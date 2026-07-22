@@ -1,0 +1,259 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta name="description" content="How to identify repeated AI agent requests, attribute costs to tasks, and set limits: a practical case study using an event log, deduplication, and result verification.">
+  <link rel="canonical" href="https://agentlabjournal.online/en/agent-cost-control-case.html">
+  <link rel="stylesheet" href="style.css">
+  <link rel="stylesheet" href="reading.css">
+  <link rel="stylesheet" href="service.css">
+  <title>How We Identified Unnecessary AI Agent Costs | Agent Lab Journal</title>
+  <script src="metrika.js"></script>
+  <script type="application/ld+json">
+  {
+    "@context": "https://schema.org",
+    "@type": "Article",
+    "headline": "How We Identified Unnecessary AI Agent Costs",
+    "description": "How to identify repeated AI agent requests, attribute costs to tasks, and set limits: a practical case study using an event log, deduplication, and result verification.",
+    "author": {
+      "@type": "Person",
+      "name": "Mikhail"
+    },
+    "publisher": {
+      "@type": "Organization",
+      "name": "Agent Lab Journal"
+    },
+    "mainEntityOfPage": {
+      "@type": "WebPage",
+      "@id": "https://agentlabjournal.online/agent-cost-control-case.html"
+    }
+  }
+  </script>
+</head>
+<body>
+  <noscript>
+    <div><img src="https://mc.yandex.ru/watch/110942679" style="position:absolute;left:-9999px" alt=""></div>
+  </noscript>
+
+  <header class="site-header">
+    <a class="brand" href="./">
+      <span class="brand-mark">AL</span>
+      <span>Agent Lab Journal</span>
+    </a>
+    <nav>
+      <a href="guides.html">← Guides</a>
+      <a href="glossary.html">Glossary</a>
+    </nav>
+  </header>
+
+  <main class="article">
+    <p class="eyebrow">ANALYSIS OF A REAL-WORLD ERROR</p>
+    <h1>How we identified unnecessary <a class="term-link" href="glossary.html#ai-агент">AI agent</a> costs</h1>
+
+    <div class="reading-meta">
+      <span>Level: intermediate</span>
+      <span>Time: 8 minutes</span>
+      <span>Outcome: control over costs and repeated requests</span>
+    </div>
+
+    <p class="lead"><strong>The agent completed its tasks, but the budget was being spent faster than expected, and the final report did not explain why.</strong> The cause was neither the model’s price nor a single long request: the same stage was being triggered again unnoticed after a timeout. We reconstructed the sequence from the event log and added an operation identifier, duplicate protection, and a separate cost report for each task.</p>
+
+    <h2>What exactly was happening</h2>
+
+    <p>The workflow looked simple: receive an event, collect data, call the model, save the response, and mark the task as completed. On the surface, everything worked—the user received one result. Internally, however, some tasks generated several calls to the model.</p>
+
+    <p>The repeated request occurred at the boundary between making the request and saving the state. The model managed to process the request, but our <a class="term-link" href="glossary.html#worker">worker</a> either did not receive the response in time or did not manage to record the status. The queue treated the attempt as failed and started it again. The provider had already accepted the first request, so every new attempt became a separate billable operation.</p>
+
+    <pre><code>event received
+  → task taken from the queue
+  → request sent to the model
+  → wait exceeded the limit
+  → task returned to the queue
+  → the same request sent again
+  → only the last response saved</code></pre>
+
+    <p>The final report stored the task result but not the history of attempts. As a result, the cost appeared as an unexplained discrepancy: one visible response, but several actual requests.</p>
+
+    <h2>Why a conventional log was not enough</h2>
+
+    <p>The log contained messages saying “task started” and “task completed,” but there was no shared identifier connecting the incoming event, the attempt, the model call, and the charge. Such a log shows activity, but it does not provide <a class="term-link" href="glossary.html#observability">observability</a>.</p>
+
+    <p>For the investigation, we needed four different identifiers:</p>
+
+    <ul>
+      <li><code>event_id</code> — a unique incoming event;</li>
+      <li><code>job_id</code> — the agent’s logical task;</li>
+      <li><code>attempt</code> — the execution attempt number;</li>
+      <li><code>request_id</code> — an individual call to the model.</li>
+    </ul>
+
+    <p>If you store only <code>job_id</code>, repeated attempts are merged together. If you store only <code>request_id</code>, it is unclear which user task the request served. Both levels are required for cost control.</p>
+
+    <h2>Step 1. Count requests before aggregation</h2>
+
+    <p>Do not record only the daily total. First, create one row for every call to the model. The minimum set of fields is:</p>
+
+    <pre><code>{
+  "event_id": "evt_example",
+  "job_id": "job_example",
+  "attempt": 1,
+  "request_id": "req_example",
+  "stage": "summarize",
+  "model": "configured-model",
+  "input_tokens": 0,
+  "output_tokens": 0,
+  "cost": null,
+  "status": "started",
+  "started_at": "ISO-8601 timestamp",
+  "finished_at": null,
+  "error_type": null
+}</code></pre>
+
+    <p>Populate <a class="term-link" href="glossary.html#token">token</a> counts and cost from the provider’s response or from a separate billing event. Do not calculate a financial report solely from text length: it may be a useful estimate, but it is not a confirmed charge.</p>
+
+    <p>The <code>started</code> status must be saved before the network call. After receiving the response, update the same record instead of creating a new one. This keeps an interrupted attempt visible so that it can be matched to the next run.</p>
+
+    <h2>Step 2. Find repeated operations</h2>
+
+    <p>Group the log by task and stage. For example, for SQLite or PostgreSQL, the basis of the check might look like this:</p>
+
+    <pre><code>SELECT
+  job_id,
+  stage,
+  COUNT(*) AS request_count,
+  SUM(COALESCE(cost, 0)) AS total_cost
+FROM model_requests
+GROUP BY job_id, stage
+HAVING COUNT(*) &gt; 1
+ORDER BY request_count DESC;</code></pre>
+
+    <p>The presence of multiple requests does not by itself prove that there is an error. The agent may deliberately call the model for planning, verification, and the final response. What is suspicious is a repeated request with the same <code>job_id</code>, <code>stage</code>, and normalized input.</p>
+
+    <p>To compare inputs without storing sensitive text, calculate a fingerprint after stable normalization:</p>
+
+    <pre><code>input_hash = sha256(
+  model + "\n" +
+  stage + "\n" +
+  normalized_system_prompt + "\n" +
+  normalized_user_input
+)</code></pre>
+
+    <p>Do not include the current time, random identifiers, or a changing order of service fields in the normalization. Otherwise, two requests that are identical in meaning will receive different fingerprints.</p>
+
+    <h2>Step 3. Distinguish repeated events from repeated attempts</h2>
+
+    <p>We had two potential sources of duplicates. The first was repeated delivery of an incoming <a class="term-link" href="glossary.html#webhook">webhook</a>. The second was restarting an already-created task after a timeout. Both boundaries need protection.</p>
+
+    <p>At the input boundary, create a unique constraint on the source and event identifier:</p>
+
+    <pre><code>CREATE UNIQUE INDEX uniq_source_event
+ON inbound_events(source, event_id);</code></pre>
+
+    <p>Before a billable stage, build an operation key from the task, stage, and input fingerprint. One key must correspond to one logical result:</p>
+
+    <pre><code>operation_key = sha256(job_id + ":" + stage + ":" + input_hash)</code></pre>
+
+    <p>Store the key in a table with a unique index. If a record already exists with the <code>completed</code> status, return the saved result. If the operation is still running, do not send a second request: reschedule the task for a brief status check.</p>
+
+    <blockquote>Redelivering a task is safe only when the repeated delivery does not create a second billable action.</blockquote>
+
+    <h2>Step 4. Configure retries by error type</h2>
+
+    <p>Unconditionally retrying every error quickly turns into a cost generator. The configuration should limit the number of attempts, the delay, and the task’s total budget:</p>
+
+    <pre><code>retry:
+  max_attempts: 3
+  backoff_seconds: [2, 10, 30]
+  retry_on:
+    - rate_limit
+    - temporary_unavailable
+    - connection_reset
+  stop_on:
+    - invalid_request
+    - authentication_error
+    - context_limit
+
+budget:
+  max_model_requests_per_job: 4
+  max_input_tokens_per_job: 30000
+  require_approval_above_configured_cost: true</code></pre>
+
+    <p>The values shown here are an example of the structure, not universal limits. Use constraints based on your own load model and pricing plan. A format error or exceeding the allowed <a class="term-link" href="glossary.html#context">context</a> limit generally needs to be corrected rather than resent unchanged.</p>
+
+    <p>If the task reaches its limit, stop it in the <code>budget_exceeded</code> state. For an expensive continuation, use an <a class="term-link" href="glossary.html#approval-gate">approval gate</a>: the agent shows the attempts already made, the accumulated cost, and the reason for the next request.</p>
+
+    <h2>Step 5. Create a clear report</h2>
+
+    <p>A final total without a breakdown is of little help during debugging. The task report should answer four questions:</p>
+
+    <ul>
+      <li>how many logical stages were planned;</li>
+      <li>how many requests were actually sent;</li>
+      <li>which requests were retries and why;</li>
+      <li>which costs are confirmed and which are still only estimates.</li>
+    </ul>
+
+    <pre><code>Task: job_example
+Status: completed
+Stages: plan, retrieve, summarize
+Model requests: 4
+Repeated attempts: 1
+Reason for retry: temporary_unavailable
+Confirmed cost: value from billing
+Unfinished requests: 0</code></pre>
+
+    <p>Do not treat zero cost and unknown cost as the same thing. For a request without billing data, store <code>null</code> or the <code>pending</code> status. Otherwise, the report will appear precise even though some costs have not yet been accounted for.</p>
+
+    <h2>How to test duplicate protection</h2>
+
+    <p>It is best to run the test in a test project with minimal limits. Do not call an expensive model merely to simulate a failure: you can replace the network client with a stub that records the number of calls.</p>
+
+    <ol>
+      <li>Submit the same incoming event twice. Only one logical task should remain in the database.</li>
+      <li>Interrupt execution after receiving the response but before the worker completes. Restarting the task must not create a second completed operation.</li>
+      <li>Return a temporary error before the request is accepted. The next attempt should receive a new number while retaining the same <code>job_id</code>.</li>
+      <li>Return a permanent format error. The agent should stop without retrying.</li>
+      <li>Run the task until it reaches the request limit. The next billable stage should be blocked.</li>
+      <li>Compare the number of <code>model_requests</code> records with the provider’s log or billing data for the same interval.</li>
+    </ol>
+
+    <p>The success criterion is not simply a single response in the interface. Every actual request has a record, every retry is explained, and the same event does not create a second billable action.</p>
+
+    <h2>What can go wrong</h2>
+
+    <p><strong>The request completed at the provider, but the connection was interrupted.</strong> It is impossible to determine the result reliably from the local side. Use the provider’s idempotency key if supported, or check the request log before retrying.</p>
+
+    <p><strong>Two workers saw the same available task simultaneously.</strong> A “read first, then write” check is not sufficient. You need a unique index, a transaction, or an atomic lock.</p>
+
+    <p><strong>The input fingerprint changes with every attempt.</strong> Remove dynamic fields from normalization, or create the request content once and store it with the task.</p>
+
+    <p><strong>Retries were disabled completely.</strong> This reduces costs but makes the system fragile in the event of temporary network errors. The goal is not zero retries, but controlled and explainable retries.</p>
+
+    <p><strong>The limit is checked after the call.</strong> The budget must be reserved before the billable operation and adjusted after the actual usage is received.</p>
+
+    <h2>Limitations of the approach</h2>
+
+    <p>A local log does not replace provider data: a charge may appear later, and calculation rules depend on the pricing plan and model. A fingerprint identifies exact repeats, but it does not always recognize two slightly different requests that perform the same work. Finally, strict limits may stop a useful long-running task, so they need to be configured separately for different types of operations.</p>
+
+    <p>The main outcome of this analysis was that cost became part of the task state rather than a separate figure at the end of the month. Every request is now tied to the reason it was initiated, retries are constrained by rules, and the report makes it possible to understand which action consumed the budget.</p>
+
+    <p class="back">
+      <a class="text-link" href="guides.html">← All guides</a>
+      ·
+      <a class="text-link" href="glossary.html">Lab glossary →</a>
+    </p>
+
+    <section class="service-note">
+      <b>We publish what works for us—and implement the same solutions for your business.</b>
+      We design AI automation, Telegram bots, chats, and AI agents for real-world processes.
+      <a href="contacts.html">Discuss your project →</a>
+    </section>
+  </main>
+
+  <footer>
+    <span>Agent Lab Journal</span>
+    <span><a href="privacy-ru.html">Privacy</a></span>
+  </footer>
+</body>
+</html>
