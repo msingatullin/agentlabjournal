@@ -5,7 +5,7 @@ import re
 import sys
 
 ROOT = Path(__file__).resolve().parent.parent
-guides = sorted(ROOT.glob("guide-*.html"))
+guides = sorted(list(ROOT.glob("guide-*.html")) + list(ROOT.glob("article-*.html")))
 required = {
     "reading-meta": "reading metadata",
     "glossary.html": "glossary link",
