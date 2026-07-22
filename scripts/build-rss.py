@@ -31,6 +31,17 @@ feed = """<?xml version="1.0" encoding="UTF-8"?>
 """ + "\n".join(items) + "\n</channel></rss>\n"
 (ROOT / "rss.xml").write_text(feed)
 english_item = '''    <item><title>Agent Lab Journal: practical AI agent engineering</title><link>https://agentlabjournal.online/en/</link><guid isPermaLink="true">https://agentlabjournal.online/en/</guid><pubDate>''' + datetime.now(timezone.utc).strftime('%a, %d %b %Y %H:%M:%S +0000') + '''</pubDate><author>journal@agentlabjournal.online (Agent Lab Journal)</author><description>English entry point for practical notes on reliable AI agents, automation, memory and safety.</description><content:encoded><![CDATA[<p>English entry point for Agent Lab Journal.</p><p><a href="https://agentlabjournal.online/en/">Read the journal</a></p>]]></content:encoded></item>'''
+for page in sorted((ROOT / "en").glob("*.html")):
+    if page.name == "index.html":
+        continue
+    text = page.read_text()
+    title = re.search(r"<h1[^>]*>(.*?)</h1>", text, re.S | re.I)
+    description = re.search(r'<meta name="description" content="([^"]*)"', text, re.I)
+    if title:
+        clean_title = re.sub(r"<[^>]+>", "", title.group(1)).strip()
+        url = f"https://agentlabjournal.online/en/{page.name}"
+        summary = html.escape(description.group(1) if description else clean_title)
+        english_item += f'''\n    <item><title>{html.escape(clean_title)}</title><link>{url}</link><guid isPermaLink="true">{url}</guid><pubDate>{datetime.now(timezone.utc).strftime('%a, %d %b %Y %H:%M:%S +0000')}</pubDate><author>journal@agentlabjournal.online (Agent Lab Journal)</author><description>{summary}</description><content:encoded><![CDATA[<p>{summary}</p><p><a href="{url}">Read the article</a></p>]]></content:encoded></item>'''
 english_feed = '''<?xml version="1.0" encoding="UTF-8"?>
 <rss version="2.0" xmlns:content="http://purl.org/rss/1.0/modules/content/" xmlns:atom="http://www.w3.org/2005/Atom"><channel>
   <title>Agent Lab Journal</title>

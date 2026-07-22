@@ -15,8 +15,9 @@ parser.add_argument("--summary", required=True, help="Short description for inde
 parser.add_argument("--news", action="store_true", help="Also add the article to Yandex News RSS")
 args = parser.parse_args()
 
-filename = Path(args.file).name
-article = ROOT / filename
+relative = Path(args.file)
+filename = relative.name
+article = ROOT / relative
 if article.suffix != ".html" or not article.exists():
     raise SystemExit(f"Article not found in repository root: {filename}")
 
@@ -26,6 +27,16 @@ if "reading-meta" not in text or "canonical" not in text:
 
 url = f"https://agentlabjournal.online/{filename}"
 summary = escape(args.summary)
+
+if relative.parts and relative.parts[0] == "en":
+    gate = subprocess.run([sys.executable, str(ROOT / "scripts/check-publication.py")], cwd=ROOT)
+    if gate.returncode:
+        raise SystemExit("Publication blocked: fix the gate output before committing")
+    rss = subprocess.run([sys.executable, str(ROOT / "scripts/build-rss.py")], cwd=ROOT)
+    if rss.returncode:
+        raise SystemExit("Publication blocked: RSS could not be built")
+    print(f"Registered English article: {relative}")
+    raise SystemExit(0)
 
 catalog = ROOT / "guides.html"
 catalog_text = catalog.read_text()

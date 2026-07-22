@@ -17,14 +17,16 @@ parser.add_argument("--minutes", type=int, default=8)
 parser.add_argument("--result", required=True)
 parser.add_argument("--summary", required=True)
 parser.add_argument("--news", action="store_true")
+parser.add_argument("--language", choices=["ru", "en"], default="ru")
 args = parser.parse_args()
 
 filename = f"{re.sub(r'[^a-z0-9-]+', '-', args.slug.lower()).strip('-')}.html"
-target = ROOT / filename
+target = ROOT / filename if args.language == "ru" else ROOT / "en" / filename
+target.parent.mkdir(exist_ok=True)
 if target.exists():
     raise SystemExit(f"Refusing to overwrite existing article: {filename}")
 
-prompt = f"""Create one complete Russian HTML article for Agent Lab Journal.
+prompt = f"""Create one complete {'English' if args.language == 'en' else 'Russian'} HTML article for Agent Lab Journal.
 Topic: {args.title}
 Real problem: {args.problem}
 Level: {args.level}
@@ -33,7 +35,7 @@ Expected result: {args.result}
 
 Return ONLY one complete HTML document, with no Markdown fences and no explanation.
 Use the existing site style: style.css and reading.css. Add description, canonical URL
-https://agentlabjournal.online/{filename}, title, and an Article JSON-LD block with headline,
+https://agentlabjournal.online/{'en/' if args.language == 'en' else ''}{filename}, title, and an Article JSON-LD block with headline,
 description, author, publisher and mainEntityOfPage. Add reading-meta, a strong lead, a concrete
 case, practical steps, commands or configuration where useful, verification, failure cases,
 limitations, and a final link to guides.html and glossary.html. The first mention of each
@@ -58,7 +60,7 @@ if not html.startswith("<!doctype html>") or "reading-meta" not in html:
     raise SystemExit("Generated output is not a valid article document")
 target.write_text(html + "\n")
 
-publish = [sys.executable, str(ROOT / "scripts/publish-article.py"), "--file", filename, "--summary", args.summary]
+publish = [sys.executable, str(ROOT / "scripts/publish-article.py"), "--file", str(target.relative_to(ROOT)), "--summary", args.summary]
 if args.news:
     publish.append("--news")
 raise SystemExit(subprocess.run(publish, cwd=ROOT).returncode)

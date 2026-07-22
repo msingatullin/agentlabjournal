@@ -70,6 +70,12 @@ if result.returncode:
     notify_error("генерация или publication gate", f"exit code {result.returncode}")
     raise SystemExit(result.returncode)
 
+english_command = command + ["--language", "en"]
+english_result = subprocess.run(english_command, cwd=ROOT)
+if english_result.returncode:
+    notify_error("английская версия статьи", f"exit code {english_result.returncode}")
+    raise SystemExit(english_result.returncode)
+
 try:
     subprocess.run(["git", "add", "."], cwd=ROOT, check=True)
     subprocess.run(["git", "commit", "-m", f"Publish article: {topic['title']}"], cwd=ROOT, check=True)
