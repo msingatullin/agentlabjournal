@@ -29,6 +29,15 @@ url = f"https://agentlabjournal.online/{filename}"
 summary = escape(args.summary)
 
 if relative.parts and relative.parts[0] == "en":
+    url = f"https://agentlabjournal.online/{relative.as_posix()}"
+    sitemap = ROOT / "sitemap.xml"
+    sitemap_text = sitemap.read_text()
+    if url not in sitemap_text:
+        sitemap.write_text(sitemap_text.replace("</urlset>", f"  <url><loc>{url}</loc><changefreq>monthly</changefreq><priority>0.7</priority></url>\n</urlset>", 1))
+    llms = ROOT / "llms.txt"
+    llms_text = llms.read_text()
+    if url not in llms_text:
+        llms.write_text(llms_text.replace("## Навигация", f"- [English: {escape(title)}]({url}): {summary}.\n\n## Навигация", 1))
     gate = subprocess.run([sys.executable, str(ROOT / "scripts/check-publication.py")], cwd=ROOT)
     if gate.returncode:
         raise SystemExit("Publication blocked: fix the gate output before committing")
