@@ -64,7 +64,7 @@ parser_html.feed(text)
 body = re.sub(r'\n{3,}', '\n\n', ''.join(parser_html.out)).strip()
 canonical = f'https://agentlabjournal.online/{args.file}'
 body += f'\n\n---\n\n**Original article:** {canonical}\n'
-payload = {'article': {'title': title, 'body_markdown': body, 'published': bool(args.publish), 'canonical_url': canonical, 'description': description.group(1) if description else title, 'tags': ['ai', 'automation', 'agents']}}
+payload = {'article': {'title': title, 'body_markdown': body, 'published': bool(args.publish or args.update), 'canonical_url': canonical, 'description': description.group(1) if description else title, 'tags': ['ai', 'automation', 'agents']}}
 method = 'PUT' if args.update else 'POST'
 endpoint = f"https://dev.to/api/articles/{registry[args.file]['id']}" if args.update else 'https://dev.to/api/articles'
 request = urllib.request.Request(endpoint, data=json.dumps(payload).encode(), headers={'api-key': key, 'Content-Type': 'application/json', 'Accept': 'application/vnd.forem.api-v1+json', 'User-Agent': 'Mozilla/5.0'}, method=method)
