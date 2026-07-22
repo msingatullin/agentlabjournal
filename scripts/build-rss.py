@@ -41,4 +41,5 @@ english_feed = '''<?xml version="1.0" encoding="UTF-8"?>
   <lastBuildDate>''' + datetime.now(timezone.utc).strftime('%a, %d %b %Y %H:%M:%S +0000') + '''</lastBuildDate>
 ''' + english_item + "\n</channel></rss>\n"
 (ROOT / "rss-en.xml").write_text(english_feed)
+(ROOT / "rss-en-v2.xml").write_text(english_feed.replace("rss-en.xml", "rss-en-v2.xml"))
 print(f"RSS: built {len(items)} items")
