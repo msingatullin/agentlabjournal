@@ -4,6 +4,7 @@ import json
 import subprocess
 import urllib.parse
 import urllib.request
+import xml.etree.ElementTree as ET
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -15,6 +16,7 @@ QUERIES = [
     ("Безопасность", "LLM agent security prompt injection guardrails"),
     ("Эксперименты", "LLM agent evaluation benchmark observability"),
 ]
+FEEDS = ROOT / "article-source-feeds.json"
 
 def github(query):
     params = urllib.parse.urlencode({"q": query, "sort": "updated", "order": "desc", "per_page": 3})
@@ -30,6 +32,18 @@ def youtube(query):
     data = json.loads(run.stdout)
     return [{"url": f"https://www.youtube.com/watch?v={x['id']}", "title": x.get("title") or x["id"], "description": x.get("description") or "", "source": "YouTube"} for x in data.get("entries", []) if x.get("id")]
 
+def rss(feed):
+    req = urllib.request.Request(feed["url"], headers={"User-Agent": "AgentLabJournal/1.0"})
+    with urllib.request.urlopen(req, timeout=30) as response:
+        root = ET.fromstring(response.read())
+    items = []
+    for item in root.findall(".//item")[:5]:
+        link = item.findtext("link") or ""
+        if not link:
+            continue
+        items.append({"url": link, "title": item.findtext("title") or link, "description": item.findtext("description") or "", "source": feed["name"], "category": feed["category"]})
+    return items
+
 old = {x["url"]: x for x in json.loads(OUT.read_text())}
 for category, query in QUERIES:
     try:
@@ -38,6 +52,16 @@ for category, query in QUERIES:
         found = []
     for item in found:
         item["category"] = category
+        item["discovered_at"] = datetime.now(timezone.utc).isoformat(timespec="seconds")
+        item["status"] = old.get(item["url"], {}).get("status", "needs_review")
+        old[item["url"]] = item
+
+for feed in json.loads(FEEDS.read_text()):
+    try:
+        found = rss(feed)
+    except Exception:
+        found = []
+    for item in found:
         item["discovered_at"] = datetime.now(timezone.utc).isoformat(timespec="seconds")
         item["status"] = old.get(item["url"], {}).get("status", "needs_review")
         old[item["url"]] = item
