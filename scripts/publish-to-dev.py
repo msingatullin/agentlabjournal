@@ -42,6 +42,7 @@ class Markdown(HTMLParser):
 parser = ArgumentParser()
 parser.add_argument('--file', required=True)
 parser.add_argument('--publish', action='store_true')
+parser.add_argument('--update', action='store_true')
 args = parser.parse_args()
 key = os.environ.get('DEV_API_KEY', '').strip()
 if not key:
@@ -49,7 +50,7 @@ if not key:
 path = ROOT / args.file
 registry_path = ROOT / "dev-published.json"
 registry = json.loads(registry_path.read_text()) if registry_path.exists() else {}
-if args.file in registry:
+if args.file in registry and not args.update:
     print(json.dumps(registry[args.file], ensure_ascii=False))
     raise SystemExit(0)
 text = path.read_text()
@@ -61,8 +62,12 @@ description = re.search(r'<meta name="description" content="([^"]*)"', text, re.
 parser_html = Markdown()
 parser_html.feed(text)
 body = re.sub(r'\n{3,}', '\n\n', ''.join(parser_html.out)).strip()
-payload = {'article': {'title': title, 'body_markdown': body, 'published': bool(args.publish), 'canonical_url': f'https://agentlabjournal.online/{args.file}', 'description': description.group(1) if description else title, 'tags': ['ai', 'automation', 'agents']}}
-request = urllib.request.Request('https://dev.to/api/articles', data=json.dumps(payload).encode(), headers={'api-key': key, 'Content-Type': 'application/json', 'Accept': 'application/vnd.forem.api-v1+json', 'User-Agent': 'Mozilla/5.0'}, method='POST')
+canonical = f'https://agentlabjournal.online/{args.file}'
+body += f'\n\n---\n\n**Original article:** {canonical}\n'
+payload = {'article': {'title': title, 'body_markdown': body, 'published': bool(args.publish), 'canonical_url': canonical, 'description': description.group(1) if description else title, 'tags': ['ai', 'automation', 'agents']}}
+method = 'PUT' if args.update else 'POST'
+endpoint = f"https://dev.to/api/articles/{registry[args.file]['id']}" if args.update else 'https://dev.to/api/articles'
+request = urllib.request.Request(endpoint, data=json.dumps(payload).encode(), headers={'api-key': key, 'Content-Type': 'application/json', 'Accept': 'application/vnd.forem.api-v1+json', 'User-Agent': 'Mozilla/5.0'}, method=method)
 for attempt in range(3):
     try:
         with urllib.request.urlopen(request, timeout=30) as response:
