@@ -37,6 +37,8 @@ for page in guides:
 for term in ("glossary.html", "guides.html", "sitemap.xml"):
     if term not in llms and term != "sitemap.xml":
         errors.append(f"llms.txt: missing navigation link to {term}")
+if "sections.html" not in llms:
+    errors.append("llms.txt: missing navigation link to sections.html")
 
 if errors:
     print("PUBLICATION_GATE: BLOCKED")
