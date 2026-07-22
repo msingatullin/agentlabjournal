@@ -31,6 +31,14 @@ feed = """<?xml version="1.0" encoding="UTF-8"?>
 """ + "\n".join(items) + "\n</channel></rss>\n"
 (ROOT / "rss.xml").write_text(feed)
 english_item = '''    <item><title>Agent Lab Journal: practical AI agent engineering</title><link>https://agentlabjournal.online/en/</link><guid isPermaLink="true">https://agentlabjournal.online/en/</guid><pubDate>''' + datetime.now(timezone.utc).strftime('%a, %d %b %Y %H:%M:%S +0000') + '''</pubDate><author>journal@agentlabjournal.online (Agent Lab Journal)</author><description>English entry point for practical notes on reliable AI agents, automation, memory and safety.</description><content:encoded><![CDATA[<p>English entry point for Agent Lab Journal.</p><p><a href="https://agentlabjournal.online/en/">Read the journal</a></p>]]></content:encoded></item>'''
-english_feed = feed.split("</channel>", 1)[0].replace("rss.xml", "rss-en.xml") + english_item + "\n</channel></rss>\n"
+english_feed = '''<?xml version="1.0" encoding="UTF-8"?>
+<rss version="2.0" xmlns:content="http://purl.org/rss/1.0/modules/content/" xmlns:atom="http://www.w3.org/2005/Atom"><channel>
+  <title>Agent Lab Journal</title>
+  <link>https://agentlabjournal.online/en/</link>
+  <atom:link href="https://agentlabjournal.online/rss-en.xml" rel="self" type="application/rss+xml" />
+  <description>Practical notes on reliable AI agents, automation and safety.</description>
+  <language>en</language>
+  <lastBuildDate>''' + datetime.now(timezone.utc).strftime('%a, %d %b %Y %H:%M:%S +0000') + '''</lastBuildDate>
+''' + english_item + "\n</channel></rss>\n"
 (ROOT / "rss-en.xml").write_text(english_feed)
 print(f"RSS: built {len(items)} items")
