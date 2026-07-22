@@ -14,9 +14,17 @@ required = {
     '"@type":"Article"': "Article JSON-LD",
 }
 errors = []
+titles = {}
 
 for page in guides:
     text = page.read_text()
+    title_match = re.search(r"<h1[^>]*>(.*?)</h1>", text, re.S | re.I)
+    if title_match:
+        title = re.sub(r"<[^>]+>", "", title_match.group(1)).strip().casefold()
+        if title in titles:
+            errors.append(f"{page.name}: duplicate title with {titles[title]}")
+        else:
+            titles[title] = page.name
     for marker, label in required.items():
         if marker not in text:
             errors.append(f"{page.name}: missing {label}")
@@ -33,6 +41,8 @@ for page in guides:
         errors.append(f"{url}: missing from sitemap.xml")
     if url not in llms:
         errors.append(f"{url}: missing from llms.txt")
+    if not any(url in (ROOT / f"section-{section}.html").read_text() for section in ("news", "practice", "companies", "tools", "experiments", "errors", "security", "money", "opinions")):
+        errors.append(f"{url}: missing from section catalog")
 
 for term in ("glossary.html", "guides.html", "sitemap.xml"):
     if term not in llms and term != "sitemap.xml":
