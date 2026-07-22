@@ -30,4 +30,7 @@ feed = """<?xml version="1.0" encoding="UTF-8"?>
   <lastBuildDate>""" + datetime.now(timezone.utc).strftime('%a, %d %b %Y %H:%M:%S +0000') + """</lastBuildDate>
 """ + "\n".join(items) + "\n</channel></rss>\n"
 (ROOT / "rss.xml").write_text(feed)
+english_item = '''    <item><title>Agent Lab Journal: practical AI agent engineering</title><link>https://agentlabjournal.online/en/</link><guid isPermaLink="true">https://agentlabjournal.online/en/</guid><pubDate>''' + datetime.now(timezone.utc).strftime('%a, %d %b %Y %H:%M:%S +0000') + '''</pubDate><author>journal@agentlabjournal.online (Agent Lab Journal)</author><description>English entry point for practical notes on reliable AI agents, automation, memory and safety.</description><content:encoded><![CDATA[<p>English entry point for Agent Lab Journal.</p><p><a href="https://agentlabjournal.online/en/">Read the journal</a></p>]]></content:encoded></item>'''
+english_feed = feed.split("</channel>", 1)[0].replace("rss.xml", "rss-en.xml") + english_item + "\n</channel></rss>\n"
+(ROOT / "rss-en.xml").write_text(english_feed)
 print(f"RSS: built {len(items)} items")
