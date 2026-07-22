@@ -55,8 +55,8 @@ with tempfile.TemporaryDirectory() as tmp:
         raise SystemExit(result.returncode)
     html = output.read_text().strip()
 
-html = re.sub(r"^```(?:html)?\s*|\s*```$", "", html, flags=re.I)
-if not html.startswith("<!doctype html>") or "reading-meta" not in html:
+html = re.sub(r"^\s*```(?:html)?\s*|\s*```\s*$", "", html, flags=re.I)
+if not re.match(r"\s*<!doctype html>", html, flags=re.I) or "reading-meta" not in html:
     raise SystemExit("Generated output is not a valid article document")
 target.write_text(html + "\n")
 
