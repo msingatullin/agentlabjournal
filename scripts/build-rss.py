@@ -17,12 +17,14 @@ for page in sorted(ROOT.glob("*.html")):
         continue
     clean_title = re.sub(r"<[^>]+>", "", title.group(1)).strip()
     url = f"https://agentlabjournal.online/{page.name}"
-    items.append(f"    <item><title>{html.escape(clean_title)}</title><link>{url}</link><guid isPermaLink=\"true\">{url}</guid><pubDate>{datetime.now(timezone.utc).strftime('%a, %d %b %Y %H:%M:%S +0000')}</pubDate><description>{html.escape(description.group(1) if description else clean_title)}</description></item>")
+    summary = html.escape(description.group(1) if description else clean_title)
+    items.append(f"    <item><title>{html.escape(clean_title)}</title><link>{url}</link><guid isPermaLink=\"true\">{url}</guid><pubDate>{datetime.now(timezone.utc).strftime('%a, %d %b %Y %H:%M:%S +0000')}</pubDate><author>journal@agentlabjournal.online (Agent Lab Journal)</author><description>{summary}</description><content:encoded><![CDATA[<p>{summary}</p><p><a href=\"{url}\">Read the original article</a></p>]]></content:encoded></item>")
 
 feed = """<?xml version="1.0" encoding="UTF-8"?>
-<rss version="2.0"><channel>
+<rss version="2.0" xmlns:content="http://purl.org/rss/1.0/modules/content/" xmlns:atom="http://www.w3.org/2005/Atom"><channel>
   <title>Agent Lab Journal</title>
   <link>https://agentlabjournal.online/</link>
+  <atom:link href="https://agentlabjournal.online/rss.xml" rel="self" type="application/rss+xml" />
   <description>Practical notes on reliable AI agents, automation and safety.</description>
   <language>en</language>
   <lastBuildDate>""" + datetime.now(timezone.utc).strftime('%a, %d %b %Y %H:%M:%S +0000') + """</lastBuildDate>
