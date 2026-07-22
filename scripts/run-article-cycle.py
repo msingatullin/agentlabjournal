@@ -83,5 +83,10 @@ try:
 except Exception as error:
     notify_error("commit или push", error)
     raise
+try:
+    subprocess.run([sys.executable, str(ROOT / "scripts/publish-to-dev.py"), "--file", f"en/{topic['slug']}.html", "--publish"], cwd=ROOT, check=True)
+except Exception as error:
+    notify_error("публикация английской статьи в DEV API", error)
+    raise
 notify(topic)
 print(f"ARTICLE_CYCLE: published {topic['slug']}")
