@@ -11,6 +11,7 @@ required = {
     "glossary.html": "glossary link",
     "canonical": "canonical URL",
     "meta name=\"description\"": "description",
+    '"@type":"Article"': "Article JSON-LD",
 }
 errors = []
 

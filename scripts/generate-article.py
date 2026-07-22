@@ -33,7 +33,8 @@ Expected result: {args.result}
 
 Return ONLY one complete HTML document, with no Markdown fences and no explanation.
 Use the existing site style: style.css and reading.css. Add description, canonical URL
-https://agentlabjournal.online/{filename}, title, reading-meta, a strong lead, a concrete
+https://agentlabjournal.online/{filename}, title, and an Article JSON-LD block with headline,
+description, author, publisher and mainEntityOfPage. Add reading-meta, a strong lead, a concrete
 case, practical steps, commands or configuration where useful, verification, failure cases,
 limitations, and a final link to guides.html and glossary.html. The first mention of each
 special term must link to glossary.html using an existing or appropriate anchor. Do not
