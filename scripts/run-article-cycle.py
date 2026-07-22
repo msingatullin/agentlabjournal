@@ -36,6 +36,21 @@ def notify(topic):
         request = urllib.request.Request(f"https://api.telegram.org/bot{token}/sendMessage", data=data)
         with urllib.request.urlopen(request, timeout=20):
             pass
+
+def notify_error(stage, error):
+    token = os.environ.get("TELEGRAM_BOT_TOKEN", "").strip()
+    chats = os.environ.get("TELEGRAM_ALLOWED_USER_IDS", "").replace(";", ",").split(",")
+    if not token:
+        print(f"ARTICLE_CYCLE: error notification skipped ({stage})")
+        return
+    text = f"Agent Lab Journal: ошибка автоматического цикла\nЭтап: {stage}\nПричина: {str(error)[:1200]}"
+    for chat in chats:
+        if not chat.strip():
+            continue
+        data = urllib.parse.urlencode({"chat_id": chat.strip(), "text": text}).encode()
+        request = urllib.request.Request(f"https://api.telegram.org/bot{token}/sendMessage", data=data)
+        with urllib.request.urlopen(request, timeout=20):
+            pass
 queue_path = ROOT / "article-topics.json"
 topics = json.loads(queue_path.read_text())
 
@@ -52,10 +67,15 @@ for key in ("slug", "title", "problem", "level", "minutes", "result", "summary")
 
 result = subprocess.run(command, cwd=ROOT)
 if result.returncode:
+    notify_error("генерация или publication gate", f"exit code {result.returncode}")
     raise SystemExit(result.returncode)
 
-subprocess.run(["git", "add", "."], cwd=ROOT, check=True)
-subprocess.run(["git", "commit", "-m", f"Publish article: {topic['title']}"], cwd=ROOT, check=True)
-subprocess.run(["git", "push"], cwd=ROOT, check=True)
+try:
+    subprocess.run(["git", "add", "."], cwd=ROOT, check=True)
+    subprocess.run(["git", "commit", "-m", f"Publish article: {topic['title']}"], cwd=ROOT, check=True)
+    subprocess.run(["git", "push"], cwd=ROOT, check=True)
+except Exception as error:
+    notify_error("commit или push", error)
+    raise
 notify(topic)
 print(f"ARTICLE_CYCLE: published {topic['slug']}")
