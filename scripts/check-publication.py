@@ -1,0 +1,45 @@
+#!/usr/bin/env python3
+"""Publication gate for Agent Lab Journal."""
+from pathlib import Path
+import re
+import sys
+
+ROOT = Path(__file__).resolve().parent.parent
+guides = sorted(ROOT.glob("guide-*.html"))
+required = {
+    "reading-meta": "reading metadata",
+    "glossary.html": "glossary link",
+    "canonical": "canonical URL",
+    "meta name=\"description\"": "description",
+}
+errors = []
+
+for page in guides:
+    text = page.read_text()
+    for marker, label in required.items():
+        if marker not in text:
+            errors.append(f"{page.name}: missing {label}")
+
+catalog = (ROOT / "guides.html").read_text()
+sitemap = (ROOT / "sitemap.xml").read_text()
+llms = (ROOT / "llms.txt").read_text()
+
+for page in guides:
+    url = page.name
+    if url not in catalog:
+        errors.append(f"{url}: missing from guides.html")
+    if url not in sitemap:
+        errors.append(f"{url}: missing from sitemap.xml")
+    if url not in llms:
+        errors.append(f"{url}: missing from llms.txt")
+
+for term in ("glossary.html", "guides.html", "sitemap.xml"):
+    if term not in llms and term != "sitemap.xml":
+        errors.append(f"llms.txt: missing navigation link to {term}")
+
+if errors:
+    print("PUBLICATION_GATE: BLOCKED")
+    print("\n".join(f"- {item}" for item in errors))
+    sys.exit(1)
+
+print(f"PUBLICATION_GATE: OK ({len(guides)} guides checked)")
