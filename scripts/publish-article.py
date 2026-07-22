@@ -62,4 +62,7 @@ if gate.returncode:
 catalogs = subprocess.run([sys.executable, str(ROOT / "scripts/build-section-catalogs.py")], cwd=ROOT)
 if catalogs.returncode:
     raise SystemExit("Publication blocked: section catalogs could not be built")
+rss = subprocess.run([sys.executable, str(ROOT / "scripts/build-rss.py")], cwd=ROOT)
+if rss.returncode:
+    raise SystemExit("Publication blocked: RSS could not be built")
 print(f"Registered: {filename}")
