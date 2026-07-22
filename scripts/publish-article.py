@@ -59,4 +59,7 @@ if args.news:
 gate = subprocess.run([sys.executable, str(ROOT / "scripts/check-publication.py")], cwd=ROOT)
 if gate.returncode:
     raise SystemExit("Publication blocked: fix the gate output before committing")
+catalogs = subprocess.run([sys.executable, str(ROOT / "scripts/build-section-catalogs.py")], cwd=ROOT)
+if catalogs.returncode:
+    raise SystemExit("Publication blocked: section catalogs could not be built")
 print(f"Registered: {filename}")
