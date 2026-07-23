@@ -11,6 +11,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 sources_path = ROOT / "article-source-candidates.json"
 topics_path = ROOT / "article-topics.json"
+state_path = ROOT / "article-triage-state.json"
 sources = json.loads(sources_path.read_text())
 topics = json.loads(topics_path.read_text())
 
@@ -44,6 +45,7 @@ for candidate in sources:
     if len(pending) >= 8:
         break
 if not pending:
+    state_path.write_text(json.dumps({'status': 'idle', 'reason': 'no_pending_candidates'}, ensure_ascii=False) + '\n')
     print("ARTICLE_TRIAGE: no pending candidates")
     raise SystemExit(0)
 
@@ -63,6 +65,7 @@ with tempfile.TemporaryDirectory() as tmp:
     output = Path(tmp) / "triage.json"
     run = subprocess.run(["codex", "exec", "--ephemeral", "--sandbox", "read-only", "--skip-git-repo-check", "-C", str(ROOT), "-o", str(output), prompt], capture_output=True, text=True, timeout=600)
     if run.returncode:
+        state_path.write_text(json.dumps({'status': 'blocked', 'reason': 'codex_triage_failed'}, ensure_ascii=False) + '\n')
         print(run.stderr, file=sys.stderr)
         raise SystemExit(run.returncode)
     raw = output.read_text().strip()
@@ -70,6 +73,7 @@ with tempfile.TemporaryDirectory() as tmp:
 try:
     approved = json.loads(re.sub(r"^```(?:json)?\s*|\s*```$", "", raw, flags=re.I))
 except json.JSONDecodeError as exc:
+    state_path.write_text(json.dumps({'status': 'blocked', 'reason': 'invalid_triage_json'}, ensure_ascii=False) + '\n')
     raise SystemExit(f"Invalid triage JSON: {exc}")
 
 existing = {x.get("slug") for x in topics}
@@ -93,4 +97,5 @@ for item in sources:
 
 topics_path.write_text(json.dumps(topics, ensure_ascii=False, indent=2) + "\n")
 sources_path.write_text(json.dumps(sources, ensure_ascii=False, indent=2) + "\n")
+state_path.write_text(json.dumps({'status': 'completed', 'approved': added, 'queue': len(topics)}, ensure_ascii=False) + '\n')
 print(json.dumps({"approved": added, "queue": len(topics)}, ensure_ascii=False))
