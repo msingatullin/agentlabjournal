@@ -1,0 +1,367 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>How an Agent Reviews a Repository Before Adoption — Agent Lab Journal</title>
+  <meta name="description" content="A repeatable advanced workflow for checking an external repository when a useful-looking library has no proven compatibility with your project.">
+  <link rel="canonical" href="https://agentlabjournal.online/en/agent-source-review-case.html">
+  <link rel="stylesheet" href="../style.css">
+  <link rel="stylesheet" href="../reading.css">
+  <script type="application/ld+json">
+  {
+    "@context": "https://schema.org",
+    "@type": "Article",
+    "headline": "How an Agent Reviews a Repository Before Adoption",
+    "description": "A repeatable advanced workflow for checking an external repository when a useful-looking library has no proven compatibility with your project.",
+    "author": {
+      "@type": "Organization",
+      "name": "Agent Lab Journal"
+    },
+    "publisher": {
+      "@type": "Organization",
+      "name": "Agent Lab Journal",
+      "url": "https://agentlabjournal.online/"
+    },
+    "mainEntityOfPage": {
+      "@type": "WebPage",
+      "@id": "https://agentlabjournal.online/en/agent-source-review-case.html"
+    }
+  }
+  </script>
+</head>
+<body>
+  <header class="site-header">
+    <div class="container">
+      <a class="site-name" href="index.html">Agent Lab Journal</a>
+      <nav class="site-nav" aria-label="Primary navigation">
+        <a href="guides.html">Guides</a>
+        <a href="glossary.html">Glossary</a>
+      </nav>
+    </div>
+  </header>
+
+  <main class="reading-page">
+    <article class="article">
+      <header class="article-header">
+        <p class="eyebrow">Advanced practice</p>
+        <h1>How an Agent Reviews a Repository Before Adoption</h1>
+        <div class="reading-meta">
+          <span>9 min read</span>
+          <span>Repository review</span>
+          <span>Practical case</span>
+        </div>
+        <p class="lead"><strong>A promising library is not compatible merely because it installs successfully.</strong> Before introducing external code, an agent should turn uncertainty into a compact body of evidence: supported runtimes, dependency constraints, exercised integration paths, operational risks, and an explicit adoption decision.</p>
+      </header>
+
+      <section>
+        <h2>The problem: useful code, missing proof</h2>
+
+        <p>A team finds a library that appears to remove a substantial amount of implementation work. Its README shows the exact feature they need, the source is available, and the package can be downloaded. What is missing is evidence that it works inside the team’s actual system.</p>
+
+        <p>The existing application has a fixed runtime version, a mature dependency tree, asynchronous request handling, strict static checks, and a controlled deployment image. The candidate library documents its happy path but says little about concurrency, optional dependencies, version boundaries, or failure behavior.</p>
+
+        <p>The task for the <a href="glossary.html#agent">agent</a> is therefore not “add this library.” It is “determine whether this external <a href="glossary.html#repository">repository</a> can be introduced without creating an unmeasured compatibility risk.” The expected output is a review card, not an enthusiastic summary.</p>
+      </section>
+
+      <section>
+        <h2>Define compatibility before inspecting code</h2>
+
+        <p>Compatibility is contextual. A project may be healthy in isolation and still be unsuitable for a particular application. Before reviewing the candidate, the agent records the target environment:</p>
+
+        <ul>
+          <li>runtime and operating-system versions;</li>
+          <li>package manager and installation mode;</li>
+          <li>direct and transitive <a href="glossary.html#dependency">dependencies</a>;</li>
+          <li>required public <a href="glossary.html#api">API</a> behavior;</li>
+          <li>synchronous, asynchronous, or multi-process execution model;</li>
+          <li>network, filesystem, and environment-variable restrictions;</li>
+          <li>linting, type-checking, testing, and security gates;</li>
+          <li>deployment architecture and rollback requirements.</li>
+        </ul>
+
+        <p>This list becomes the acceptance boundary. Without it, repository review tends to drift toward superficial signals such as popularity, recent commits, or attractive documentation.</p>
+
+        <aside class="callout">
+          <h3>Decision rule</h3>
+          <p>The agent may recommend adoption only when every required compatibility claim is either verified or explicitly accepted as a known limitation. “No problem was noticed” is not verification.</p>
+        </aside>
+      </section>
+
+      <section>
+        <h2>The concrete case</h2>
+
+        <p>Assume the application needs a parsing component. A candidate package exposes a concise interface and could replace several internal modules. The application, however, requires a specific runtime range, processes untrusted input, runs concurrent jobs, and installs from a pinned <a href="glossary.html#lockfile">lockfile</a>.</p>
+
+        <p>The repository does not contain a compatibility table for this environment. No benchmark or test result is assumed. The agent must inspect what is present, create a minimal integration probe, and clearly distinguish observed facts from unresolved questions.</p>
+
+        <p>The review is performed in a temporary branch or isolated working copy. The production dependency files are not modified during initial inspection, and repository scripts are not executed before they are read.</p>
+      </section>
+
+      <section>
+        <h2>Step 1: capture provenance and project shape</h2>
+
+        <p>The first pass establishes exactly what is being reviewed. A branch name such as <code>main</code> can move; a commit identifier cannot. The agent records the repository URL, selected revision, package version if applicable, license file, and the date of review.</p>
+
+        <pre><code>git clone --filter=blob:none --no-checkout "$CANDIDATE_URL" candidate
+cd candidate
+git checkout --detach "$CANDIDATE_COMMIT"
+git rev-parse HEAD
+git status --short
+find . -maxdepth 2 -type f | sort | sed -n '1,200p'</code></pre>
+
+        <p>The shallow structural scan looks for manifests, lockfiles, build definitions, test directories, release notes, generated files, examples, contribution instructions, and automation configuration. It also reveals whether the published package is likely to differ from the repository checkout.</p>
+
+        <p>At this stage, the agent does not classify missing files as defects. For example, the absence of a lockfile can be reasonable for a library. It is recorded because it affects how reproducible dependency resolution will be during evaluation.</p>
+      </section>
+
+      <section>
+        <h2>Step 2: inspect declared compatibility</h2>
+
+        <p>Next, the agent reads package manifests and build metadata rather than relying on the README alone. Important fields include runtime constraints, required and optional packages, platform markers, build backends, native extensions, feature flags, entry points, and excluded files.</p>
+
+        <pre><code># Examples; select commands appropriate to the project.
+sed -n '1,240p' pyproject.toml
+sed -n '1,240p' package.json
+sed -n '1,240p' Cargo.toml
+find .github -maxdepth 3 -type f -print 2&gt;/dev/null</code></pre>
+
+        <p>The agent compares these declarations with the target application and builds a small constraint table:</p>
+
+        <table>
+          <thead>
+            <tr>
+              <th>Area</th>
+              <th>Target requirement</th>
+              <th>Candidate evidence</th>
+              <th>Status</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td>Runtime</td>
+              <td>Application’s pinned range</td>
+              <td>Manifest constraint and tested matrix</td>
+              <td>Verified, conflict, or unknown</td>
+            </tr>
+            <tr>
+              <td>Dependencies</td>
+              <td>Resolvable with current lockfile</td>
+              <td>Resolver output</td>
+              <td>Verified or conflict</td>
+            </tr>
+            <tr>
+              <td>Execution</td>
+              <td>Required concurrency model</td>
+              <td>Source path and focused probe</td>
+              <td>Verified or unknown</td>
+            </tr>
+            <tr>
+              <td>Deployment</td>
+              <td>Supported image and architecture</td>
+              <td>Build metadata and clean install</td>
+              <td>Verified, conflict, or unknown</td>
+            </tr>
+          </tbody>
+        </table>
+
+        <p>A continuous-integration matrix is useful evidence of project intent, but it is not automatically proof for the application. The agent checks which jobs are required, which are allowed to fail, and whether the relevant runtime-feature combination is actually exercised by the project’s <a href="glossary.html#ci">continuous integration</a>.</p>
+      </section>
+
+      <section>
+        <h2>Step 3: trace the required path through the source</h2>
+
+        <p>A full line-by-line audit is rarely necessary. The agent follows the path that the application intends to use:</p>
+
+        <ol>
+          <li>Locate the exported symbol shown in the documentation.</li>
+          <li>Trace construction, validation, and the main operation.</li>
+          <li>Identify imports activated on that path.</li>
+          <li>Inspect global state, caches, background work, and cleanup.</li>
+          <li>Record exceptions, return values, timeouts, and retry behavior.</li>
+          <li>Check whether input limits are enforced or delegated to the caller.</li>
+        </ol>
+
+        <pre><code>rg "class Parser|def parse|export .*parse|pub fn parse" .
+rg "subprocess|exec\(|eval\(|requests\.|fetch\(|open\(" src lib
+rg "global|singleton|cache|thread|async|lock|timeout|retry" src lib</code></pre>
+
+        <p>Search results are leads, not findings. A reference to <code>exec</code> in a test fixture is different from a production path that launches a shell. Each material concern must point to a file, symbol, and condition under which it becomes relevant.</p>
+      </section>
+
+      <section>
+        <h2>Step 4: resolve dependencies without adopting them</h2>
+
+        <p>The next question is whether the candidate can coexist with the application’s current graph. The safest first attempt uses a copy of the project metadata or the package manager’s dry-run and lockfile-checking facilities.</p>
+
+        <pre><code># Illustrative patterns; use the repository's actual package manager.
+python -m pip install --dry-run "./candidate"
+npm install --package-lock-only --ignore-scripts ./candidate
+cargo tree --duplicates
+cargo update --dry-run</code></pre>
+
+        <p>Installation scripts deserve special care. Package managers may execute lifecycle hooks or build code during dependency resolution. The agent begins with scripts disabled when supported, reads any required hooks, and only then evaluates them inside an isolated <a href="glossary.html#sandbox">sandbox</a> with minimal permissions.</p>
+
+        <p>The evidence captured here includes version conflicts, unexpected optional packages, native build requirements, new network downloads, lockfile changes, and duplicate foundational libraries. A successful resolver run proves only that constraints can be solved; it does not prove runtime behavior.</p>
+      </section>
+
+      <section>
+        <h2>Step 5: build the smallest meaningful integration probe</h2>
+
+        <p>The probe should exercise the application boundary, not merely import the package. For the parsing case, that means using the same input representation, configuration shape, asynchronous wrapper, and error-handling contract expected in production.</p>
+
+        <pre><code># tests/compat/test_candidate_parser.py
+import pytest
+
+from integration.candidate_parser import CandidateParser
+
+def test_valid_minimal_document():
+    parser = CandidateParser()
+    result = parser.parse(b"key=value")
+    assert result.items == {"key": "value"}
+
+def test_rejects_malformed_input():
+    parser = CandidateParser()
+    with pytest.raises(ValueError):
+        parser.parse(b"\x00invalid")
+
+def test_enforces_configured_size_limit():
+    parser = CandidateParser(max_bytes=8)
+    with pytest.raises(ValueError):
+        parser.parse(b"more-than-eight-bytes")</code></pre>
+
+        <p>The assertions above are a template, not claimed results. They must be adjusted to the application’s real contract and the candidate’s documented behavior. If the package raises a different exception, the adapter may translate it—but the review card should record that translation as application-owned code.</p>
+
+        <p>A useful probe normally covers the smallest valid input, malformed input, resource limits, repeated calls, cleanup, and the required concurrency mode. It should remain small enough to review and rerun after dependency upgrades.</p>
+      </section>
+
+      <section>
+        <h2>Step 6: verify in layers</h2>
+
+        <p>Verification proceeds from cheap, narrow checks to broader ones. A practical order is:</p>
+
+        <ol>
+          <li>Confirm the checked-out revision and a clean working tree.</li>
+          <li>Build or install the candidate in a clean temporary environment.</li>
+          <li>Run the focused integration probe.</li>
+          <li>Run static analysis on the adapter and touched application code.</li>
+          <li>Run the application’s relevant subsystem tests.</li>
+          <li>Run the complete project test suite if adoption remains viable.</li>
+          <li>Build the real deployment artifact and inspect its dependency contents.</li>
+        </ol>
+
+        <pre><code>git diff --check
+pytest -q tests/compat/test_candidate_parser.py
+pytest -q tests/parser tests/compat
+mypy integration/candidate_parser.py
+ruff check integration tests/compat
+
+# Then use the project's normal full verification command.
+make test
+make build</code></pre>
+
+        <p>Record the exact commands, environment identifiers, exit status, and relevant output. Do not convert an unexecuted command into a check mark. If infrastructure prevents a test, mark it “not run” and state why.</p>
+      </section>
+
+      <section>
+        <h2>Failure cases the review must expose</h2>
+
+        <h3>The package installs but cannot run</h3>
+        <p>Optional native components, missing shared libraries, or imports activated only on the required code path can survive a basic installation check. A clean-environment integration probe exposes this gap.</p>
+
+        <h3>The dependency graph resolves by replacing a critical version</h3>
+        <p>A package manager may produce a valid graph that silently upgrades or downgrades a foundational dependency. The agent compares lockfile changes and reruns the affected subsystem rather than treating resolution as harmless.</p>
+
+        <h3>The documented API differs from the selected revision</h3>
+        <p>Examples may describe the latest release while evaluation targets an older tag or commit. Documentation, source, and installed artifact must refer to the same revision.</p>
+
+        <h3>The happy path works, but failure behavior does not</h3>
+        <p>Unexpected exception types, unlimited retries, absent timeouts, partial writes, or retained global state can make an otherwise functional library operationally unsafe.</p>
+
+        <h3>Repository tests pass outside the application only</h3>
+        <p>The candidate’s tests validate its assumptions. They do not validate interaction with the application’s dependency versions, adapters, runtime policies, or deployment image.</p>
+
+        <h3>The review executes untrusted automation too early</h3>
+        <p>Build hooks, task runners, test fixtures, and installation scripts are executable code. Reading their entry points and isolating execution is part of compatibility work, not a separate security exercise.</p>
+      </section>
+
+      <section>
+        <h2>The external project review card</h2>
+
+        <p>The final artifact should be short enough to use in a change review while retaining reproducible evidence.</p>
+
+        <div class="review-card">
+          <h3>External project review</h3>
+          <dl>
+            <dt>Candidate</dt>
+            <dd>Repository URL, package name, and immutable revision</dd>
+
+            <dt>Intended use</dt>
+            <dd>The exact application capability and entry point being considered</dd>
+
+            <dt>Target environment</dt>
+            <dd>Runtime, operating system, architecture, package manager, and deployment image</dd>
+
+            <dt>Required contract</dt>
+            <dd>Inputs, outputs, errors, concurrency, resource limits, and cleanup expectations</dd>
+
+            <dt>Declared support</dt>
+            <dd>Relevant manifest constraints and automation matrix, with file references</dd>
+
+            <dt>Dependency impact</dt>
+            <dd>Added packages, version changes, native requirements, and lockfile consequences</dd>
+
+            <dt>Source-path findings</dt>
+            <dd>Files and symbols involved in the intended use; side effects and external access</dd>
+
+            <dt>Verification performed</dt>
+            <dd>Exact commands, environment, revision, and outcomes</dd>
+
+            <dt>Unverified items</dt>
+            <dd>Checks not run, missing evidence, and assumptions still requiring acceptance</dd>
+
+            <dt>Failure and rollback</dt>
+            <dd>Expected failure behavior, observability, feature flag or removal path</dd>
+
+            <dt>Decision</dt>
+            <dd>Adopt, adopt with conditions, run a bounded trial, or reject</dd>
+
+            <dt>Recheck triggers</dt>
+            <dd>Candidate upgrade, runtime upgrade, dependency change, deployment change, or new usage path</dd>
+          </dl>
+        </div>
+
+        <p>A strong decision statement is specific: “Suitable for a bounded trial on the parsing path after the deployment-image build and concurrent-call probe pass.” A weak statement such as “The repository looks maintained” neither defines evidence nor constrains risk.</p>
+      </section>
+
+      <section>
+        <h2>Limitations of this method</h2>
+
+        <p>A repository review is a compatibility assessment, not a guarantee of correctness or long-term maintenance. Focused source tracing may miss behavior outside the intended path. Tests demonstrate behavior only for the examined inputs and environment. A clean dependency resolution does not prove supply-chain integrity, and visible source does not prove that a registry artifact contains identical files.</p>
+
+        <p>The method also cannot answer organizational questions by itself: whether the team can maintain an adapter, accept the license, respond to an abandoned dependency, or carry a private patch. Those require explicit owners and policy decisions.</p>
+
+        <p>For high-impact components, extend the card with artifact comparison, vulnerability review, performance measurement using representative workloads, and a maintenance plan. Keep these as separate evidence sections so that “not performed” remains visible.</p>
+      </section>
+
+      <section>
+        <h2>What makes the review repeatable</h2>
+
+        <p>The agent’s value is not that it can read a repository quickly. It is that it can preserve the chain from requirement to evidence to decision. The repository revision is immutable, commands are recorded, the integration probe is retained, unknowns stay visible, and recheck triggers are defined.</p>
+
+        <p>That turns “this library seems useful” into an engineering statement another person can challenge and reproduce. If the evidence is insufficient, the correct result is not forced adoption or automatic rejection. It is a precise review card showing what is known, what failed, and which next check would change the decision.</p>
+      </section>
+
+      <footer class="article-footer">
+        <p>Continue with the practical workflows in <a href="guides.html">Agent Lab Journal guides</a>, or review terminology in the <a href="glossary.html">glossary</a>.</p>
+      </footer>
+    </article>
+  </main>
+
+  <footer class="site-footer">
+    <div class="container">
+      <p>&copy; Agent Lab Journal</p>
+    </div>
+  </footer>
+</body>
+</html>
