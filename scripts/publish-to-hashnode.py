@@ -40,7 +40,7 @@ parser_html = Markdown(); parser_html.feed(text)
 body = re.sub(r'\n{3,}', '\n\n', ''.join(parser_html.out)).strip()
 canonical = f'https://agentlabjournal.online/{args.file}'
 body += f'\n\n---\n\n**Original article:** {canonical}\n'
-query = 'mutation Publish($input: PublishPostInput!) { publishPost(input: $input) { post { id title slug url } } }'
+query = 'mutation Draft($input: CreateDraftInput!) { createDraft(input: $input) { draft { id title slug } } }'
 variables = {'input': {'publicationId': publication, 'title': title, 'contentMarkdown': body,
     'originalArticleURL': canonical, 'metaDescription': desc.group(1) if desc else title,
     'slug': path.stem, 'tags': [{'slug':'ai','name':'AI'}, {'slug':'automation','name':'Automation'}, {'slug':'agents','name':'Agents'}]}}
@@ -49,6 +49,13 @@ request = urllib.request.Request(os.environ.get('HASHNODE_GRAPHQL_ENDPOINT','htt
     headers={'Content-Type':'application/json','Authorization':token,'User-Agent':'AgentLabJournal/1.0'})
 with urllib.request.urlopen(request, timeout=60) as response: result = json.loads(response.read())
 if result.get('errors'): raise SystemExit(json.dumps(result['errors'], ensure_ascii=False))
-post = result['data']['publishPost']['post']; registry[args.file] = post
+draft = result['data']['createDraft']['draft']
+publish_query = 'mutation Publish($input: PublishDraftInput!) { publishDraft(input: $input) { post { id title slug url } } }'
+publish_request = urllib.request.Request(os.environ.get('HASHNODE_GRAPHQL_ENDPOINT','https://gql-beta.hashnode.com/'),
+    data=json.dumps({'query':publish_query,'variables':{'input':{'draftId':draft['id']}}}).encode(),
+    headers={'Content-Type':'application/json','Authorization':token,'User-Agent':'AgentLabJournal/1.0'})
+with urllib.request.urlopen(publish_request, timeout=60) as response: published = json.loads(response.read())
+if published.get('errors'): raise SystemExit(json.dumps(published['errors'], ensure_ascii=False))
+post = published['data']['publishDraft']['post']; registry[args.file] = post
 registry_path.write_text(json.dumps(registry, ensure_ascii=False, indent=2) + '\n')
 print(json.dumps(post, ensure_ascii=False))
