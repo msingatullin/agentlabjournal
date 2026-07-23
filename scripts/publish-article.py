@@ -27,6 +27,7 @@ if "reading-meta" not in text or "canonical" not in text:
 
 url = f"https://agentlabjournal.online/{filename}"
 summary = escape(args.summary)
+title = escape(article.stem.replace("-", " ").title())
 
 if relative.parts and relative.parts[0] == "en":
     url = f"https://agentlabjournal.online/{relative.as_posix()}"
@@ -37,7 +38,7 @@ if relative.parts and relative.parts[0] == "en":
     llms = ROOT / "llms.txt"
     llms_text = llms.read_text()
     if url not in llms_text:
-        llms.write_text(llms_text.replace("## Навигация", f"- [English: {escape(title)}]({url}): {summary}.\n\n## Навигация", 1))
+        llms.write_text(llms_text.replace("## Навигация", f"- [English: {title}]({url}): {summary}.\n\n## Навигация", 1))
     gate = subprocess.run([sys.executable, str(ROOT / "scripts/check-publication.py")], cwd=ROOT)
     if gate.returncode:
         raise SystemExit("Publication blocked: fix the gate output before committing")
@@ -51,7 +52,7 @@ catalog = ROOT / "guides.html"
 catalog_text = catalog.read_text()
 if filename not in catalog_text:
     marker = "</ol>"
-    item = f'<li><a class="text-link" href="{filename}">{escape(article.stem.replace("-", " ").title())}</a></li>'
+    item = f'<li><a class="text-link" href="{filename}">{title}</a></li>'
     if marker not in catalog_text:
         raise SystemExit("Cannot find article list in guides.html")
     catalog.write_text(catalog_text.replace(marker, item + marker, 1))
@@ -72,7 +73,6 @@ if args.news:
     feed_text = feed.read_text()
     if url not in feed_text:
         now = datetime.now(timezone.utc).strftime("%a, %d %b %Y %H:%M:%S +0000")
-        title = escape(article.stem.replace("-", " ").title())
         item = f"    <item><title>{title}</title><link>{url}</link><guid isPermaLink=\"true\">{url}</guid><pubDate>{now}</pubDate><author>Михаил</author><description>{summary}</description></item>\n"
         feed.write_text(feed_text.replace("  </channel>", item + "  </channel>", 1))
 
