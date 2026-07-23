@@ -6,8 +6,9 @@ import re
 
 ROOT = Path(__file__).resolve().parent.parent
 paths = []
+topic_slugs = {item.get('slug') for item in __import__('json').loads((ROOT / 'article-topics.json').read_text())}
 for path in ROOT.glob('*.html'):
-    if path.name in {'index.html', 'lead-intake.html', 'contacts.html'} or not (path.name.startswith('guide-') or path.name.startswith('article-') or path.name.endswith('-case.html')):
+    if path.name in {'index.html', 'lead-intake.html', 'contacts.html'} or (path.stem not in topic_slugs and not (path.name.startswith('guide-') or path.name.startswith('article-') or path.name.endswith('-case.html'))):
         continue
     text = path.read_text()
     h1 = re.search(r'<h1[^>]*>(.*?)</h1>', text, re.S | re.I)
