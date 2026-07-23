@@ -3,6 +3,7 @@
 import json
 import subprocess
 import sys
+import os
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -12,6 +13,14 @@ COMMANDS = {
     "hashnode": ["publish-to-hashnode.py"],
     "blogger": ["publish-to-blogger.py"],
 }
+
+for env_path in (Path('/root/.config/agentlabjournal-hashnode.env'), ROOT / '.env'):
+    if not env_path.exists():
+        continue
+    for line in env_path.read_text().splitlines():
+        if line.strip() and not line.lstrip().startswith('#') and '=' in line:
+            key, value = line.split('=', 1)
+            os.environ.setdefault(key.strip(), value.strip().strip('"'))
 
 if not STATUS.exists():
     print(json.dumps({"retried": 0, "message": "publication-status.json not found"}, ensure_ascii=False))
@@ -31,7 +40,7 @@ for slug, item in state.items():
         command = [sys.executable, str(ROOT / "scripts" / COMMANDS[channel][0]), "--file", str(source.relative_to(ROOT))]
         command.extend(COMMANDS[channel][1:])
         try:
-            subprocess.run(command, cwd=ROOT, check=True)
+            subprocess.run(command, cwd=ROOT, check=True, env=os.environ.copy())
             channel_state.clear()
             channel_state.update({"status": "published", "recovered": True})
             retried.append({"slug": slug, "channel": channel, "status": "published"})

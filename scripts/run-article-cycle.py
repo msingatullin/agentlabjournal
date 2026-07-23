@@ -28,6 +28,8 @@ def load_env(path):
             key, value = line.split("=", 1)
             os.environ.setdefault(key.strip(), value.strip().strip('"'))
 
+load_env(Path('/root/.config/agentlabjournal-hashnode.env'))
+
 def notify(topic):
     time.sleep(120)
     token = os.environ.get("TELEGRAM_BOT_TOKEN", "").strip()
