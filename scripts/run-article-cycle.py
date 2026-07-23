@@ -51,6 +51,22 @@ def notify_error(stage, error):
         request = urllib.request.Request(f"https://api.telegram.org/bot{token}/sendMessage", data=data)
         with urllib.request.urlopen(request, timeout=20):
             pass
+
+def wait_until_public(topic, attempts=40, delay=15):
+    """Do not distribute a canonical URL until GitHub Pages serves it."""
+    url = f"https://agentlabjournal.online/{topic['slug']}.html"
+    for attempt in range(1, attempts + 1):
+        try:
+            request = urllib.request.Request(url, headers={"User-Agent": "AgentLabJournalPublicationGate/1.0"})
+            with urllib.request.urlopen(request, timeout=20) as response:
+                if response.status == 200:
+                    print(f"PUBLIC_URL_GATE: OK ({url}, attempt {attempt})")
+                    return
+        except Exception:
+            pass
+        if attempt < attempts:
+            time.sleep(delay)
+    raise RuntimeError(f"canonical URL is not publicly available after {attempts * delay}s: {url}")
 queue_path = ROOT / "article-topics.json"
 topics = json.loads(queue_path.read_text())
 
@@ -83,24 +99,22 @@ except Exception as error:
     notify_error("commit или push", error)
     raise
 try:
-    subprocess.run([sys.executable, str(ROOT / "scripts/publish-to-dev.py"), "--file", f"en/{topic['slug']}.html", "--publish"], cwd=ROOT, check=True)
-except Exception as error:
-    notify_error("публикация английской статьи в DEV API", error)
-    raise
-try:
-    subprocess.run([sys.executable, str(ROOT / "scripts/publish-to-hashnode.py"), "--file", f"en/{topic['slug']}.html"], cwd=ROOT, check=True)
-except Exception as error:
-    notify_error("публикация английской статьи в Hashnode API", error)
-    raise
-try:
-    subprocess.run([sys.executable, str(ROOT / "scripts/publish-to-blogger.py"), "--file", f"en/{topic['slug']}.html"], cwd=ROOT, check=True)
-except Exception as error:
-    notify_error("публикация английской статьи в Blogger API", error)
-    raise
-try:
     subprocess.run(["git", "push"], cwd=ROOT, check=True)
 except Exception as error:
-    notify_error("push после DEV API", error)
+    notify_error("push статьи", error)
     raise
+try:
+    wait_until_public(topic)
+except Exception as error:
+    notify_error("проверка публичной ссылки", error)
+    raise
+for script, label in (("publish-to-dev.py", "публикация английской статьи в DEV API"), ("publish-to-hashnode.py", "публикация английской статьи в Hashnode API"), ("publish-to-blogger.py", "публикация английской статьи в Blogger API")):
+    try:
+        command = [sys.executable, str(ROOT / "scripts" / script), "--file", f"en/{topic['slug']}.html"]
+        if script == "publish-to-dev.py": command.append("--publish")
+        subprocess.run(command, cwd=ROOT, check=True)
+    except Exception as error:
+        notify_error(label, error)
+        raise
 notify(topic)
 print(f"ARTICLE_CYCLE: published {topic['slug']}")
