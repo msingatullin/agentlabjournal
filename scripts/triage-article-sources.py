@@ -5,6 +5,7 @@ import re
 import subprocess
 import sys
 import tempfile
+from urllib.parse import urlparse
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -12,14 +13,45 @@ sources_path = ROOT / "article-source-candidates.json"
 topics_path = ROOT / "article-topics.json"
 sources = json.loads(sources_path.read_text())
 topics = json.loads(topics_path.read_text())
-pending = [x for x in sources if x.get("status") == "needs_review"][:8]
+
+TRUSTED_DOMAINS = {
+    'anthropic.com', 'platform.claude.com', 'openai.com', 'developers.googleblog.com',
+    'blog.google', 'github.com', 'modelcontextprotocol.io', 'docs.anthropic.com',
+    'dev.to', 'youtube.com', 'youtu.be'
+}
+
+def source_quality(item):
+    host = urlparse(item.get('url', '')).netloc.lower().removeprefix('www.')
+    if any(host == domain or host.endswith('.' + domain) for domain in TRUSTED_DOMAINS):
+        return 'known_platform'
+    return 'unknown'
+
+def normalized_title(value):
+    return re.sub(r'[^a-zа-я0-9]+', ' ', str(value).lower()).strip()
+
+known_titles = {normalized_title(x.get('title')) for x in topics if x.get('title')}
+pending = []
+for candidate in sources:
+    if candidate.get('status') != 'needs_review':
+        continue
+    candidate['source_quality'] = source_quality(candidate)
+    title = normalized_title(candidate.get('title'))
+    if title and title in known_titles:
+        candidate['status'] = 'rejected_duplicate'
+        continue
+    pending.append(candidate)
+    known_titles.add(title)
+    if len(pending) >= 8:
+        break
 if not pending:
     print("ARTICLE_TRIAGE: no pending candidates")
     raise SystemExit(0)
 
 prompt = """You are the editor of a practical AI journal. Review the candidate sources below.
 Approve only sources that can support an original article with a concrete test, comparison,
-or implementation. Reject marketing-only, duplicate, vague, or unverifiable items.
+or implementation. Reject marketing-only, duplicate, vague, or unverifiable items. Prefer
+known_platform sources; unknown sources require explicit verification and should not be used
+as the sole basis for a factual claim.
 Return ONLY a JSON array. Each approved object must have: slug, title, problem, level
 (one of: с нуля, средний, продвинутый), minutes (integer), result, summary, source_url,
 category. Return [] when none qualify.

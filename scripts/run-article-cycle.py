@@ -10,6 +10,15 @@ import urllib.request
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
+STATUS_PATH = ROOT / "publication-status.json"
+
+def update_status(slug, patch):
+    data = json.loads(STATUS_PATH.read_text()) if STATUS_PATH.exists() else {}
+    item = data.setdefault(slug, {'slug': slug, 'canonical': {}, 'channels': {}})
+    item.update({k: v for k, v in patch.items() if k != 'channels'})
+    item.setdefault('channels', {}).update(patch.get('channels', {}))
+    item['updated_at'] = time.strftime('%Y-%m-%dT%H:%M:%S%z')
+    STATUS_PATH.write_text(json.dumps(data, ensure_ascii=False, indent=2) + "\n")
 
 def load_env(path):
     if not path.exists():
@@ -108,13 +117,20 @@ try:
 except Exception as error:
     notify_error("проверка публичной ссылки", error)
     raise
+update_status(topic['slug'], {'canonical': {'status': 'published', 'url': f"https://agentlabjournal.online/{topic['slug']}.html"}})
+channel_errors = []
 for script, label in (("publish-to-dev.py", "публикация английской статьи в DEV API"), ("publish-to-hashnode.py", "публикация английской статьи в Hashnode API"), ("publish-to-blogger.py", "публикация английской статьи в Blogger API")):
+    channel = script.removeprefix('publish-to-').removesuffix('.py')
     try:
         command = [sys.executable, str(ROOT / "scripts" / script), "--file", f"en/{topic['slug']}.html"]
         if script == "publish-to-dev.py": command.append("--publish")
         subprocess.run(command, cwd=ROOT, check=True)
+        update_status(topic['slug'], {'channels': {channel: {'status': 'published'}}})
     except Exception as error:
-        notify_error(label, error)
-        raise
+        channel_errors.append(f"{label}: {str(error)[:500]}")
+        update_status(topic['slug'], {'channels': {channel: {'status': 'error', 'error': str(error)[:1000]}}})
+
+if channel_errors:
+    notify_error("частичный сбой внешних публикаций", "\n".join(channel_errors))
 notify(topic)
-print(f"ARTICLE_CYCLE: published {topic['slug']}")
+print(f"ARTICLE_CYCLE: canonical published {topic['slug']}; external_errors={len(channel_errors)}")
