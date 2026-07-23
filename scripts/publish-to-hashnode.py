@@ -40,6 +40,17 @@ parser_html = Markdown(); parser_html.feed(text)
 body = re.sub(r'\n{3,}', '\n\n', ''.join(parser_html.out)).strip()
 canonical = f'https://agentlabjournal.online/{args.file}'
 body += f'\n\n---\n\n**Original article:** {canonical}\n'
+lookup = 'query { publication(host: "agentlabjournal.hashnode.dev") { posts(first: 100) { edges { node { id title slug url content { markdown } } } } } }'
+lookup_request = urllib.request.Request(os.environ.get('HASHNODE_GRAPHQL_ENDPOINT','https://gql-beta.hashnode.com/'),
+    data=json.dumps({'query':lookup}).encode(),
+    headers={'Content-Type':'application/json','Authorization':token,'User-Agent':'AgentLabJournal/1.0'})
+with urllib.request.urlopen(lookup_request, timeout=60) as response: existing = json.loads(response.read())
+for edge in existing.get('data',{}).get('publication',{}).get('posts',{}).get('edges',[]):
+    post = edge.get('node',{})
+    if canonical in (post.get('content',{}).get('markdown') or ''):
+        registry[args.file] = {k: post.get(k) for k in ('id','title','slug','url')}
+        registry_path.write_text(json.dumps(registry, ensure_ascii=False, indent=2) + '\n')
+        print(json.dumps(registry[args.file], ensure_ascii=False)); raise SystemExit(0)
 query = 'mutation Draft($input: CreateDraftInput!) { createDraft(input: $input) { draft { id title slug } } }'
 variables = {'input': {'publicationId': publication, 'title': title, 'contentMarkdown': body,
     'originalArticleURL': canonical, 'metaDescription': desc.group(1) if desc else title,
