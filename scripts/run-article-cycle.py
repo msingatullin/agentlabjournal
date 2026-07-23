@@ -103,7 +103,15 @@ if english_result.returncode:
     notify_error("английская версия статьи", f"exit code {english_result.returncode}")
     raise SystemExit(english_result.returncode)
 
+verify = subprocess.run([sys.executable, str(ROOT / 'scripts' / 'verify-article-pair.py'), '--slug', topic['slug']], cwd=ROOT)
+if verify.returncode:
+    notify_error('проверка пары RU/EN', f'exit code {verify.returncode}')
+    raise SystemExit(verify.returncode)
+
 try:
+    review = subprocess.run([sys.executable, str(ROOT / 'scripts' / 'pre-push-review.py')], cwd=ROOT)
+    if review.returncode:
+        raise RuntimeError(f'pre-push review exit code {review.returncode}')
     subprocess.run(["git", "add", "."], cwd=ROOT, check=True)
     subprocess.run(["git", "commit", "-m", f"Publish article: {topic['title']}"], cwd=ROOT, check=True)
 except Exception as error:
