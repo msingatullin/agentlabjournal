@@ -3,6 +3,7 @@ from argparse import ArgumentParser
 from html.parser import HTMLParser
 from pathlib import Path
 import json, os, re, urllib.request
+from urllib.error import HTTPError
 
 ROOT = Path(__file__).resolve().parent.parent
 
@@ -53,12 +54,22 @@ for edge in existing.get('data',{}).get('publication',{}).get('posts',{}).get('e
         print(json.dumps(registry[args.file], ensure_ascii=False)); raise SystemExit(0)
 query = 'mutation Draft($input: CreateDraftInput!) { createDraft(input: $input) { draft { id title slug } } }'
 variables = {'input': {'publicationId': publication, 'title': title, 'contentMarkdown': body,
-    'originalArticleURL': canonical, 'metaDescription': desc.group(1) if desc else title,
+    'originalArticleURL': canonical,
     'slug': path.stem, 'tags': [{'slug':'ai','name':'AI'}, {'slug':'automation','name':'Automation'}, {'slug':'agents','name':'Agents'}]}}
 request = urllib.request.Request(os.environ.get('HASHNODE_GRAPHQL_ENDPOINT','https://gql-beta.hashnode.com/'),
     data=json.dumps({'query':query,'variables':variables}).encode(),
     headers={'Content-Type':'application/json','Authorization':token,'User-Agent':'AgentLabJournal/1.0'})
-with urllib.request.urlopen(request, timeout=60) as response: result = json.loads(response.read())
+try:
+    with urllib.request.urlopen(request, timeout=60) as response: result = json.loads(response.read())
+except HTTPError as error:
+    detail = error.read().decode('utf-8', errors='replace')
+    try:
+        payload = json.loads(detail)
+        messages = [item.get('message', '') for item in payload.get('errors', [])]
+        detail = '\n'.join(messages)
+    except json.JSONDecodeError:
+        pass
+    raise SystemExit(f'Hashnode API HTTP {error.code}: {detail[-3000:]}')
 if result.get('errors'): raise SystemExit(json.dumps(result['errors'], ensure_ascii=False))
 draft = result['data']['createDraft']['draft']
 publish_query = 'mutation Publish($input: PublishDraftInput!) { publishDraft(input: $input) { post { id title slug url } } }'
