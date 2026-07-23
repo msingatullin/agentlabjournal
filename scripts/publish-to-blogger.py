@@ -14,10 +14,10 @@ def access_token():
     with urllib.request.urlopen(req, timeout=30) as response:
         return json.loads(response.read())['access_token']
 
-parser = ArgumentParser(); parser.add_argument('--file', required=True); args = parser.parse_args()
+parser = ArgumentParser(); parser.add_argument('--file', required=True); parser.add_argument('--update', action='store_true'); args = parser.parse_args()
 path = ROOT / args.file; registry_path = ROOT / 'blogger-published.json'
 registry = json.loads(registry_path.read_text()) if registry_path.exists() else {}
-if args.file in registry:
+if args.file in registry and not args.update:
     print(json.dumps(registry[args.file], ensure_ascii=False)); raise SystemExit(0)
 text = path.read_text(); title_match = re.search(r'<h1[^>]*>(.*?)</h1>', text, re.S | re.I)
 if not title_match: raise SystemExit('Article title not found')
@@ -25,11 +25,15 @@ title = re.sub(r'<[^>]+>', '', title_match.group(1)).strip()
 body_match = re.search(r'<body[^>]*>(.*?)</body>', text, re.S | re.I)
 if not body_match: raise SystemExit('Article body not found')
 body = re.sub(r'<script\b.*?</script>', '', body_match.group(1), flags=re.S | re.I)
+paragraphs = re.findall(r'<(?:p|h2|h3)\b[^>]*>.*?</(?:p|h2|h3)>', body, flags=re.S | re.I)
+body = '\n'.join(paragraphs[:8])
 canonical = f'https://agentlabjournal.online/{args.file}'
-body += f'\n<p><strong>Original article:</strong> <a href="{canonical}">{canonical}</a></p>'
+body += f'\n<p><strong>Полная версия:</strong> <a href="{canonical}">{canonical}</a></p>'
 payload = json.dumps({'kind': 'blogger#post', 'title': title, 'content': body, 'labels': ['AI', 'Automation', 'Agents']}).encode()
-url = f'https://www.googleapis.com/blogger/v3/blogs/{BLOG_ID}/posts?isDraft=false'
-req = urllib.request.Request(url, data=payload, headers={'Authorization': 'Bearer ' + access_token(), 'Content-Type': 'application/json'}, method='POST')
+method = 'PUT' if args.update else 'POST'
+post_id = f"/{registry[args.file]['id']}" if args.update else ''
+url = f'https://www.googleapis.com/blogger/v3/blogs/{BLOG_ID}/posts{post_id}?isDraft=false'
+req = urllib.request.Request(url, data=payload, headers={'Authorization': 'Bearer ' + access_token(), 'Content-Type': 'application/json'}, method=method)
 with urllib.request.urlopen(req, timeout=60) as response: result = json.loads(response.read())
 record = {k: result.get(k) for k in ('id', 'url', 'title')}; registry[args.file] = record
 registry_path.write_text(json.dumps(registry, ensure_ascii=False, indent=2) + '\n'); print(json.dumps(record, ensure_ascii=False))
