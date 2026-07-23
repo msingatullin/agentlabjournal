@@ -1,0 +1,246 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>How We Added Confirmation Before an Agent Sends a Message — Agent Lab Journal</title>
+  <meta name="description" content="A practical case study for building a safe approval loop that prevents an AI agent from automatically sending messages on behalf of its owner.">
+  <link rel="canonical" href="https://agentlabjournal.online/en/agent-telegram-approval-case.html">
+  <link rel="stylesheet" href="style.css">
+  <link rel="stylesheet" href="reading.css">
+  <script type="application/ld+json">
+  {
+    "@context": "https://schema.org",
+    "@type": "Article",
+    "headline": "How We Added Confirmation Before an Agent Sends a Message",
+    "description": "A practical case study for building a safe approval loop that prevents an AI agent from automatically sending messages on behalf of its owner.",
+    "author": {
+      "@type": "Organization",
+      "name": "Agent Lab Journal"
+    },
+    "publisher": {
+      "@type": "Organization",
+      "name": "Agent Lab Journal",
+      "url": "https://agentlabjournal.online/"
+    },
+    "mainEntityOfPage": {
+      "@type": "WebPage",
+      "@id": "https://agentlabjournal.online/en/agent-telegram-approval-case.html"
+    }
+  }
+  </script>
+</head>
+<body>
+  <header class="site-header">
+    <div class="container">
+      <a class="site-title" href="index.html">Agent Lab Journal</a>
+      <nav aria-label="Primary navigation">
+        <a href="guides.html">Guides</a>
+        <a href="glossary.html">Glossary</a>
+      </nav>
+    </div>
+  </header>
+
+  <main class="reading">
+    <article>
+      <header class="article-header">
+        <p class="eyebrow">Case study · Agent safety</p>
+        <h1>How We Added Confirmation Before an Agent Sends a Message</h1>
+        <div class="reading-meta">
+          <span>Intermediate</span>
+          <span>7 min read</span>
+          <span>Safe approval loop</span>
+        </div>
+        <p class="lead"><strong>A message prepared by an agent must not automatically become a message sent in its owner’s name.</strong> We separated drafting from delivery and placed an explicit, verifiable human decision between them.</p>
+      </header>
+
+      <section>
+        <h2>The problem was not text generation</h2>
+        <p>Our agent could assemble a useful Telegram reply from the conversation context. The dangerous part came afterward: the same execution path also had access to the send operation. A mistaken recipient, an outdated draft, a misunderstood instruction, or a malicious fragment in the source material could therefore turn directly into an external action.</p>
+        <p>This is an <a href="glossary.html#approval-loop">approval loop</a> problem. Drafting is reversible; sending is not. Once a message reaches another person, deleting it may not undo screenshots, notifications, automated processing, or reputational damage.</p>
+        <p>The safety requirement was simple to state:</p>
+        <blockquote>
+          <p>No agent-generated message may be sent until the owner has reviewed the exact text, the exact destination, and explicitly approved that specific version.</p>
+        </blockquote>
+        <p>The important words are “exact” and “specific.” A generic “yes” from an old conversation must not authorize a later draft, and approval for one recipient must not be reusable for another.</p>
+      </section>
+
+      <section>
+        <h2>The concrete case</h2>
+        <p>The workflow began when an incoming Telegram message required a response. The agent received the conversation identifier and enough recent context to propose a reply. Previously, the handler could call the Telegram send method immediately after generation.</p>
+        <p>We changed the flow into four distinct states:</p>
+        <ol>
+          <li><strong>Drafted:</strong> the agent produces text but has no permission to deliver it.</li>
+          <li><strong>Pending approval:</strong> the owner sees the recipient, draft, and approval controls.</li>
+          <li><strong>Approved or rejected:</strong> the owner makes an explicit decision.</li>
+          <li><strong>Sent or cancelled:</strong> a separate delivery component executes only an approved, unchanged request.</li>
+        </ol>
+        <p>This separation establishes a <a href="glossary.html#human-in-the-loop">human-in-the-loop</a> boundary around the consequential action. It also follows the <a href="glossary.html#least-privilege">principle of least privilege</a>: the drafting component can create pending records, while only the delivery component can use the messaging credential.</p>
+      </section>
+
+      <section>
+        <h2>The approval record</h2>
+        <p>A pending approval must be durable. Keeping it only in model context or process memory makes restarts unsafe and makes it difficult to determine what was actually approved.</p>
+        <p>We used a record with fields equivalent to the following:</p>
+        <pre><code>{
+  "id": "generated-random-id",
+  "status": "pending",
+  "channel": "telegram",
+  "recipient_id": "resolved-chat-id",
+  "recipient_label": "displayed-to-owner",
+  "message_text": "Exact proposed message",
+  "message_hash": "sha256-of-canonical-payload",
+  "created_at": "server-timestamp",
+  "expires_at": "server-timestamp",
+  "created_by": "agent",
+  "approved_by": null,
+  "approved_at": null,
+  "sent_at": null,
+  "provider_message_id": null
+}</code></pre>
+        <p>The <a href="glossary.html#message-hash">message hash</a> binds approval to both content and destination. Hash a canonical payload rather than the text alone:</p>
+        <pre><code>payload = channel + "\n" + recipient_id + "\n" + message_text
+message_hash = SHA256(payload)</code></pre>
+        <p>If the recipient or text changes, the hash changes and the old approval is invalid. In that case the record returns to the pending state and must be reviewed again.</p>
+      </section>
+
+      <section>
+        <h2>Practical implementation</h2>
+
+        <h3>1. Remove sending from the agent’s toolset</h3>
+        <p>The strongest control is architectural. Do not merely prompt the agent to ask first. A prompt is behavioral guidance, not an authorization boundary.</p>
+        <p>Expose a draft operation:</p>
+        <pre><code>{
+  "name": "create_message_draft",
+  "description": "Create a pending message for owner review. Does not send.",
+  "parameters": {
+    "recipient_id": "string",
+    "message_text": "string"
+  }
+}</code></pre>
+        <p>Keep the actual provider token outside the agent runtime. The draft service needs database access, but no Telegram send credential.</p>
+
+        <h3>2. Show what will happen</h3>
+        <p>The approval screen or owner notification should display:</p>
+        <ul>
+          <li>the channel and unambiguous recipient;</li>
+          <li>the complete message without hidden truncation;</li>
+          <li>attachments, formatting, reply target, and link previews when applicable;</li>
+          <li>when the draft was created and when it expires;</li>
+          <li>separate Approve, Edit, and Reject actions.</li>
+        </ul>
+        <p>Do not make approval the default when the owner presses Enter, closes a dialog, or fails to respond. Silence means the draft remains pending until it expires.</p>
+
+        <h3>3. Authenticate the decision</h3>
+        <p>An approval callback must be tied to the owner’s verified account. Treat callback data as untrusted input, even if it originated in your own interface.</p>
+        <p>Use a random, single-use token or a signed value containing the approval ID, intended owner, and expiration. On receipt, the server must verify the owner identity, signature, expiry, current record status, and message hash.</p>
+        <pre><code>POST /approvals/{approval_id}/approve
+Authorization: Bearer &lt;owner-session&gt;
+If-Match: "&lt;message-hash&gt;"</code></pre>
+        <p>The server—not the client—must decide whether the request is valid.</p>
+
+        <h3>4. Make the state transition atomic</h3>
+        <p>Two approval clicks or concurrent workers must not produce two sends. Use an atomic conditional update:</p>
+        <pre><code>UPDATE message_approvals
+SET status = 'approved',
+    approved_by = :owner_id,
+    approved_at = CURRENT_TIMESTAMP
+WHERE id = :approval_id
+  AND status = 'pending'
+  AND message_hash = :expected_hash
+  AND expires_at &gt; CURRENT_TIMESTAMP;</code></pre>
+        <p>Continue only if exactly one row changed. This is an <a href="glossary.html#idempotency">idempotency</a> safeguard at the approval boundary.</p>
+
+        <h3>5. Deliver through a separate worker</h3>
+        <p>The delivery worker selects approved records, verifies the hash again, and claims one record before contacting Telegram:</p>
+        <pre><code>pending -&gt; approved -&gt; sending -&gt; sent
+                   \-&gt; failed</code></pre>
+        <p>Use a unique idempotency key derived from the approval ID where the provider supports it. If it does not, store the provider response immediately and design retry behavior conservatively. After an uncertain timeout, do not blindly resend: the first request may have succeeded.</p>
+      </section>
+
+      <section>
+        <h2>Suggested policy configuration</h2>
+        <p>Keeping the rules in configuration makes the boundary visible and reviewable:</p>
+        <pre><code>outbound_messages:
+  default_mode: require_approval
+  approvers:
+    - owner
+  approval_ttl_minutes: 30
+  approval_binds:
+    - channel
+    - recipient_id
+    - message_text
+    - attachments
+  edit_invalidates_approval: true
+  reject_is_terminal: true
+  auto_send:
+    enabled: false
+  audit_log:
+    enabled: true
+    redact_credentials: true</code></pre>
+        <p>We recommend starting with no automatic-send exceptions. If a future workflow genuinely needs them, define a narrow allowlist based on action type and destination—not on the model’s confidence. Confidence is not authorization.</p>
+      </section>
+
+      <section>
+        <h2>Verification checklist</h2>
+        <p>We verified the control by checking state transitions and permissions rather than judging whether generated prose looked reasonable. A repeatable test plan should cover:</p>
+        <ul>
+          <li>A new draft cannot call the provider send endpoint.</li>
+          <li>An unauthenticated user cannot approve a draft.</li>
+          <li>A different authenticated user cannot approve the owner’s draft.</li>
+          <li>Changing one character, attachment, channel, or recipient invalidates approval.</li>
+          <li>An expired draft cannot move to approved.</li>
+          <li>Two simultaneous approval requests result in one successful transition.</li>
+          <li>Repeated delivery jobs do not intentionally send the same approved record twice.</li>
+          <li>A rejected draft can never be sent.</li>
+          <li>A service restart preserves pending, approved, and sent states correctly.</li>
+          <li>Logs record the decision without exposing credentials or unnecessary private content.</li>
+        </ul>
+        <p>A useful manual test is to pause between preview and approval, edit the database record through the normal application path, and confirm that the stored hash no longer matches. The delivery worker should refuse the request and require fresh approval.</p>
+      </section>
+
+      <section>
+        <h2>Failure cases we designed for</h2>
+
+        <h3>The owner approves the wrong chat</h3>
+        <p>A display name alone is ambiguous. Show stable context such as the channel, chat type, and a recognizable recipient label. Bind the internal recipient identifier into the hash.</p>
+
+        <h3>The draft changes after preview</h3>
+        <p>Any edit creates a new version and resets the status to pending. Never modify an approved record in place.</p>
+
+        <h3>The approval button is clicked twice</h3>
+        <p>The second request should return the existing state without scheduling another delivery. Conditional updates and a unique delivery record prevent duplicate work.</p>
+
+        <h3>The provider times out</h3>
+        <p>A timeout is an unknown result, not proof of failure. Mark it separately, retain the request details, and reconcile before retrying when possible.</p>
+
+        <h3>The owner never responds</h3>
+        <p>The approval expires. It must not become approved through a timeout handler, scheduled task, or fallback branch.</p>
+
+        <h3>Prompt injection asks the agent to bypass review</h3>
+        <p>The request fails because the agent has no sending credential and no approval transition capability. This is why the permission boundary matters more than wording in the system prompt.</p>
+      </section>
+
+      <section>
+        <h2>Limitations</h2>
+        <p>An approval loop reduces unauthorized sending, but it does not guarantee that the owner will notice every factual, legal, privacy, or tone problem. The preview must provide enough context for a meaningful decision, and high-risk messages may need additional review.</p>
+        <p>The pattern also introduces latency and interface work. It may be unsuitable for emergency automation where delay is itself dangerous. Such systems need a separately designed policy with tightly scoped actions, predefined destinations, monitoring, and an explicit risk decision.</p>
+        <p>Finally, exactly-once delivery cannot always be guaranteed when an external provider accepts a request but loses the response. The local state machine can prevent ordinary duplicates, but ambiguous network failures still require reconciliation or a provider-supported idempotency mechanism.</p>
+      </section>
+
+      <section>
+        <h2>The resulting safety boundary</h2>
+        <p>The final design made one rule enforceable: the agent proposes; the owner authorizes; a separate worker acts. Approval is authenticated, expires, applies to one immutable payload, and cannot be replayed.</p>
+        <p>This pattern is useful beyond Telegram. The same boundary applies to email, calendar invitations, support replies, issue comments, purchases, document sharing, and any other action performed in a person’s name.</p>
+        <p>Continue with the implementation patterns in <a href="guides.html">Agent Lab Journal guides</a>, or review the linked concepts in the <a href="glossary.html">glossary</a>.</p>
+      </section>
+    </article>
+  </main>
+
+  <footer class="site-footer">
+    <div class="container">
+      <p>&copy; Agent Lab Journal</p>
+    </div>
+  </footer>
+</body>
+</html>
