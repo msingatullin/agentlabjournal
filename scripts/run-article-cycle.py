@@ -88,6 +88,11 @@ except Exception as error:
     notify_error("публикация английской статьи в DEV API", error)
     raise
 try:
+    subprocess.run([sys.executable, str(ROOT / "scripts/publish-to-hashnode.py"), "--file", f"en/{topic['slug']}.html"], cwd=ROOT, check=True)
+except Exception as error:
+    notify_error("публикация английской статьи в Hashnode API", error)
+    raise
+try:
     subprocess.run(["git", "push"], cwd=ROOT, check=True)
 except Exception as error:
     notify_error("push после DEV API", error)
