@@ -6,7 +6,7 @@ import sys
 
 ROOT = Path(__file__).resolve().parent.parent
 guides = sorted(list(ROOT.glob("guide-*.html")) + list(ROOT.glob("article-*.html")))
-english_guides = sorted(p for p in (ROOT / "en").glob("*.html") if p.name != "index.html")
+english_guides = sorted(p for p in (ROOT / "en").glob("*.html") if p.name not in {"index.html", "lead-intake.html"})
 required = {
     "reading-meta": "reading metadata",
     "glossary.html": "glossary link",
