@@ -40,7 +40,8 @@ desc = re.search(r'<meta name="description" content="([^"]*)"', text, re.I)
 parser_html = Markdown(); parser_html.feed(text)
 body = re.sub(r'\n{3,}', '\n\n', ''.join(parser_html.out)).strip()
 canonical = f'https://agentlabjournal.online/{args.file}'
-body += f'\n\n---\n\n**Original article:** {canonical}\n'
+tracked = canonical + '?utm_source=hashnode&utm_medium=referral&utm_campaign=agentlabjournal'
+body += f'\n\n---\n\n**Original article:** {tracked}\n'
 lookup = 'query { publication(host: "agentlabjournal.hashnode.dev") { posts(first: 100) { edges { node { id title slug url content { markdown } } } } } }'
 lookup_request = urllib.request.Request(os.environ.get('HASHNODE_GRAPHQL_ENDPOINT','https://gql-beta.hashnode.com/'),
     data=json.dumps({'query':lookup}).encode(),

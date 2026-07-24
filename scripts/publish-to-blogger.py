@@ -28,7 +28,8 @@ body = re.sub(r'<script\b.*?</script>', '', body_match.group(1), flags=re.S | re
 paragraphs = re.findall(r'<(?:p|h2|h3)\b[^>]*>.*?</(?:p|h2|h3)>', body, flags=re.S | re.I)
 body = '\n'.join(paragraphs[:8])
 canonical = f'https://agentlabjournal.online/{args.file}'
-body += f'\n<p><strong>Полная версия:</strong> <a href="{canonical}">{canonical}</a></p>'
+tracked = canonical + '?utm_source=blogger&utm_medium=referral&utm_campaign=agentlabjournal'
+body += f'\n<p><strong>Полная версия:</strong> <a href="{tracked}">{tracked}</a></p>'
 payload = json.dumps({'kind': 'blogger#post', 'title': title, 'content': body, 'labels': ['AI', 'Automation', 'Agents']}).encode()
 method = 'PUT' if args.update else 'POST'
 post_id = f"/{registry[args.file]['id']}" if args.update else ''

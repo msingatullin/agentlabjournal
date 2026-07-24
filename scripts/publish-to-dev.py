@@ -63,7 +63,8 @@ parser_html = Markdown()
 parser_html.feed(text)
 body = re.sub(r'\n{3,}', '\n\n', ''.join(parser_html.out)).strip()
 canonical = f'https://agentlabjournal.online/{args.file}'
-body += f'\n\n---\n\n**Original article:** {canonical}\n'
+tracked = canonical + '?utm_source=devto&utm_medium=referral&utm_campaign=agentlabjournal'
+body += f'\n\n---\n\n**Original article:** {tracked}\n'
 payload = {'article': {'title': title, 'body_markdown': body, 'published': bool(args.publish or args.update), 'canonical_url': canonical, 'description': description.group(1) if description else title, 'tags': ['ai', 'automation', 'agents']}}
 method = 'PUT' if args.update else 'POST'
 endpoint = f"https://dev.to/api/articles/{registry[args.file]['id']}" if args.update else 'https://dev.to/api/articles'
