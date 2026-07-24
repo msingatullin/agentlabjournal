@@ -34,7 +34,7 @@ def notify(topic):
     time.sleep(120)
     token = os.environ.get("TELEGRAM_BOT_TOKEN", "").strip()
     chats = os.environ.get("TELEGRAM_ALLOWED_USER_IDS", "").replace(";", ",").split(",")
-    url = f"https://agentlabjournal.online/{topic['slug']}.html"
+    url = f"https://agentlabjournal.online/{topic['slug']}.html?utm_source=telegram&utm_medium=social&utm_campaign=agentlabjournal"
     text = f"Agent Lab Journal: опубликована новая статья\n\n{topic['title']}\n{url}"
     if not token or not any(chat.strip() for chat in chats):
         print("ARTICLE_CYCLE: Telegram notification skipped; credentials or chat IDs missing")
