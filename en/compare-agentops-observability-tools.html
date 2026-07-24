@@ -1,0 +1,1080 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Langfuse vs Phoenix vs Opik: Comparing AI Agent Observability Tools | Agent Lab Journal</title>
+  <meta name="description" content="A reproducible comparison of Langfuse, Phoenix, and Opik for tracing an AI agent, diagnosing failures, measuring latency, estimating run cost, and debugging locally.">
+  <link rel="canonical" href="https://agentlabjournal.online/en/compare-agentops-observability-tools.html">
+  <link rel="stylesheet" href="style.css">
+  <link rel="stylesheet" href="reading.css">
+  <script type="application/ld+json">
+  {
+    "@context": "https://schema.org",
+    "@type": "Article",
+    "headline": "Langfuse vs Phoenix vs Opik: Comparing Three AI Agent Observability Tools",
+    "description": "A reproducible comparison of Langfuse, Phoenix, and Opik for tracing an AI agent, diagnosing failures, measuring latency, estimating run cost, and debugging locally.",
+    "author": {
+      "@type": "Organization",
+      "name": "Agent Lab Journal"
+    },
+    "publisher": {
+      "@type": "Organization",
+      "name": "Agent Lab Journal",
+      "url": "https://agentlabjournal.online/"
+    },
+    "mainEntityOfPage": {
+      "@type": "WebPage",
+      "@id": "https://agentlabjournal.online/en/compare-agentops-observability-tools.html"
+    }
+  }
+  </script>
+</head>
+<body>
+  <header class="site-header">
+    <div class="container">
+      <a class="site-name" href="index.html">Agent Lab Journal</a>
+      <nav aria-label="Primary navigation">
+        <a href="guides.html">Guides</a>
+        <a href="glossary.html">Glossary</a>
+      </nav>
+    </div>
+  </header>
+
+  <main class="container">
+    <article class="reading article">
+      <header class="article-header">
+        <p class="eyebrow">Agent operations · Intermediate</p>
+        <h1>Langfuse vs Phoenix vs Opik: comparing three AI agent observability tools</h1>
+        <div class="reading-meta" aria-label="Article information">
+          <span>Intermediate</span>
+          <span>120-minute practical guide</span>
+          <span>Repeatable local comparison</span>
+        </div>
+        <p class="lead"><strong>A feature checklist will not tell you whether an <a href="glossary.html#ai-agent">AI agent</a> observability platform can reveal the step that failed, explain a latency spike, or calculate the cost of a retry.</strong> The useful comparison is to send the same instrumented agent through Langfuse, Phoenix, and Opik, inject the same failures, and judge how quickly each system leads you from a bad output to its cause.</p>
+      </header>
+
+      <nav class="table-of-contents" aria-label="On this page">
+        <h2>Contents</h2>
+        <ol>
+          <li><a href="#decision">The short decision</a></li>
+          <li><a href="#scenario">The agent scenario</a></li>
+          <li><a href="#method">A fair comparison method</a></li>
+          <li><a href="#instrumentation-contract">The shared instrumentation contract</a></li>
+          <li><a href="#baseline">Build the baseline agent</a></li>
+          <li><a href="#langfuse">Langfuse setup</a></li>
+          <li><a href="#phoenix">Phoenix setup</a></li>
+          <li><a href="#opik">Opik setup</a></li>
+          <li><a href="#failure-drills">Failure-injection drills</a></li>
+          <li><a href="#comparison">Comparative evaluation</a></li>
+          <li><a href="#verification">Verification checklist</a></li>
+          <li><a href="#limitations">Limitations and migration risks</a></li>
+          <li><a href="#recommendation">How to choose</a></li>
+        </ol>
+      </nav>
+
+      <section id="decision">
+        <h2>The short decision</h2>
+        <p><a href="glossary.html#agentops">AgentOps</a> is the operating discipline around testing, monitoring, debugging, and controlling agents after a prototype begins making real calls. In that context, the three products overlap, but their centers of gravity differ.</p>
+
+        <div class="table-wrapper">
+          <table>
+            <thead>
+              <tr>
+                <th scope="col">Choose</th>
+                <th scope="col">When your primary need is</th>
+                <th scope="col">Main trade-off to verify</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <th scope="row">Langfuse</th>
+                <td>A broad application workflow combining traces, prompts, usage, evaluations, datasets, and team review.</td>
+                <td>Self-hosting has more operational surface than starting an in-process or lightweight local viewer.</td>
+              </tr>
+              <tr>
+                <th scope="row">Phoenix</th>
+                <td>Deep local inspection, standards-oriented instrumentation, experimentation, and evaluation close to notebooks or Python services.</td>
+                <td>Confirm that its project and collaboration workflow matches the way your production team triages incidents.</td>
+              </tr>
+              <tr>
+                <th scope="row">Opik</th>
+                <td>A balanced tracing and evaluation workflow with a straightforward route from local experiments to shared projects.</td>
+                <td>Verify the exact integrations, dashboards, and cost fields required by your model providers.</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+
+        <p>This is not a benchmark result. It is a workload-based decision rule. The rest of the guide shows how to produce evidence for your own stack instead of trusting the labels in a product matrix.</p>
+      </section>
+
+      <section id="scenario">
+        <h2>The concrete case: a support research agent</h2>
+        <p>The test subject is a small support agent that receives a question about an internal product, retrieves relevant notes, optionally calls a status tool, and asks an <a href="glossary.html#llm">LLM</a> to compose a final answer. It is intentionally more complex than a single chat completion but small enough to reproduce in one afternoon.</p>
+
+        <h3>Execution graph</h3>
+        <ol>
+          <li><strong>Classify:</strong> decide whether the question requires documentation, live status, or both.</li>
+          <li><strong>Retrieve:</strong> find up to three local text passages.</li>
+          <li><strong>Call a tool:</strong> read a deterministic JSON status fixture when requested.</li>
+          <li><strong>Compose:</strong> generate a concise response from the retrieved context.</li>
+          <li><strong>Validate:</strong> reject an empty answer or an answer missing a required source identifier.</li>
+          <li><strong>Retry once:</strong> repair the final answer if validation fails.</li>
+        </ol>
+
+        <p>The agent gives us nested steps, a tool call, retrieval, model usage, validation, and retry behavior. That is enough to test whether a platform provides useful <a href="glossary.html#observability">observability</a> rather than merely recording top-level requests.</p>
+
+        <h3>What every run must record</h3>
+        <div class="table-wrapper">
+          <table>
+            <thead>
+              <tr>
+                <th scope="col">Field</th>
+                <th scope="col">Example shape</th>
+                <th scope="col">Why it matters</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td><code>run_id</code></td>
+                <td>Random UUID</td>
+                <td>Correlates the application log with the observability record.</td>
+              </tr>
+              <tr>
+                <td><code>scenario</code></td>
+                <td><code>happy_path</code>, <code>tool_timeout</code></td>
+                <td>Allows filtering without inspecting prompts.</td>
+              </tr>
+              <tr>
+                <td><code>agent.version</code></td>
+                <td>Git revision or explicit local label</td>
+                <td>Separates behavior changes from infrastructure changes.</td>
+              </tr>
+              <tr>
+                <td><code>model</code></td>
+                <td>Exact model identifier returned by the provider</td>
+                <td>Prevents cost and latency comparisons across different models.</td>
+              </tr>
+              <tr>
+                <td><code>input_tokens</code> and <code>output_tokens</code></td>
+                <td>Provider-reported integers</td>
+                <td>Supports usage analysis without estimating text length.</td>
+              </tr>
+              <tr>
+                <td><code>duration_ms</code></td>
+                <td>Monotonic elapsed time</td>
+                <td>Shows where the user-visible delay was accumulated.</td>
+              </tr>
+              <tr>
+                <td><code>retry_count</code></td>
+                <td>0 or 1</td>
+                <td>Explains duplicated calls and higher run cost.</td>
+              </tr>
+              <tr>
+                <td><code>status</code></td>
+                <td><code>ok</code>, <code>error</code>, <code>degraded</code></td>
+                <td>Distinguishes a completed request from a correct request.</td>
+              </tr>
+              <tr>
+                <td><code>error.type</code></td>
+                <td><code>ToolTimeout</code>, <code>ValidationError</code></td>
+                <td>Makes recurring failure classes searchable.</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+
+        <aside class="note">
+          <p><strong>Keep secrets out of traces.</strong> Use synthetic questions and local fixtures for this comparison. Do not send access tokens, customer messages, private documents, or complete tool credentials as attributes.</p>
+        </aside>
+      </section>
+
+      <section id="method">
+        <h2>A fair comparison method</h2>
+        <p>A <a href="glossary.html#trace">trace</a> should represent one complete agent run. A <a href="glossary.html#span">span</a> should represent one meaningful operation inside that run. Use the same boundaries in all three products:</p>
+
+        <pre><code>agent.run
+├── classify.intent
+├── retrieve.context
+├── tool.status
+├── model.compose
+├── validate.answer
+└── model.repair        # present only after a failed validation</code></pre>
+
+        <p>Do not let one platform record every internal library call while another receives only a root event. That would compare instrumentation depth, not the products.</p>
+
+        <h3>Evaluation scale</h3>
+        <p>The scores later in this article use a five-point rubric. They are workflow assessments, not measured performance claims.</p>
+
+        <ul>
+          <li><strong>5 — direct:</strong> the task is visible and actionable with little additional work.</li>
+          <li><strong>4 — good:</strong> the task is supported but needs some configuration or navigation.</li>
+          <li><strong>3 — workable:</strong> the task is possible with manual conventions or extra components.</li>
+          <li><strong>2 — awkward:</strong> the information exists but is difficult to connect to the incident.</li>
+          <li><strong>1 — unsuitable:</strong> the workflow is absent or requires a separate system.</li>
+        </ul>
+
+        <h3>Control the variables</h3>
+        <ol>
+          <li>Use the same Python environment, agent code, model, prompts, and test fixtures.</li>
+          <li>Disable automatic retries in provider clients; keep the agent’s single explicit retry.</li>
+          <li>Run one observability backend at a time if local CPU or memory is limited.</li>
+          <li>Warm the agent once before recording observations.</li>
+          <li>Never compare runs executed with different network conditions as if the platform caused the difference.</li>
+          <li>Record raw provider usage before allowing any platform to calculate cost.</li>
+          <li>Repeat every scenario several times, but report the individual runs as well as aggregates.</li>
+        </ol>
+
+        <p>The important timing measure is <a href="glossary.html#latency">latency</a> at each agent step. The important usage measure is the provider-reported <a href="glossary.html#token">token</a> count. Currency cost is derived data and can become wrong when pricing tables, cached-input rules, or provider billing policies change.</p>
+      </section>
+
+      <section id="instrumentation-contract">
+        <h2>Define a shared instrumentation contract first</h2>
+        <p>Create a small adapter instead of scattering vendor calls throughout the agent. The application should express operations such as “start run,” “start step,” “record usage,” and “record error.” Each backend adapter maps those operations to its SDK.</p>
+
+        <pre><code>from contextlib import contextmanager
+from typing import Any, Iterator, Protocol
+
+
+class Observation(Protocol):
+    def set_attributes(self, values: dict[str, Any]) -&gt; None: ...
+    def set_output(self, value: Any) -&gt; None: ...
+    def set_error(self, exc: Exception) -&gt; None: ...
+
+
+class Telemetry(Protocol):
+    @contextmanager
+    def operation(
+        self,
+        name: str,
+        *,
+        kind: str,
+        attributes: dict[str, Any] | None = None,
+    ) -&gt; Iterator[Observation]:
+        ...
+
+
+class NullObservation:
+    def set_attributes(self, values):
+        pass
+
+    def set_output(self, value):
+        pass
+
+    def set_error(self, exc):
+        pass
+
+
+class NullTelemetry:
+    @contextmanager
+    def operation(self, name, *, kind, attributes=None):
+        yield NullObservation()</code></pre>
+
+        <p>This interface is deliberately small. It prevents a comparison from turning into three separate agent implementations and makes it possible to remove a vendor SDK later.</p>
+
+        <h3>Canonical attributes</h3>
+        <pre><code>COMMON = {
+    "app.name": "support-research-agent",
+    "agent.version": "comparison-v1",
+    "environment": "local-comparison",
+}
+
+RUN = {
+    **COMMON,
+    "run_id": run_id,
+    "scenario": scenario,
+}
+
+MODEL_STEP = {
+    "model.provider": provider_name,
+    "model.name": model_name,
+    "prompt.version": "compose-v1",
+    "retry_count": retry_count,
+}</code></pre>
+
+        <p>If you also export through <a href="glossary.html#opentelemetry">OpenTelemetry</a>, keep the business attributes above stable and map model-specific data to the semantic conventions supported by your installed instrumentation packages. Do not silently rename fields between backends.</p>
+      </section>
+
+      <section id="baseline">
+        <h2>Build the baseline agent</h2>
+
+        <h3>1. Prepare an isolated environment</h3>
+        <pre><code>python -m venv .venv
+source .venv/bin/activate
+python -m pip install --upgrade pip
+python -m pip install langfuse arize-phoenix opik \
+  openai opentelemetry-api opentelemetry-sdk \
+  openinference-instrumentation-openai</code></pre>
+
+        <p>Pin the resolved package versions before sharing results:</p>
+        <pre><code>python -m pip freeze &gt; comparison-requirements.lock</code></pre>
+
+        <p>SDK interfaces change. If a snippet below differs from the installed package, inspect the package help or current SDK API and preserve the same trace hierarchy and attributes.</p>
+
+        <h3>2. Use deterministic local fixtures</h3>
+        <pre><code>DOCUMENTS = [
+    {
+        "id": "doc-refunds",
+        "text": "Refund requests enter review after the support form is submitted."
+    },
+    {
+        "id": "doc-status",
+        "text": "Service status must be checked before diagnosing an outage."
+    },
+    {
+        "id": "doc-access",
+        "text": "Access recovery requires account ownership verification."
+    },
+]
+
+STATUS_FIXTURE = {
+    "service": "example-api",
+    "state": "operational",
+    "checked_at": "fixture-time"
+}</code></pre>
+
+        <p>Do not use a live vector database for the comparison. A simple keyword retriever removes indexing, embedding, and network variance:</p>
+
+        <pre><code>def retrieve(query: str, limit: int = 3) -&gt; list[dict]:
+    terms = {word.strip(".,?!").lower() for word in query.split()}
+    ranked = []
+
+    for document in DOCUMENTS:
+        document_terms = set(document["text"].lower().split())
+        score = len(terms &amp; document_terms)
+        ranked.append((score, document))
+
+    ranked.sort(key=lambda item: item[0], reverse=True)
+    return [doc for score, doc in ranked if score &gt; 0][:limit]</code></pre>
+
+        <h3>3. Instrument the agent’s business steps</h3>
+        <pre><code>def run_agent(question, scenario, telemetry, model_client):
+    run_id = new_run_id()
+
+    with telemetry.operation(
+        "agent.run",
+        kind="agent",
+        attributes={**RUN, "run_id": run_id, "scenario": scenario},
+    ) as run:
+        try:
+            with telemetry.operation(
+                "classify.intent",
+                kind="chain",
+                attributes={"question.length": len(question)},
+            ) as step:
+                intent = classify(question)
+                step.set_output({"intent": intent})
+
+            with telemetry.operation(
+                "retrieve.context",
+                kind="retriever",
+                attributes={"retrieval.limit": 3},
+            ) as step:
+                documents = retrieve(question)
+                step.set_attributes({
+                    "retrieval.result_count": len(documents),
+                    "retrieval.document_ids": [d["id"] for d in documents],
+                })
+
+            status = None
+            if intent["needs_status"]:
+                with telemetry.operation(
+                    "tool.status",
+                    kind="tool",
+                    attributes={"tool.name": "local_status"},
+                ) as step:
+                    status = read_status_fixture(scenario)
+                    step.set_output({"state": status["state"]})
+
+            answer, usage = compose_answer(
+                model_client,
+                question,
+                documents,
+                status,
+                scenario,
+            )
+
+            with telemetry.operation(
+                "validate.answer",
+                kind="evaluator",
+                attributes={"validator.name": "source-id-required"},
+            ) as step:
+                valid = validate_answer(answer, documents)
+                step.set_output({"valid": valid})
+
+            retry_count = 0
+            if not valid:
+                retry_count = 1
+                answer, repair_usage = repair_answer(
+                    model_client,
+                    question,
+                    documents,
+                    answer,
+                )
+                usage = add_usage(usage, repair_usage)
+
+            run.set_attributes({
+                "status": "ok",
+                "retry_count": retry_count,
+                "input_tokens": usage.input_tokens,
+                "output_tokens": usage.output_tokens,
+            })
+            run.set_output({"answer": answer})
+            return answer
+
+        except Exception as exc:
+            run.set_attributes({
+                "status": "error",
+                "error.type": type(exc).__name__,
+            })
+            run.set_error(exc)
+            raise</code></pre>
+
+        <aside class="note">
+          <p><strong>Instrument the actual model operations too.</strong> In a real implementation, <code>compose_answer</code> and <code>repair_answer</code> should each create a model span containing model identity, timing, usage, and a safely redacted input/output summary. They are abbreviated here so the comparison remains independent of a particular model provider.</p>
+        </aside>
+
+        <h3>4. Keep a local run ledger</h3>
+        <p>Write one JSON line after every run. This is the independent source used to verify what each UI shows:</p>
+
+        <pre><code>{
+  "run_id": "generated-uuid",
+  "backend": "phoenix",
+  "scenario": "tool_timeout",
+  "started_at": "ISO-8601 timestamp",
+  "duration_ms": 0,
+  "status": "error",
+  "input_tokens": null,
+  "output_tokens": null,
+  "retry_count": 0,
+  "error_type": "ToolTimeout"
+}</code></pre>
+
+        <p>The zero and null values above are schema placeholders, not observations. Populate them from the actual run. Use a monotonic clock for durations and a wall clock only for timestamps.</p>
+      </section>
+
+      <section id="langfuse">
+        <h2>Langfuse: application-centered tracing and operations</h2>
+        <p>Langfuse is a strong candidate when traces are only one part of the desired workflow and the team also wants prompts, datasets, evaluations, sessions, usage, and review in a shared application.</p>
+
+        <h3>Configuration</h3>
+        <p>For a managed deployment, provide the public key, secret key, and host through environment variables. For self-hosting, use credentials created by that deployment. Keep the file outside version control:</p>
+
+        <pre><code>LANGFUSE_PUBLIC_KEY=replace-with-local-or-project-key
+LANGFUSE_SECRET_KEY=replace-with-local-or-project-secret
+LANGFUSE_HOST=http://localhost:3000</code></pre>
+
+        <p>Load those values using your normal secret-management method. Do not paste them into source files or trace attributes.</p>
+
+        <h3>Adapter shape</h3>
+        <p>Recent SDK generations support observations and context-managed spans. The exact constructor and update method names must match the version you pinned, but the mapping should remain:</p>
+
+        <pre><code>from contextlib import contextmanager
+from langfuse import get_client
+
+
+class LangfuseTelemetry:
+    def __init__(self):
+        self.client = get_client()
+
+    @contextmanager
+    def operation(self, name, *, kind, attributes=None):
+        with self.client.start_as_current_observation(
+            name=name,
+            as_type=kind,
+            metadata=attributes or {},
+        ) as observation:
+            yield LangfuseObservation(observation)
+
+    def flush(self):
+        self.client.flush()
+
+
+class LangfuseObservation:
+    def __init__(self, observation):
+        self.observation = observation
+
+    def set_attributes(self, values):
+        self.observation.update(metadata=values)
+
+    def set_output(self, value):
+        self.observation.update(output=value)
+
+    def set_error(self, exc):
+        self.observation.update(
+            level="ERROR",
+            status_message=str(exc),
+        )</code></pre>
+
+        <p>Call <code>flush()</code> before a short-lived test process exits. For a server, use the SDK’s lifecycle guidance rather than flushing synchronously after every request.</p>
+
+        <h3>What to inspect</h3>
+        <ol>
+          <li>Open the root <code>agent.run</code> observation and confirm all child operations share its trace.</li>
+          <li>Find the longest child step and compare its duration with the local ledger.</li>
+          <li>Open the model generation and confirm provider-reported input and output usage is present.</li>
+          <li>Filter by <code>scenario</code>, <code>status</code>, and <code>agent.version</code>.</li>
+          <li>Check whether the retry is visible as a distinct model operation rather than being merged into the first attempt.</li>
+          <li>Inspect any calculated cost and compare it with a calculation based on the provider’s billing record.</li>
+        </ol>
+
+        <h3>Where Langfuse is especially useful</h3>
+        <p>The product model is well suited to connecting a failing trace with prompt versions, evaluations, and datasets. That makes it useful when the debugging question is not only “which call was slow?” but also “did a prompt change increase validation failures?”</p>
+
+        <h3>Langfuse failure cases to test</h3>
+        <ul>
+          <li>An application exception occurs before the SDK sends buffered events.</li>
+          <li>A parent context is lost when a tool runs in another thread or task.</li>
+          <li>A model integration reports usage under names that the cost calculation does not recognize.</li>
+          <li>A redaction rule removes data needed for debugging or leaves private data visible.</li>
+          <li>A trace is marked successful because the HTTP request completed even though answer validation failed.</li>
+        </ul>
+      </section>
+
+      <section id="phoenix">
+        <h2>Phoenix: local-first inspection with open instrumentation</h2>
+        <p>Phoenix is particularly attractive when engineers want a local observability and evaluation environment and already use, or plan to use, OpenTelemetry and OpenInference-compatible instrumentation.</p>
+
+        <h3>Start locally</h3>
+        <p>After installing <code>arize-phoenix</code>, inspect the available command before starting the service:</p>
+
+        <pre><code>python -m phoenix.server.main --help</code></pre>
+
+        <p>Depending on the installed package generation, the distribution may also expose a shorter CLI command. Use the command documented by the installed version and record it in the comparison notes. A Python process can also launch Phoenix during local experiments.</p>
+
+        <h3>Register tracing</h3>
+        <pre><code>from phoenix.otel import register
+
+tracer_provider = register(
+    project_name="support-agent-comparison",
+    auto_instrument=True,
+)</code></pre>
+
+        <p>If the agent uses an OpenAI-compatible client and the corresponding instrumentation package, attach automatic model instrumentation to the same provider:</p>
+
+        <pre><code>from openinference.instrumentation.openai import OpenAIInstrumentor
+
+OpenAIInstrumentor().instrument(
+    tracer_provider=tracer_provider,
+)</code></pre>
+
+        <p>Automatic instrumentation is convenient, but it does not understand your business graph. Add manual spans for classification, retrieval, validation, and retry decisions.</p>
+
+        <h3>Manual adapter shape</h3>
+        <pre><code>from contextlib import contextmanager
+from opentelemetry import trace
+from opentelemetry.trace import Status, StatusCode
+
+
+class PhoenixTelemetry:
+    def __init__(self):
+        self.tracer = trace.get_tracer("support-research-agent")
+
+    @contextmanager
+    def operation(self, name, *, kind, attributes=None):
+        with self.tracer.start_as_current_span(name) as span:
+            safe_attributes = flatten_attributes(attributes or {})
+            span.set_attributes(safe_attributes)
+            wrapper = PhoenixObservation(span)
+            try:
+                yield wrapper
+            except Exception as exc:
+                wrapper.set_error(exc)
+                raise
+
+
+class PhoenixObservation:
+    def __init__(self, span):
+        self.span = span
+
+    def set_attributes(self, values):
+        self.span.set_attributes(flatten_attributes(values))
+
+    def set_output(self, value):
+        self.span.set_attribute(
+            "output.summary",
+            redact_and_serialize(value),
+        )
+
+    def set_error(self, exc):
+        self.span.record_exception(exc)
+        self.span.set_status(
+            Status(StatusCode.ERROR, str(exc))
+        )</code></pre>
+
+        <p>OpenTelemetry attributes accept a limited set of primitive values and arrays. The helper <code>flatten_attributes</code> should convert nested dictionaries into stable dotted keys instead of serializing an entire confidential object.</p>
+
+        <h3>What to inspect</h3>
+        <ol>
+          <li>Verify that automatic model spans appear beneath the manual <code>model.compose</code> operation, not as unrelated root traces.</li>
+          <li>Use the waterfall view to isolate retrieval, tool, provider, and validation delays.</li>
+          <li>Inspect model inputs and outputs only after confirming redaction.</li>
+          <li>Check model usage fields and any derived cost against the local ledger.</li>
+          <li>Group or filter failures using stable status and scenario attributes.</li>
+          <li>Confirm evaluators can be associated with the intended trace or span.</li>
+        </ol>
+
+        <h3>Where Phoenix is especially useful</h3>
+        <p>Phoenix fits an engineering workflow in which spans are a portable source of truth and local inspection matters. Its standards-oriented route is valuable when the same telemetry may later be exported to additional systems.</p>
+
+        <h3>Phoenix failure cases to test</h3>
+        <ul>
+          <li>Manual and automatic instrumentation create duplicate model spans.</li>
+          <li>Async context propagation breaks and produces several root traces.</li>
+          <li>Nested dictionaries are rejected or silently omitted as span attributes.</li>
+          <li>The process exits before the span processor exports buffered data.</li>
+          <li>Prompts are captured by automatic instrumentation even though the application expected metadata-only tracing.</li>
+        </ul>
+      </section>
+
+      <section id="opik">
+        <h2>Opik: tracing and evaluation across local and shared workflows</h2>
+        <p>Opik is a practical middle path when the team wants agent traces, experiments, evaluations, and project organization without making a standards-first telemetry pipeline the central design decision.</p>
+
+        <h3>Configuration</h3>
+        <p>Run the installed configuration command interactively or define the endpoint and authentication settings required by the selected local or hosted deployment. Inspect the CLI before automating it:</p>
+
+        <pre><code>opik --help
+opik configure --help</code></pre>
+
+        <p>Keep local and hosted project names distinct so that comparison traces do not mix with development traffic.</p>
+
+        <h3>Decorator-based instrumentation</h3>
+        <p>Opik provides tracking helpers that are convenient for application functions:</p>
+
+        <pre><code>from opik import track
+
+
+@track(name="retrieve.context", type="tool")
+def observed_retrieve(query):
+    return retrieve(query)
+
+
+@track(name="validate.answer")
+def observed_validate(answer, documents):
+    return validate_answer(answer, documents)</code></pre>
+
+        <p>For the three-way comparison, wrap these capabilities behind the shared adapter. Otherwise the Opik version will have different function boundaries from the other two versions.</p>
+
+        <h3>Adapter shape</h3>
+        <p>The installed SDK may expose context managers, decorators, or an explicit client API. Map the adapter to that API using this lifecycle:</p>
+
+        <pre><code>start trace or nested span
+    set name and stable metadata
+    execute application operation
+    record redacted output
+    record provider usage when applicable
+    mark validation failures explicitly
+    close span in a finally block
+flush client before a short-lived process exits</code></pre>
+
+        <p>A model-client integration can capture model calls, but manual operations are still required for retrieval decisions, tool behavior, validation, and retry logic.</p>
+
+        <h3>What to inspect</h3>
+        <ol>
+          <li>Confirm that the complete agent run is one trace with the expected child hierarchy.</li>
+          <li>Filter runs by scenario, version, validation result, and retry count.</li>
+          <li>Compare usage recorded on model spans with provider responses.</li>
+          <li>Check whether a failed validation remains visible even when the repaired answer succeeds.</li>
+          <li>Associate evaluation results with the exact output they assessed.</li>
+          <li>Verify local project data remains separated from hosted or team projects.</li>
+        </ol>
+
+        <h3>Where Opik is especially useful</h3>
+        <p>Opik is compelling when experiments and evaluation are first-class needs but the team also wants a readable trace view for day-to-day debugging. Its value should be judged through the complete workflow: reproduce a bad run, inspect it, attach an evaluation, compare a changed prompt, and share the result.</p>
+
+        <h3>Opik failure cases to test</h3>
+        <ul>
+          <li>A decorator records the Python function but misses the nested provider call.</li>
+          <li>A trace is closed before an async child operation completes.</li>
+          <li>Project configuration sends local tests to an unintended shared project.</li>
+          <li>Usage is available but price mapping is missing for the chosen model.</li>
+          <li>A successful repaired answer hides the failed first attempt from top-level filtering.</li>
+        </ul>
+      </section>
+
+      <section id="failure-drills">
+        <h2>Run the same six failure-injection drills</h2>
+        <p>The winning tool is the one that helps you explain these incidents with the least guesswork. Inject failures in application code, not by manipulating a platform’s stored records.</p>
+
+        <h3>Drill 1: slow retrieval</h3>
+        <pre><code>def retrieve_with_fault(query, scenario):
+    if scenario == "slow_retrieval":
+        time.sleep(1.5)
+    return retrieve(query)</code></pre>
+
+        <p>Verify that the root run becomes slower by approximately the retrieval delay and that the delay is attributed to <code>retrieve.context</code>, not the model span. The fixed delay is an input to your experiment, not a claimed platform measurement.</p>
+
+        <h3>Drill 2: tool timeout</h3>
+        <pre><code>class ToolTimeout(RuntimeError):
+    pass
+
+
+def read_status_fixture(scenario):
+    if scenario == "tool_timeout":
+        raise ToolTimeout("Injected local status timeout")
+    return STATUS_FIXTURE</code></pre>
+
+        <p>The tool span and root trace should be marked as errors, and the error class should be filterable. A stack trace alone is insufficient if the interface cannot group similar failures.</p>
+
+        <h3>Drill 3: empty retrieval</h3>
+        <pre><code>if scenario == "empty_retrieval":
+    documents = []</code></pre>
+
+        <p>The trace may complete technically, but its status should be <code>degraded</code> or its evaluation should fail. This tests whether the platform distinguishes transport success from agent quality.</p>
+
+        <h3>Drill 4: malformed tool output</h3>
+        <pre><code>if scenario == "malformed_tool_output":
+    return {"unexpected": True}</code></pre>
+
+        <p>Validate the tool response before sending it to the model. Record the schema error on the tool span and do not store a misleading successful tool output.</p>
+
+        <h3>Drill 5: failed first answer and successful repair</h3>
+        <pre><code>if scenario == "forced_repair":
+    first_answer = "Answer without a required document identifier."</code></pre>
+
+        <p>You should see two separate model operations, one failed validation, and <code>retry_count=1</code>. The total usage must be the sum of both model calls.</p>
+
+        <h3>Drill 6: exporter unavailable</h3>
+        <p>Temporarily point the SDK at an unreachable local endpoint, then execute one synthetic run. The application should either continue with a clearly logged telemetry failure or stop according to an explicit policy. Observability must not create an unbounded wait or silently consume memory.</p>
+
+        <aside class="warning">
+          <p><strong>Do not perform the exporter drill against a production process.</strong> Run it in the isolated comparison environment and restore the endpoint before continuing.</p>
+        </aside>
+
+        <h3>Incident questions for every drill</h3>
+        <ol>
+          <li>Can you find the run using only <code>run_id</code>?</li>
+          <li>Can you identify the first failing operation in under three navigation steps?</li>
+          <li>Can you see the operation’s input summary without exposing secret values?</li>
+          <li>Can you distinguish application time from model-provider time?</li>
+          <li>Can you see every model attempt and its usage?</li>
+          <li>Can you filter all runs with the same failure class?</li>
+          <li>Can you copy a stable link or identifier for another engineer?</li>
+        </ol>
+      </section>
+
+      <section id="comparison">
+        <h2>Comparative evaluation on the shared scenario</h2>
+        <p>The table below evaluates the expected workflow fit of each product when the instrumentation contract in this guide is followed. It does not claim measured speed, reliability, or cost. Confirm every row with your installed versions and deployment mode.</p>
+
+        <div class="table-wrapper">
+          <table>
+            <thead>
+              <tr>
+                <th scope="col">Criterion</th>
+                <th scope="col">Langfuse</th>
+                <th scope="col">Phoenix</th>
+                <th scope="col">Opik</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <th scope="row">Initial setup</th>
+                <td><strong>4/5</strong><br>Simple SDK path; self-hosting introduces additional services and configuration.</td>
+                <td><strong>5/5</strong><br>Strong fit for starting a local Python-centered inspection workflow.</td>
+                <td><strong>4/5</strong><br>Accessible local or hosted path; confirm project and endpoint configuration.</td>
+              </tr>
+              <tr>
+                <th scope="row">Nested agent tracing</th>
+                <td><strong>5/5</strong><br>Clear application trace model with generations, spans, metadata, and sessions.</td>
+                <td><strong>5/5</strong><br>Detailed span inspection with manual and automatic instrumentation.</td>
+                <td><strong>4/5</strong><br>Good trace workflow; consistency depends on integration and decorator boundaries.</td>
+              </tr>
+              <tr>
+                <th scope="row">Latency diagnosis</th>
+                <td><strong>5/5</strong><br>Strong when every business step and retry is represented explicitly.</td>
+                <td><strong>5/5</strong><br>Waterfall-oriented span analysis is a natural fit for isolating slow operations.</td>
+                <td><strong>4/5</strong><br>Useful operation timing; verify how nested automatic calls appear.</td>
+              </tr>
+              <tr>
+                <th scope="row">Usage and cost analysis</th>
+                <td><strong>5/5</strong><br>Strong application-level usage workflow, subject to accurate model and price mapping.</td>
+                <td><strong>4/5</strong><br>Usage can be captured through model instrumentation; verify derived cost coverage.</td>
+                <td><strong>4/5</strong><br>Usage and cost workflows are useful but should be checked for each provider and model.</td>
+              </tr>
+              <tr>
+                <th scope="row">Local operation</th>
+                <td><strong>3/5</strong><br>Self-hosting is available, but the complete application stack is heavier than an embedded inspection workflow.</td>
+                <td><strong>5/5</strong><br>Particularly well aligned with local experiments, notebooks, and services.</td>
+                <td><strong>4/5</strong><br>Practical local path; evaluate startup, persistence, and resource use in your environment.</td>
+              </tr>
+              <tr>
+                <th scope="row">Debugging failed runs</th>
+                <td><strong>5/5</strong><br>Strong connection between traces, metadata, prompts, evaluations, and datasets.</td>
+                <td><strong>5/5</strong><br>Excellent for inspecting span details and evaluation evidence close to development.</td>
+                <td><strong>4/5</strong><br>Good combined trace and evaluation workflow with some integration-dependent details.</td>
+              </tr>
+              <tr>
+                <th scope="row">Portable instrumentation</th>
+                <td><strong>4/5</strong><br>Can participate in open telemetry workflows, but product-native concepts remain useful.</td>
+                <td><strong>5/5</strong><br>Strong standards-oriented instrumentation path.</td>
+                <td><strong>4/5</strong><br>Adapter-based instrumentation limits lock-in; confirm exporter options required by your stack.</td>
+              </tr>
+              <tr>
+                <th scope="row">Team application workflow</th>
+                <td><strong>5/5</strong><br>Broad operational surface for shared prompts, traces, evaluation, and review.</td>
+                <td><strong>4/5</strong><br>Strong engineering workflow; validate the desired production collaboration model.</td>
+                <td><strong>4/5</strong><br>Balanced project and experiment workflow; validate permissions and review needs.</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+
+        <h3>Interpretation</h3>
+        <p><strong>Langfuse has the strongest fit when observability belongs inside a broader LLM application platform.</strong> It is a natural choice for teams that want to connect incidents with prompt versions, experiments, evaluations, datasets, sessions, and cost views.</p>
+
+        <p><strong>Phoenix has the strongest fit when local debugging depth and open instrumentation are the deciding factors.</strong> It is especially attractive to teams already thinking in spans, evaluators, notebooks, and portable telemetry.</p>
+
+        <p><strong>Opik is the balanced option when tracing and evaluation must be approachable in both local and shared workflows.</strong> Its final score depends more heavily on whether the exact model integration and deployment mode match your stack.</p>
+
+        <h3>Use a weighted score for your team</h3>
+        <pre><code>weighted_score =
+    setup_score          * setup_weight +
+    tracing_score        * tracing_weight +
+    metrics_score        * metrics_weight +
+    local_score          * local_weight +
+    debugging_score      * debugging_weight</code></pre>
+
+        <p>Weights must sum to 1. A solo engineer may assign a high weight to local startup and trace inspection. A platform team may care more about permissions, retention, deployment architecture, API stability, and telemetry portability.</p>
+
+        <div class="table-wrapper">
+          <table>
+            <thead>
+              <tr>
+                <th scope="col">Criterion</th>
+                <th scope="col">Suggested starting weight</th>
+                <th scope="col">Your weight</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td>Setup and maintenance</td>
+                <td>0.15</td>
+                <td>____</td>
+              </tr>
+              <tr>
+                <td>Trace completeness</td>
+                <td>0.25</td>
+                <td>____</td>
+              </tr>
+              <tr>
+                <td>Latency and cost metrics</td>
+                <td>0.20</td>
+                <td>____</td>
+              </tr>
+              <tr>
+                <td>Local operation</td>
+                <td>0.15</td>
+                <td>____</td>
+              </tr>
+              <tr>
+                <td>Failure debugging</td>
+                <td>0.25</td>
+                <td>____</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      </section>
+
+      <section id="verification">
+        <h2>Verification: prove that the trace is trustworthy</h2>
+
+        <h3>Trace structure</h3>
+        <ul class="checklist">
+          <li>Every test run produces exactly one root <code>agent.run</code> trace.</li>
+          <li>The root contains classification, retrieval, tool, model, validation, and optional repair operations.</li>
+          <li>Parent-child relationships survive asynchronous functions and thread boundaries.</li>
+          <li>Failed operations have an error status and a stable error class.</li>
+          <li>A repaired run retains evidence of the failed first attempt.</li>
+        </ul>
+
+        <h3>Timing</h3>
+        <ul class="checklist">
+          <li>Root duration approximately matches the local monotonic measurement.</li>
+          <li>Injected delay appears on the intended child operation.</li>
+          <li>Overlapping async spans are not incorrectly added as sequential time.</li>
+          <li>Exporter or UI delays are not confused with agent execution latency.</li>
+        </ul>
+
+        <h3>Usage and cost</h3>
+        <ul class="checklist">
+          <li>Input and output usage equals the values returned by the provider.</li>
+          <li>Streaming responses record final usage after the stream closes.</li>
+          <li>Retries and repair calls contribute to total usage.</li>
+          <li>Cached input, reasoning tokens, tool calls, or other provider-specific units are represented when applicable.</li>
+          <li>Displayed currency cost uses the correct model and pricing rule.</li>
+          <li>Unknown price mappings remain unknown rather than being shown as zero.</li>
+        </ul>
+
+        <h3>Privacy</h3>
+        <ul class="checklist">
+          <li>API keys and authorization headers never appear in attributes.</li>
+          <li>Synthetic prompts are used for the comparison.</li>
+          <li>Tool results are summarized or allow-listed before capture.</li>
+          <li>Exception messages are sanitized.</li>
+          <li>Disabling prompt capture actually removes prompts from both manual and automatic spans.</li>
+        </ul>
+
+        <h3>Operational behavior</h3>
+        <ul class="checklist">
+          <li>The agent has a defined policy when telemetry is unavailable.</li>
+          <li>Buffers have bounded size and a known flush strategy.</li>
+          <li>Short-lived scripts flush successfully before exit.</li>
+          <li>Sampling retains errors and unusual high-latency runs according to policy.</li>
+          <li>Retention and deletion behavior matches the sensitivity of recorded data.</li>
+        </ul>
+
+        <h3>Comparison worksheet</h3>
+        <div class="table-wrapper">
+          <table>
+            <thead>
+              <tr>
+                <th scope="col">Question</th>
+                <th scope="col">Langfuse</th>
+                <th scope="col">Phoenix</th>
+                <th scope="col">Opik</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td>Minutes from clean environment to first complete trace</td>
+                <td>____</td>
+                <td>____</td>
+                <td>____</td>
+              </tr>
+              <tr>
+                <td>Missing or incorrectly parented spans</td>
+                <td>____</td>
+                <td>____</td>
+                <td>____</td>
+              </tr>
+              <tr>
+                <td>Navigation steps from run ID to root cause</td>
+                <td>____</td>
+                <td>____</td>
+                <td>____</td>
+              </tr>
+              <tr>
+                <td>Provider usage matches the local ledger</td>
+                <td>Yes / No</td>
+                <td>Yes / No</td>
+                <td>Yes / No</td>
+              </tr>
+              <tr>
+                <td>Derived cost verified independently</td>
+                <td>Yes / No / N/A</td>
+                <td>Yes / No / N/A</td>
+                <td>Yes / No / N/A</td>
+              </tr>
+              <tr>
+                <td>All six failure scenarios searchable</td>
+                <td>____ / 6</td>
+                <td>____ / 6</td>
+                <td>____ / 6</td>
+              </tr>
+              <tr>
+                <td>Private fields found after redaction test</td>
+                <td>____</td>
+                <td>____</td>
+                <td>____</td>
+              </tr>
+              <tr>
+                <td>Local services and approximate idle resources</td>
+                <td>____</td>
+                <td>____</td>
+                <td>____</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+
+        <p>Fill this worksheet from your own runs. Publishing blank values is better than presenting fabricated precision.</p>
+      </section>
+
+      <section id="limitations">
+        <h2>Limitations and common traps</h2>
+
+        <h3>Cost is never just a token count</h3>
+        <p>Providers may distinguish cached input, uncached input, output, reasoning, images, audio, batch processing, or tool-related charges. A platform’s cost column is useful only when the recorded model identifier and pricing rule match the provider’s bill. Preserve raw usage so historical runs can be recalculated.</p>
+
+        <h3>Trace capture has overhead</h3>
+        <p>Serialization, context propagation, buffering, and exporting consume resources. Measure the agent with telemetry enabled and disabled in your own environment. Do not attribute a single noisy timing difference to the SDK; repeat the experiment and inspect distributions.</p>
+
+        <h3>Automatic instrumentation is incomplete by design</h3>
+        <p>It can observe provider calls, but it cannot infer why the agent selected a tool, why a validator rejected an answer, or whether an empty retrieval should be treated as an incident. Manual business spans remain necessary.</p>
+
+        <h3>More captured data can make debugging worse</h3>
+        <p>Recording complete prompts, documents, and tool payloads creates noise and privacy risk. Prefer stable identifiers, counts, hashes, allow-listed fields, and short redacted summaries. Store the minimum content required to reproduce the problem.</p>
+
+        <h3>A trace does not prove answer quality</h3>
+        <p>A perfectly structured trace can contain a fluent but incorrect answer. Add deterministic checks where possible, then use carefully designed evaluations for properties that cannot be validated mechanically. Treat evaluator output as evidence, not absolute truth.</p>
+
+        <h3>Local and production deployments are different tests</h3>
+        <p>Local startup evaluates developer experience. Production suitability also depends on authentication, permissions, upgrades, backups, retention, network isolation, availability, scaling, and incident response. Do not infer those properties from a laptop demonstration.</p>
+
+        <h3>SDK and interface details change</h3>
+        <p>Package names, method signatures, configuration variables, and local startup commands can change between releases. Pin versions, preserve your adapter, and make a trace-contract test part of dependency upgrades.</p>
+
+        <h3>The comparison omits unrelated platform concerns</h3>
+        <p>This exercise focuses on setup, tracing, metrics, local operation, and debugging. It does not score procurement, enterprise support, regional hosting, contractual requirements, long-term storage economics, or every integration. Add those criteria before an organizational purchase.</p>
+      </section>
+
+      <section id="recommendation">
+        <h2>How to choose without getting trapped by the feature list</h2>
+
+        <h3>Choose Langfuse when</h3>
+        <ul>
+          <li>Your team wants a shared application for traces, prompts, evaluations, datasets, usage, and review.</li>
+          <li>Debugging frequently requires connecting behavior to prompt or application versions.</li>
+          <li>You accept the additional operational work of a fuller self-hosted application, or you prefer a managed deployment.</li>
+        </ul>
+
+        <h3>Choose Phoenix when</h3>
+        <ul>
+          <li>Local debugging and detailed span inspection are the primary requirements.</li>
+          <li>Your team values OpenTelemetry and OpenInference-oriented instrumentation.</li>
+          <li>Engineers need observability close to notebooks, experiments, or Python services.</li>
+        </ul>
+
+        <h3>Choose Opik when</h3>
+        <ul>
+          <li>You want an approachable combination of tracing, evaluation, and experimentation.</li>
+          <li>You need a credible path between local development and shared projects.</li>
+          <li>Your validation confirms that its current integrations expose the provider usage and hierarchy your agent needs.</li>
+        </ul>
+
+        <h3>The practical default</h3>
+        <p>If the team has no established telemetry architecture, run the six drills before selecting anything. Start with Phoenix when the immediate bottleneck is local diagnosis, Langfuse when the larger problem is managing the LLM application lifecycle, and Opik when you want a balanced trace-and-evaluation workflow. Override that default whenever your completed worksheet shows a better fit.</p>
+
+        <h3>Exit criteria for the evaluation</h3>
+        <p>A platform is ready for a pilot only when all of the following are true:</p>
+        <ol>
+          <li>The complete agent hierarchy is captured without duplicate or orphaned model calls.</li>
+          <li>Every injected failure can be found by run ID and grouped by failure type.</li>
+          <li>Step latency agrees with an independent application measurement.</li>
+          <li>Usage agrees with provider responses, and unknown cost remains visibly unknown.</li>
+          <li>Retries are visible and included in total usage.</li>
+          <li>Redaction tests find no secrets or private fixture data outside the allowed fields.</li>
+          <li>The application’s behavior during telemetry failure is predictable and bounded.</li>
+          <li>At least two engineers can reproduce the setup from the pinned environment and runbook.</li>
+        </ol>
+
+        <p>That evidence is more valuable than the number of checkmarks on a product page. The best observability tool is the one that preserves the causal story of a run: what the agent decided, what it called, what failed, how long each operation took, why it retried, and how much usage the complete attempt consumed.</p>
+      </section>
+
+      <footer class="article-footer">
+        <p>Continue with the practical material in <a href="guides.html">Agent Lab Journal guides</a>, or review unfamiliar terminology in the <a href="glossary.html">AI agent glossary</a>.</p>
+      </footer>
+    </article>
+  </main>
+
+  <footer class="site-footer">
+    <div class="container">
+      <p>&copy; Agent Lab Journal</p>
+    </div>
+  </footer>
+</body>
+</html>
