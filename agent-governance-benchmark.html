@@ -1,0 +1,900 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta name="description" content="Практическая проверка контура управления AI-агентом с помощью AgentGovBench: запуск 48 сценариев, базовый scorecard и разбор провалов идентичности, делегирования, изоляции и аудита.">
+  <link rel="canonical" href="https://agentlabjournal.online/agent-governance-benchmark.html">
+  <link rel="stylesheet" href="style.css">
+  <link rel="stylesheet" href="reading.css">
+  <title>Проверяем контур управления AI-агентом с помощью AgentGovBench | Agent Lab Journal</title>
+  <script type="application/ld+json">
+  {
+    "@context": "https://schema.org",
+    "@type": "Article",
+    "headline": "Проверяем контур управления AI-агентом с помощью AgentGovBench",
+    "description": "Практическая проверка контура управления AI-агентом с помощью AgentGovBench: запуск 48 сценариев, базовый scorecard и разбор провалов идентичности, делегирования, изоляции и аудита.",
+    "author": {
+      "@type": "Organization",
+      "name": "Agent Lab Journal"
+    },
+    "publisher": {
+      "@type": "Organization",
+      "name": "Agent Lab Journal",
+      "url": "https://agentlabjournal.online/"
+    },
+    "mainEntityOfPage": {
+      "@type": "WebPage",
+      "@id": "https://agentlabjournal.online/agent-governance-benchmark.html"
+    },
+    "inLanguage": "ru"
+  }
+  </script>
+</head>
+<body>
+  <header class="site-header">
+    <a class="brand" href="./">
+      <span class="brand-mark">AL</span>
+      <span>Agent Lab Journal</span>
+    </a>
+    <nav aria-label="Основная навигация">
+      <a href="guides.html">Гайды</a>
+      <a href="glossary.html">Глоссарий</a>
+    </nav>
+  </header>
+
+  <main class="article">
+    <article>
+      <header>
+        <p class="eyebrow">ПРАКТИКА · УПРАВЛЕНИЕ И БЕЗОПАСНОСТЬ</p>
+        <h1>Проверяем <a class="term-link" href="glossary.html#governance-layer">контур управления</a> <a class="term-link" href="glossary.html#ai-agent">AI-агентом</a> с помощью <a class="term-link" href="glossary.html#agentgovbench">AgentGovBench</a></h1>
+        <div class="reading-meta" aria-label="Информация о материале">
+          <span>Уровень: продвинутый</span>
+          <span>Время чтения и практики: 75 минут</span>
+          <span>Результат: 48 сценариев и базовый <a href="glossary.html#scorecard">scorecard</a></span>
+        </div>
+        <p class="lead"><strong>Обычный тест модели может показать правильный ответ и одновременно пропустить критический системный дефект:</strong> по пути к инструменту исчезла <a class="term-link" href="glossary.html#user-identity">пользовательская идентичность</a>, <a class="term-link" href="glossary.html#subagent">дочерний агент</a> получил больше прав, чем родитель, запрос одного клиента попал в пространство другого, а <a class="term-link" href="glossary.html#audit-log">журнал аудита</a> не позволяет восстановить произошедшее. AgentGovBench проверяет именно этот слой — не качество текста модели, а фактическое применение правил перед вызовом инструмента и доказательства, оставшиеся после вызова.</p>
+      </header>
+
+      <aside class="note">
+        <p><strong>Что получится.</strong> Вы закрепите версию AgentGovBench, проверите наличие всех 48 сценариев, запустите безопасный baseline, подключите собственный runner, сохраните машинный результат и составите scorecard по восьми категориям. Затем разберёте провалы в идентификации, политике, наследовании полномочий, делегировании, лимитах, аварийном режиме, межклиентской изоляции и аудите.</p>
+      </aside>
+
+      <section id="problem">
+        <h2>Почему тестов модели недостаточно</h2>
+
+        <p><a class="term-link" href="glossary.html#benchmark">Бенчмарк</a> ответов обычно задаёт модели вопросы и сравнивает результат с ожидаемым текстом, классом или оценкой эксперта. Такой тест полезен для проверки рассуждения, извлечения данных и соблюдения формата, но он почти ничего не говорит о том, что происходит после выбора инструмента.</p>
+
+        <p>Рассмотрим внешне успешный запуск:</p>
+
+        <pre><code>Пользователь → оркестратор → worker → read_email → краткий ответ
+                                      └────────────→ audit</code></pre>
+
+        <p>Ответ может быть точным, хотя внутри произошли четыре нарушения:</p>
+
+        <ol>
+          <li>Worker вызвал инструмент от имени общей сервисной учётной записи, а не пользователя.</li>
+          <li>Политика пользователя запрещала чтение почты, но применялась только к оркестратору.</li>
+          <li>Идентификатор клиента был взят из аргументов модели, а не из проверенного контекста авторизации.</li>
+          <li>В журнал попала запись «инструмент выполнен» без пользователя, решения политики и цепочки делегирования.</li>
+        </ol>
+
+        <p>Текстовый тест отметит задачу как выполненную. Проверка управления должна задать другие вопросы: кто являлся действующим субъектом, в каком клиентском пространстве он работал, какие права имел, кто передал ему задачу, какое правило разрешило действие и существует ли запись, достаточная для расследования.</p>
+
+        <blockquote>Единица проверки — не ответ модели, а переход через границу полномочий.</blockquote>
+
+        <p>Поэтому AgentGovBench выполняет детерминированные последовательности действий без <a class="term-link" href="glossary.html#llm">LLM</a> в критическом пути. Это важное свойство: случайность генерации не должна скрывать ошибку в авторизации. Бенчмарк синтезирует вызовы инструментов и проверяет наблюдаемые решения контура управления.</p>
+      </section>
+
+      <section id="coverage">
+        <h2>Что находится внутри 48 сценариев</h2>
+
+        <p>Набор версии 0.2 разделён на восемь категорий по шесть сценариев. Перед запуском сверяйте структуру своей закреплённой версии репозитория: названия, проверки и формат результатов могут меняться.</p>
+
+        <table>
+          <thead>
+            <tr>
+              <th>Категория</th>
+              <th>Сценариев</th>
+              <th>Что проверяется</th>
+              <th>Типичный риск</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td><code>identity_propagation</code></td>
+              <td>6</td>
+              <td>Передача UID и читаемого идентификатора пользователя через прямые и делегированные вызовы</td>
+              <td>Действие приписано агенту или service account</td>
+            </tr>
+            <tr>
+              <td><code>per_user_policy_enforcement</code></td>
+              <td>6</td>
+              <td>Пользовательские исключения, недостающие права и отзыв разрешения</td>
+              <td>Общее правило пространства перекрывает персональный запрет</td>
+            </tr>
+            <tr>
+              <td><code>scope_inheritance</code></td>
+              <td>6</td>
+              <td>Сужение <a class="term-link" href="glossary.html#scope">scope</a> на каждом шаге</td>
+              <td>Дочерний процесс приобретает полномочие, которого не было у пользователя</td>
+            </tr>
+            <tr>
+              <td><code>delegation_provenance</code></td>
+              <td>6</td>
+              <td>Полная и упорядоченная <a class="term-link" href="glossary.html#delegation-chain">цепочка делегирования</a></td>
+              <td>Нельзя установить, какой агент передал задачу исполнителю</td>
+            </tr>
+            <tr>
+              <td><code>audit_completeness</code></td>
+              <td>6</td>
+              <td>Обязательные поля, разрешения, отказы и отсутствие внутренних ошибок runner</td>
+              <td>Журнал показывает активность, но не позволяет восстановить решение</td>
+            </tr>
+            <tr>
+              <td><code>rate_limit_cascade</code></td>
+              <td>6</td>
+              <td>Наследование <a class="term-link" href="glossary.html#rate-limit">лимитов запросов</a> дочерними агентами</td>
+              <td>Пользователь умножает свой лимит созданием нескольких workers</td>
+            </tr>
+            <tr>
+              <td><code>fail_mode_discipline</code></td>
+              <td>6</td>
+              <td>Предсказуемые <a class="term-link" href="glossary.html#fail-open">fail-open</a> и <a class="term-link" href="glossary.html#fail-closed">fail-closed</a> режимы</td>
+              <td>Недоступность шлюза незаметно отключает защиту</td>
+            </tr>
+            <tr>
+              <td><code>cross_tenant_isolation</code></td>
+              <td>6</td>
+              <td><a class="term-link" href="glossary.html#tenant-isolation">Изоляция клиентов</a> в политиках, идентичности, аудите и лимитах</td>
+              <td>Пользователь клиента A читает или изменяет состояние клиента B</td>
+            </tr>
+          </tbody>
+        </table>
+
+        <p>Шесть сценариев в каждой строке нужны не ради красивого общего числа. Положительный контроль проверяет, что допустимое действие всё ещё работает; отрицательный — что нарушение блокируется; проверки аудита подтверждают, что решение можно доказать после завершения запроса. Если оставить только отрицательные случаи, чрезмерно жёсткий шлюз, запрещающий всё, получит незаслуженно хороший результат.</p>
+      </section>
+
+      <section id="case">
+        <h2>Конкретный случай: пользователь исчезает при передаче задачи worker</h2>
+
+        <p>Возьмём синтетический стенд с двумя клиентами. У Alice из <code>tenant-a</code> есть право <code>email.read</code>, но нет <code>admin.grant_permission</code>. Оркестратор получает задачу прочитать письмо и создаёт worker. Worker подключён к инструментам через общую сервисную учётную запись.</p>
+
+        <p>Ошибочная реализация передаёт в очередь только содержание задачи:</p>
+
+        <pre><code>{
+  "task": "Прочитать письмо и подготовить краткое резюме",
+  "mailbox": "alice@example.test",
+  "agent_name": "mail-worker"
+}</code></pre>
+
+        <p>Проверенный пользователь, клиент, исходные права и идентификатор делегирования потеряны. Worker восстанавливает контекст так:</p>
+
+        <pre><code>actor_uid = "service:mail-worker"
+tenant = payload.get("tenant", DEFAULT_TENANT)
+scopes = SERVICE_ACCOUNT_SCOPES</code></pre>
+
+        <p>Теперь тот же worker может попытаться вызвать административный инструмент. Если <a class="term-link" href="glossary.html#policy-engine">policy engine</a> проверяет полномочия service account, а не Alice, персональный запрет не сработает. Даже если административный вызов случайно не произойдёт, журнал уже неверен: он связывает действие с техническим процессом, а не с человеком, от имени которого выполнялась задача.</p>
+
+        <p>Правильный конверт выполнения отделяет доверенную идентичность от данных задачи:</p>
+
+        <pre><code>{
+  "execution": {
+    "request_id": "req-test-001",
+    "tenant_id": "tenant-a",
+    "subject": {
+      "uid": "user-alice",
+      "display": "alice@example.test"
+    },
+    "delegation": [
+      {
+        "from": "orchestrator",
+        "to": "mail-worker",
+        "scopes": ["email.read"]
+      }
+    ],
+    "effective_scopes": ["email.read"],
+    "policy_version": "test-policy-v1"
+  },
+  "input": {
+    "mailbox": "alice@example.test"
+  }
+}</code></pre>
+
+        <p>Поле <code>input</code> считается недоверенным. Оно не может изменить <code>subject</code>, <code>tenant_id</code> или <code>effective_scopes</code>. Конверт создаётся на границе аутентификации, подписывается либо передаётся по доверенному внутреннему каналу и заново проверяется непосредственно перед инструментом.</p>
+
+        <p>Эффективные права дочернего агента вычисляются пересечением, а не объединением:</p>
+
+        <pre><code>effective_child_scopes =
+    user_scopes
+    ∩ parent_effective_scopes
+    ∩ delegated_task_scopes
+    ∩ tool_policy_scopes</code></pre>
+
+        <p>Если хотя бы один слой не разрешает <code>admin.grant_permission</code>, вызов блокируется. Ни промпт, ни имя worker, ни полномочия технического процесса не могут расширить результат.</p>
+      </section>
+
+      <section id="prepare">
+        <h2>Шаг 1. Подготавливаем безопасный стенд</h2>
+
+        <p>Не запускайте первый прогон против рабочих почтовых ящиков, файлов, платёжных API или production-политик. Используйте отдельное окружение с синтетическими пользователями, несуществующими доменами и инструментами-фикстурами, которые записывают вызов, но не выполняют внешнее действие.</p>
+
+        <p>Минимальные условия:</p>
+
+        <ul>
+          <li>Python 3.10 или новее;</li>
+          <li>Git и отдельный каталог;</li>
+          <li>два тестовых клиента: <code>tenant-a</code> и <code>tenant-b</code>;</li>
+          <li>три синтетических пользователя с разными правами;</li>
+          <li>безопасные инструменты <code>read_email</code>, <code>read_file</code>, <code>read_public_doc</code> и <code>grant_permission</code>;</li>
+          <li>возможность очистить политики, лимиты и журналы между сценариями;</li>
+          <li>отдельный экспорт аудита для проверок runner.</li>
+        </ul>
+
+        <pre><code>mkdir -p agentgovbench-lab
+cd agentgovbench-lab
+umask 077
+
+git clone https://github.com/agentic-control-plane/agentgovbench.git
+cd agentgovbench
+
+git status --short
+git rev-parse HEAD
+git rev-parse HEAD &gt; ../agentgovbench.commit
+
+python3 -m venv .venv
+. .venv/bin/activate
+python -m pip install --upgrade pip
+python -m pip install -e .</code></pre>
+
+        <p>Файл <code>agentgovbench.commit</code> нужен для повторяемости. Запись «мы запускали AgentGovBench» недостаточна: через месяц сценарий, допуск или runner может измениться. В отчёте фиксируйте commit, версию Python, имя runner, версию проверяемой системы и хеш конфигурации политики.</p>
+
+        <p>Перед выполнением посмотрите доступные команды и runner именно в закреплённой версии:</p>
+
+        <pre><code>agentgovbench --help
+agentgovbench run --help
+
+find scenarios -type f \( -name '*.yaml' -o -name '*.yml' \) -print | sort
+find runners -type f -name '*.py' -print | sort</code></pre>
+
+        <p>Проверьте число файлов сценариев:</p>
+
+        <pre><code>find scenarios -type f \( -name '*.yaml' -o -name '*.yml' \) -print \
+  | sort \
+  | tee ../scenario-files.txt \
+  | wc -l</code></pre>
+
+        <p>Для профиля из этой статьи ожидается ровно <strong>48</strong>. Если число другое, не подгоняйте scorecard вручную: вы используете другую версию или считаете вспомогательные YAML-файлы. Сначала изучите структуру каталога и документацию закреплённого commit.</p>
+      </section>
+
+      <section id="baseline">
+        <h2>Шаг 2. Запускаем baseline без контура управления</h2>
+
+        <p>Runner <code>vanilla</code> нужен не для оценки вашей системы, а для проверки установки, загрузки сценариев и работы scorer. Он не требует рабочих секретов.</p>
+
+        <pre><code>mkdir -p results
+
+agentgovbench run \
+  --runner vanilla \
+  --out results/vanilla-local.json</code></pre>
+
+        <p>Не копируйте чужое итоговое число в свой отчёт. Зафиксируйте то, что реально вывела ваша версия CLI, и убедитесь в трёх свойствах:</p>
+
+        <ol>
+          <li>Runner обнаружил все 48 сценариев.</li>
+          <li>В результате нет необработанного исключения установки или импорта.</li>
+          <li>Файл <code>results/vanilla-local.json</code> создан и содержит результаты отдельных сценариев, а не только общий балл.</li>
+        </ol>
+
+        <p>Сохраните диагностическую информацию рядом:</p>
+
+        <pre><code>python --version &gt; results/environment.txt
+python -m pip freeze &gt;&gt; results/environment.txt
+git rev-parse HEAD &gt;&gt; results/environment.txt
+sha256sum results/vanilla-local.json &gt; results/SHA256SUMS</code></pre>
+
+        <p>Baseline нельзя сравнивать с рабочим runner, если между прогонами изменились сценарии. Оба результата должны быть получены на одном commit.</p>
+      </section>
+
+      <section id="runner">
+        <h2>Шаг 3. Подключаем свой контур через runner</h2>
+
+        <p><a class="term-link" href="glossary.html#runner">Runner</a> переводит абстрактные действия сценария в операции вашей системы: создаёт тестовых пользователей, меняет политику, вызывает инструмент, имитирует делегирование, отключает управляющий шлюз, выгружает аудит и очищает состояние.</p>
+
+        <p>Не встраивайте логику прохождения тестов в runner. Он должен адаптировать интерфейс, а не решать, что считать правильным. Ожидаемые результаты уже находятся в сценариях.</p>
+
+        <h3>Контракт адаптера</h3>
+
+        <table>
+          <thead>
+            <tr>
+              <th>Операция сценария</th>
+              <th>Что должен сделать адаптер</th>
+              <th>Что нельзя подменять</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td><code>direct_tool_call</code></td>
+              <td>Провести вызов через тот же enforcement path, что используется агентом</td>
+              <td>Нельзя напрямую вызывать фикстуру в обход политики</td>
+            </tr>
+            <tr>
+              <td><code>delegation</code></td>
+              <td>Создать реальный внутренний контекст дочернего агента</td>
+              <td>Нельзя дописывать цепочку только перед экспортом аудита</td>
+            </tr>
+            <tr>
+              <td><code>policy_change</code></td>
+              <td>Изменить политику через штатный механизм и дождаться применимости</td>
+              <td>Нельзя менять только локальное ожидание runner</td>
+            </tr>
+            <tr>
+              <td><code>parallel_fan_out</code></td>
+              <td>Создать нужное количество логических workers и вызовов</td>
+              <td>Нельзя использовать отдельный лимит для каждого worker</td>
+            </tr>
+            <tr>
+              <td><code>gateway_failure</code></td>
+              <td>Сделать точку решения реально недоступной для тестового трафика</td>
+              <td>Нельзя заранее вернуть желаемый allow или deny</td>
+            </tr>
+            <tr>
+              <td>audit query</td>
+              <td>Прочитать тот же журнал, который доступен расследованию</td>
+              <td>Нельзя строить аудит из памяти самого runner</td>
+            </tr>
+          </tbody>
+        </table>
+
+        <p>Начните с ближайшего адаптера из каталога <code>runners</code> и реализации базового класса, существующей в вашем commit:</p>
+
+        <pre><code>grep -R "class BaseRunner" -n benchmark runners
+grep -R "BaseRunner" -n runners | head -30
+grep -R "def direct_tool_call\|def run_action\|def query_audit" -n runners benchmark</code></pre>
+
+        <p>Названия методов могут отличаться между версиями. Не создавайте интерфейс по памяти: откройте базовый класс и соседний runner, затем реализуйте все обязательные операции.</p>
+
+        <h3>Доверенная и недоверенная часть запроса</h3>
+
+        <p>В адаптере полезно явно разделить две структуры:</p>
+
+        <pre><code>trusted_execution_context = {
+    "actor_uid": authenticated_user.uid,
+    "actor_email": authenticated_user.email,
+    "tenant_id": authenticated_membership.tenant_id,
+    "effective_scopes": computed_scopes,
+    "delegation_chain": verified_chain,
+    "request_id": scenario_request_id
+}
+
+untrusted_tool_input = {
+    "tool": scenario.tool,
+    "arguments": scenario.input
+}</code></pre>
+
+        <p>Если ваша система принимает <code>actor_uid</code> или <code>tenant_id</code> из тела запроса, runner должен передавать их только через предусмотренный тестовый механизм имперсонации. Этот механизм обязан быть отключён в production, ограничен отдельным правом и отражён в аудите.</p>
+
+        <h3>Инструмент-фикстура</h3>
+
+        <p>Фикстура должна записывать только фактически дошедшие до неё вызовы:</p>
+
+        <pre><code>{
+  "received_at": "2026-01-01T00:00:00Z",
+  "request_id": "req-test-001",
+  "tool": "read_file",
+  "arguments": {
+    "path": "/tenant-a/report.txt"
+  }
+}</code></pre>
+
+        <p>Отказ считается настоящим только тогда, когда запрещённого вызова нет в журнале фикстуры. Сообщение агента «я не выполнил действие» не является доказательством.</p>
+      </section>
+
+      <section id="first-category">
+        <h2>Шаг 4. Сначала запускаем одну категорию</h2>
+
+        <p>Полный прогон затрудняет первичную отладку. Начните с передачи идентичности:</p>
+
+        <pre><code>agentgovbench run \
+  --runner your_runner_name \
+  --category identity_propagation \
+  --out results/identity.json</code></pre>
+
+        <p>Замените <code>your_runner_name</code> именем, реально зарегистрированным вашей версией runner. Если CLI его не видит, проверьте механизм регистрации, импорт модуля и вывод <code>agentgovbench run --help</code>.</p>
+
+        <p>После категории идентичности последовательно проверьте четыре чувствительные границы:</p>
+
+        <pre><code>agentgovbench run --runner your_runner_name \
+  --category per_user_policy_enforcement \
+  --out results/per-user-policy.json
+
+agentgovbench run --runner your_runner_name \
+  --category scope_inheritance \
+  --out results/scope-inheritance.json
+
+agentgovbench run --runner your_runner_name \
+  --category delegation_provenance \
+  --out results/delegation.json
+
+agentgovbench run --runner your_runner_name \
+  --category cross_tenant_isolation \
+  --out results/cross-tenant.json</code></pre>
+
+        <p>Не продолжайте, если runner падает на setup или teardown. Такой результат нельзя интерпретировать как провал управления: сначала нужно отделить ошибку адаптера от наблюдаемого поведения системы.</p>
+      </section>
+
+      <section id="full-run">
+        <h2>Шаг 5. Запускаем все 48 сценариев</h2>
+
+        <p>После отладки отдельных категорий очистите тестовое состояние и выполните полный прогон:</p>
+
+        <pre><code>agentgovbench run \
+  --runner your_runner_name \
+  --out results/your-system.json</code></pre>
+
+        <p>Сразу сохраните контрольную сумму:</p>
+
+        <pre><code>sha256sum results/your-system.json &gt;&gt; results/SHA256SUMS</code></pre>
+
+        <p>Проверка количества сценариев должна опираться на формат JSON вашей версии. Сначала изучите структуру без вывода потенциально чувствительных аргументов:</p>
+
+        <pre><code>python - &lt;&lt;'PY'
+import json
+from pathlib import Path
+
+path = Path("results/your-system.json")
+data = json.loads(path.read_text(encoding="utf-8"))
+
+print("root_type:", type(data).__name__)
+if isinstance(data, dict):
+    print("root_keys:", sorted(data.keys()))
+elif isinstance(data, list):
+    print("items:", len(data))
+PY</code></pre>
+
+        <p>Найдите коллекцию результатов сценариев и проверьте:</p>
+
+        <ul>
+          <li>в ней 48 уникальных идентификаторов;</li>
+          <li>каждый идентификатор относится к одной из восьми категорий;</li>
+          <li>в каждой категории находится шесть сценариев;</li>
+          <li>у каждого сценария есть итоговый статус и объяснение проверки;</li>
+          <li>declined и runner error не были автоматически превращены в pass.</li>
+        </ul>
+
+        <p>Если формат результата содержит массив <code>scenarios</code>, пример проверки выглядит так:</p>
+
+        <pre><code>python - &lt;&lt;'PY'
+import json
+from collections import Counter
+from pathlib import Path
+
+data = json.loads(
+    Path("results/your-system.json").read_text(encoding="utf-8")
+)
+rows = data["scenarios"]
+
+ids = [row["id"] for row in rows]
+categories = Counter(row["category"] for row in rows)
+
+assert len(rows) == 48, f"получено {len(rows)}, ожидалось 48"
+assert len(set(ids)) == 48, "обнаружены повторяющиеся scenario id"
+assert set(categories.values()) == {6}, categories
+
+print("scenarios:", len(rows))
+for category, count in sorted(categories.items()):
+    print(f"{category}: {count}")
+PY</code></pre>
+
+        <p>Если ключи отличаются, адаптируйте только чтение результата. Не меняйте критерии сценариев ради прохождения проверки.</p>
+      </section>
+
+      <section id="scorecard">
+        <h2>Шаг 6. Собираем базовый scorecard</h2>
+
+        <p>Базовый scorecard должен показывать не только общий балл. Система с высоким итогом может иметь единственный неприемлемый провал — например, разрешённый доступ к другому клиенту.</p>
+
+        <table>
+          <thead>
+            <tr>
+              <th>Категория</th>
+              <th>Pass</th>
+              <th>Fail</th>
+              <th>Declined</th>
+              <th>Error</th>
+              <th>Решение</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td>Identity propagation</td>
+              <td>из результата</td>
+              <td>из результата</td>
+              <td>из результата</td>
+              <td>из результата</td>
+              <td>разобрать потерю субъекта</td>
+            </tr>
+            <tr>
+              <td>Per-user policy enforcement</td>
+              <td>из результата</td>
+              <td>из результата</td>
+              <td>из результата</td>
+              <td>из результата</td>
+              <td>проверить приоритет персональной политики</td>
+            </tr>
+            <tr>
+              <td>Scope inheritance</td>
+              <td>из результата</td>
+              <td>из результата</td>
+              <td>из результата</td>
+              <td>из результата</td>
+              <td>проверить пересечение прав</td>
+            </tr>
+            <tr>
+              <td>Delegation provenance</td>
+              <td>из результата</td>
+              <td>из результата</td>
+              <td>из результата</td>
+              <td>из результата</td>
+              <td>восстановить цепочку</td>
+            </tr>
+            <tr>
+              <td>Audit completeness</td>
+              <td>из результата</td>
+              <td>из результата</td>
+              <td>из результата</td>
+              <td>из результата</td>
+              <td>добавить обязательные поля и отказы</td>
+            </tr>
+            <tr>
+              <td>Rate-limit cascade</td>
+              <td>из результата</td>
+              <td>из результата</td>
+              <td>из результата</td>
+              <td>из результата</td>
+              <td>связать бюджет с пользователем и клиентом</td>
+            </tr>
+            <tr>
+              <td>Fail-mode discipline</td>
+              <td>из результата</td>
+              <td>из результата</td>
+              <td>из результата</td>
+              <td>из результата</td>
+              <td>зафиксировать режим отказа</td>
+            </tr>
+            <tr>
+              <td>Cross-tenant isolation</td>
+              <td>из результата</td>
+              <td>из результата</td>
+              <td>из результата</td>
+              <td>из результата</td>
+              <td>остановить выпуск при утечке</td>
+            </tr>
+            <tr>
+              <th>Итого</th>
+              <th colspan="4">фактический результат из файла</th>
+              <th>готово / условно / не готово</th>
+            </tr>
+          </tbody>
+        </table>
+
+        <p><strong>Pass</strong> означает, что все утверждения сценария проверены. <strong>Fail</strong> — система наблюдаемо нарушила ожидание. <strong>Declined</strong> означает, что runner честно не поддерживает требуемую возможность или топологию. <strong>Error</strong> — сценарий не дал интерпретируемого результата из-за сбоя setup, выполнения либо teardown.</p>
+
+        <p>Declined не следует считать ни успехом, ни обычным провалом. Например, одноклиентское развёртывание может не уметь воспроизвести часть межклиентских сценариев. В scorecard нужно сохранить статус, причину и владельца решения, а не увеличивать знаменатель удобным способом.</p>
+
+        <h3>Рекомендуемый выпускной барьер</h3>
+
+        <p>Числовой порог выбирает владелец системы, но для критических границ полезно применять отдельный барьер:</p>
+
+        <ul>
+          <li>ни одного подтверждённого обхода пользовательского запрета;</li>
+          <li>ни одного расширения scope при делегировании;</li>
+          <li>ни одного разрешённого межклиентского доступа;</li>
+          <li>ни одного fail-open поведения там, где политика требует fail-closed;</li>
+          <li>для каждого выполненного либо заблокированного инструмента существует пригодная для расследования запись.</li>
+        </ul>
+
+        <p>Такой барьер не является правилом самого AgentGovBench. Это практическая политика выпуска, которую нужно согласовать с вашей моделью угроз.</p>
+      </section>
+
+      <section id="identity-failures">
+        <h2>Разбор провалов: идентификация</h2>
+
+        <p>Признаки потери идентичности:</p>
+
+        <ul>
+          <li>в аудите указан <code>service:worker</code> вместо пользователя;</li>
+          <li>UID есть, но отсутствует зафиксированный читаемый идентификатор;</li>
+          <li>делегированный вызов имеет другую пользовательскую идентичность;</li>
+          <li>запрос без аутентифицированного пользователя выполняется от default account;</li>
+          <li>tenant берётся из тела запроса без проверки членства.</li>
+        </ul>
+
+        <p>Чаще всего причина находится не в модели, а на асинхронной границе. HTTP-обработчик проверил пользователя, но отправил в очередь только текст задачи. Worker создал новый контекст с техническими правами. Второй распространённый дефект — идентичность сохраняется в изменяемом словаре состояния, который дочерний агент может перезаписать.</p>
+
+        <p>Исправление состоит из четырёх частей:</p>
+
+        <ol>
+          <li>Создавать субъект только из проверенного результата аутентификации.</li>
+          <li>Передавать его через очередь в отдельном неизменяемом execution envelope.</li>
+          <li>Проверять целостность конверта перед каждым инструментом.</li>
+          <li>Сохранять снимок UID и читаемого идентификатора в момент решения, а не восстанавливать имя при последующем просмотре журнала.</li>
+        </ol>
+
+        <p>После исправления повторите всю категорию, а не только упавший сценарий. Изменение сериализации контекста может починить делегирование и одновременно сломать прямые вызовы.</p>
+      </section>
+
+      <section id="delegation-failures">
+        <h2>Разбор провалов: делегирование и наследование прав</h2>
+
+        <p><a class="term-link" href="glossary.html#least-privilege">Принцип минимальных полномочий</a> нарушен, если worker способен получить больше прав, чем пользователь, родитель или явно делегированная задача.</p>
+
+        <p>Опасная реализация выглядит так:</p>
+
+        <pre><code>child_scopes = parent_scopes | requested_scopes</code></pre>
+
+        <p>Оператор <code>|</code> объединяет множества. Любое право, записанное в запросе на создание дочернего агента, становится действующим. Безопасная реализация использует пересечение:</p>
+
+        <pre><code>child_scopes = (
+    user_scopes
+    &amp; parent_effective_scopes
+    &amp; requested_scopes
+    &amp; policy_allowed_scopes
+)</code></pre>
+
+        <p>Отдельно проверяйте <a class="term-link" href="glossary.html#delegation-provenance">происхождение делегирования</a>. Запись только последнего worker недостаточна. Для цепочки</p>
+
+        <pre><code>user-alice → orchestrator → specialist → worker → tool</code></pre>
+
+        <p>аудит должен сохранить пользователя и агентов в исходном порядке. Прямой пользовательский вызов, наоборот, должен иметь пустую цепочку, а не вымышленный элемент <code>system</code>.</p>
+
+        <p>Типичные причины провала:</p>
+
+        <ul>
+          <li>проверка политики выполняется только при создании задачи;</li>
+          <li>worker использует долгоживущий токен оркестратора;</li>
+          <li>дочернему агенту передаётся полный набор инструментов родителя;</li>
+          <li>цепочка хранится в тексте промпта, а не в доверенном контексте;</li>
+          <li>при повторной постановке задачи создаётся новая корневая цепочка;</li>
+          <li>background-задача ошибочно помечается как интерактивная.</li>
+        </ul>
+
+        <p>Принудительная проверка должна находиться непосредственно перед выполнением инструмента. Проверка у оркестратора полезна для раннего отказа, но не заменяет контроль на последней границе.</p>
+      </section>
+
+      <section id="isolation-failures">
+        <h2>Разбор провалов: изоляция клиентов</h2>
+
+        <p>Межклиентская утечка не всегда выглядит как чтение чужого файла. Загрязнение политики, аудита, кеша или лимита тоже нарушает изоляцию.</p>
+
+        <p>Проверьте ключи каждого разделяемого хранилища:</p>
+
+        <pre><code>policy_cache[(tenant_id, policy_version, subject_uid)]
+rate_bucket[(tenant_id, subject_uid, agent_tier)]
+audit_partition[tenant_id]
+memory_namespace[(tenant_id, subject_uid, conversation_id)]
+tool_credentials[(tenant_id, connector_id)]</code></pre>
+
+        <p>Кеш вида <code>policy_cache[subject_uid]</code> небезопасен, если идентификаторы пользователей уникальны только внутри клиента. Кеш вида <code>policy_cache[tool_name]</code> ещё опаснее: первое вычисленное решение может применяться ко всем клиентам.</p>
+
+        <p>Tenant нельзя считать доверенным только потому, что он находится в подписанном пользовательском запросе. Система должна проверить связь:</p>
+
+        <pre><code>authenticated_subject
+    → verified_membership
+    → tenant_id
+    → tenant_policy
+    → tenant_credentials
+    → tenant_audit_partition</code></pre>
+
+        <p>Администратор <code>tenant-b</code> остаётся администратором только внутри <code>tenant-b</code>. Роль <code>admin</code> без клиентской области превращается в неявного глобального администратора.</p>
+
+        <p>После провала проведите двустороннюю проверку:</p>
+
+        <ol>
+          <li>Измените политику A и убедитесь, что решение B не изменилось.</li>
+          <li>Создайте события в обоих клиентах и проверьте правильную атрибуцию аудита.</li>
+          <li>Попробуйте подставить идентификатор B в запрос пользователя A.</li>
+          <li>Исчерпайте лимит A и выполните допустимый вызов в B.</li>
+          <li>Повторите тест с администратором B, указывающим A.</li>
+          <li>Очистите кеши и повторите прогон, затем повторите без очистки.</li>
+        </ol>
+      </section>
+
+      <section id="audit-failures">
+        <h2>Разбор провалов: неполный аудит</h2>
+
+        <p><a class="term-link" href="glossary.html#observability">Наблюдаемость</a> и аудит пересекаются, но решают разные задачи. Метрика показывает частоту и задержку. Аудит должен позволить доказательно восстановить конкретное решение.</p>
+
+        <p>Минимальная запись решения содержит:</p>
+
+        <pre><code>{
+  "timestamp": "точное время решения",
+  "request_id": "сквозной идентификатор",
+  "tenant": "tenant-a",
+  "actor_uid": "user-alice",
+  "actor_display": "alice@example.test",
+  "agent_name": "mail-worker",
+  "agent_tier": "background",
+  "delegation_chain": ["orchestrator", "mail-worker"],
+  "tool": "read_email",
+  "decision": "allow",
+  "reason_code": "scope_present",
+  "effective_scopes": ["email.read"],
+  "policy_version": "test-policy-v1",
+  "arguments_hash": "хеш нормализованных аргументов"
+}</code></pre>
+
+        <p>Не записывайте секреты и полное содержимое писем ради полноты. Хеш нормализованных аргументов, классификация данных и ссылка на защищённый объект обычно полезнее сырого payload.</p>
+
+        <p>Нужны две связанные записи:</p>
+
+        <ol>
+          <li><strong>Decision record</strong> создаётся до передачи вызова инструменту и сообщает, почему запрос разрешён или запрещён.</li>
+          <li><strong>Execution receipt</strong> создаётся после попытки выполнения и сообщает, был ли инструмент фактически вызван и чем завершился.</li>
+        </ol>
+
+        <pre><code>request
+  → policy decision: allow
+  → fixture received call
+  → execution receipt: success</code></pre>
+
+        <p>Если процесс упал между решением и выполнением, журнал должен показывать разрешение без подтверждённого результата. Если инструмент выполнился, а запись результата не сохранилась, сверка с фикстурой обнаружит разрыв.</p>
+
+        <p>Типичные дефекты аудита:</p>
+
+        <ul>
+          <li>логируются только успешные действия, а отказы исчезают;</li>
+          <li>timestamp добавляет аналитический pipeline через несколько минут;</li>
+          <li>email пользователя разрешается по текущему каталогу и исчезает после удаления учётной записи;</li>
+          <li>вызов и запись аудита имеют разные request ID;</li>
+          <li>повторная попытка перезаписывает первую;</li>
+          <li>исключение runner ошибочно считается отсутствием нарушения;</li>
+          <li>в журнале указан выбранный моделью инструмент, но нет доказательства фактического вызова.</li>
+        </ul>
+      </section>
+
+      <section id="other-failures">
+        <h2>Что искать в остальных четырёх категориях</h2>
+
+        <h3>Персональная политика</h3>
+
+        <p>Применяйте наиболее специфичное правило. Если пространство разрешает чтение файлов, а политика Carol запрещает его, Carol должна получить отказ, пока пользователь без исключения сохраняет разрешённый доступ. После отзыва права следующая операция должна использовать новую политику, а не устаревшее решение кеша.</p>
+
+        <h3>Каскад лимитов</h3>
+
+        <p>Пять workers не должны получить пять независимых пользовательских бюджетов. Ключ лимита включает клиента, пользователя и класс выполнения. Запрещённые политикой вызовы логируются, но обычно не должны расходовать разрешённый операционный бюджет пользователя.</p>
+
+        <h3>Аварийный режим</h3>
+
+        <p>Fail-closed и fail-open — явные режимы, а не случайное следствие обработки исключения. Если политика требует fail-closed, timeout управляющего шлюза должен остановить инструмент. Если для конкретного низкорискового окружения объявлен fail-open, runner должен проверить именно его, а не изображать поддержку через заранее подготовленный ответ.</p>
+
+        <h3>Наследование scope</h3>
+
+        <p>Проверяйте не только запрет административного инструмента. Дочерний агент должен сохранять допустимую узкую работу. Иначе реализация, запрещающая любые дочерние вызовы, будет безопасной лишь формально и непригодной практически.</p>
+      </section>
+
+      <section id="verification">
+        <h2>Итоговая проверка результата</h2>
+
+        <p>Работа завершена, когда у вас есть не скриншот общего числа, а воспроизводимый пакет доказательств:</p>
+
+        <pre><code>results/
+├── environment.txt
+├── SHA256SUMS
+├── vanilla-local.json
+├── your-system.json
+├── identity.json
+├── per-user-policy.json
+├── scope-inheritance.json
+├── delegation.json
+└── cross-tenant.json
+
+agentgovbench.commit
+scenario-files.txt
+runner/
+└── ваша реализация и конфигурация</code></pre>
+
+        <p>Проверьте пакет по следующему списку:</p>
+
+        <ol>
+          <li>Закреплён commit AgentGovBench.</li>
+          <li>Обнаружены и выполнены все 48 сценариев.</li>
+          <li>Каждая из восьми категорий содержит шесть результатов.</li>
+          <li>Baseline и рабочий runner запускались на одной версии.</li>
+          <li>Scorecard построен из JSON, а не переписан из памяти.</li>
+          <li>Fail, declined и error сохранены отдельно.</li>
+          <li>Для каждого провала есть scenario ID, наблюдаемое поведение и ссылка на артефакт.</li>
+          <li>Запрещённые вызовы сверены с журналом инструмента-фикстуры.</li>
+          <li>Записи аудита не содержат тестовых секретов или содержимого частных данных.</li>
+          <li>Повторный запуск после очистки состояния даёт интерпретируемый результат без скрытого влияния предыдущего прогона.</li>
+        </ol>
+
+        <p>Карточка разбора одного провала может выглядеть так:</p>
+
+        <pre><code>Scenario: identity_propagation.02_...
+Status: FAIL
+Expected: actor_uid=user-alice
+Observed: actor_uid=service:mail-worker
+Side effect: фикстура получила допустимый read_email
+Root cause: execution envelope потерян при постановке в очередь
+Fix owner: platform-runtime
+Fix: сериализация и проверка trusted execution context
+Retest: вся identity_propagation + delegation_provenance
+Evidence: result JSON, audit event, fixture receipt, commit</code></pre>
+
+        <p>Не указывайте предполагаемую первопричину как установленный факт. Сначала свяжите scenario result, событие политики, запись аудита и receipt инструмента одним request ID.</p>
+      </section>
+
+      <section id="failure-cases">
+        <h2>Что обычно ломает сам прогон</h2>
+
+        <h3>Runner обходит реальный enforcement path</h3>
+
+        <p>Тест вызывает служебный API напрямую, а агенты используют другой proxy или hook. Полученный scorecard описывает тестовый путь, а не рабочую архитектуру. Сравните сетевой маршрут и точки проверки в обоих режимах.</p>
+
+        <h3>Состояние течёт между сценариями</h3>
+
+        <p>Отозванное право, заполненный rate bucket или запись прошлого клиента остаются после teardown. Добавьте уникальный run ID, явную очистку и проверку пустого начального состояния.</p>
+
+        <h3>Аудит появляется с задержкой</h3>
+
+        <p>Runner запрашивает журнал сразу после действия и получает пустой результат. Используйте ограниченное ожидание с повторным чтением и фиксированным timeout. Не ждите бесконечно и не считайте timeout успехом.</p>
+
+        <h3>Тестовый инструмент выполняет настоящее действие</h3>
+
+        <p>Название <code>send_email</code> подключено к рабочему коннектору. Подмените исполнителя на fixture на уровне маршрутизации, а не инструкцией в промпте. Модель и сценарий не должны иметь возможность переключить его обратно.</p>
+
+        <h3>Declined скрывает неудобный провал</h3>
+
+        <p>Declined допустим, когда топология действительно недоступна и причина документирована. Если система поддерживает два клиента, но runner объявляет межклиентские сценарии неподдерживаемыми, scorecard вводит в заблуждение.</p>
+
+        <h3>После исправления запускается один удобный сценарий</h3>
+
+        <p>Изменение идентичности затрагивает аудит, scope, делегирование и лимиты. Сначала повторите категорию, затем весь набор из 48 сценариев.</p>
+      </section>
+
+      <section id="limitations">
+        <h2>Ограничения AgentGovBench</h2>
+
+        <p>Scorecard не является сертификатом безопасности и не заменяет модель угроз. У бенчмарка есть важные границы:</p>
+
+        <ul>
+          <li>Детерминированные вызовы не проверяют, сопротивляется ли модель <a class="term-link" href="glossary.html#prompt-injection">prompt injection</a> и правильно ли выбирает инструмент.</li>
+          <li>Набор не доказывает безопасность операционной системы, контейнера, сети, секрет-хранилища и самого инструмента.</li>
+          <li>Разрешённое политикой, но семантически вредное действие может остаться незамеченным.</li>
+          <li>Шесть сценариев на категорию не покрывают все варианты кеширования, гонок и восстановления после аварии.</li>
+          <li>Runner может дать ложную уверенность, если его путь отличается от production.</li>
+          <li>Результаты разных commit нельзя напрямую сравнивать без анализа изменений сценариев и scorer.</li>
+          <li>Бенчмарк поддерживается командой, связанной с одним из продуктов управления; сценарии и критерии нужно независимо читать, а не принимать итоговый балл на доверии.</li>
+          <li>Соответствие техническим сценариям не означает автоматического соответствия внутренним, отраслевым или правовым требованиям.</li>
+        </ul>
+
+        <p>Практический контур проверки должен сочетать AgentGovBench с тестами prompt injection, проверкой инструментов, ревью политик, тестами изоляции инфраструктуры, нагрузочными сценариями, восстановлением после сбоев и ручным расследованием нескольких трасс.</p>
+      </section>
+
+      <section id="next">
+        <h2>Что делать после первого scorecard</h2>
+
+        <ol>
+          <li>Заморозьте исходный JSON и контрольную сумму.</li>
+          <li>Классифицируйте провалы по границе: auth, очередь, policy engine, tool proxy, audit pipeline или runner.</li>
+          <li>Сначала исправляйте разрешённые обходы, затем неполные доказательства, после этого чрезмерные запреты.</li>
+          <li>Добавьте найденные production-варианты в собственный регрессионный набор рядом с AgentGovBench.</li>
+          <li>Запускайте 48 сценариев при изменении identity middleware, политики, runner, оркестрации, кеша, аудита и подключения инструментов.</li>
+          <li>Храните историю scorecard вместе с commit системы и конфигурацией политики.</li>
+        </ol>
+
+        <p>Главный результат этой работы — не максимальное число в таблице. Это карта конкретных границ, где пользователь остаётся владельцем действия, дочерний агент не расширяет полномочия, клиентские пространства не смешиваются, а любое решение можно восстановить по журналу.</p>
+      </section>
+
+      <p class="back"><a class="text-link" href="guides.html">← Все практические гайды</a> · <a class="text-link" href="glossary.html">Лабораторный словарь →</a></p>
+    </article>
+  </main>
+
+  <footer>
+    <span>Agent Lab Journal</span>
+    <span>Real experiments. Verifiable conclusions.</span>
+  </footer>
+</body>
+</html>

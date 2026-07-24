@@ -1,0 +1,1041 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta name="description" content="Test an AI agent governance boundary with AgentGovBench: run 48 repeatable scenarios, build a baseline scorecard, and investigate failures in identity, delegation, isolation, policy enforcement, and audit completeness.">
+  <link rel="canonical" href="https://agentlabjournal.online/en/agent-governance-benchmark.html">
+  <link rel="stylesheet" href="../style.css">
+  <link rel="stylesheet" href="../reading.css">
+  <title>Testing an AI Agent Governance Boundary with AgentGovBench | Agent Lab Journal</title>
+  <script type="application/ld+json">
+  {
+    "@context": "https://schema.org",
+    "@type": "Article",
+    "headline": "Testing an AI Agent Governance Boundary with AgentGovBench",
+    "description": "Test an AI agent governance boundary with AgentGovBench: run 48 repeatable scenarios, build a baseline scorecard, and investigate failures in identity, delegation, isolation, policy enforcement, and audit completeness.",
+    "author": {
+      "@type": "Organization",
+      "name": "Agent Lab Journal"
+    },
+    "publisher": {
+      "@type": "Organization",
+      "name": "Agent Lab Journal",
+      "url": "https://agentlabjournal.online/"
+    },
+    "mainEntityOfPage": {
+      "@type": "WebPage",
+      "@id": "https://agentlabjournal.online/en/agent-governance-benchmark.html"
+    },
+    "inLanguage": "en"
+  }
+  </script>
+</head>
+<body>
+  <header class="site-header">
+    <a class="brand" href="./">
+      <span class="brand-mark">AL</span>
+      <span>Agent Lab Journal</span>
+    </a>
+    <nav aria-label="Primary navigation">
+      <a href="guides.html">Guides</a>
+      <a href="glossary.html">Glossary</a>
+    </nav>
+  </header>
+
+  <main class="article">
+    <article>
+      <header>
+        <p class="eyebrow">ADVANCED PRACTICE · GOVERNANCE AND SECURITY</p>
+        <h1>Testing an <a class="term-link" href="glossary.html#ai-agent">AI agent</a> <a class="term-link" href="glossary.html#governance-layer">governance boundary</a> with <a class="term-link" href="glossary.html#agentgovbench">AgentGovBench</a></h1>
+        <div class="reading-meta" aria-label="Article information">
+          <span>Level: advanced</span>
+          <span>Reading and lab time: 75 minutes</span>
+          <span>Outcome: 48 scenarios and a baseline <a href="glossary.html#scorecard">scorecard</a></span>
+        </div>
+        <p class="lead"><strong>A model can produce the correct answer while the surrounding agent system commits a serious control failure.</strong> The request may lose the authenticated <a class="term-link" href="glossary.html#user-identity">user identity</a> on its way to a worker, a <a class="term-link" href="glossary.html#subagent">subagent</a> may acquire permissions its parent never had, one tenant may reuse another tenant’s policy decision, and the <a class="term-link" href="glossary.html#audit-log">audit log</a> may be too incomplete to reconstruct what happened. AgentGovBench targets these system-level failures rather than the quality of the model’s prose.</p>
+      </header>
+
+      <aside class="note">
+        <p><strong>What you will finish with.</strong> A pinned AgentGovBench installation, a validated inventory of 48 scenarios, an installation baseline, a run through your real enforcement path, a category-level scorecard, and an evidence-based failure review covering identity, delegation, scope inheritance, tenant isolation, rate limits, failure modes, and audit completeness.</p>
+      </aside>
+
+      <section id="why-model-tests-miss-the-problem">
+        <h2>Why ordinary model tests miss the problem</h2>
+
+        <p>A conventional <a class="term-link" href="glossary.html#benchmark">benchmark</a> sends prompts to a model and evaluates the resulting text, classification, tool choice, or structured output. That is useful for measuring reasoning and instruction following, but it does not prove that the selected operation was authorized correctly.</p>
+
+        <p>Consider an apparently successful request:</p>
+
+        <pre><code>User → orchestrator → mail worker → read_email → concise answer
+                                      └──────────→ audit pipeline</code></pre>
+
+        <p>The final answer can be accurate even when all of the following happened:</p>
+
+        <ol>
+          <li>The worker invoked the tool under a shared service account instead of the authenticated user.</li>
+          <li>A user-specific prohibition was checked by the orchestrator but not by the worker.</li>
+          <li>The tenant identifier came from model-controlled arguments rather than verified membership.</li>
+          <li>The log recorded “tool completed” without the user, policy version, decision reason, or delegation chain.</li>
+        </ol>
+
+        <p>A response-quality test marks the task as successful. A governance test asks different questions:</p>
+
+        <ul>
+          <li>Who was the effective subject at the tool boundary?</li>
+          <li>Which tenant did the subject belong to?</li>
+          <li>Which permissions were effective at that exact moment?</li>
+          <li>Which component delegated the operation to the executor?</li>
+          <li>Which rule allowed or rejected the operation?</li>
+          <li>Did the tool actually receive the call?</li>
+          <li>Is there enough durable evidence to investigate the decision later?</li>
+        </ul>
+
+        <blockquote>The useful unit of governance testing is not the model’s answer. It is a transition across an authority boundary.</blockquote>
+
+        <p>AgentGovBench should therefore run deterministic tool sequences wherever possible. Keeping the <a class="term-link" href="glossary.html#llm">large language model</a> out of the critical test path separates authorization defects from generation variance. Model-security tests remain necessary, but they answer a different question.</p>
+      </section>
+
+      <section id="coverage">
+        <h2>The 48-scenario coverage model</h2>
+
+        <p>The target profile in this lab contains eight categories with six scenarios in each category. Before interpreting a result, verify that your pinned AgentGovBench revision actually exposes the expected profile. Do not silently add, remove, or rename scenarios to make the count fit.</p>
+
+        <table>
+          <thead>
+            <tr>
+              <th>Category</th>
+              <th>Count</th>
+              <th>Primary assertion</th>
+              <th>Typical failure</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td><code>identity_propagation</code></td>
+              <td>6</td>
+              <td>The verified user survives direct, queued, retried, and delegated calls</td>
+              <td>An action is attributed to a worker or service account</td>
+            </tr>
+            <tr>
+              <td><code>per_user_policy_enforcement</code></td>
+              <td>6</td>
+              <td>User-specific grants, denials, and revocations are applied at execution time</td>
+              <td>A broad tenant rule overrides a personal prohibition</td>
+            </tr>
+            <tr>
+              <td><code>scope_inheritance</code></td>
+              <td>6</td>
+              <td>Effective <a class="term-link" href="glossary.html#scope">scope</a> can stay equal or narrow, but cannot expand</td>
+              <td>A child obtains an administrative capability requested in task data</td>
+            </tr>
+            <tr>
+              <td><code>delegation_provenance</code></td>
+              <td>6</td>
+              <td>The complete <a class="term-link" href="glossary.html#delegation-chain">delegation chain</a> remains ordered and verifiable</td>
+              <td>The audit event contains only the final worker</td>
+            </tr>
+            <tr>
+              <td><code>audit_completeness</code></td>
+              <td>6</td>
+              <td>Allowed, denied, failed, and retried operations leave usable evidence</td>
+              <td>The log proves activity but not the policy decision</td>
+            </tr>
+            <tr>
+              <td><code>rate_limit_cascade</code></td>
+              <td>6</td>
+              <td><a class="term-link" href="glossary.html#rate-limit">Rate limits</a> follow the user and tenant across workers</td>
+              <td>Fan-out creates a fresh budget for every child</td>
+            </tr>
+            <tr>
+              <td><code>fail_mode_discipline</code></td>
+              <td>6</td>
+              <td>Declared <a class="term-link" href="glossary.html#fail-open">fail-open</a> and <a class="term-link" href="glossary.html#fail-closed">fail-closed</a> behavior is enforced predictably</td>
+              <td>A policy-service timeout accidentally disables protection</td>
+            </tr>
+            <tr>
+              <td><code>cross_tenant_isolation</code></td>
+              <td>6</td>
+              <td><a class="term-link" href="glossary.html#tenant-isolation">Tenant isolation</a> covers data, policy, credentials, limits, cache, and audit</td>
+              <td>A decision or credential from tenant A is reused in tenant B</td>
+            </tr>
+          </tbody>
+        </table>
+
+        <p>Each category needs both positive and negative controls. A gateway that rejects every request may block every malicious case, but it is not a functioning governance system. The suite must prove that narrow authorized work still succeeds while unauthorized work is stopped.</p>
+
+        <p>Six scenarios per category should cover more than six textual variations of one request. A useful category includes direct execution, delegation, asynchronous execution, state change, an allowed control case, and an evidence check. Treat the source scenario definitions in your pinned revision as authoritative for the run.</p>
+      </section>
+
+      <section id="concrete-case">
+        <h2>Concrete case: Alice disappears at the queue boundary</h2>
+
+        <p>Use a synthetic environment with two tenants. Alice belongs to <code>tenant-a</code>. She has <code>email.read</code> but does not have <code>admin.grant_permission</code>. An orchestrator receives her request, creates a mail worker, and sends the task through a queue.</p>
+
+        <p>The unsafe queue message carries only model-visible task data:</p>
+
+        <pre><code>{
+  "task": "Read the message and prepare a short summary",
+  "mailbox": "alice@example.test",
+  "agent_name": "mail-worker"
+}</code></pre>
+
+        <p>The worker then reconstructs authority from local defaults:</p>
+
+        <pre><code>actor_uid = "service:mail-worker"
+tenant_id = payload.get("tenant_id", DEFAULT_TENANT)
+effective_scopes = SERVICE_ACCOUNT_SCOPES</code></pre>
+
+        <p>This design has lost the authenticated user, verified tenant membership, original scope, and delegation provenance. If the <a class="term-link" href="glossary.html#policy-engine">policy engine</a> evaluates the service account, Alice’s personal denial no longer matters. The service token can also expose capabilities that the user never possessed.</p>
+
+        <p>A safer execution envelope separates trusted authority from untrusted task input:</p>
+
+        <pre><code>{
+  "execution": {
+    "request_id": "run-local-001-request-001",
+    "tenant_id": "tenant-a",
+    "subject": {
+      "uid": "user-alice",
+      "display": "alice@example.test"
+    },
+    "delegation": [
+      {
+        "from": "orchestrator",
+        "to": "mail-worker",
+        "scopes": ["email.read"]
+      }
+    ],
+    "effective_scopes": ["email.read"],
+    "policy_version": "lab-policy-v1"
+  },
+  "input": {
+    "mailbox": "alice@example.test"
+  }
+}</code></pre>
+
+        <p>The values are synthetic. They are not credentials and must not be replaced with production accounts during this exercise.</p>
+
+        <p>The <code>input</code> object is untrusted. It may select a mailbox or document within an already authorized boundary, but it cannot replace <code>subject</code>, <code>tenant_id</code>, <code>delegation</code>, or <code>effective_scopes</code>. The execution envelope must originate at an authenticated boundary and be integrity-protected across the queue.</p>
+
+        <p>Effective permissions for the child are calculated by intersection:</p>
+
+        <pre><code>effective_child_scopes =
+    authenticated_user_scopes
+    ∩ parent_effective_scopes
+    ∩ delegated_task_scopes
+    ∩ tool_policy_scopes</code></pre>
+
+        <p>They must never be calculated by union:</p>
+
+        <pre><code># Unsafe: requested data can add authority
+child_scopes = parent_scopes | requested_scopes</code></pre>
+
+        <p>This is an application of <a class="term-link" href="glossary.html#least-privilege">least privilege</a>: a delegation may narrow authority for a task, but it cannot manufacture a permission that is absent from any required layer.</p>
+      </section>
+
+      <section id="prepare">
+        <h2>1. Prepare an isolated test environment</h2>
+
+        <p>Do not point the initial run at production mailboxes, file stores, payment APIs, customer records, or live policy administration. Use tool fixtures that record requests but cannot perform external effects.</p>
+
+        <p>The minimum laboratory needs:</p>
+
+        <ul>
+          <li>a supported Python version for your pinned AgentGovBench revision;</li>
+          <li>an isolated virtual environment;</li>
+          <li>two synthetic tenants, such as <code>tenant-a</code> and <code>tenant-b</code>;</li>
+          <li>at least three synthetic users with deliberately different permissions;</li>
+          <li>safe fixtures for read, write, outbound, and administrative tool classes;</li>
+          <li>a way to reset policies, caches, limits, queues, and logs between scenarios;</li>
+          <li>an audit export independent of the benchmark runner’s in-memory state.</li>
+        </ul>
+
+        <p>Obtain AgentGovBench from the source approved by your organization, check out the revision you intend to evaluate, and record that exact revision. Starting from an already cloned repository:</p>
+
+        <pre><code>cd agentgovbench
+
+git status --short
+git rev-parse HEAD
+git rev-parse HEAD &gt; ../agentgovbench.commit
+
+python3 -m venv .venv
+. .venv/bin/activate
+python -m pip install --upgrade pip
+python -m pip install -e .</code></pre>
+
+        <p>Do not continue from a dirty checkout unless the local changes are intentional and archived with the results. A commit hash alone cannot reproduce uncommitted modifications.</p>
+
+        <p>Inspect the command-line interface and repository structure instead of assuming that a command from another revision still applies:</p>
+
+        <pre><code>agentgovbench --help
+agentgovbench run --help
+
+find . -type f \( -name '*.yaml' -o -name '*.yml' -o -name '*.json' \) \
+  | sort \
+  | sed -n '1,160p'
+
+find . -type f -iname '*runner*.py' | sort</code></pre>
+
+        <p>Locate the scenario directory for the selected profile and count scenario definitions using the layout of your revision. If each scenario is stored in a separate YAML file, a check may look like this:</p>
+
+        <pre><code>find scenarios -type f \( -name '*.yaml' -o -name '*.yml' \) \
+  | sort \
+  | tee ../scenario-files.txt \
+  | wc -l</code></pre>
+
+        <p>The target for this article is exactly <strong>48 runnable scenarios</strong>. If the command prints another number, determine whether you selected another profile, counted shared fixtures, or checked out a different revision. Do not alter the scorecard denominator manually.</p>
+      </section>
+
+      <section id="fixtures">
+        <h2>2. Build fixtures that can prove side effects</h2>
+
+        <p>A denial is not proven by the agent saying “I did not perform the action.” The fixture behind the policy boundary must show whether the request actually arrived.</p>
+
+        <p>A minimal fixture receipt can contain:</p>
+
+        <pre><code>{
+  "received_at": "2026-01-01T00:00:00Z",
+  "run_id": "run-local-001",
+  "request_id": "run-local-001-request-001",
+  "tenant_id": "tenant-a",
+  "tool": "read_email",
+  "arguments_hash": "sha256-of-normalized-arguments"
+}</code></pre>
+
+        <p>The timestamp and identifiers above are examples of shape, not claimed benchmark output. Generate unique values during your run.</p>
+
+        <p>The fixture should enforce four properties:</p>
+
+        <ol>
+          <li>It never connects to a production service.</li>
+          <li>It records only calls that actually reached the execution boundary.</li>
+          <li>It does not trust a model-supplied tenant or actor field.</li>
+          <li>It can be reset and queried by <code>run_id</code> and <code>request_id</code>.</li>
+        </ol>
+
+        <p>Keep policy decisions and fixture receipts separate. A policy record proves what the control layer decided. A fixture receipt proves whether execution was attempted after that decision. Comparing the two reveals gaps such as “denied but executed” or “allowed but never attempted.”</p>
+      </section>
+
+      <section id="baseline">
+        <h2>3. Run an installation baseline</h2>
+
+        <p>Use the no-governance or reference runner shipped by your pinned revision, if one exists. Its purpose is to verify scenario loading, runner startup, result serialization, and scoring—not to represent the security of your system.</p>
+
+        <p>Confirm the actual runner name with <code>agentgovbench run --help</code>. A representative invocation is:</p>
+
+        <pre><code>mkdir -p results
+
+agentgovbench run \
+  --runner vanilla \
+  --out results/vanilla-local.json</code></pre>
+
+        <p>If your revision uses different flags, substitute only the documented CLI syntax. Do not rename a custom runner to <code>vanilla</code> merely to make this command work.</p>
+
+        <p>Verify the baseline operationally:</p>
+
+        <ol>
+          <li>All 48 scenarios were discovered.</li>
+          <li>No installation, import, setup, or serialization exception was hidden.</li>
+          <li>The output contains individual scenario records rather than only one total.</li>
+          <li>Each scenario has a stable identifier, category, and status.</li>
+          <li>The baseline and future system run will use the same benchmark revision.</li>
+        </ol>
+
+        <p>Save the environment beside the output:</p>
+
+        <pre><code>python --version &gt; results/environment.txt
+python -m pip freeze &gt;&gt; results/environment.txt
+git rev-parse HEAD &gt;&gt; results/environment.txt
+
+sha256sum results/vanilla-local.json \
+  &gt; results/SHA256SUMS</code></pre>
+
+        <p>Do not copy a score from this article or another installation. The valid baseline is the result produced by your pinned code in your environment.</p>
+      </section>
+
+      <section id="runner">
+        <h2>4. Connect the real control path through a runner</h2>
+
+        <p>A <a class="term-link" href="glossary.html#runner">runner</a> translates abstract scenario actions into operations against your system. It creates test identities, applies policy, starts delegation, invokes tools, simulates control-plane failure, queries audit evidence, and resets state.</p>
+
+        <p>The runner must adapt interfaces without implementing the expected answer. If it returns “deny” because the scenario name contains <code>deny</code>, you are testing the adapter rather than the system.</p>
+
+        <table>
+          <thead>
+            <tr>
+              <th>Scenario operation</th>
+              <th>Required runner behavior</th>
+              <th>Invalid shortcut</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td>Direct tool call</td>
+              <td>Use the same enforcement path as the deployed agent</td>
+              <td>Calling the fixture directly</td>
+            </tr>
+            <tr>
+              <td>Delegation</td>
+              <td>Create a real child execution context</td>
+              <td>Appending a fake chain only during audit export</td>
+            </tr>
+            <tr>
+              <td>Policy change</td>
+              <td>Use the normal policy mechanism and wait for bounded propagation</td>
+              <td>Changing only the runner’s expected value</td>
+            </tr>
+            <tr>
+              <td>Parallel fan-out</td>
+              <td>Create the requested logical children and concurrent calls</td>
+              <td>Giving every child a separate user budget</td>
+            </tr>
+            <tr>
+              <td>Gateway failure</td>
+              <td>Make the decision service unavailable to test traffic</td>
+              <td>Returning a preselected allow or deny from the runner</td>
+            </tr>
+            <tr>
+              <td>Audit query</td>
+              <td>Read the durable investigation log</td>
+              <td>Constructing evidence from runner memory</td>
+            </tr>
+          </tbody>
+        </table>
+
+        <p>Find the runner contract in your checkout:</p>
+
+        <pre><code>grep -R "class BaseRunner" -n . --exclude-dir=.venv
+grep -R "BaseRunner" -n . --exclude-dir=.venv | head -40
+grep -R "def .*audit\\|def .*tool\\|def .*delegate" -n . \
+  --exclude-dir=.venv \
+  | head -80</code></pre>
+
+        <p>Method names differ across revisions. Read the base class and the nearest included adapter before implementing yours.</p>
+
+        <h3>Separate trusted context from model input</h3>
+
+        <pre><code>trusted_execution_context = {
+    "run_id": scenario_run_id,
+    "request_id": scenario_request_id,
+    "actor_uid": authenticated_user.uid,
+    "actor_display": authenticated_user.display,
+    "tenant_id": verified_membership.tenant_id,
+    "effective_scopes": computed_scopes,
+    "delegation_chain": verified_chain,
+    "policy_version": active_policy.version
+}
+
+untrusted_tool_request = {
+    "tool": scenario.tool,
+    "arguments": scenario.arguments
+}</code></pre>
+
+        <p>A test impersonation mechanism may be necessary to create synthetic subjects. Keep it isolated from production, protect it with a separate administrative capability, and record its use in the audit trail. Never accept an arbitrary <code>actor_uid</code> from an ordinary tool request.</p>
+
+        <h3>Reset state explicitly</h3>
+
+        <p>Before every scenario, reset or namespace:</p>
+
+        <ul>
+          <li>user and tenant policy;</li>
+          <li>policy-decision caches;</li>
+          <li>rate-limit buckets;</li>
+          <li>queued jobs and retry counters;</li>
+          <li>delegation records;</li>
+          <li>fixture receipts;</li>
+          <li>audit-query cursors.</li>
+        </ul>
+
+        <p>Prefer unique run and scenario identifiers over broad deletion. The runner should also assert that the scenario starts from the intended empty or seeded state.</p>
+      </section>
+
+      <section id="category-run">
+        <h2>5. Debug one category before the full run</h2>
+
+        <p>Begin with identity propagation because failures there contaminate policy, delegation, limits, isolation, and audit attribution.</p>
+
+        <pre><code>agentgovbench run \
+  --runner your_runner_name \
+  --category identity_propagation \
+  --out results/identity.json</code></pre>
+
+        <p>Replace <code>your_runner_name</code> with the registered runner shown by your CLI. Then exercise the other high-impact boundaries:</p>
+
+        <pre><code>agentgovbench run --runner your_runner_name \
+  --category per_user_policy_enforcement \
+  --out results/per-user-policy.json
+
+agentgovbench run --runner your_runner_name \
+  --category scope_inheritance \
+  --out results/scope-inheritance.json
+
+agentgovbench run --runner your_runner_name \
+  --category delegation_provenance \
+  --out results/delegation.json
+
+agentgovbench run --runner your_runner_name \
+  --category cross_tenant_isolation \
+  --out results/cross-tenant.json</code></pre>
+
+        <p>Stop interpretation if setup or teardown fails. A runner error is not evidence that the governance boundary passed or failed. Repair the adapter, reset the environment, and rerun the entire affected category.</p>
+      </section>
+
+      <section id="full-run">
+        <h2>6. Execute all 48 scenarios</h2>
+
+        <p>After category-level debugging, reset all test state and run the complete profile:</p>
+
+        <pre><code>agentgovbench run \
+  --runner your_runner_name \
+  --out results/your-system.json
+
+sha256sum results/your-system.json \
+  &gt;&gt; results/SHA256SUMS</code></pre>
+
+        <p>Inspect the result structure without printing potentially sensitive arguments:</p>
+
+        <pre><code>python - &lt;&lt;'PY'
+import json
+from pathlib import Path
+
+path = Path("results/your-system.json")
+data = json.loads(path.read_text(encoding="utf-8"))
+
+print("root_type:", type(data).__name__)
+if isinstance(data, dict):
+    print("root_keys:", sorted(data))
+elif isinstance(data, list):
+    print("items:", len(data))
+PY</code></pre>
+
+        <p>Locate the collection that holds individual results. Verify:</p>
+
+        <ul>
+          <li>48 records exist;</li>
+          <li>all scenario identifiers are unique;</li>
+          <li>eight expected categories exist;</li>
+          <li>each category contains six records;</li>
+          <li>every record has an interpretable status;</li>
+          <li><code>declined</code> and <code>error</code> were not converted into <code>pass</code>.</li>
+        </ul>
+
+        <p>If your result uses a top-level <code>scenarios</code> array, this validation is suitable:</p>
+
+        <pre><code>python - &lt;&lt;'PY'
+import json
+from collections import Counter
+from pathlib import Path
+
+data = json.loads(
+    Path("results/your-system.json").read_text(encoding="utf-8")
+)
+rows = data["scenarios"]
+
+ids = [row["id"] for row in rows]
+counts = Counter(row["category"] for row in rows)
+
+assert len(rows) == 48, f"received {len(rows)}, expected 48"
+assert len(set(ids)) == 48, "duplicate scenario identifiers"
+assert len(counts) == 8, counts
+assert set(counts.values()) == {6}, counts
+
+print("scenarios:", len(rows))
+for category, count in sorted(counts.items()):
+    print(f"{category}: {count}")
+PY</code></pre>
+
+        <p>If your pinned revision uses different keys, adapt only the extraction layer. Do not change scenario statuses or expected outcomes.</p>
+      </section>
+
+      <section id="scorecard">
+        <h2>7. Build a baseline scorecard</h2>
+
+        <p>An overall percentage is insufficient. One allowed cross-tenant operation may be unacceptable even when the other 47 scenarios pass. Preserve category counts and operational status separately.</p>
+
+        <table>
+          <thead>
+            <tr>
+              <th>Category</th>
+              <th>Pass</th>
+              <th>Fail</th>
+              <th>Declined</th>
+              <th>Error</th>
+              <th>Required review</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td>Identity propagation</td>
+              <td>from output</td>
+              <td>from output</td>
+              <td>from output</td>
+              <td>from output</td>
+              <td>Subject loss and substitution</td>
+            </tr>
+            <tr>
+              <td>Per-user policy enforcement</td>
+              <td>from output</td>
+              <td>from output</td>
+              <td>from output</td>
+              <td>from output</td>
+              <td>Rule specificity and revocation</td>
+            </tr>
+            <tr>
+              <td>Scope inheritance</td>
+              <td>from output</td>
+              <td>from output</td>
+              <td>from output</td>
+              <td>from output</td>
+              <td>Permission intersection</td>
+            </tr>
+            <tr>
+              <td>Delegation provenance</td>
+              <td>from output</td>
+              <td>from output</td>
+              <td>from output</td>
+              <td>from output</td>
+              <td>Chain integrity</td>
+            </tr>
+            <tr>
+              <td>Audit completeness</td>
+              <td>from output</td>
+              <td>from output</td>
+              <td>from output</td>
+              <td>from output</td>
+              <td>Decision and execution evidence</td>
+            </tr>
+            <tr>
+              <td>Rate-limit cascade</td>
+              <td>from output</td>
+              <td>from output</td>
+              <td>from output</td>
+              <td>from output</td>
+              <td>User and tenant budget keys</td>
+            </tr>
+            <tr>
+              <td>Fail-mode discipline</td>
+              <td>from output</td>
+              <td>from output</td>
+              <td>from output</td>
+              <td>from output</td>
+              <td>Timeout and dependency behavior</td>
+            </tr>
+            <tr>
+              <td>Cross-tenant isolation</td>
+              <td>from output</td>
+              <td>from output</td>
+              <td>from output</td>
+              <td>from output</td>
+              <td>Release-blocking isolation defects</td>
+            </tr>
+            <tr>
+              <th>Total</th>
+              <th colspan="4">calculated from the result file</th>
+              <th>Ready / conditional / blocked</th>
+            </tr>
+          </tbody>
+        </table>
+
+        <p>Use these status meanings consistently:</p>
+
+        <dl>
+          <dt><strong>Pass</strong></dt>
+          <dd>All required assertions were observed and the evidence is available.</dd>
+
+          <dt><strong>Fail</strong></dt>
+          <dd>The system produced observable behavior that contradicted an assertion.</dd>
+
+          <dt><strong>Declined</strong></dt>
+          <dd>The runner explicitly could not reproduce a required capability or topology.</dd>
+
+          <dt><strong>Error</strong></dt>
+          <dd>Setup, execution, collection, or teardown failed before an interpretable result existed.</dd>
+        </dl>
+
+        <p>Do not include declined or error scenarios in the pass count. Also do not quietly remove them from reporting. Preserve the reason, affected capability, owner, and proposed resolution.</p>
+
+        <p>A generic scorecard extractor for the example result shape is:</p>
+
+        <pre><code>python - &lt;&lt;'PY'
+import json
+from collections import defaultdict
+from pathlib import Path
+
+rows = json.loads(
+    Path("results/your-system.json").read_text(encoding="utf-8")
+)["scenarios"]
+
+statuses = ("pass", "fail", "declined", "error")
+card = defaultdict(lambda: {status: 0 for status in statuses})
+
+for row in rows:
+    category = row["category"]
+    status = row["status"].lower()
+    if status not in statuses:
+        raise ValueError(
+            f"unknown status {status!r} in scenario {row['id']}"
+        )
+    card[category][status] += 1
+
+print("category,pass,fail,declined,error")
+for category in sorted(card):
+    counts = card[category]
+    print(
+        category,
+        counts["pass"],
+        counts["fail"],
+        counts["declined"],
+        counts["error"],
+        sep=","
+    )
+PY</code></pre>
+
+        <h3>A practical release barrier</h3>
+
+        <p>Your system owner must choose the formal release policy. For high-impact boundaries, a useful starting barrier is:</p>
+
+        <ul>
+          <li>no confirmed bypass of a user-specific prohibition;</li>
+          <li>no scope expansion during delegation;</li>
+          <li>no allowed cross-tenant access or credential reuse;</li>
+          <li>no fail-open behavior where policy requires fail-closed;</li>
+          <li>an investigation-grade record for every allowed and denied tool request;</li>
+          <li>no unexplained runner errors in a category used for release approval.</li>
+        </ul>
+
+        <p>This barrier is an operational recommendation, not a claimed default rule of AgentGovBench. Align it with your own threat model and risk ownership.</p>
+      </section>
+
+      <section id="identity-failures">
+        <h2>Failure analysis: identity propagation</h2>
+
+        <p>Common signs of identity loss include:</p>
+
+        <ul>
+          <li><code>service:worker</code> appears where the authenticated user should appear;</li>
+          <li>a UID exists but the display identity was reconstructed later from a mutable directory;</li>
+          <li>the subject changes after delegation or retry;</li>
+          <li>an unauthenticated request falls back to a default account;</li>
+          <li>the tenant is accepted from request data without checking membership;</li>
+          <li>the decision event and execution receipt identify different subjects.</li>
+        </ul>
+
+        <p>The root cause is usually outside the model. An HTTP handler authenticates the user, then places only task text on a queue. The worker creates a fresh context using its technical credentials. Another frequent defect stores identity in mutable agent state that a tool response or child process can overwrite.</p>
+
+        <p>Repair the boundary in four parts:</p>
+
+        <ol>
+          <li>Create the subject only from the verified authentication result.</li>
+          <li>Carry it through queues and retries in a distinct execution envelope.</li>
+          <li>Validate envelope integrity immediately before each tool invocation.</li>
+          <li>Record an immutable snapshot of the subject at decision time.</li>
+        </ol>
+
+        <p>After the change, rerun the entire identity category and the delegation category. A serialization fix can repair queued calls while accidentally breaking direct or retried calls.</p>
+      </section>
+
+      <section id="delegation-failures">
+        <h2>Failure analysis: delegation and scope inheritance</h2>
+
+        <p>A child must not obtain more authority than the authenticated user, the parent’s effective authority, the explicit delegation, or the tool policy allows.</p>
+
+        <p>Check where the effective set is computed and whether every required set participates:</p>
+
+        <pre><code>child_effective_scopes = (
+    user_scopes
+    &amp; parent_effective_scopes
+    &amp; delegated_scopes
+    &amp; policy_allowed_scopes
+)</code></pre>
+
+        <p>Then inspect <a class="term-link" href="glossary.html#delegation-provenance">delegation provenance</a>. For this chain:</p>
+
+        <pre><code>user-alice → orchestrator → specialist → worker → tool</code></pre>
+
+        <p>the decision record should preserve the user and agents in order. A direct user-to-tool call should contain an empty agent delegation chain, not an invented <code>system</code> hop.</p>
+
+        <p>Frequent causes include:</p>
+
+        <ul>
+          <li>policy is checked only when the parent creates the task;</li>
+          <li>the child uses a long-lived orchestrator token;</li>
+          <li>the child receives the parent’s complete tool registry;</li>
+          <li>the chain exists only inside prompt text;</li>
+          <li>a retry creates a new root chain instead of continuing the original request;</li>
+          <li>a background task is mislabeled as an interactive request;</li>
+          <li>requested scopes are merged rather than intersected.</li>
+        </ul>
+
+        <p>Place final enforcement immediately before the tool boundary. Early checks by the orchestrator improve usability and reduce wasted work, but they cannot replace enforcement at execution time.</p>
+      </section>
+
+      <section id="isolation-failures">
+        <h2>Failure analysis: tenant isolation</h2>
+
+        <p>Cross-tenant failure is broader than reading another tenant’s file. Policy caches, rate buckets, memory, credentials, audit partitions, and idempotency keys can all leak state.</p>
+
+        <p>Review the keys of every shared store:</p>
+
+        <pre><code>policy_cache[(tenant_id, policy_version, subject_uid)]
+rate_bucket[(tenant_id, subject_uid, execution_class)]
+audit_partition[tenant_id]
+memory_namespace[(tenant_id, subject_uid, conversation_id)]
+tool_credentials[(tenant_id, connector_id)]
+idempotency_record[(tenant_id, request_id)]</code></pre>
+
+        <p>A cache keyed only by <code>subject_uid</code> is unsafe when user identifiers are unique only inside a tenant. A cache keyed only by tool name is worse: the first tenant’s decision may be reused everywhere.</p>
+
+        <p>Derive the tenant through a verified relationship:</p>
+
+        <pre><code>authenticated_subject
+    → verified_membership
+    → tenant_id
+    → tenant_policy
+    → tenant_credentials
+    → tenant_audit_partition</code></pre>
+
+        <p>An administrator of <code>tenant-b</code> is an administrator only inside <code>tenant-b</code>. A global <code>admin</code> role without a tenant boundary creates implicit cross-tenant authority.</p>
+
+        <p>After an isolation failure, test both directions:</p>
+
+        <ol>
+          <li>Change tenant A’s policy and confirm tenant B’s decision is unchanged.</li>
+          <li>Create events in both tenants and verify their audit attribution.</li>
+          <li>Submit tenant B’s identifier through tenant A’s user request.</li>
+          <li>Exhaust tenant A’s rate limit, then perform an allowed request in B.</li>
+          <li>Repeat with an administrator from B targeting A.</li>
+          <li>Run once with empty caches and once with warm caches.</li>
+        </ol>
+      </section>
+
+      <section id="audit-failures">
+        <h2>Failure analysis: incomplete audit evidence</h2>
+
+        <p><a class="term-link" href="glossary.html#observability">Observability</a> and audit overlap, but they are not equivalent. A metric can reveal rising denial rates. An audit record must reconstruct one specific decision and connect it to actual execution.</p>
+
+        <p>A useful decision record contains at least:</p>
+
+        <pre><code>{
+  "timestamp": "decision time",
+  "run_id": "benchmark run identifier",
+  "request_id": "end-to-end request identifier",
+  "tenant_id": "tenant-a",
+  "actor_uid": "user-alice",
+  "actor_display": "alice@example.test",
+  "agent_name": "mail-worker",
+  "execution_class": "background",
+  "delegation_chain": ["orchestrator", "mail-worker"],
+  "tool": "read_email",
+  "decision": "allow",
+  "reason_code": "required_scope_present",
+  "effective_scopes": ["email.read"],
+  "policy_version": "lab-policy-v1",
+  "arguments_hash": "hash of normalized arguments"
+}</code></pre>
+
+        <p>Completeness does not mean copying secrets, message bodies, private files, or authentication headers into the log. Prefer normalized argument hashes, data classifications, protected object identifiers, and references to access-controlled evidence.</p>
+
+        <p>Maintain two linked records:</p>
+
+        <ol>
+          <li><strong>Decision record:</strong> written before forwarding, explaining allow or deny.</li>
+          <li><strong>Execution receipt:</strong> written after the attempt, explaining whether the tool was reached and how it ended.</li>
+        </ol>
+
+        <pre><code>request
+  → policy decision: allow
+  → fixture receives request
+  → execution receipt: success</code></pre>
+
+        <p>If the process crashes after the allow decision but before execution, the evidence must show an allow without a confirmed receipt. If execution occurred but the completion record was lost, reconciliation with the fixture should reveal the gap.</p>
+
+        <p>Typical audit defects are:</p>
+
+        <ul>
+          <li>only successful operations are logged;</li>
+          <li>timestamps are added later by an analytics pipeline;</li>
+          <li>display identity is resolved from the current directory during investigation;</li>
+          <li>the decision and execution use different request identifiers;</li>
+          <li>a retry overwrites the first attempt;</li>
+          <li>a runner exception is treated as evidence of safe behavior;</li>
+          <li>the log records the model’s selected tool but not the actual invocation;</li>
+          <li>raw secrets are retained in the name of completeness.</li>
+        </ul>
+      </section>
+
+      <section id="other-failures">
+        <h2>What to inspect in the remaining categories</h2>
+
+        <h3>Per-user policy enforcement</h3>
+
+        <p>Apply the most specific applicable rule. If the tenant allows file reading but Carol has an explicit personal denial, Carol must be denied while another authorized user still succeeds. After revocation, the next relevant operation must use the new policy rather than a stale cached decision.</p>
+
+        <h3>Rate-limit cascade</h3>
+
+        <p>Five workers must not receive five independent user budgets. Include the tenant, authenticated subject, and execution class in the budget key. Decide explicitly whether policy-denied calls consume a user’s operational allowance, and test that decision consistently.</p>
+
+        <h3>Failure-mode discipline</h3>
+
+        <p>Fail-open and fail-closed are declared behaviors, not accidental exception handling. If a sensitive tool requires fail-closed behavior, a timeout in the policy service must prevent execution. A deliberately fail-open low-risk path should be narrowly scoped, visible in audit evidence, and tested as its own policy case.</p>
+
+        <h3>Scope inheritance</h3>
+
+        <p>Test allowed child work as well as forbidden escalation. A system that blocks every delegated call is restrictive but unusable. The positive control should demonstrate that a child retains exactly the narrow capability required for its task.</p>
+      </section>
+
+      <section id="failure-review">
+        <h2>Record each failure as an evidence chain</h2>
+
+        <p>A useful failure card links the benchmark result, policy decision, audit event, and fixture receipt through one request identifier:</p>
+
+        <pre><code>Scenario: identity_propagation.&lt;scenario-id&gt;
+Status: FAIL
+Expected: actor_uid equals the authenticated synthetic user
+Observed: actor_uid equals the mail worker service identity
+Side effect: fixture receipt exists for read_email
+Suspected boundary: queue serialization
+Root-cause status: unconfirmed until trace review
+Owner: platform runtime
+Retest: identity_propagation and delegation_provenance
+Evidence: result JSON, decision record, receipt, policy version, commits</code></pre>
+
+        <p>Keep “observed behavior,” “suspected boundary,” and “confirmed root cause” separate. Do not convert a plausible explanation into a fact before the evidence establishes it.</p>
+
+        <p>For every failed scenario, answer:</p>
+
+        <ol>
+          <li>What assertion failed?</li>
+          <li>Did the tool fixture receive the request?</li>
+          <li>Which subject and tenant were evaluated?</li>
+          <li>Which effective scopes were recorded?</li>
+          <li>Which policy version and reason code produced the decision?</li>
+          <li>Did retries or delegation change the request context?</li>
+          <li>Can the same failure be reproduced after a clean reset?</li>
+        </ol>
+      </section>
+
+      <section id="verification">
+        <h2>Verify the completed result</h2>
+
+        <p>The exercise is complete when you have a reproducible evidence package rather than a screenshot of one score:</p>
+
+        <pre><code>results/
+├── environment.txt
+├── SHA256SUMS
+├── vanilla-local.json
+├── your-system.json
+├── identity.json
+├── per-user-policy.json
+├── scope-inheritance.json
+├── delegation.json
+└── cross-tenant.json
+
+agentgovbench.commit
+scenario-files.txt
+runner/
+└── adapter source and sanitized configuration</code></pre>
+
+        <p>Use this completion checklist:</p>
+
+        <ol>
+          <li>The AgentGovBench revision is pinned and the working-tree state is known.</li>
+          <li>Exactly 48 unique scenarios were discovered and executed.</li>
+          <li>Eight categories contain six results each.</li>
+          <li>The baseline and system runner used the same benchmark revision.</li>
+          <li>The scorecard was generated from machine-readable output.</li>
+          <li>Pass, fail, declined, and error remain distinct.</li>
+          <li>Every failure has a scenario ID, observed behavior, and evidence references.</li>
+          <li>Denied requests were checked against fixture receipts.</li>
+          <li>Audit exports contain no credentials or private payloads.</li>
+          <li>A clean-state rerun produces an interpretable result.</li>
+          <li>Critical failures are tied to a release decision and owner.</li>
+        </ol>
+
+        <p>Finally, rerun the full suite after repairs:</p>
+
+        <pre><code>agentgovbench run \
+  --runner your_runner_name \
+  --out results/your-system-retest.json
+
+sha256sum results/your-system-retest.json \
+  &gt;&gt; results/SHA256SUMS</code></pre>
+
+        <p>Compare individual scenario IDs and statuses. Do not compare only the totals: one repaired failure can conceal a newly introduced regression elsewhere.</p>
+      </section>
+
+      <section id="run-failures">
+        <h2>Failure cases in the benchmark process itself</h2>
+
+        <h3>The runner bypasses the production enforcement path</h3>
+
+        <p>The benchmark calls an internal service API while deployed agents pass through a different proxy or middleware chain. The resulting score describes the test path, not the system. Compare routing, identity headers, policy hooks, and tool credentials in both paths.</p>
+
+        <h3>State leaks between scenarios</h3>
+
+        <p>A revoked grant, exhausted budget, cached decision, or tenant record survives teardown. Add unique namespaces, explicit cleanup, and a precondition check at scenario start.</p>
+
+        <h3>Audit events arrive asynchronously</h3>
+
+        <p>The runner queries the log immediately and observes no event. Use bounded polling with a fixed timeout and record the observed delay. Never wait indefinitely, and never treat a timeout as a pass.</p>
+
+        <h3>The test tool performs a real action</h3>
+
+        <p>A fixture named <code>send_email</code> is accidentally routed to a live connector. Replace execution at the routing or dependency-injection boundary, not through a prompt instruction. The scenario and model must not be able to switch the real connector back on.</p>
+
+        <h3>Declined hides an inconvenient capability</h3>
+
+        <p>Declined is legitimate when the topology truly cannot be reproduced and the reason is documented. It is misleading when the system supports multiple tenants but the adapter skips isolation tests because they are difficult to implement.</p>
+
+        <h3>Only the repaired scenario is rerun</h3>
+
+        <p>Identity, delegation, auditing, caching, and limits share context. Rerun the affected category first, then all 48 scenarios.</p>
+
+        <h3>The benchmark data contains real secrets</h3>
+
+        <p>Credentials copied into tool arguments can leak through results, exception traces, audit exports, or shell history. Use synthetic canary strings and non-routable destinations. Test secret handling structurally without supplying a usable secret.</p>
+      </section>
+
+      <section id="limitations">
+        <h2>Limitations</h2>
+
+        <p>A scorecard is not a security certificate and does not replace a threat model. Important limits remain:</p>
+
+        <ul>
+          <li>Deterministic governance calls do not prove that the model resists <a class="term-link" href="glossary.html#prompt-injection">prompt injection</a> or selects the correct tool.</li>
+          <li>The suite does not prove the security of the operating system, container, network, secret store, connector, or tool implementation.</li>
+          <li>An operation can be policy-compliant yet semantically harmful.</li>
+          <li>Six scenarios per category cannot cover every cache race, retry race, partial outage, or disaster-recovery path.</li>
+          <li>A runner can create false confidence when its path differs from production.</li>
+          <li>Results from different benchmark revisions are not directly comparable without reviewing scenario and scoring changes.</li>
+          <li>Passing technical scenarios does not automatically establish compliance with internal, contractual, industry, or legal requirements.</li>
+          <li>A complete audit schema does not prove retention integrity, access control, or tamper resistance.</li>
+        </ul>
+
+        <p>Combine AgentGovBench with model-level adversarial testing, tool-specific tests, policy review, infrastructure isolation tests, load and race testing, recovery exercises, and manual investigation of selected traces.</p>
+      </section>
+
+      <section id="next-steps">
+        <h2>After the first scorecard</h2>
+
+        <ol>
+          <li>Freeze the original result files and checksums.</li>
+          <li>Classify each failure by boundary: authentication, queue, policy engine, tool proxy, cache, audit pipeline, or runner.</li>
+          <li>Fix allowed authority bypasses first, incomplete evidence second, and excessive denials third.</li>
+          <li>Add production-specific variants to a separate regression suite without modifying the benchmark’s original expectations.</li>
+          <li>Run the 48 scenarios whenever identity middleware, delegation, policy, caching, auditing, rate limits, or tool routing changes.</li>
+          <li>Store scorecard history with the system revision and sanitized policy configuration.</li>
+        </ol>
+
+        <p>The valuable output is not a perfect-looking percentage. It is a verified map of the boundaries where the user remains the owner of an action, delegated agents cannot expand authority, tenant state stays separated, and every decision can be reconstructed from durable evidence.</p>
+      </section>
+
+      <p class="back"><a class="text-link" href="guides.html">← All practical guides</a> · <a class="text-link" href="glossary.html">Lab glossary →</a></p>
+    </article>
+  </main>
+
+  <footer>
+    <span>Agent Lab Journal</span>
+    <span>Real experiments. Verifiable conclusions.</span>
+  </footer>
+</body>
+</html>
