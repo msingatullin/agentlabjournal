@@ -10,6 +10,8 @@ import urllib.request
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
+sys.path.insert(0, '/root')
+from hermes_graph_engine import GraphRun, content_graph
 STATUS_PATH = ROOT / "publication-status.json"
 
 def update_status(slug, patch):
@@ -87,6 +89,16 @@ for topic in topics:
 else:
     print("ARTICLE_CYCLE: queue exhausted")
     raise SystemExit(0)
+
+topic = topics[next(i for i, item in enumerate(topics) if not (ROOT / f"{item['slug']}.html").exists())]
+graph_result = GraphRun(content_graph(), 'source').execute({
+    'source': topic.get('summary', topic['title']),
+    'topic': topic['slug'],
+    'language': 'ru',
+})
+if graph_result['status'] != 'awaiting_verification':
+    notify_error('graph preflight', f"run {graph_result['run_id']} status {graph_result['status']}")
+    raise SystemExit(1)
 
 command = [sys.executable, str(ROOT / "scripts/generate-article.py")]
 for key in ("slug", "title", "problem", "level", "minutes", "result", "summary"):
