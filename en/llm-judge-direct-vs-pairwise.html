@@ -1,0 +1,744 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>LLM Judge Under Test: Direct Scoring vs Pairwise Comparison | Agent Lab Journal</title>
+  <meta name="description" content="A repeatable protocol for comparing direct LLM scoring with pairwise evaluation, measuring agreement with human reviewers, and detecting positional bias by swapping answers.">
+  <link rel="canonical" href="https://agentlabjournal.online/en/llm-judge-direct-vs-pairwise.html">
+  <link rel="stylesheet" href="style.css">
+  <link rel="stylesheet" href="reading.css">
+  <script type="application/ld+json">
+  {
+    "@context": "https://schema.org",
+    "@type": "Article",
+    "headline": "LLM Judge Under Test: Direct Scoring vs Pairwise Comparison",
+    "description": "A repeatable protocol for comparing direct LLM scoring with pairwise evaluation, measuring agreement with human reviewers, and detecting positional bias by swapping answers.",
+    "author": {
+      "@type": "Organization",
+      "name": "Agent Lab Journal"
+    },
+    "publisher": {
+      "@type": "Organization",
+      "name": "Agent Lab Journal",
+      "url": "https://agentlabjournal.online/"
+    },
+    "mainEntityOfPage": {
+      "@type": "WebPage",
+      "@id": "https://agentlabjournal.online/en/llm-judge-direct-vs-pairwise.html"
+    }
+  }
+  </script>
+</head>
+<body>
+  <header class="site-header">
+    <div class="container">
+      <a class="site-name" href="index.html">Agent Lab Journal</a>
+      <nav aria-label="Primary navigation">
+        <a href="guides.html">Guides</a>
+        <a href="glossary.html">Glossary</a>
+      </nav>
+    </div>
+  </header>
+
+  <main>
+    <article class="reading">
+      <header class="article-header">
+        <p class="eyebrow">Evaluation engineering</p>
+        <h1>LLM Judge Under Test: Direct Scoring vs Pairwise Comparison</h1>
+        <p class="reading-meta">Intermediate · 60-minute read · Reproducible evaluation protocol</p>
+        <p class="lead"><strong>An automatic judge can consistently prefer the first answer, the longer answer, or an answer produced by its own model family—even when those properties have nothing to do with quality.</strong> This guide treats the judge as an instrument that must itself be evaluated. You will compare direct scoring with pairwise comparison, measure agreement with human decisions, and run a separate answer-swap experiment to expose positional bias.</p>
+      </header>
+
+      <section aria-labelledby="outcome">
+        <h2 id="outcome">What you will produce</h2>
+        <p>The result is not a single leaderboard number. It is an evidence package containing:</p>
+        <ol>
+          <li>A direct score for every candidate answer under a fixed <a href="glossary.html#rubric">evaluation rubric</a>.</li>
+          <li>A pairwise preference for the same answer pairs, including an explicit tie option.</li>
+          <li>Human reference judgments collected independently of the automatic judge.</li>
+          <li>Agreement measurements between each automatic strategy and the human reference.</li>
+          <li>A dedicated <a href="glossary.html#position-bias">position-bias</a> test in which every pair is judged again after the answers are swapped.</li>
+          <li>Failure logs, invalid-output counts, uncertainty intervals, and enough raw data to reproduce every summary.</li>
+        </ol>
+        <p>The protocol deliberately separates data generation, judging, and analysis. You may use any model or serving platform, but the stored records must follow the schemas below. This keeps the experiment repeatable without requiring shared credentials or a particular vendor.</p>
+      </section>
+
+      <section aria-labelledby="problem">
+        <h2 id="problem">Why the judge needs a trial of its own</h2>
+        <p>An <a href="glossary.html#llm-judge">LLM judge</a> converts a task, candidate answer, and evaluation instructions into a score or preference. It is attractive because it is faster and cheaper than repeated expert review. Its output, however, is another model prediction rather than ground truth.</p>
+        <p>Several unrelated effects can produce a convincing but misleading result:</p>
+        <ul>
+          <li><strong>Order:</strong> the judge may prefer answer A because it appears first, or answer B because it appears last.</li>
+          <li><strong>Length:</strong> detail, repetition, and confident prose can be mistaken for completeness or correctness.</li>
+          <li><strong>Self-preference:</strong> a judge may favor wording, structure, or conventions associated with its own model family.</li>
+          <li><strong>Scale drift:</strong> a “4” in one record may not represent the same standard as a “4” later in the run.</li>
+          <li><strong>Rubric leakage:</strong> the judge may reward visible keywords from the rubric without checking whether the answer actually satisfies them.</li>
+          <li><strong>Task shortcuts:</strong> style or surface form may become a proxy for quality when the underlying claim is difficult to verify.</li>
+        </ul>
+        <p>The right question is therefore not “Which strategy produces cleaner numbers?” It is “Which strategy best reproduces the human decision relevant to this task, with acceptable stability and known failure modes?”</p>
+      </section>
+
+      <section aria-labelledby="strategies">
+        <h2 id="strategies">The two strategies</h2>
+
+        <h3 id="direct-scoring">Strategy 1: direct scoring</h3>
+        <p>In <a href="glossary.html#direct-scoring">direct scoring</a>, the judge sees one answer at a time and assigns criterion scores, such as correctness from 1 to 5 and relevance from 1 to 5. A weighted total can then be calculated.</p>
+        <p>Direct scoring is useful when you need an absolute threshold, criterion-level diagnostics, or more than two candidates. It also makes operational rules easy to express: for example, “reject any answer with correctness below 3.”</p>
+        <p>Its main weakness is calibration. Scores can cluster near the top, drift between batches, and depend on the judge’s interpretation of scale labels. A one-point difference may look meaningful even when the judge cannot reproduce it.</p>
+
+        <h3 id="pairwise-comparison">Strategy 2: pairwise comparison</h3>
+        <p>In <a href="glossary.html#pairwise-comparison">pairwise comparison</a>, the judge sees two answers to the same task and chooses A, B, or tie. The decision is relative: which answer better satisfies the rubric?</p>
+        <p>Pairwise decisions often reduce the burden of maintaining a stable absolute scale. They can still be biased by presentation order, verbosity, shared errors, or recognizable model style. They also become expensive when many candidates require many comparisons.</p>
+
+        <table>
+          <caption>What each strategy exposes and hides</caption>
+          <thead>
+            <tr>
+              <th scope="col">Property</th>
+              <th scope="col">Direct scoring</th>
+              <th scope="col">Pairwise comparison</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <th scope="row">Primary output</th>
+              <td>Criterion scores and total</td>
+              <td>A, B, or tie</td>
+            </tr>
+            <tr>
+              <th scope="row">Human comparison</th>
+              <td>Scores or preference derived from score differences</td>
+              <td>Direct preference agreement</td>
+            </tr>
+            <tr>
+              <th scope="row">Calibration burden</th>
+              <td>High</td>
+              <td>Lower, but not absent</td>
+            </tr>
+            <tr>
+              <th scope="row">Order sensitivity</th>
+              <td>Possible through surrounding context or batch layout</td>
+              <td>Directly testable by swapping A and B</td>
+            </tr>
+            <tr>
+              <th scope="row">Diagnostic detail</th>
+              <td>Strong if criterion scores are reliable</td>
+              <td>Limited unless reasons are coded separately</td>
+            </tr>
+            <tr>
+              <th scope="row">Cost for many candidates</th>
+              <td>Approximately linear</td>
+              <td>Potentially quadratic for all pairs</td>
+            </tr>
+          </tbody>
+        </table>
+      </section>
+
+      <section aria-labelledby="case">
+        <h2 id="case">Concrete case: two support-answer systems</h2>
+        <p>Suppose two systems, Alpha and Beta, answer the same set of internal support questions. The experiment asks which judging strategy better matches trained human reviewers.</p>
+        <p>The unit of analysis is one task with exactly two candidate answers:</p>
+        <pre><code>{
+  "item_id": "support_0042",
+  "task": "Explain how to rotate an expired API key safely.",
+  "reference_context": "Approved task-specific context, if available.",
+  "answer_alpha": "...",
+  "answer_beta": "...",
+  "alpha_length_words": 126,
+  "beta_length_words": 81
+}</code></pre>
+        <p>Use real items from the target workload. Do not fill the dataset with convenient examples written solely for the evaluation. Remove records where one answer is missing, corrupted, or generated from a different task version.</p>
+        <p>For a first study, aim for enough items to cover important task categories and known edge cases. Do not choose the final count only because it produces a desired significance result. Record the sampling rule before running the judge.</p>
+
+        <h3>Fixed rubric</h3>
+        <p>Use criteria that humans and the automatic judge can apply to the same evidence:</p>
+        <ol>
+          <li><strong>Correctness:</strong> claims are consistent with the supplied task and reference context.</li>
+          <li><strong>Relevance:</strong> the answer addresses the user’s actual request.</li>
+          <li><strong>Completeness:</strong> required actions, caveats, and consequences are covered.</li>
+          <li><strong>Safety:</strong> the answer avoids dangerous, unauthorized, or irreversible instructions.</li>
+          <li><strong>Clarity:</strong> the answer is understandable without unnecessary repetition.</li>
+        </ol>
+        <p>Keep style subordinate to task quality. Length is not a criterion unless the task explicitly specifies a length constraint. A correct concise answer must be allowed to beat a longer answer.</p>
+      </section>
+
+      <section aria-labelledby="design">
+        <h2 id="design">Design the experiment before calling a model</h2>
+
+        <h3>1. Freeze the evaluation unit</h3>
+        <p>Store an immutable item identifier, exact task text, approved context, both answers, system identifiers, and generation metadata that you are permitted to retain. Hashing the task and answers can help detect accidental edits between runs.</p>
+
+        <h3>2. Separate development and evaluation items</h3>
+        <p>Use a small development set to repair prompts, parsers, and schemas. Once the protocol is frozen, run it on a separate evaluation set. Repeatedly changing the prompt after seeing evaluation failures turns the evaluation set into a development set.</p>
+
+        <h3>3. Blind identities</h3>
+        <p>Apply <a href="glossary.html#blind-evaluation">blind evaluation</a>: replace product and model names with neutral labels. Remove phrases that disclose the generating system when they are not part of the user-visible answer. Do not rewrite ordinary style differences, because those are part of the actual output.</p>
+
+        <h3>4. Predefine ties</h3>
+        <p>A tie should mean that neither answer is meaningfully better under the rubric. It must not be a parser fallback or an escape hatch for uncertainty. Decide whether a small direct-score difference becomes a tie before examining the outcomes.</p>
+
+        <h3>5. Randomize independently</h3>
+        <p>Use a recorded random seed to decide which system appears as A in the first pairwise pass. Do not place Alpha first for every item. The swap pass must then reverse the exact first-pass order.</p>
+
+        <h3>6. Fix the judge configuration</h3>
+        <p>Record the judge identifier, model version if exposed, prompt version, decoding settings, response format, retry rule, timeout, and execution date. Low randomness may improve repeatability, but it does not remove systematic bias.</p>
+      </section>
+
+      <section aria-labelledby="files">
+        <h2 id="files">Data files</h2>
+        <p>A simple directory layout is enough:</p>
+        <pre><code>evaluation/
+├── items.jsonl
+├── human_labels.csv
+├── direct_scores.jsonl
+├── pairwise_original.jsonl
+├── pairwise_swapped.jsonl
+├── invalid_outputs.jsonl
+├── protocol.yaml
+└── analyze.py</code></pre>
+
+        <p>The protocol file captures decisions that must not change during the run:</p>
+        <pre><code>study_id: support-alpha-beta-v1
+item_id_field: item_id
+rubric_version: support-rubric-v1
+judge_prompt_version: judge-v1
+direct_scale:
+  minimum: 1
+  maximum: 5
+  criteria:
+    - correctness
+    - relevance
+    - completeness
+    - safety
+    - clarity
+pairwise_labels: [A, B, TIE]
+direct_tie_margin: 0.25
+missing_policy: exclude_from_agreement_and_report
+random_seed: 240719
+retries:
+  malformed_output: 1
+  transient_error: 2
+position_test:
+  enabled: true
+  swap_every_pair: true
+human_review:
+  reviewers_per_item: 2
+  adjudicate_disagreement: true</code></pre>
+        <p>The numbers above are configuration examples, not claimed best values. Choose and document values appropriate to your task before evaluation.</p>
+      </section>
+
+      <section aria-labelledby="prompts">
+        <h2 id="prompts">Judge prompts and output contracts</h2>
+
+        <h3>Direct-scoring prompt</h3>
+        <pre><code>You are evaluating one candidate answer.
+
+Use only the TASK, REFERENCE CONTEXT, RUBRIC, and ANSWER below.
+Do not reward length, confidence, formatting, or stylistic similarity by itself.
+For each criterion, return an integer from 1 to 5.
+A high score requires evidence in the answer, not merely relevant keywords.
+If the reference context is insufficient to verify a claim, note that limitation.
+
+Return JSON only:
+{
+  "correctness": 1,
+  "relevance": 1,
+  "completeness": 1,
+  "safety": 1,
+  "clarity": 1,
+  "critical_error": false,
+  "reason_codes": ["SHORT_MACHINE_READABLE_CODE"]
+}
+
+TASK:
+{{ task }}
+
+REFERENCE CONTEXT:
+{{ reference_context }}
+
+RUBRIC:
+{{ rubric }}
+
+ANSWER:
+{{ answer }}</code></pre>
+        <p>Judge Alpha and Beta in separate calls if possible. Putting both answers into a “direct” prompt can turn the task into an implicit comparison. Randomize the order in which the single-answer calls are executed and do not expose the other answer’s score.</p>
+
+        <h3>Pairwise prompt</h3>
+        <pre><code>You are comparing two candidate answers to the same task.
+
+Choose the answer that better satisfies the RUBRIC.
+Do not prefer an answer because it appears first or second.
+Do not reward length, confidence, formatting, or stylistic similarity by itself.
+Treat verbosity as useful only when it adds relevant and correct information.
+Choose TIE only when neither answer is meaningfully better overall.
+
+Return JSON only:
+{
+  "winner": "A",
+  "confidence": "low",
+  "reason_codes": ["MORE_CORRECT"]
+}
+
+Allowed winner values: A, B, TIE
+Allowed confidence values: low, medium, high
+
+TASK:
+{{ task }}
+
+REFERENCE CONTEXT:
+{{ reference_context }}
+
+RUBRIC:
+{{ rubric }}
+
+ANSWER A:
+{{ answer_a }}
+
+ANSWER B:
+{{ answer_b }}</code></pre>
+        <p>Reason codes are useful for diagnosis, but do not use free-form explanations as the scored outcome. Explanations can be plausible even when the selected label is unstable.</p>
+      </section>
+
+      <section aria-labelledby="human">
+        <h2 id="human">Build the human reference</h2>
+        <p><a href="glossary.html#human-evaluation">Human evaluation</a> is not automatically correct. Reviewers need the same task, context, and rubric as the judge, plus training examples that do not belong to the evaluation set.</p>
+        <ol>
+          <li>Assign at least two independent reviewers where the cost permits.</li>
+          <li>Hide system identities and automatic-judge outputs.</li>
+          <li>Randomize answer order separately from the automatic run.</li>
+          <li>Ask for A, B, or tie and criterion scores if those scores will be compared.</li>
+          <li>Record the initial independent decisions before discussion.</li>
+          <li>Adjudicate disagreements under a written rule, without deleting the original labels.</li>
+        </ol>
+        <p>A compact human-label file might look like this:</p>
+        <pre><code>item_id,reviewer_id,alpha_score,beta_score,preference,is_adjudicated
+support_0042,r01,4.2,3.4,ALPHA,false
+support_0042,r02,4.0,3.8,ALPHA,false
+support_0042,adjudicator,4.1,3.6,ALPHA,true</code></pre>
+        <p>Before using adjudicated labels as the reference, measure agreement among the initial reviewers. If humans cannot apply the rubric consistently, automatic agreement with an adjudicated label may overstate the quality of the measurement process.</p>
+      </section>
+
+      <section aria-labelledby="run">
+        <h2 id="run">Run the four required passes</h2>
+        <ol>
+          <li><strong>Direct Alpha:</strong> score every Alpha answer independently.</li>
+          <li><strong>Direct Beta:</strong> score every Beta answer independently.</li>
+          <li><strong>Pairwise original:</strong> judge the recorded randomized A/B presentation.</li>
+          <li><strong>Pairwise swapped:</strong> exchange A and B and judge again with all other fields unchanged.</li>
+        </ol>
+        <p>Do not send the first pairwise decision to the swap call. Avoid conversational sessions that preserve previous answers. Each judgment should start from a clean context.</p>
+        <p>A provider-neutral runner should perform these operations:</p>
+        <pre><code>for item in items:
+    direct_alpha = judge_direct(item.task, item.context, item.answer_alpha)
+    direct_beta  = judge_direct(item.task, item.context, item.answer_beta)
+
+    if seeded_order(item.item_id) == "ALPHA_FIRST":
+        original = judge_pair(item.answer_alpha, item.answer_beta)
+        swapped  = judge_pair(item.answer_beta, item.answer_alpha)
+    else:
+        original = judge_pair(item.answer_beta, item.answer_alpha)
+        swapped  = judge_pair(item.answer_alpha, item.answer_beta)
+
+    validate_and_store(item.item_id, direct_alpha, direct_beta)
+    validate_and_store(item.item_id, original, swapped)</code></pre>
+        <p>Validate JSON types, required keys, allowed labels, score ranges, and duplicate identifiers before accepting a record. Store malformed responses separately. A retry must use the same input and a documented retry policy.</p>
+      </section>
+
+      <section aria-labelledby="normalize">
+        <h2 id="normalize">Normalize both strategies to the same decision space</h2>
+        <p>Agreement cannot be compared fairly while direct scoring produces numbers and pairwise evaluation produces labels. Convert both to system-level preferences: <code>ALPHA</code>, <code>BETA</code>, or <code>TIE</code>.</p>
+        <p>For direct scoring, first calculate the weighted total for each answer. If all criteria have equal weight:</p>
+        <pre><code>direct_total = (
+    correctness +
+    relevance +
+    completeness +
+    safety +
+    clarity
+) / 5</code></pre>
+        <p>Then apply the predefined tie margin:</p>
+        <pre><code>difference = alpha_total - beta_total
+
+if difference &gt; tie_margin:
+    direct_preference = "ALPHA"
+elif difference &lt; -tie_margin:
+    direct_preference = "BETA"
+else:
+    direct_preference = "TIE"</code></pre>
+        <p>Map pairwise A/B labels back to system identities using the recorded presentation order. Never compare the raw letter A with the human label Alpha.</p>
+      </section>
+
+      <section aria-labelledby="metrics">
+        <h2 id="metrics">Measure agreement with humans</h2>
+
+        <h3>Exact agreement</h3>
+        <p><a href="glossary.html#inter-rater-agreement">Inter-rater agreement</a> begins with the proportion of valid items on which the automatic strategy and human reference choose the same label:</p>
+        <pre><code>exact agreement = matching labels / jointly valid labels</code></pre>
+        <p>Report its numerator and denominator. A percentage without the number of eligible items can hide exclusions.</p>
+
+        <h3>Confusion matrix</h3>
+        <p>Create a 3×3 table for human and judge labels. It reveals whether disagreement is concentrated in ties, whether one system is systematically favored, or whether the judge reverses clear human decisions.</p>
+
+        <h3>Chance-corrected agreement</h3>
+        <p><a href="glossary.html#cohens-kappa">Cohen’s kappa</a> can supplement exact agreement when comparing one automatic label with one final human label. It adjusts for agreement expected from the observed label frequencies:</p>
+        <pre><code>kappa = (observed_agreement - expected_agreement)
+        / (1 - expected_agreement)</code></pre>
+        <p>Kappa can behave unexpectedly when one label dominates. Always show label frequencies and exact agreement beside it. If you retain multiple reviewers or have missing labels, consider <a href="glossary.html#krippendorffs-alpha">Krippendorff’s alpha</a> under a clearly stated measurement level.</p>
+
+        <h3>Score association</h3>
+        <p>If humans and the direct judge both provide criterion scores, report rank association and absolute score differences in addition to preference agreement. A strong ranking does not prove that an absolute threshold is calibrated correctly.</p>
+
+        <h3>Uncertainty</h3>
+        <p>Use a paired <a href="glossary.html#bootstrap">bootstrap</a> over item identifiers to compare direct and pairwise agreement. Resample whole items, not individual judge fields. Report a <a href="glossary.html#confidence-interval">confidence interval</a> for each agreement rate and for their paired difference.</p>
+        <p>Do not claim one strategy is better merely because its point estimate is higher. Inspect the interval, sample composition, and disagreement cases.</p>
+      </section>
+
+      <section aria-labelledby="position">
+        <h2 id="position">Run the positional-bias test</h2>
+        <p>The original and swapped pair must represent the same underlying comparison. After mapping letters back to system identities, a stable judge should preserve its decision:</p>
+        <table>
+          <thead>
+            <tr>
+              <th scope="col">Original presentation</th>
+              <th scope="col">Original winner</th>
+              <th scope="col">Swapped presentation</th>
+              <th scope="col">Stable swapped winner</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td>A = Alpha, B = Beta</td>
+              <td>A</td>
+              <td>A = Beta, B = Alpha</td>
+              <td>B</td>
+            </tr>
+            <tr>
+              <td>A = Alpha, B = Beta</td>
+              <td>B</td>
+              <td>A = Beta, B = Alpha</td>
+              <td>A</td>
+            </tr>
+            <tr>
+              <td>A = Alpha, B = Beta</td>
+              <td>TIE</td>
+              <td>A = Beta, B = Alpha</td>
+              <td>TIE</td>
+            </tr>
+          </tbody>
+        </table>
+
+        <h3>Swap consistency</h3>
+        <pre><code>swap consistency =
+    same system-level preference after swap
+    / pairs with two valid judgments</code></pre>
+        <p>Count every change, including winner-to-tie and tie-to-winner. Also report the stricter reversal rate among non-tie decisions: Alpha becomes Beta or Beta becomes Alpha after mapping to identities.</p>
+
+        <h3>First-position preference</h3>
+        <pre><code>first-position rate =
+    judgments selecting the displayed A answer
+    / valid non-tie pairwise judgments</code></pre>
+        <p>Calculate this across both passes and separately by pass. A rate near one half is not sufficient evidence of no bias: opposing biases across item categories can cancel out. Compare outcomes within each swapped pair.</p>
+
+        <h3>Position-sensitive subset</h3>
+        <p>Create a review file containing every inconsistent pair, answer lengths, human preference, original order, original decision, swapped order, and swapped decision. Inspect this subset without changing the main evaluation labels.</p>
+
+        <h3>Operational aggregation</h3>
+        <p>If you later use swapped judgments in production, define the aggregation rule in advance. One conservative rule is:</p>
+        <ul>
+          <li>If both presentations select the same system, accept that preference.</li>
+          <li>If both return tie, accept tie.</li>
+          <li>If they disagree, mark the item unstable rather than forcing a winner.</li>
+        </ul>
+        <p>This rule reduces coverage. Report the abstention rate so that stability is not purchased invisibly.</p>
+      </section>
+
+      <section aria-labelledby="analysis-code">
+        <h2 id="analysis-code">Minimal reproducible analysis</h2>
+        <p>Prepare a CSV with one row per item and these columns:</p>
+        <pre><code>item_id,human,direct,pair_original,pair_swapped,original_first,alpha_words,beta_words
+support_0042,ALPHA,ALPHA,ALPHA,ALPHA,ALPHA,126,81</code></pre>
+        <p>All preference fields must already be mapped to <code>ALPHA</code>, <code>BETA</code>, or <code>TIE</code>. The following script uses only the Python standard library:</p>
+        <pre><code>#!/usr/bin/env python3
+import csv
+import random
+import sys
+from collections import Counter
+
+LABELS = ("ALPHA", "BETA", "TIE")
+
+def valid(row, *fields):
+    return all(row.get(field) in LABELS for field in fields)
+
+def agreement(rows, field):
+    usable = [r for r in rows if valid(r, "human", field)]
+    matches = sum(r["human"] == r[field] for r in usable)
+    return matches, len(usable), matches / len(usable) if usable else float("nan")
+
+def confusion(rows, field):
+    matrix = {(h, j): 0 for h in LABELS for j in LABELS}
+    for row in rows:
+        if valid(row, "human", field):
+            matrix[(row["human"], row[field])] += 1
+    return matrix
+
+def kappa(rows, field):
+    usable = [r for r in rows if valid(r, "human", field)]
+    n = len(usable)
+    if not n:
+        return float("nan")
+    observed = sum(r["human"] == r[field] for r in usable) / n
+    human_counts = Counter(r["human"] for r in usable)
+    judge_counts = Counter(r[field] for r in usable)
+    expected = sum(
+        (human_counts[label] / n) * (judge_counts[label] / n)
+        for label in LABELS
+    )
+    if expected == 1:
+        return float("nan")
+    return (observed - expected) / (1 - expected)
+
+def swap_consistency(rows):
+    usable = [
+        r for r in rows
+        if valid(r, "pair_original", "pair_swapped")
+    ]
+    stable = sum(
+        r["pair_original"] == r["pair_swapped"]
+        for r in usable
+    )
+    return stable, len(usable), stable / len(usable) if usable else float("nan")
+
+def first_position_rate(rows):
+    selections = []
+    for r in rows:
+        first = r.get("original_first")
+        winner = r.get("pair_original")
+        if first in ("ALPHA", "BETA") and winner in ("ALPHA", "BETA"):
+            selections.append(first == winner)
+    return sum(selections), len(selections), (
+        sum(selections) / len(selections) if selections else float("nan")
+    )
+
+def paired_bootstrap(rows, iterations=10000, seed=240719):
+    eligible = [
+        r for r in rows
+        if valid(r, "human", "direct", "pair_original")
+    ]
+    if not eligible:
+        return []
+    rng = random.Random(seed)
+    differences = []
+    n = len(eligible)
+    for _ in range(iterations):
+        sample = [eligible[rng.randrange(n)] for _ in range(n)]
+        direct = sum(r["human"] == r["direct"] for r in sample) / n
+        pair = sum(r["human"] == r["pair_original"] for r in sample) / n
+        differences.append(pair - direct)
+    return sorted(differences)
+
+def percentile(values, p):
+    if not values:
+        return float("nan")
+    index = round((len(values) - 1) * p)
+    return values[index]
+
+with open(sys.argv[1], newline="", encoding="utf-8") as handle:
+    rows = list(csv.DictReader(handle))
+
+for field in ("direct", "pair_original"):
+    matches, total, rate = agreement(rows, field)
+    print(field, "agreement", matches, "/", total, "=", f"{rate:.4f}")
+    print(field, "kappa", f"{kappa(rows, field):.4f}")
+    print(field, "confusion")
+    matrix = confusion(rows, field)
+    for human in LABELS:
+        print(human, [matrix[(human, judge)] for judge in LABELS])
+
+stable, total, rate = swap_consistency(rows)
+print("swap consistency", stable, "/", total, "=", f"{rate:.4f}")
+
+first, total, rate = first_position_rate(rows)
+print("original first-position selections", first, "/", total, "=", f"{rate:.4f}")
+
+diffs = paired_bootstrap(rows)
+print(
+    "pair-minus-direct agreement difference interval",
+    f"[{percentile(diffs, 0.025):.4f}, {percentile(diffs, 0.975):.4f}]"
+)</code></pre>
+        <p>Run it with:</p>
+        <pre><code>python3 analyze.py normalized_results.csv</code></pre>
+        <p>This script intentionally does not manufacture missing labels, calculate p-values, or declare a winner. Extend it only after documenting the additional decision rule.</p>
+      </section>
+
+      <section aria-labelledby="length-bias">
+        <h2 id="length-bias">Check length and self-preference separately</h2>
+        <p>The answer-swap experiment isolates position effects, not every bias.</p>
+
+        <h3>Length preference</h3>
+        <p>For non-tie pairs, mark whether the judge chose the longer answer and whether the human chose the longer answer. Compare:</p>
+        <ul>
+          <li>the judge’s longer-answer selection rate;</li>
+          <li>the human longer-answer selection rate;</li>
+          <li>judge–human agreement within similar-length pairs;</li>
+          <li>judge–human agreement when the word-count difference is large.</li>
+        </ul>
+        <p>A higher longer-answer rate is not by itself proof of bias: longer answers may genuinely be better in the sample. The diagnostic signal is whether the judge prefers length in cases where humans favor the shorter answer, especially when the shorter answer is more correct or relevant.</p>
+
+        <h3>Self-preference</h3>
+        <p>To investigate self-preference, include answers from the judge’s own model family and from other systems while keeping system identities hidden. Compare human-adjusted win patterns across source families. Treat the result as observational unless generation quality, task mix, and answer style have been controlled.</p>
+        <p>A stronger test creates matched transformations that preserve meaning while reducing recognizable stylistic signatures. Such transformations can introduce their own artifacts, so retain the original-answer experiment as the primary measurement.</p>
+      </section>
+
+      <section aria-labelledby="verification">
+        <h2 id="verification">Verification checklist</h2>
+        <p>Complete these checks before interpreting results:</p>
+        <ol>
+          <li><strong>Coverage:</strong> every expected item has two direct records and two pairwise records, or a documented exclusion.</li>
+          <li><strong>Uniqueness:</strong> no duplicate combination of item, strategy, pass, and judge configuration exists.</li>
+          <li><strong>Schema:</strong> every accepted score and label falls inside its declared domain.</li>
+          <li><strong>Identity mapping:</strong> manually inspect a sample to confirm that A/B winners were mapped back to Alpha/Beta correctly.</li>
+          <li><strong>Swap integrity:</strong> task, context, rubric, and answers are byte-identical between passes except for answer order and labels.</li>
+          <li><strong>Blindness:</strong> prompts contain no hidden system name or file name that reveals the answer source.</li>
+          <li><strong>Human independence:</strong> initial reviewers did not see each other’s labels or judge outputs.</li>
+          <li><strong>Missingness:</strong> invalid and failed calls are reported by strategy and answer source.</li>
+          <li><strong>Reproducibility:</strong> rerunning analysis from stored normalized data reproduces all tables.</li>
+          <li><strong>Manual audit:</strong> inspect agreements, disagreements, ties, reversals, extreme score differences, and malformed outputs.</li>
+        </ol>
+      </section>
+
+      <section aria-labelledby="interpretation">
+        <h2 id="interpretation">How to interpret the result</h2>
+        <p>Use a result table that preserves denominators and uncertainty:</p>
+        <table>
+          <thead>
+            <tr>
+              <th scope="col">Measure</th>
+              <th scope="col">Direct scoring</th>
+              <th scope="col">Pairwise</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <th scope="row">Valid items</th>
+              <td>Fill from run</td>
+              <td>Fill from run</td>
+            </tr>
+            <tr>
+              <th scope="row">Exact human agreement</th>
+              <td>Estimate and interval</td>
+              <td>Estimate and interval</td>
+            </tr>
+            <tr>
+              <th scope="row">Cohen’s kappa</th>
+              <td>Estimate</td>
+              <td>Estimate</td>
+            </tr>
+            <tr>
+              <th scope="row">Tie rate</th>
+              <td>Estimate</td>
+              <td>Estimate</td>
+            </tr>
+            <tr>
+              <th scope="row">Invalid-output rate</th>
+              <td>Estimate</td>
+              <td>Estimate</td>
+            </tr>
+            <tr>
+              <th scope="row">Swap consistency</th>
+              <td>Not the primary test</td>
+              <td>Estimate and denominator</td>
+            </tr>
+          </tbody>
+        </table>
+        <p>Pairwise evaluation is the stronger choice when it shows meaningfully better human agreement, acceptable swap consistency, and manageable abstention and cost. Direct scoring is stronger when criterion-level scores are reproducible, thresholds matter operationally, and its human agreement is comparable or better.</p>
+        <p>A hybrid is often practical: direct scores for diagnostics and filtering, followed by swapped pairwise evaluation for close or high-impact cases. The hybrid still needs an explicit routing threshold and evaluation as a complete system.</p>
+      </section>
+
+      <section aria-labelledby="failures">
+        <h2 id="failures">Common failure cases</h2>
+
+        <h3>The judge picks the same displayed position after the swap</h3>
+        <p>This is strong evidence of order sensitivity for that pair. Check prompt construction and mapping first. If they are correct, mark the pair unstable. Do not average the two letter labels.</p>
+
+        <h3>Direct scores are almost all 4 or 5</h3>
+        <p>The scale may be poorly anchored, the rubric may be too permissive, or the task sample may be too easy. Add behavioral descriptions for each score level using development items, then freeze the revised rubric before a new evaluation run.</p>
+
+        <h3>Pairwise evaluation rarely allows ties</h3>
+        <p>The prompt may pressure the judge to choose a winner. Verify that tie is an allowed schema value and give an operational definition. Do not add a target tie percentage.</p>
+
+        <h3>Agreement is high because one system wins almost everything</h3>
+        <p>Inspect label prevalence, confusion matrices, and performance by task category. A judge that always selects the dominant system can achieve high raw agreement without handling difficult cases.</p>
+
+        <h3>Invalid output rates differ by answer source</h3>
+        <p>This may indicate prompt injection, unusual formatting, extreme length, or content filtering. Invalid output is an evaluation outcome, not housekeeping. Report it by source and category.</p>
+
+        <h3>The longer answer wins even when it repeats itself</h3>
+        <p>Review human-disagreement cases and code whether extra text adds verified information. Tighten the rubric language around relevance and redundancy, but make changes only on the development set.</p>
+
+        <h3>Reasons and labels contradict each other</h3>
+        <p>Score the structured label as the primary output and log the contradiction. If reasons drive downstream action, evaluate their correctness separately rather than assuming they justify the choice.</p>
+
+        <h3>Results change across repeated identical calls</h3>
+        <p>Record the instability. Reduce uncontrolled sampling where possible, repeat a defined subset, and report within-configuration repeatability. A deterministic setting does not guarantee stable infrastructure or a permanently fixed hosted model.</p>
+      </section>
+
+      <section aria-labelledby="limitations">
+        <h2 id="limitations">Limitations</h2>
+        <ul>
+          <li>The human reference reflects the chosen reviewers, rubric, and adjudication process rather than universal truth.</li>
+          <li>Answer swapping detects positional sensitivity but does not isolate every cause of disagreement.</li>
+          <li>Blinding model identities cannot remove all recognizable style signals.</li>
+          <li>Results may not transfer to different domains, languages, safety levels, prompt formats, or answer lengths.</li>
+          <li>A judge that ranks two systems correctly may still be unsuitable for absolute quality thresholds.</li>
+          <li>Pairwise results depend on the candidate set; adding a new system can change which comparisons matter.</li>
+          <li>Hosted model behavior can change. Preserve dates, configuration, raw outputs, and prompt versions.</li>
+          <li>Bootstrap intervals describe uncertainty from the sampled items under the chosen procedure; they do not account for every source of model or reviewer uncertainty.</li>
+        </ul>
+      </section>
+
+      <section aria-labelledby="decision">
+        <h2 id="decision">A defensible final decision</h2>
+        <p>Do not choose a strategy from one headline percentage. Write a short decision record that answers:</p>
+        <ol>
+          <li>Which strategy agrees more closely with the human reference, and by how much?</li>
+          <li>How uncertain is that difference?</li>
+          <li>How often does pairwise judgment change after swapping positions?</li>
+          <li>Are disagreements concentrated in ties, long answers, particular categories, or particular source systems?</li>
+          <li>What proportion of records is invalid or unstable?</li>
+          <li>Does the intended use require absolute scores, relative ranking, or both?</li>
+          <li>What human-review fallback is required for high-impact or unstable cases?</li>
+        </ol>
+        <p>The judge is ready only for the scope in which these measurements support it. If the evidence is weak, the correct output is not a forced winner—it is a narrower deployment, a human-review route, or another evaluation cycle.</p>
+      </section>
+
+      <section aria-labelledby="repeat">
+        <h2 id="repeat">Repeatable workflow summary</h2>
+        <ol>
+          <li>Sample representative tasks and freeze the evaluation set.</li>
+          <li>Collect two candidate answers per task and retain their identities separately from displayed labels.</li>
+          <li>Write one rubric shared by humans and the automatic judge.</li>
+          <li>Collect independent human labels and preserve disagreements.</li>
+          <li>Run direct scoring on each answer separately.</li>
+          <li>Run pairwise evaluation with seeded randomized order.</li>
+          <li>Swap every pair and run it again in a clean context.</li>
+          <li>Normalize all outcomes to Alpha, Beta, or tie.</li>
+          <li>Measure exact agreement, confusion matrices, chance-corrected agreement, missingness, and uncertainty.</li>
+          <li>Measure swap consistency and first-position selection separately.</li>
+          <li>Audit disagreements for length, task category, source family, and critical errors.</li>
+          <li>Select direct, pairwise, hybrid, or human fallback according to the intended operational decision.</li>
+        </ol>
+      </section>
+
+      <footer class="article-footer">
+        <p>Continue with the <a href="guides.html">Agent Lab Journal guides</a>, or review evaluation terminology in the <a href="glossary.html">glossary</a>.</p>
+      </footer>
+    </article>
+  </main>
+
+  <footer class="site-footer">
+    <div class="container">
+      <p>Agent Lab Journal</p>
+    </div>
+  </footer>
+</body>
+</html>
