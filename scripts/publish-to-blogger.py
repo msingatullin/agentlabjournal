@@ -4,6 +4,9 @@ from pathlib import Path
 import json, os, re, urllib.parse, urllib.request
 
 ROOT = Path(__file__).resolve().parent.parent
+import sys
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from tracking import tracked_url
 TOKEN_FILE = Path(os.environ.get('BLOGGER_TOKEN_FILE', '/root/.config/blogger-token.json'))
 BLOG_ID = os.environ.get('BLOGGER_BLOG_ID', '496084951039088012')
 
@@ -14,7 +17,7 @@ def access_token():
     with urllib.request.urlopen(req, timeout=30) as response:
         return json.loads(response.read())['access_token']
 
-parser = ArgumentParser(); parser.add_argument('--file', required=True); parser.add_argument('--update', action='store_true'); args = parser.parse_args()
+parser = ArgumentParser(); parser.add_argument('--file', required=True); parser.add_argument('--update', action='store_true'); parser.add_argument('--country', default=os.environ.get('AGENTLAB_COUNTRY', 'global')); parser.add_argument('--region', default=os.environ.get('AGENTLAB_REGION', 'all')); parser.add_argument('--language', default='en'); args = parser.parse_args()
 path = ROOT / args.file; registry_path = ROOT / 'blogger-published.json'
 registry = json.loads(registry_path.read_text()) if registry_path.exists() else {}
 if args.file in registry and not args.update:
@@ -28,7 +31,7 @@ body = re.sub(r'<script\b.*?</script>', '', body_match.group(1), flags=re.S | re
 paragraphs = re.findall(r'<(?:p|h2|h3)\b[^>]*>.*?</(?:p|h2|h3)>', body, flags=re.S | re.I)
 body = '\n'.join(paragraphs[:8])
 canonical = f'https://agentlabjournal.online/{args.file}'
-tracked = canonical + '?utm_source=blogger&utm_medium=referral&utm_campaign=agentlabjournal'
+tracked = tracked_url(canonical, 'blogger', 'referral', path.stem, args.language, args.country, args.region, 'article')
 body += f'\n<p><strong>Полная версия:</strong> <a href="{tracked}">{tracked}</a></p>'
 payload = json.dumps({'kind': 'blogger#post', 'title': title, 'content': body, 'labels': ['AI', 'Automation', 'Agents']}).encode()
 method = 'PUT' if args.update else 'POST'

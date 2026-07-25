@@ -11,6 +11,9 @@ import time
 from urllib.error import HTTPError
 
 ROOT = Path(__file__).resolve().parent.parent
+import sys
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from tracking import tracked_url
 
 class Markdown(HTMLParser):
     def __init__(self):
@@ -43,6 +46,9 @@ parser = ArgumentParser()
 parser.add_argument('--file', required=True)
 parser.add_argument('--publish', action='store_true')
 parser.add_argument('--update', action='store_true')
+parser.add_argument('--country', default=os.environ.get('AGENTLAB_COUNTRY', 'global'))
+parser.add_argument('--region', default=os.environ.get('AGENTLAB_REGION', 'all'))
+parser.add_argument('--language', default='en')
 args = parser.parse_args()
 key = os.environ.get('DEV_API_KEY', '').strip()
 if not key:
@@ -63,7 +69,7 @@ parser_html = Markdown()
 parser_html.feed(text)
 body = re.sub(r'\n{3,}', '\n\n', ''.join(parser_html.out)).strip()
 canonical = f'https://agentlabjournal.online/{args.file}'
-tracked = canonical + '?utm_source=devto&utm_medium=referral&utm_campaign=agentlabjournal'
+tracked = tracked_url(canonical, 'devto', 'referral', path.stem, args.language, args.country, args.region, 'article')
 body += f'\n\n---\n\n**Original article:** {tracked}\n'
 payload = {'article': {'title': title, 'body_markdown': body, 'published': bool(args.publish or args.update), 'canonical_url': canonical, 'description': description.group(1) if description else title, 'tags': ['ai', 'automation', 'agents']}}
 method = 'PUT' if args.update else 'POST'

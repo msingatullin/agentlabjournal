@@ -6,6 +6,9 @@ import json, os, re, urllib.request
 from urllib.error import HTTPError
 
 ROOT = Path(__file__).resolve().parent.parent
+import sys
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from tracking import tracked_url
 
 class Markdown(HTMLParser):
     def __init__(self):
@@ -23,7 +26,7 @@ class Markdown(HTMLParser):
     def handle_data(self, data):
         if not self.skip: self.out.append(data)
 
-parser = ArgumentParser(); parser.add_argument('--file', required=True); args = parser.parse_args()
+parser = ArgumentParser(); parser.add_argument('--file', required=True); parser.add_argument('--country', default=os.environ.get('AGENTLAB_COUNTRY', 'global')); parser.add_argument('--region', default=os.environ.get('AGENTLAB_REGION', 'all')); parser.add_argument('--language', default='en'); args = parser.parse_args()
 token = os.environ.get('HASHNODE_PAT','').strip()
 publication = os.environ.get('HASHNODE_PUBLICATION_ID','').strip()
 if not token or not publication: raise SystemExit('HASHNODE_PAT or HASHNODE_PUBLICATION_ID is missing')
@@ -40,7 +43,7 @@ desc = re.search(r'<meta name="description" content="([^"]*)"', text, re.I)
 parser_html = Markdown(); parser_html.feed(text)
 body = re.sub(r'\n{3,}', '\n\n', ''.join(parser_html.out)).strip()
 canonical = f'https://agentlabjournal.online/{args.file}'
-tracked = canonical + '?utm_source=hashnode&utm_medium=referral&utm_campaign=agentlabjournal'
+tracked = tracked_url(canonical, 'hashnode', 'referral', path.stem, args.language, args.country, args.region, 'article')
 body += f'\n\n---\n\n**Original article:** {tracked}\n'
 lookup = 'query { publication(host: "agentlabjournal.hashnode.dev") { posts(first: 100) { edges { node { id title slug url content { markdown } } } } } }'
 lookup_request = urllib.request.Request(os.environ.get('HASHNODE_GRAPHQL_ENDPOINT','https://gql-beta.hashnode.com/'),
