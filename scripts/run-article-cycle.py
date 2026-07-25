@@ -129,12 +129,24 @@ except Exception as error:
     raise
 update_status(topic['slug'], {'canonical': {'status': 'published', 'url': f"https://agentlabjournal.online/{topic['slug']}.html"}})
 channel_errors = []
+def publish_with_retry(command, attempts=3):
+    last_error = None
+    for attempt in range(1, attempts + 1):
+        try:
+            subprocess.run(command, cwd=ROOT, check=True)
+            return
+        except Exception as error:
+            last_error = error
+            if attempt < attempts:
+                time.sleep(10 * attempt)
+    raise last_error
+
 for script, label in (("publish-to-dev.py", "публикация английской статьи в DEV API"), ("publish-to-hashnode.py", "публикация английской статьи в Hashnode API"), ("publish-to-blogger.py", "публикация английской статьи в Blogger API")):
     channel = script.removeprefix('publish-to-').removesuffix('.py')
     try:
         command = [sys.executable, str(ROOT / "scripts" / script), "--file", f"en/{topic['slug']}.html"]
         if script == "publish-to-dev.py": command.append("--publish")
-        subprocess.run(command, cwd=ROOT, check=True)
+        publish_with_retry(command)
         update_status(topic['slug'], {'channels': {channel: {'status': 'published'}}})
     except Exception as error:
         channel_errors.append(f"{label}: {str(error)[:500]}")
