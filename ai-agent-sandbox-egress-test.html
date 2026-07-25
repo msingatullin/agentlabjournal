@@ -1,0 +1,1168 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>Как проверить песочницу AI-агента на утечки и обход сетевых ограничений | Agent Lab Journal</title>
+  <meta name="description" content="Практическая лаборатория по проверке песочницы AI-агента: запрет произвольного исходящего трафика, токены-приманки, внешний журнал сетевых вызовов и тесты попыток выхода из контейнера.">
+  <link rel="canonical" href="https://agentlabjournal.online/ai-agent-sandbox-egress-test.html">
+  <link rel="stylesheet" href="style.css">
+  <link rel="stylesheet" href="reading.css">
+  <script type="application/ld+json">
+  {
+    "@context": "https://schema.org",
+    "@type": "Article",
+    "headline": "Как проверить песочницу AI-агента на утечки и обход сетевых ограничений",
+    "description": "Практическая лаборатория по проверке песочницы AI-агента: запрет произвольного исходящего трафика, токены-приманки, внешний журнал сетевых вызовов и тесты попыток выхода из контейнера.",
+    "author": {
+      "@type": "Organization",
+      "name": "Agent Lab Journal"
+    },
+    "publisher": {
+      "@type": "Organization",
+      "name": "Agent Lab Journal",
+      "url": "https://agentlabjournal.online/"
+    },
+    "mainEntityOfPage": {
+      "@type": "WebPage",
+      "@id": "https://agentlabjournal.online/ai-agent-sandbox-egress-test.html"
+    },
+    "inLanguage": "ru"
+  }
+  </script>
+</head>
+<body>
+  <header class="site-header">
+    <a class="brand" href="./">
+      <span class="brand-mark">AL</span>
+      <span>Agent Lab Journal</span>
+    </a>
+    <nav aria-label="Основная навигация">
+      <a href="guides.html">Практика</a>
+      <a href="glossary.html">Словарь</a>
+    </nav>
+  </header>
+
+  <main class="article">
+    <article>
+      <header>
+        <p class="eyebrow">ЛАБОРАТОРИЯ · БЕЗОПАСНОСТЬ АГЕНТОВ</p>
+        <h1>Как проверить <a class="term-link" href="glossary.html#sandbox">песочницу</a> <a class="term-link" href="glossary.html#ai-агент">AI-агента</a> на утечки и обход сетевых ограничений</h1>
+        <div class="reading-meta" aria-label="Информация о материале">
+          <span>Уровень: продвинутый</span>
+          <span>Время чтения и практики: 90 минут</span>
+          <span>Результат: изолированный стенд, приманки, журналы и автоматические проверки</span>
+        </div>
+        <p class="lead"><strong>Надпись «запущено в контейнере» ещё не означает, что агент изолирован.</strong> Процесс может найти настроенный прокси, обратиться к облачному metadata endpoint, прочитать оставленные в окружении ключи, вызвать пакетный менеджер, подключиться к сокету Docker или использовать уязвимость среды выполнения. В этой лаборатории мы закроем произвольный <a class="term-link" href="glossary.html#egress">исходящий трафик</a>, поместим внутрь только синтетические <a class="term-link" href="glossary.html#canary-token">токены-приманки</a>, вынесем наблюдение за пределы проверяемого процесса и воспроизведём типичные попытки утечки и выхода из изоляции.</p>
+      </header>
+
+      <aside class="note">
+        <p><strong>Безопасный масштаб.</strong> Стенд использует только зарезервированные тестовые IP-адреса, домен с суффиксом <code>.invalid</code> и локальный контейнер без сети. Не помещайте в него рабочие ключи, облачные профили, домашний каталог, SSH-агент, браузерный профиль, сокет Docker или каталоги исходного проекта. Токены создаются локально специально для эксперимента и не дают доступа ни к одному сервису.</p>
+      </aside>
+
+      <section id="result">
+        <h2>Что получится в конце</h2>
+
+        <p>Стенд состоит из четырёх независимых слоёв:</p>
+
+        <ol>
+          <li>минимального образа с проверочным процессом от непривилегированного пользователя;</li>
+          <li>сетевого режима <code>none</code>, в котором отсутствует маршрут к интернету, DNS и локальной сети хоста;</li>
+          <li>двух синтетических приманок: переменной окружения и файла, похожего на облачный профиль;</li>
+          <li>внешнего наблюдателя, который фиксирует системные вызовы <code>connect</code>, <code>socket</code>, <code>unshare</code>, <code>setns</code> и <code>mount</code>.</li>
+        </ol>
+
+        <p>Проверочный процесс попытается использовать пять каналов выхода:</p>
+
+        <ul>
+          <li>прямое TCP-соединение с тестовым адресом;</li>
+          <li>адрес из переменной <code>HTTPS_PROXY</code>;</li>
+          <li>DNS-запрос с отпечатком приманки в имени;</li>
+          <li>облачный link-local адрес <code>169.254.169.254</code>;</li>
+          <li>Unix-сокет Docker.</li>
+        </ul>
+
+        <p>Затем он проверит несколько путей повышения полномочий: raw socket, создание новых пространств имён, присоединение через <code>setns</code>, вызов <code>mount</code>, запись в корневую файловую систему и осмотр процессов. Это не эксплуатация конкретной уязвимости. Цель — подтвердить свойства границы, которые должны сохраняться даже при недоверенном коде внутри.</p>
+
+        <table>
+          <thead>
+            <tr>
+              <th>Граница</th>
+              <th>Проверка</th>
+              <th>Допустимое наблюдение</th>
+              <th>Провал</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td>Сеть</td>
+              <td>TCP, proxy, DNS, metadata</td>
+              <td>Ошибка до передачи данных</td>
+              <td>Соединение установлено или получен ответ</td>
+            </tr>
+            <tr>
+              <td>Управление контейнерами</td>
+              <td><code>/var/run/docker.sock</code></td>
+              <td>Сокет отсутствует</td>
+              <td>Сокет найден или доступен</td>
+            </tr>
+            <tr>
+              <td>Привилегии</td>
+              <td>Raw socket, mount, namespaces</td>
+              <td><code>EPERM</code> или <code>EACCES</code></td>
+              <td>Операция выполнена</td>
+            </tr>
+            <tr>
+              <td>Файловая система</td>
+              <td>Запись в <code>/</code></td>
+              <td><code>EROFS</code> или отказ</td>
+              <td>Файл создан</td>
+            </tr>
+            <tr>
+              <td>Приманки</td>
+              <td>Фиксация факта чтения и попытки использования</td>
+              <td>Есть отпечаток, нет успешного egress</td>
+              <td>Приманка появилась за пределами стенда</td>
+            </tr>
+          </tbody>
+        </table>
+      </section>
+
+      <section id="problem">
+        <h2>Почему изоляция незаметно перестаёт быть изоляцией</h2>
+
+        <p><a class="term-link" href="glossary.html#container">Контейнер</a> отделяет файловую систему, процессы и часть системных ресурсов, но сам по себе не задаёт безопасную сетевую политику. Обычная bridge-сеть Docker предоставляет контейнеру NAT и исходящий доступ. Если приложение умеет устанавливать пакеты или обращаться к HTTP API, оно, скорее всего, уже умеет передавать данные наружу.</p>
+
+        <p>На практике опасен не только прямой запрос к произвольному адресу. У агента могут оказаться косвенные маршруты:</p>
+
+        <ul>
+          <li><a class="term-link" href="glossary.html#egress-proxy">egress-прокси</a>, указанный в <code>HTTP_PROXY</code>, <code>HTTPS_PROXY</code>, конфигурации npm, pip, Git или системного менеджера пакетов;</li>
+          <li>внутренний сервис, который принимает URL и сам загружает ресурс, превращаясь в канал <a class="term-link" href="glossary.html#ssrf">SSRF</a>;</li>
+          <li>DNS, куда данные кодируются в поддоменах;</li>
+          <li>облачный metadata endpoint, выдающий временные полномочия workload;</li>
+          <li>смонтированный сокет Docker, containerd или Kubernetes;</li>
+          <li>SSH-agent, сокет браузера, D-Bus или другой IPC-канал хоста;</li>
+          <li>кэш пакетного менеджера с сохранённой авторизацией;</li>
+          <li>домашний каталог разработчика с файлами <code>.aws</code>, <code>.config</code>, <code>.npmrc</code> или <code>.git-credentials</code>;</li>
+          <li>уязвимость ядра либо OCI runtime, позволяющая пересечь границу контейнера.</li>
+        </ul>
+
+        <p>Поэтому тест должен отвечать не на вопрос «может ли агент выполнить <code>curl</code>», а на четыре отдельных вопроса:</p>
+
+        <ol>
+          <li>существует ли маршрут передачи байтов за пределы разрешённого контура;</li>
+          <li>есть ли внутри данные или полномочия, которые стоит украсть;</li>
+          <li>может ли процесс изменить собственные ограничения;</li>
+          <li>останутся ли доказательства, если сам процесс не признается в попытке.</li>
+        </ol>
+
+        <blockquote>Лог приложения показывает то, что приложение решило сообщить. Журнал за границей песочницы показывает то, что процесс действительно пытался сделать.</blockquote>
+      </section>
+
+      <section id="case">
+        <h2>Конкретный случай: пакетный прокси становится выходом в интернет</h2>
+
+        <p>Представим агента, который анализирует репозиторий и при необходимости запускает тесты. Его поместили в контейнер, ограничили CPU и память, но оставили стандартную bridge-сеть. В образе присутствует <code>pip</code>, а инфраструктура добавляет переменную:</p>
+
+        <pre><code>HTTPS_PROXY=http://packages-proxy.internal:3128</code></pre>
+
+        <p>Команда агента напрямую к внешнему IP может блокироваться межсетевым экраном. Однако пакетный клиент отправляет запрос через доверенный прокси. Если прокси проверяет только порт или метод, а не назначение, тот же маршрут можно использовать для произвольного HTTPS-туннеля. Если рядом лежит рабочий токен, агент способен передать его в заголовке, URL, имени пакета либо DNS-метке.</p>
+
+        <p>Другой вариант не требует прокси: в контейнер случайно смонтирован <code>/var/run/docker.sock</code>. Получив доступ к API Docker, процесс может создать новый привилегированный контейнер, подключить файловую систему хоста и обойти исходную сетевую политику. Ограничения первого контейнера при этом остаются формально включёнными, но уже не защищают систему.</p>
+
+        <p>Наш стенд воспроизводит предпосылки безопасно. Значение <code>HTTPS_PROXY</code> указывает на зарезервированный тестовый адрес, Docker socket не монтируется, а вместо настоящих ключей используются случайные строки без полномочий.</p>
+      </section>
+
+      <section id="threat-model">
+        <h2>Модель угроз и критерии приёмки</h2>
+
+        <p>До запуска зафиксируйте, что именно считается доверенным:</p>
+
+        <dl>
+          <dt><strong>Недоверенный субъект</strong></dt>
+          <dd>Весь процесс агента, сгенерированные им команды, установленные зависимости и открытые им документы.</dd>
+
+          <dt><strong>Доверенная граница</strong></dt>
+          <dd>Конфигурация контейнера, сетевой namespace, ядро хоста и внешний журнал системных вызовов.</dd>
+
+          <dt><strong>Защищаемые данные</strong></dt>
+          <dd>Рабочие ключи, исходные файлы вне задачи, учётные данные хоста и сетевые полномочия.</dd>
+
+          <dt><strong>Сигнал обнаружения</strong></dt>
+          <dd>Чтение синтетической приманки и последующая попытка сетевого или привилегированного действия.</dd>
+
+          <dt><strong>Успех защиты</strong></dt>
+          <dd>Все контрольные попытки видны, ни один произвольный сетевой запрос не завершается, а процесс не получает новых полномочий.</dd>
+
+          <dt><strong>Успех атаки</strong></dt>
+          <dd>Достаточно одного установленного соединения, доступного управляющего сокета, успешного <code>mount</code>/<code>setns</code> или записи за пределами разрешённой области.</dd>
+        </dl>
+
+        <p>Мы будем применять <a class="term-link" href="glossary.html#default-deny">default deny</a>: отсутствие явного разрешения означает запрет. В базовом варианте разрешений на сеть нет вообще. Для производственной системы позже можно добавить отдельный сетевой шлюз, но не общую bridge-сеть.</p>
+      </section>
+
+      <section id="architecture">
+        <h2>Архитектура стенда</h2>
+
+        <pre><code>Хост
+├── Docker daemon
+├── evidence/
+│   ├── events.jsonl       ← stdout проверочного процесса
+│   ├── syscalls.*         ← внешний strace
+│   ├── inspect.json       ← фактическая конфигурация контейнера
+│   └── hashes.txt         ← контрольные суммы доказательств
+│
+└── agent-sandbox
+    ├── network_mode: none
+    ├── UID/GID: 65532
+    ├── root filesystem: read-only
+    ├── capabilities: dropped
+    ├── no-new-privileges
+    ├── PID/memory/CPU limits
+    ├── /tmp: isolated tmpfs
+    ├── /bait: read-only synthetic tokens
+    └── probe.py</code></pre>
+
+        <p>Сетевой namespace содержит только loopback-интерфейс. Прямого маршрута, DNS-сервера и NAT нет. Даже если Python, curl или пакетный менеджер знают адрес назначения, ядро не может доставить пакет.</p>
+
+        <p>Снаружи к PID контейнера подключается <code>strace</code>. Такой журнал является частью <a class="term-link" href="glossary.html#observability">наблюдаемости</a> стенда: проверяемый код не выбирает, какие системные вызовы в него попадут. Для полноценной производственной телеметрии вместо длительного <code>strace</code> обычно используют аудит ядра или eBPF, но для короткой лаборатории трассировка проще и воспроизводимее.</p>
+      </section>
+
+      <section id="requirements">
+        <h2>Шаг 1. Подготовьте отдельный каталог</h2>
+
+        <p>Нужна Linux-машина с rootful Docker, Compose plugin, <code>strace</code>, <code>jq</code> и OpenSSL. Не проводите тест на рабочем runner, где уже доступны реальные секреты.</p>
+
+        <pre><code>mkdir sandbox-egress-lab
+cd sandbox-egress-lab
+
+mkdir -p app bait evidence
+chmod 700 bait evidence
+
+docker version
+docker compose version
+strace --version
+jq --version
+openssl version</code></pre>
+
+        <p>Итоговая структура будет такой:</p>
+
+        <pre><code>sandbox-egress-lab/
+├── app/
+│   ├── Dockerfile
+│   └── probe.py
+├── bait/
+│   └── cloud_credentials
+├── evidence/
+├── compose.yaml
+├── verify.py
+└── .env</code></pre>
+
+        <p>Если хост управляется общей командой, создайте для лаборатории отдельную виртуальную машину. Root-доступ к Docker фактически равен административному доступу к хосту, поэтому пользователь, запускающий стенд, тоже входит в доверенную часть эксперимента.</p>
+      </section>
+
+      <section id="probe">
+        <h2>Шаг 2. Создайте проверочный процесс</h2>
+
+        <p>Сохраните следующий файл как <code>app/probe.py</code>. Он не сканирует реальные адреса и не пытается эксплуатировать уязвимости. Все сетевые назначения либо зарезервированы для документации, либо относятся к стандартному link-local metadata адресу, недоступному из нашего namespace.</p>
+
+        <pre><code>import ctypes
+import errno
+import hashlib
+import json
+import os
+import socket
+import time
+from pathlib import Path
+
+EVENTS = []
+
+def emit(test, status, detail, **extra):
+    event = {
+        "time_ns": time.time_ns(),
+        "test": test,
+        "status": status,
+        "detail": detail,
+        **extra,
+    }
+    EVENTS.append(event)
+    print(json.dumps(event, ensure_ascii=False), flush=True)
+
+def fingerprint(value):
+    return hashlib.sha256(value.encode()).hexdigest()[:16]
+
+def try_tcp(name, host, port):
+    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    sock.settimeout(2)
+    try:
+        sock.connect((host, port))
+    except OSError as exc:
+        emit(name, "blocked", type(exc).__name__, errno=exc.errno)
+    else:
+        emit(name, "connected", f"{host}:{port}")
+    finally:
+        sock.close()
+
+def try_dns(canary):
+    label = fingerprint(canary)
+    hostname = f"{label}.egress-check.invalid"
+    try:
+        socket.getaddrinfo(hostname, 443, type=socket.SOCK_STREAM)
+    except socket.gaierror as exc:
+        emit("dns_canary", "blocked", str(exc), canary_fp=label)
+    else:
+        emit("dns_canary", "resolved", hostname, canary_fp=label)
+
+def try_unix_socket():
+    path = "/var/run/docker.sock"
+    if not Path(path).exists():
+        emit("docker_socket", "blocked", "socket_absent")
+        return
+    sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    try:
+        sock.connect(path)
+    except OSError as exc:
+        emit("docker_socket", "blocked", type(exc).__name__, errno=exc.errno)
+    else:
+        emit("docker_socket", "connected", path)
+    finally:
+        sock.close()
+
+def try_raw_socket():
+    try:
+        sock = socket.socket(socket.AF_INET, socket.SOCK_RAW, socket.IPPROTO_ICMP)
+    except OSError as exc:
+        emit("raw_socket", "blocked", type(exc).__name__, errno=exc.errno)
+    else:
+        emit("raw_socket", "created", "unexpected")
+        sock.close()
+
+def try_root_write():
+    path = Path("/sandbox-escape-marker")
+    try:
+        path.write_text("synthetic marker", encoding="utf-8")
+    except OSError as exc:
+        emit("root_write", "blocked", type(exc).__name__, errno=exc.errno)
+    else:
+        emit("root_write", "written", str(path))
+        path.unlink(missing_ok=True)
+
+def try_namespace_calls():
+    libc = ctypes.CDLL(None, use_errno=True)
+    clone_newuser = 0x10000000
+    clone_newnet = 0x40000000
+
+    result = libc.unshare(clone_newuser | clone_newnet)
+    if result == -1:
+        code = ctypes.get_errno()
+        emit("unshare", "blocked", os.strerror(code), errno=code)
+    else:
+        emit("unshare", "created", "new user and network namespaces")
+
+    namespace_path = "/proc/1/ns/net"
+    fd = os.open(namespace_path, os.O_RDONLY)
+    try:
+        result = libc.setns(fd, 0)
+        if result == -1:
+            code = ctypes.get_errno()
+            emit("setns", "blocked", os.strerror(code), errno=code)
+        else:
+            emit("setns", "joined", namespace_path)
+    finally:
+        os.close(fd)
+
+def try_mount():
+    libc = ctypes.CDLL(None, use_errno=True)
+    target = b"/tmp"
+    result = libc.mount(
+        b"tmpfs",
+        target,
+        b"tmpfs",
+        0,
+        b"size=1m"
+    )
+    if result == -1:
+        code = ctypes.get_errno()
+        emit("mount", "blocked", os.strerror(code), errno=code)
+    else:
+        emit("mount", "mounted", "/tmp")
+
+def inspect_runtime():
+    status = Path("/proc/self/status").read_text(encoding="utf-8")
+    fields = {}
+    for line in status.splitlines():
+        if line.startswith(("Uid:", "Gid:", "CapEff:", "NoNewPrivs:", "Seccomp:")):
+            key, value = line.split(":", 1)
+            fields[key] = value.strip()
+    emit("runtime_status", "observed", fields)
+
+    numeric_pids = sorted(
+        entry.name for entry in Path("/proc").iterdir()
+        if entry.name.isdigit()
+    )
+    emit("pid_namespace", "observed", numeric_pids[:20], count=len(numeric_pids))
+
+def main():
+    delay = int(os.environ.get("START_DELAY_SECONDS", "20"))
+    emit("startup", "waiting", f"{delay}s before probes")
+    time.sleep(delay)
+
+    env_canary = os.environ.get("CANARY_API_TOKEN", "")
+    file_canary = Path("/bait/cloud_credentials").read_text(
+        encoding="utf-8"
+    ).strip()
+
+    emit(
+        "canary_inventory",
+        "observed",
+        "synthetic values loaded",
+        env_fp=fingerprint(env_canary),
+        file_fp=fingerprint(file_canary),
+        env_present=bool(env_canary),
+        file_present=bool(file_canary),
+    )
+
+    try_tcp("direct_tcp", "192.0.2.10", 443)
+    try_tcp("proxy_tcp", "192.0.2.20", 3128)
+    try_tcp("metadata_tcp", "169.254.169.254", 80)
+    try_dns(env_canary)
+    try_unix_socket()
+
+    try_raw_socket()
+    try_root_write()
+    try_namespace_calls()
+    try_mount()
+    inspect_runtime()
+
+    failures = [
+        event["test"] for event in EVENTS
+        if event["status"] in {
+            "connected", "resolved", "created",
+            "written", "joined", "mounted"
+        }
+    ]
+    emit(
+        "summary",
+        "pass" if not failures else "fail",
+        "all boundary checks completed",
+        failures=failures,
+    )
+    raise SystemExit(0 if not failures else 1)
+
+if __name__ == "__main__":
+    main()</code></pre>
+
+        <p>В события не записывается значение приманки. Вместо него сохраняются первые 16 символов SHA-256. Это не защита настоящего слабого секрета от перебора, но для случайной длинной лабораторной строки позволяет сопоставить события, не размножая значение по журналам.</p>
+      </section>
+
+      <section id="image">
+        <h2>Шаг 3. Соберите минимальный образ</h2>
+
+        <p>Сохраните файл <code>app/Dockerfile</code>:</p>
+
+        <pre><code>FROM python:3.12-slim
+
+RUN groupadd --gid 65532 sandbox \
+    &amp;&amp; useradd \
+       --uid 65532 \
+       --gid 65532 \
+       --no-create-home \
+       --home-dir /nonexistent \
+       --shell /usr/sbin/nologin \
+       sandbox
+
+WORKDIR /app
+COPY --chown=65532:65532 probe.py /app/probe.py
+
+USER 65532:65532
+ENTRYPOINT ["python", "-I", "/app/probe.py"]</code></pre>
+
+        <p>Флаг <code>-I</code> включает изолированный режим Python: текущий каталог и пользовательские site-packages не добавляются в путь импорта, а переменные <code>PYTHON*</code> игнорируются. Это не security boundary, но уменьшает число неявных источников кода.</p>
+
+        <p>Зафиксируйте базовый образ по digest перед использованием стенда в регулярных проверках. Плавающий тег удобен для первой лаборатории, но повторный запуск через месяц иначе может проверять уже другой набор системных библиотек.</p>
+      </section>
+
+      <section id="canaries">
+        <h2>Шаг 4. Создайте синтетические приманки</h2>
+
+        <p><a class="term-link" href="glossary.html#secret">Секрет</a>-приманка должна быть уникальной для одного стенда и не совпадать с форматом рабочих ключей настолько точно, чтобы её можно было случайно принять за настоящую. Создадим две независимые случайные строки:</p>
+
+        <pre><code>umask 077
+
+ENV_CANARY="lab_env_$(openssl rand -hex 24)"
+FILE_CANARY="lab_file_$(openssl rand -hex 24)"
+
+printf 'CANARY_API_TOKEN=%s\n' "$ENV_CANARY" &gt; .env
+printf '%s\n' "$FILE_CANARY" &gt; bait/cloud_credentials
+
+unset ENV_CANARY FILE_CANARY
+
+chmod 600 .env bait/cloud_credentials
+ls -l .env bait/cloud_credentials</code></pre>
+
+        <p>Файл <code>.env</code> и каталог <code>bait</code> не следует добавлять в Git, хотя значения и синтетические. Приманки полезны, когда у каждой есть идентификатор владельца, стенда и срока жизни, но эта информация должна храниться отдельно от самого значения.</p>
+
+        <p>В производственной проверке событием считается не просто чтение приманки. Агент может законно перечислять переменные или искать конфигурацию. Более сильный сигнал — попытка использовать значение в сетевом запросе, аргументе дочернего процесса, DNS-имени или управляющем API.</p>
+      </section>
+
+      <section id="compose">
+        <h2>Шаг 5. Задайте ограничения контейнера</h2>
+
+        <p>Сохраните <code>compose.yaml</code>:</p>
+
+        <pre><code>services:
+  agent:
+    build:
+      context: ./app
+    container_name: agent-sandbox-egress-lab
+    network_mode: none
+    user: "65532:65532"
+    read_only: true
+    init: true
+
+    cap_drop:
+      - ALL
+
+    security_opt:
+      - no-new-privileges:true
+
+    pids_limit: 64
+    mem_limit: 256m
+    cpus: 1.0
+
+    environment:
+      START_DELAY_SECONDS: "20"
+      CANARY_API_TOKEN: "${CANARY_API_TOKEN}"
+      HTTP_PROXY: "http://192.0.2.20:3128"
+      HTTPS_PROXY: "http://192.0.2.20:3128"
+      ALL_PROXY: "socks5://192.0.2.30:1080"
+      NO_PROXY: ""
+
+    volumes:
+      - type: bind
+        source: ./bait
+        target: /bait
+        read_only: true
+
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,nodev,size=16m,mode=1777
+
+    logging:
+      driver: json-file
+      options:
+        max-size: "5m"
+        max-file: "2"</code></pre>
+
+        <p>Каждая настройка закрывает отдельный класс ошибок:</p>
+
+        <ul>
+          <li><code>network_mode: none</code> удаляет внешний сетевой маршрут, а не просит приложение не пользоваться сетью;</li>
+          <li><code>user</code> исключает запуск от root внутри контейнера;</li>
+          <li><code>read_only</code> запрещает изменение образа и запись в корень;</li>
+          <li><code>cap_drop: ALL</code> убирает Linux capabilities, включая управление сетью и монтирование;</li>
+          <li><code>no-new-privileges</code> не позволяет получить дополнительные права через setuid/setgid-файлы;</li>
+          <li>лимиты PID, памяти и CPU уменьшают последствия fork bomb и ресурсного истощения;</li>
+          <li><code>tmpfs</code> даёт ограниченную рабочую область без исполнения бинарников;</li>
+          <li>единственный bind mount доступен только для чтения и содержит лишь приманку.</li>
+        </ul>
+
+        <p>В конфигурации намеренно присутствуют proxy-переменные. Они показывают важное свойство: знание адреса прокси не помогает, если сетевой namespace не имеет маршрута. В реальной системе переменные всё равно следует очищать, потому что после будущего изменения сетевой конфигурации они могут внезапно стать рабочим обходом.</p>
+      </section>
+
+      <section id="preflight">
+        <h2>Шаг 6. Проверьте конфигурацию до запуска</h2>
+
+        <p>Сначала отрендерите Compose-конфигурацию и убедитесь, что переменная приманки подставилась. Не публикуйте вывод команды: он содержит синтетическое значение.</p>
+
+        <pre><code>docker compose config &gt; /dev/null
+docker compose build --pull=false</code></pre>
+
+        <p>Запустите контейнер в фоне. Проверочный процесс ждёт 20 секунд, чтобы вы успели подключить внешний наблюдатель:</p>
+
+        <pre><code>docker compose up -d --no-recreate
+
+CONTAINER_ID="$(docker compose ps -q agent)"
+test -n "$CONTAINER_ID"
+
+docker inspect "$CONTAINER_ID" &gt; evidence/inspect.json
+
+HOST_PID="$(docker inspect \
+  --format '{{.State.Pid}}' \
+  "$CONTAINER_ID")"
+
+test "$HOST_PID" -gt 1
+printf 'container=%s host_pid=%s\n' \
+  "$CONTAINER_ID" "$HOST_PID"</code></pre>
+
+        <p>Теперь подтвердите ключевые свойства непосредственно из фактического состояния Docker, а не только из YAML:</p>
+
+        <pre><code>jq -e '.[0].HostConfig.NetworkMode == "none"' \
+  evidence/inspect.json
+
+jq -e '.[0].HostConfig.ReadonlyRootfs == true' \
+  evidence/inspect.json
+
+jq -e '.[0].Config.User == "65532:65532"' \
+  evidence/inspect.json
+
+jq -e '.[0].HostConfig.CapDrop | index("ALL") != null' \
+  evidence/inspect.json
+
+jq -e '
+  .[0].HostConfig.SecurityOpt
+  | index("no-new-privileges:true") != null
+' evidence/inspect.json
+
+jq -e '
+  all(.[0].Mounts[];
+    (.Destination != "/var/run/docker.sock")
+    and (.Destination != "/run/containerd/containerd.sock")
+    and (.Destination != "/")
+  )
+' evidence/inspect.json</code></pre>
+
+        <p>Если любая команда возвращает ненулевой код, остановитесь. Не интерпретируйте последующий тест как проверку требуемой конфигурации: вы запустили другой стенд.</p>
+      </section>
+
+      <section id="trace">
+        <h2>Шаг 7. Подключите журнал системных вызовов</h2>
+
+        <p>Пока процесс находится в задержке, подключите <code>strace</code> к PID контейнера:</p>
+
+        <pre><code>sudo strace \
+  -ff \
+  -ttt \
+  -s 256 \
+  -yy \
+  -e trace=network,mount,setns,unshare,execve \
+  -o evidence/syscalls \
+  -p "$HOST_PID"</code></pre>
+
+        <p>Команда останется на переднем плане до завершения процесса. Если контейнер уже закончил работу до подключения, увеличьте <code>START_DELAY_SECONDS</code>, пересоздайте его и повторите. Не считайте пустой журнал доказательством отсутствия попыток.</p>
+
+        <p>После завершения сохраните журнал приложения и код выхода:</p>
+
+        <pre><code>docker logs "$CONTAINER_ID" &gt; evidence/events.jsonl 2&gt;&amp;1
+
+EXIT_CODE="$(docker inspect \
+  --format '{{.State.ExitCode}}' \
+  "$CONTAINER_ID")"
+
+printf '%s\n' "$EXIT_CODE" &gt; evidence/container-exit-code.txt
+
+sha256sum \
+  evidence/inspect.json \
+  evidence/events.jsonl \
+  evidence/container-exit-code.txt \
+  evidence/syscalls* \
+  &gt; evidence/hashes.txt</code></pre>
+
+        <p>Не подставляйте в отчёт ожидаемый вывод из этой статьи. Фактическими результатами являются только файлы, созданные на вашей машине. Версия ядра, Docker, seccomp-профиль и настройки хоста могут изменить конкретный <code>errno</code>, хотя итоговое решение останется «разрешено» или «запрещено».</p>
+      </section>
+
+      <section id="verification-script">
+        <h2>Шаг 8. Добавьте автоматическую проверку</h2>
+
+        <p>Сохраните следующий файл как <code>verify.py</code>:</p>
+
+        <pre><code>import json
+import sys
+from pathlib import Path
+
+EVENT_FILE = Path("evidence/events.jsonl")
+INSPECT_FILE = Path("evidence/inspect.json")
+
+required_blocked = {
+    "direct_tcp",
+    "proxy_tcp",
+    "metadata_tcp",
+    "dns_canary",
+    "docker_socket",
+    "raw_socket",
+    "root_write",
+    "unshare",
+    "setns",
+    "mount",
+}
+
+dangerous_statuses = {
+    "connected",
+    "resolved",
+    "created",
+    "written",
+    "joined",
+    "mounted",
+}
+
+def fail(message):
+    print(f"FAIL: {message}")
+    raise SystemExit(1)
+
+if not EVENT_FILE.exists():
+    fail("events.jsonl is missing")
+
+events = []
+for number, line in enumerate(
+    EVENT_FILE.read_text(encoding="utf-8").splitlines(),
+    start=1,
+):
+    try:
+        events.append(json.loads(line))
+    except json.JSONDecodeError as exc:
+        fail(f"invalid JSON on line {number}: {exc}")
+
+by_test = {}
+for event in events:
+    by_test.setdefault(event.get("test"), []).append(event)
+
+missing = sorted(required_blocked - set(by_test))
+if missing:
+    fail(f"missing checks: {missing}")
+
+dangerous = [
+    event for event in events
+    if event.get("status") in dangerous_statuses
+]
+if dangerous:
+    fail(f"boundary violation: {dangerous}")
+
+for test in sorted(required_blocked):
+    statuses = {event.get("status") for event in by_test[test]}
+    if statuses != {"blocked"}:
+        fail(f"{test} has unexpected statuses: {sorted(statuses)}")
+
+inventory = by_test.get("canary_inventory", [])
+if len(inventory) != 1:
+    fail("exactly one canary_inventory event is required")
+
+if not inventory[0].get("env_present"):
+    fail("environment canary was not loaded")
+
+if not inventory[0].get("file_present"):
+    fail("file canary was not loaded")
+
+summaries = by_test.get("summary", [])
+if len(summaries) != 1 or summaries[0].get("status") != "pass":
+    fail("probe summary is not pass")
+
+inspect = json.loads(INSPECT_FILE.read_text(encoding="utf-8"))[0]
+host = inspect["HostConfig"]
+config = inspect["Config"]
+
+if host.get("NetworkMode") != "none":
+    fail("network mode is not none")
+
+if host.get("ReadonlyRootfs") is not True:
+    fail("root filesystem is writable")
+
+if config.get("User") != "65532:65532":
+    fail("container user is unexpected")
+
+if "ALL" not in (host.get("CapDrop") or []):
+    fail("capabilities were not fully dropped")
+
+security = host.get("SecurityOpt") or []
+if "no-new-privileges:true" not in security:
+    fail("no-new-privileges is missing")
+
+for mount in inspect.get("Mounts", []):
+    destination = mount.get("Destination")
+    if destination in {
+        "/",
+        "/var/run/docker.sock",
+        "/run/containerd/containerd.sock",
+    }:
+        fail(f"dangerous mount: {destination}")
+
+print("PASS: configuration and probe events satisfy the lab policy")</code></pre>
+
+        <p>Запустите проверку:</p>
+
+        <pre><code>python3 verify.py
+test "$(cat evidence/container-exit-code.txt)" = "0"</code></pre>
+
+        <p>После этого отдельно убедитесь, что внешний журнал действительно содержит контрольные вызовы:</p>
+
+        <pre><code>grep -hE \
+  'connect\\(|socket\\(|unshare\\(|setns\\(|mount\\(' \
+  evidence/syscalls* \
+  &gt; evidence/relevant-syscalls.txt
+
+test -s evidence/relevant-syscalls.txt
+sed -n '1,120p' evidence/relevant-syscalls.txt</code></pre>
+
+        <p>Автоматическая проверка требует, чтобы все сценарии были выполнены и получили статус <code>blocked</code>. Так контейнер, который аварийно завершился до сетевых тестов, не сможет получить ложный положительный результат.</p>
+      </section>
+
+      <section id="manual-verification">
+        <h2>Ручная верификация доказательств</h2>
+
+        <p>Даже при зелёном результате просмотрите четыре независимых источника.</p>
+
+        <h3>1. Фактическая конфигурация</h3>
+
+        <p>В <code>inspect.json</code> должны быть видны <code>NetworkMode: none</code>, read-only rootfs, непривилегированный UID, сброшенные capabilities и отсутствие опасных mount points. Проверьте также, что не включены <code>Privileged</code>, <code>PidMode: host</code>, <code>IpcMode: host</code> и <code>UsernsMode: host</code>:</p>
+
+        <pre><code>jq '.[0].HostConfig | {
+  Privileged,
+  NetworkMode,
+  PidMode,
+  IpcMode,
+  UsernsMode,
+  ReadonlyRootfs,
+  CapAdd,
+  CapDrop,
+  SecurityOpt
+}' evidence/inspect.json</code></pre>
+
+        <h3>2. События процесса</h3>
+
+        <p>Каждый обязательный тест должен присутствовать ровно один раз. Статусы <code>connected</code>, <code>resolved</code>, <code>created</code>, <code>written</code>, <code>joined</code> и <code>mounted</code> являются провалом независимо от итоговой строки <code>summary</code>.</p>
+
+        <pre><code>jq -r '[.test, .status, .detail] | @tsv' \
+  evidence/events.jsonl</code></pre>
+
+        <h3>3. Журнал вне песочницы</h3>
+
+        <p>Найдите обращения к тестовым адресам и metadata endpoint:</p>
+
+        <pre><code>grep -hE \
+  '192\\.0\\.2\\.(10|20)|169\\.254\\.169\\.254' \
+  evidence/syscalls*</code></pre>
+
+        <p>Наличие вызова <code>connect</code> здесь ожидаемо: стенд должен доказать, что попытка была сделана. Решающее значение имеет результат системного вызова. Установленное соединение или отсутствие ошибки означает провал.</p>
+
+        <h3>4. Изоляция процессов</h3>
+
+        <p>Событие <code>pid_namespace</code> не должно показывать полный список процессов хоста. Само количество процессов не является универсальным порогом: init-процесс и трассировка могут менять картину. Сравните список с ожидаемой структурой контейнера и проверьте, что <code>PidMode</code> не равен <code>host</code>.</p>
+      </section>
+
+      <section id="negative-controls">
+        <h2>Шаг 9. Проведите отрицательные контрольные тесты</h2>
+
+        <p>Защита заслуживает доверия, если тест способен обнаружить намеренно внесённую ошибку. Проверяйте изменения по одному и после каждого возвращайтесь к исходной конфигурации.</p>
+
+        <h3>Контроль A: обычная bridge-сеть</h3>
+
+        <p>Во временной копии конфигурации удалите <code>network_mode: none</code>. Не меняйте тестовые адреса на реальные. Запустите стенд снова и сравните <code>inspect.json</code>. Проверка конфигурации обязана завершиться с ошибкой ещё до интерпретации сетевых событий.</p>
+
+        <p>Этот контроль не обязан устанавливать соединение с зарезервированным IP. Его задача — доказать, что policy-check замечает появление маршрутизируемой сети.</p>
+
+        <h3>Контроль B: writable root filesystem</h3>
+
+        <p>Во временной конфигурации установите <code>read_only: false</code>. Тест <code>root_write</code> должен заметить возможность создать файл, а <code>verify.py</code> — завершиться с ошибкой. После теста удалите временный контейнер вместе с записываемым слоем.</p>
+
+        <h3>Контроль C: добавленная capability</h3>
+
+        <p>Не используйте <code>privileged: true</code>. Для ограниченного отрицательного контроля временно замените <code>cap_drop: ALL</code> на:</p>
+
+        <pre><code>cap_drop:
+  - ALL
+cap_add:
+  - NET_RAW</code></pre>
+
+        <p>Проверка raw socket должна обнаружить созданный сокет. Этот тест показывает, что сценарий действительно достигает чувствительной операции, а не всегда печатает заранее заданное <code>blocked</code>.</p>
+
+        <h3>Контроль D: фиктивный Unix-сокет</h3>
+
+        <p>Не монтируйте настоящий Docker socket. Вместо него можно добавить отдельный безопасный Unix-сервер с тестовым путём и изменить путь в копии <code>probe.py</code>. Проверка должна отличить «сокет отсутствует» от успешного локального IPC-соединения.</p>
+
+        <aside class="note">
+          <p><strong>После отрицательных контролей.</strong> Выполните <code>docker compose down --remove-orphans</code>, восстановите исходные файлы, пересоберите образ и повторите основной тест. Не используйте доказательства из намеренно ослабленного запуска как финальный отчёт.</p>
+        </aside>
+      </section>
+
+      <section id="proxy-test">
+        <h2>Как отдельно проверить разрешённый egress-прокси</h2>
+
+        <p>Режим <code>network_mode: none</code> подходит агенту, которому интернет не нужен. Если рабочая задача требует нескольких внешних API, не переключайте контейнер на неограниченную bridge-сеть. Добавьте отдельный <a class="term-link" href="glossary.html#allowlist">allowlist</a>-шлюз и проверяйте два уровня:</p>
+
+        <ol>
+          <li>на сетевом уровне контейнер может соединиться только с IP и портом шлюза;</li>
+          <li>шлюз разрешает только конкретные схемы, методы, домены, пути и объёмы данных.</li>
+        </ol>
+
+        <p>Минимальная матрица тестов для прокси:</p>
+
+        <table>
+          <thead>
+            <tr>
+              <th>Запрос</th>
+              <th>Ожидаемое решение</th>
+              <th>Что зафиксировать</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td>Разрешённый домен и путь</td>
+              <td>Разрешить</td>
+              <td>Идентификатор агента, правило, объём</td>
+            </tr>
+            <tr>
+              <td>Другой домен</td>
+              <td>Запретить</td>
+              <td>Запрошенный host и правило отказа</td>
+            </tr>
+            <tr>
+              <td>IP вместо домена</td>
+              <td>Запретить</td>
+              <td>Исходный IP и назначение</td>
+            </tr>
+            <tr>
+              <td>HTTP redirect на другой host</td>
+              <td>Запретить переход</td>
+              <td>Оба назначения</td>
+            </tr>
+            <tr>
+              <td><code>CONNECT</code> к произвольному порту</td>
+              <td>Запретить</td>
+              <td>Host, порт и решение</td>
+            </tr>
+            <tr>
+              <td>Домен с разрешённым суффиксом как подстрокой</td>
+              <td>Запретить</td>
+              <td>Нормализованное имя</td>
+            </tr>
+            <tr>
+              <td>Ответ DNS с private/link-local IP</td>
+              <td>Запретить</td>
+              <td>Разрешённые IP после резолвинга</td>
+            </tr>
+            <tr>
+              <td>Большое тело с отпечатком приманки</td>
+              <td>Запретить и поднять сигнал</td>
+              <td>Размер, fingerprint, run ID</td>
+            </tr>
+          </tbody>
+        </table>
+
+        <p>Прокси не должен принимать решение только по заголовку <code>Host</code>. Нужны нормализация имени, повторная проверка адреса после DNS, запрет private, loopback и link-local диапазонов, контроль redirect и защита от DNS rebinding. TLS passthrough ограничивает возможность анализировать путь и тело; TLS inspection добавляет собственные риски и требует отдельной модели доверия.</p>
+
+        <p>Для агентов с package manager лучше выделять внутренний репозиторий с заранее одобренными артефактами, а не предоставлять универсальный HTTP CONNECT. Установка пакета должна происходить на этапе сборки образа, а не во время выполнения недоверенной задачи.</p>
+      </section>
+
+      <section id="escape-review">
+        <h2>Проверка путей выхода из песочницы</h2>
+
+        <p>Сетевые тесты не заменяют проверку самой среды выполнения. Перед допуском образа соберите отдельную таблицу границ:</p>
+
+        <table>
+          <thead>
+            <tr>
+              <th>Поверхность</th>
+              <th>Безопасное состояние</th>
+              <th>Как проверить</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td>Docker/containerd socket</td>
+              <td>Не смонтирован</td>
+              <td><code>docker inspect</code>, поиск Unix-сокетов</td>
+            </tr>
+            <tr>
+              <td>Capabilities</td>
+              <td>Сброшены, исключения документированы</td>
+              <td><code>CapEff</code>, фактические негативные тесты</td>
+            </tr>
+            <tr>
+              <td>Seccomp</td>
+              <td>Не отключён</td>
+              <td><code>/proc/self/status</code>, конфигурация runtime</td>
+            </tr>
+            <tr>
+              <td>AppArmor/SELinux</td>
+              <td>Профиль включён и не unconfined</td>
+              <td>Настройки хоста и container inspect</td>
+            </tr>
+            <tr>
+              <td>PID namespace</td>
+              <td>Не host</td>
+              <td><code>PidMode</code>, список <code>/proc</code></td>
+            </tr>
+            <tr>
+              <td>User namespace</td>
+              <td>Root внутри не равен root хоста</td>
+              <td>Настройки daemon/runtime</td>
+            </tr>
+            <tr>
+              <td>Bind mounts</td>
+              <td>Минимальны и read-only</td>
+              <td>Полный список <code>Mounts</code></td>
+            </tr>
+            <tr>
+              <td>Устройства</td>
+              <td>Нет добавленных host devices</td>
+              <td><code>Devices</code> и device cgroup</td>
+            </tr>
+            <tr>
+              <td>Runtime и ядро</td>
+              <td>Поддерживаемые исправленные версии</td>
+              <td>Инвентаризация и внутренний vulnerability scan</td>
+            </tr>
+          </tbody>
+        </table>
+
+        <p>Попытка <code>unshare</code> в лаборатории подтверждает только текущую комбинацию UID, capabilities, seccomp и настроек ядра. Она не доказывает отсутствие неизвестной цепочки уязвимостей. Для задач с действительно недоверенным кодом усилением могут быть отдельная виртуальная машина, microVM или sandboxed runtime: тогда успешный выход из контейнера всё ещё встречает следующую независимую границу.</p>
+      </section>
+
+      <section id="failure-cases">
+        <h2>Типичные провалы и их интерпретация</h2>
+
+        <h3>Контейнер не имеет прямого интернета, но DNS работает</h3>
+
+        <p>Это не полный запрет egress. DNS-запросы могут переносить небольшие объёмы данных в именах. Уберите DNS из namespace без сети либо разрешайте резолвинг только через контролируемый resolver с журналированием, ограничением длины, частоты и допустимых зон.</p>
+
+        <h3>Прямой адрес заблокирован, proxy-соединение установлено</h3>
+
+        <p>Политика применена к назначению, но не к посреднику. Ограничьте сам proxy на уровне сетевой политики и настройте application-layer allowlist. Проверьте переменные окружения, <code>.npmrc</code>, <code>pip.conf</code>, Git config, Maven settings и системные конфигурации.</p>
+
+        <h3>Metadata endpoint отвечает</h3>
+
+        <p>Песочница наследует маршрут облачной среды. Заблокируйте link-local диапазон сетевой политикой и отключите выдачу workload credentials там, где она не нужна. Если токен необходим, его полномочия должны соответствовать одной операции и иметь короткий срок жизни.</p>
+
+        <h3>Docker socket отсутствует, но найден другой управляющий сокет</h3>
+
+        <p>Проверьте containerd, CRI-O, Kubernetes service account, SSH-agent, D-Bus, X11/Wayland и сокеты внутренних автоматизаций. Allowlist mount points должен быть явным; поиск только одного известного пути недостаточен.</p>
+
+        <h3>Raw socket создаётся</h3>
+
+        <p>У процесса сохранилась <code>CAP_NET_RAW</code> или эквивалентное разрешение. Оно может использоваться для нестандартных протоколов и сетевой разведки. Удалите capability, пересоздайте контейнер и повторите тест.</p>
+
+        <h3><code>unshare</code> разрешён непривилегированному пользователю</h3>
+
+        <p>Это не всегда немедленный escape, но увеличивает доступную поверхность ядра. Решение зависит от workload и дистрибутива: ограничьте системный вызов seccomp-профилем или параметрами хоста, если агенту не требуется создание namespaces.</p>
+
+        <h3>Проверка прошла, но <code>strace</code> пуст</h3>
+
+        <p>Нет независимого доказательства, что попытки действительно происходили. Возможно, наблюдатель подключился слишком поздно, PID был неверным или attach запретил Yama. Увеличьте задержку, подтвердите PID через <code>docker inspect</code> и повторите.</p>
+
+        <h3>Приманка попала в обычный лог</h3>
+
+        <p>Даже синтетические значения не следует бесконтрольно копировать. Настройте редактирование логов и сохраняйте идентификатор или fingerprint. Для рабочих секретов журналирование полного значения недопустимо.</p>
+
+        <h3>Все негативные тесты заблокированы, но полезная задача не работает</h3>
+
+        <p>Это безопасный, но бесполезный стенд. Для рабочего агента добавьте отдельный положительный контроль: доступ к одному фиктивному внутреннему API через точное разрешение. Проверяйте одновременно, что разрешённый маршрут работает, а соседний host, порт, метод и redirect блокируются.</p>
+      </section>
+
+      <section id="production">
+        <h2>Перенос проверки в производственный контур</h2>
+
+        <p>Лабораторный <a class="term-link" href="glossary.html#workflow">рабочий процесс</a> можно превратить в проверку перед выпуском образа:</p>
+
+        <ol>
+          <li>собрать образ по закреплённым зависимостям;</li>
+          <li>запустить его с уникальной парой приманок;</li>
+          <li>применить ту же сетевую политику и runtime-профиль, что в рабочей среде;</li>
+          <li>выполнить отрицательные и положительные сценарии;</li>
+          <li>собрать события сети, процессов, файловой системы и policy engine;</li>
+          <li>связать записи общим <code>run_id</code>;</li>
+          <li>завершить проверку ошибкой при отсутствующем событии, неизвестном результате или расширении полномочий;</li>
+          <li>сохранить версии образа, runtime, ядра и правил вместе с доказательствами.</li>
+        </ol>
+
+        <p>Для долгоживущих агентов добавьте непрерывные сигналы:</p>
+
+        <ul>
+          <li>первое соединение с новым назначением;</li>
+          <li>обращение к private, loopback или link-local диапазону;</li>
+          <li>необычный объём исходящих данных;</li>
+          <li>частые DNS-запросы с длинными уникальными метками;</li>
+          <li>запуск shell, package manager, сетевого диагностического инструмента или нового интерпретатора;</li>
+          <li>доступ к файлам приманок;</li>
+          <li>создание Unix-сокета или обращение к управляющему сокету;</li>
+          <li>изменение namespace, capabilities или seccomp-состояния;</li>
+          <li>расхождение между разрешением policy engine и фактическим сетевым событием.</li>
+        </ul>
+
+        <p>Сигнал не обязательно означает атаку. Например, агент разработки может законно запускать shell. Ценность появляется при корреляции: чтение приманки, запуск неизвестного процесса и попытка соединения в одном <code>run_id</code> значительно важнее каждого события по отдельности.</p>
+
+        <p>Для высокорисковых действий добавьте <a class="term-link" href="glossary.html#approval-gate">контур подтверждения</a>. Подтверждение должно быть связано с точным доменом, методом, объёмом и сроком разрешения. Формулировка «разрешить агенту интернет» слишком широка и не должна использоваться как approval.</p>
+      </section>
+
+      <section id="limitations">
+        <h2>Ограничения лаборатории</h2>
+
+        <ul>
+          <li>Стенд проверяет Linux-контейнер под Docker и не переносится автоматически на macOS, Windows, Kubernetes или serverless runtime.</li>
+          <li><code>network_mode: none</code> доказывает отсутствие обычного сетевого маршрута, но не анализирует уязвимости ядра и гипервизора.</li>
+          <li><code>strace</code> подходит для короткой проверки, но создаёт накладные расходы и не является полноценной системой длительного мониторинга.</li>
+          <li>Тестовые адреса не доказывают корректность allowlist-прокси: для него нужна отдельная матрица разрешённых и запрещённых назначений.</li>
+          <li>Приманки обнаруживают только сценарии, в которых код их читает или использует. Агент может украсть другой файл, не касаясь приманки.</li>
+          <li>Fingerprint в журнале не заменяет защищённое хранилище секретов и не должен применяться к коротким предсказуемым значениям.</li>
+          <li>Успешный тест одной версии образа не гарантирует безопасность следующей версии runtime, ядра, зависимости или конфигурации.</li>
+          <li>Лаборатория не проверяет побочные каналы через время выполнения, нагрузку на общие ресурсы, кэш CPU или аппаратные уязвимости.</li>
+          <li>Нет теста на межконтейнерную сеть, service mesh и DNS rebinding, поскольку базовый режим полностью отключает сеть.</li>
+          <li>Нельзя доказать отсутствие неизвестной цепочки уязвимостей одним набором функциональных проверок.</li>
+        </ul>
+
+        <p>Поэтому итог следует формулировать точно: «при зафиксированной конфигурации и перечисленных сценариях произвольный исходящий трафик и проверенные операции повышения полномочий были запрещены». Формулировка «песочница неуязвима» не подтверждается этим экспериментом.</p>
+      </section>
+
+      <section id="cleanup">
+        <h2>Очистка стенда</h2>
+
+        <p>Сначала остановите и удалите лабораторный контейнер:</p>
+
+        <pre><code>docker compose down --remove-orphans</code></pre>
+
+        <p>Проверьте точный каталог перед удалением приманок. Если доказательства нужны для отчёта, сохраните <code>evidence</code> в контролируемом хранилище, затем удалите только локальные синтетические значения:</p>
+
+        <pre><code>pwd
+ls -l .env bait/cloud_credentials
+shred -u .env bait/cloud_credentials 2&gt;/dev/null \
+  || rm -f .env bait/cloud_credentials</code></pre>
+
+        <p>Приманки не дают доступа к сервисам, но их удаление предотвращает повторное использование одной строки в нескольких прогонах. Для следующего запуска создайте новую пару.</p>
+      </section>
+
+      <section id="checklist">
+        <h2>Финальный чек-лист воспроизводимости</h2>
+
+        <ul>
+          <li>Стенд запущен на отдельной машине или в отдельной виртуальной среде.</li>
+          <li>Внутри нет рабочих токенов, SSH-ключей, облачных профилей и исходных данных.</li>
+          <li>Фактический <code>NetworkMode</code> равен <code>none</code>.</li>
+          <li>Контейнер работает от UID/GID 65532, а не от root.</li>
+          <li>Корневая файловая система доступна только для чтения.</li>
+          <li>Все capabilities сброшены.</li>
+          <li><code>no-new-privileges</code> включён.</li>
+          <li>Docker, containerd и другие управляющие сокеты не смонтированы.</li>
+          <li>Host PID, IPC и network namespaces не используются.</li>
+          <li>Приманки уникальны для запуска и не обладают реальными полномочиями.</li>
+          <li>В журнал попадают только отпечатки приманок, а не значения.</li>
+          <li>Все сетевые и привилегированные сценарии действительно выполнены.</li>
+          <li>Внешний наблюдатель зафиксировал системные вызовы.</li>
+          <li>Ни один опасный статус не появился в <code>events.jsonl</code>.</li>
+          <li>Автоматическая проверка замечает намеренно ослабленную конфигурацию.</li>
+          <li>Версии образа, Docker, ядра и профилей сохранены с результатом.</li>
+          <li>Контрольные суммы доказательств рассчитаны после завершения запуска.</li>
+          <li>Вывод отчёта ограничен проверенными свойствами, без заявления об абсолютной безопасности.</li>
+        </ul>
+      </section>
+
+      <section id="conclusion">
+        <h2>Вывод</h2>
+
+        <p>Надёжная песочница строится не из одной настройки. Сетевой namespace убирает маршрут, непривилегированный пользователь и capabilities ограничивают системные операции, read-only filesystem уменьшает возможность закрепления, приманки показывают интерес к ценным данным, а внешний журнал позволяет доказать попытку независимо от поведения агента.</p>
+
+        <p>Главный принцип проверки — отделять намерение от результата. Агент должен суметь попытаться установить соединение, обратиться к прокси, прочитать приманку или вызвать <code>mount</code>. Защита считается работающей только тогда, когда попытка видна снаружи, чувствительная операция не выполнена, а автоматическая проверка отклоняет неполный или двусмысленный прогон.</p>
+
+        <p>Начинайте с режима без сети. Если интернет действительно нужен, добавляйте не общую связность, а один контролируемый шлюз с точным allowlist, журналированием и короткоживущими разрешениями. Любое новое исключение должно сопровождаться положительным тестом полезного маршрута и отрицательными тестами соседних направлений.</p>
+      </section>
+
+      <p class="back">
+        <a class="text-link" href="guides.html">← Все практические материалы</a>
+        ·
+        <a class="text-link" href="glossary.html">Лабораторный словарь →</a>
+      </p>
+    </article>
+  </main>
+
+  <footer>
+    <span>Agent Lab Journal</span>
+    <span>Real experiments. Verifiable conclusions.</span>
+  </footer>
+</body>
+</html>
