@@ -1,0 +1,1279 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Фоновый AI-агент с удалённым MCP на Gemini API — Agent Lab Journal</title>
+  <meta name="description" content="Практическое руководство по созданию фонового AI-агента на Gemini API: очередь задач, статус выполнения, восстановление после сбоев и вызов внутренних инструментов через удалённый MCP-сервер.">
+  <link rel="canonical" href="https://agentlabjournal.online/gemini-managed-agent-background-mcp.html">
+  <link rel="stylesheet" href="style.css">
+  <link rel="stylesheet" href="reading.css">
+  <script type="application/ld+json">
+  {
+    "@context": "https://schema.org",
+    "@type": "Article",
+    "headline": "Фоновый AI-агент с удалённым MCP на Gemini API",
+    "description": "Практическое руководство по созданию фонового AI-агента на Gemini API: очередь задач, статус выполнения, восстановление после сбоев и вызов внутренних инструментов через удалённый MCP-сервер.",
+    "author": {
+      "@type": "Organization",
+      "name": "Agent Lab Journal"
+    },
+    "publisher": {
+      "@type": "Organization",
+      "name": "Agent Lab Journal"
+    },
+    "mainEntityOfPage": {
+      "@type": "WebPage",
+      "@id": "https://agentlabjournal.online/gemini-managed-agent-background-mcp.html"
+    }
+  }
+  </script>
+</head>
+<body>
+  <header class="site-header">
+    <div class="container">
+      <a class="site-title" href="index.html">Agent Lab Journal</a>
+      <nav aria-label="Основная навигация">
+        <a href="index.html">Статьи</a>
+        <a href="guides.html">Гайды</a>
+        <a href="glossary.html">Глоссарий</a>
+      </nav>
+    </div>
+  </header>
+
+  <main>
+    <article class="reading-container">
+      <header class="article-header">
+        <p class="eyebrow">Продвинутый уровень</p>
+        <h1>Фоновый AI-агент с удалённым MCP на Gemini API</h1>
+        <div class="reading-meta">
+          <span>Время чтения и практики: 60 минут</span>
+          <span>Результат: фоновая задача, статус и удалённые инструменты</span>
+        </div>
+        <p class="lead"><strong>Долгая агентная задача не должна жить внутри одного HTTP-запроса.</strong> Клиент может закрыть вкладку, прокси — оборвать соединение, а модель — запросить несколько инструментов подряд. Надёжная схема принимает работу за миллисекунды, сохраняет её в очереди, возвращает идентификатор, выполняет цикл модели в отдельном процессе и подключает внутренние системы через удалённый MCP-сервер.</p>
+      </header>
+
+      <section>
+        <h2>Что мы построим</h2>
+        <p>В этой лабораторной работе мы создадим <a href="glossary.html#ai-agent">AI-агента</a>, который использует <a href="glossary.html#gemini-api">Gemini API</a> для планирования и генерации ответа, а внутренний инструмент получает через удалённый <a href="glossary.html#mcp">Model Context Protocol, или MCP</a>. Пользователь запускает работу через короткий <a href="glossary.html#http">HTTP</a>-запрос и затем проверяет состояние отдельным запросом.</p>
+
+        <p>Готовая система будет состоять из четырёх частей:</p>
+        <ol>
+          <li>API принимает описание задачи, сохраняет её и немедленно отвечает кодом <code>202 Accepted</code>.</li>
+          <li>Фоновый worker забирает задачу, обращается к Gemini и выполняет цикл вызовов инструментов.</li>
+          <li>Удалённый MCP-сервер публикует разрешённые операции над внутренними данными.</li>
+          <li>Клиент получает состояние <code>queued</code>, <code>running</code>, <code>succeeded</code> или <code>failed</code> через отдельный endpoint.</li>
+        </ol>
+
+        <pre><code>Клиент
+  │
+  │ POST /v1/jobs
+  ▼
+API ───────► SQLite: queued
+  │              │
+  │ 202 + job_id │ claim
+  ▼              ▼
+Клиент        Worker ─────► Gemini API
+  │              ▲             │
+  │ GET status   │ tool result │ function call
+  ▼              │             ▼
+API ◄──────── SQLite       удалённый MCP
+                                  │
+                                  ▼
+                         внутренний источник</code></pre>
+
+        <p>Для демонстрации очередь хранится в SQLite. Это позволяет повторить работу без Redis, брокера сообщений и облачной инфраструктуры. В разделе об ограничениях разберём, когда SQLite следует заменить.</p>
+      </section>
+
+      <section>
+        <h2>Конкретный кейс: анализ инцидента</h2>
+        <p>Представим внутреннего помощника дежурного инженера. Пользователь передаёт описание симптома: «После релиза у сервиса billing выросло число ответов 503. Подготовь план диагностики». Модель должна запросить инструкцию для нужного сервиса, сопоставить её с симптомами и вернуть последовательность безопасных действий.</p>
+
+        <p>Внутренний каталог инструкций нельзя напрямую открыть из публичного API. Поэтому мы публикуем узкий MCP-инструмент <code>lookup_runbook</code>. Он принимает имя сервиса и возвращает только заранее разрешённые поля. В учебном примере данные статичны, но граница интеграции остаётся такой же для базы знаний, CMDB, Git-репозитория или внутреннего REST API.</p>
+
+        <p>Такой кейс показывает две независимые проблемы:</p>
+        <ul>
+          <li>выполнение может занять дольше тайм-аута браузера, балансировщика или serverless-платформы;</li>
+          <li>доступ к внутренним данным требует отдельной доверенной точки, а не прямого сетевого доступа со стороны модели.</li>
+        </ul>
+      </section>
+
+      <section>
+        <h2>Почему обычный синхронный endpoint ненадёжен</h2>
+        <p>Наивная реализация вызывает Gemini прямо внутри обработчика <code>POST /analyze</code>, затем там же обращается к инструментам и удерживает соединение до готового ответа. Она работает на коротких демонстрациях, но плохо переносит реальную эксплуатацию.</p>
+
+        <p>Разрыв клиентского соединения не означает автоматической отмены внешних вызовов. Возможна неприятная комбинация: клиент считает запрос неудачным, повторяет его, а сервер продолжает первую работу. Без <a href="glossary.html#idempotency">идемпотентности</a> две копии агента могут выполнить один и тот же изменяющий инструмент.</p>
+
+        <p>Дополнительные источники сбоев:</p>
+        <ul>
+          <li>тайм-аут reverse proxy короче времени выполнения агента;</li>
+          <li>перезапуск API-процесса уничтожает задачу, хранившуюся только в памяти;</li>
+          <li>повторный вызов модели после сетевой ошибки расходует токены и может дать другой результат;</li>
+          <li>инструмент отвечает медленно или возвращает слишком большой документ;</li>
+          <li>worker завершается после получения задания, но до записи результата;</li>
+          <li>модель циклически вызывает один инструмент с одинаковыми аргументами.</li>
+        </ul>
+
+        <p>Правильная граница HTTP-запроса заканчивается сразу после надёжной постановки работы в очередь. Фактическое выполнение получает собственный жизненный цикл.</p>
+      </section>
+
+      <section>
+        <h2>Контракт фоновой задачи</h2>
+        <p>Создание задачи возвращает идентификатор и URL состояния:</p>
+
+        <pre><code>POST /v1/jobs
+Idempotency-Key: incident-2026-07-26-billing-503
+Content-Type: application/json
+
+{
+  "prompt": "После релиза у billing выросло число 503. Подготовь план диагностики."
+}</code></pre>
+
+        <pre><code>HTTP/1.1 202 Accepted
+Location: /v1/jobs/01K123...
+
+{
+  "id": "01K123...",
+  "status": "queued",
+  "status_url": "/v1/jobs/01K123..."
+}</code></pre>
+
+        <p>Endpoint состояния возвращает одну и ту же структуру на всех стадиях:</p>
+
+        <pre><code>{
+  "id": "01K123...",
+  "status": "running",
+  "created_at": "2026-07-26T10:00:00+00:00",
+  "started_at": "2026-07-26T10:00:01+00:00",
+  "finished_at": null,
+  "result": null,
+  "error": null,
+  "attempt": 1
+}</code></pre>
+
+        <p>Клиент использует <a href="glossary.html#polling">polling</a> с увеличивающимся интервалом. Для интерфейса с большим количеством обновлений можно добавить <a href="glossary.html#sse">Server-Sent Events</a> или webhook, но состояние в базе всё равно остаётся источником истины.</p>
+      </section>
+
+      <section>
+        <h2>Подготовка проекта</h2>
+        <p>Нужны Python 3.11 или новее, ключ Gemini API и возможность запустить два процесса: приложение с API и worker. Удалённый MCP-сервер запускается третьим процессом или разворачивается на отдельном внутреннем хосте.</p>
+
+        <pre><code>mkdir managed-agent
+cd managed-agent
+python -m venv .venv
+source .venv/bin/activate
+pip install fastapi "uvicorn[standard]" google-genai mcp httpx pydantic-settings</code></pre>
+
+        <p>Структура проекта:</p>
+
+        <pre><code>managed-agent/
+├── app/
+│   ├── __init__.py
+│   ├── api.py
+│   ├── agent.py
+│   ├── config.py
+│   ├── db.py
+│   └── worker.py
+├── mcp_server/
+│   └── server.py
+└── .env</code></pre>
+
+        <p>Создайте конфигурацию окружения. Настоящие значения не включайте в репозиторий:</p>
+
+        <pre><code>GEMINI_API_KEY=replace-me
+GEMINI_MODEL=gemini-2.5-flash
+MCP_URL=http://127.0.0.1:8001/mcp
+MCP_BEARER_TOKEN=
+DATABASE_PATH=./agent_jobs.sqlite3
+MAX_AGENT_STEPS=8
+TOOL_TIMEOUT_SECONDS=20
+JOB_LEASE_SECONDS=120</code></pre>
+
+        <p>Название модели вынесено в переменную, потому что доступность моделей зависит от аккаунта и может меняться. Перед запуском укажите модель Gemini, доступную вашему проекту. Секрет передаётся только через окружение.</p>
+      </section>
+
+      <section>
+        <h2>Шаг 1. Конфигурация</h2>
+        <p>Файл <code>app/config.py</code>:</p>
+
+        <pre><code>from functools import lru_cache
+
+from pydantic_settings import BaseSettings, SettingsConfigDict
+
+
+class Settings(BaseSettings):
+    gemini_api_key: str
+    gemini_model: str = "gemini-2.5-flash"
+    mcp_url: str = "http://127.0.0.1:8001/mcp"
+    mcp_bearer_token: str = ""
+    database_path: str = "./agent_jobs.sqlite3"
+    max_agent_steps: int = 8
+    tool_timeout_seconds: float = 20.0
+    job_lease_seconds: int = 120
+
+    model_config = SettingsConfigDict(
+        env_file=".env",
+        env_file_encoding="utf-8",
+        extra="ignore",
+    )
+
+
+@lru_cache
+def get_settings() -&gt; Settings:
+    return Settings()</code></pre>
+
+        <p>Ограничение числа шагов обязательно. Без него модель и инструмент способны образовать цикл, который будет расходовать бюджет до внешнего тайм-аута.</p>
+      </section>
+
+      <section>
+        <h2>Шаг 2. Персистентная очередь в SQLite</h2>
+        <p>Нам нужны атомарное получение задания, сохранение результата и lease — срок владения работой. Если worker погибнет, задача не должна навсегда остаться в состоянии <code>running</code>.</p>
+
+        <p>Файл <code>app/db.py</code>:</p>
+
+        <pre><code>import json
+import sqlite3
+import uuid
+from contextlib import contextmanager
+from datetime import datetime, timedelta, timezone
+from typing import Any
+
+from app.config import get_settings
+
+
+def utc_now() -&gt; datetime:
+    return datetime.now(timezone.utc)
+
+
+def iso(value: datetime | None = None) -&gt; str:
+    return (value or utc_now()).isoformat()
+
+
+@contextmanager
+def connect():
+    settings = get_settings()
+    connection = sqlite3.connect(
+        settings.database_path,
+        timeout=10,
+        isolation_level=None,
+    )
+    connection.row_factory = sqlite3.Row
+    connection.execute("PRAGMA journal_mode=WAL")
+    connection.execute("PRAGMA foreign_keys=ON")
+    try:
+        yield connection
+    finally:
+        connection.close()
+
+
+def init_db() -&gt; None:
+    with connect() as db:
+        db.executescript("""
+        CREATE TABLE IF NOT EXISTS jobs (
+            id TEXT PRIMARY KEY,
+            idempotency_key TEXT UNIQUE,
+            prompt TEXT NOT NULL,
+            status TEXT NOT NULL
+                CHECK (status IN ('queued', 'running', 'succeeded', 'failed')),
+            result_json TEXT,
+            error_json TEXT,
+            attempt INTEGER NOT NULL DEFAULT 0,
+            created_at TEXT NOT NULL,
+            started_at TEXT,
+            heartbeat_at TEXT,
+            lease_expires_at TEXT,
+            finished_at TEXT
+        );
+
+        CREATE INDEX IF NOT EXISTS jobs_claim_idx
+        ON jobs(status, created_at);
+        """)
+
+
+def row_to_job(row: sqlite3.Row | None) -&gt; dict[str, Any] | None:
+    if row is None:
+        return None
+
+    job = dict(row)
+    job["result"] = (
+        json.loads(job.pop("result_json"))
+        if job["result_json"] is not None
+        else None
+    )
+    job["error"] = (
+        json.loads(job.pop("error_json"))
+        if job["error_json"] is not None
+        else None
+    )
+    job.pop("prompt", None)
+    job.pop("heartbeat_at", None)
+    job.pop("lease_expires_at", None)
+    job.pop("idempotency_key", None)
+    return job
+
+
+def create_job(prompt: str, idempotency_key: str | None) -&gt; dict[str, Any]:
+    job_id = uuid.uuid4().hex
+    created_at = iso()
+
+    with connect() as db:
+        db.execute("BEGIN IMMEDIATE")
+        try:
+            if idempotency_key:
+                existing = db.execute(
+                    "SELECT * FROM jobs WHERE idempotency_key = ?",
+                    (idempotency_key,),
+                ).fetchone()
+                if existing:
+                    db.execute("COMMIT")
+                    return row_to_job(existing)
+
+            db.execute(
+                """
+                INSERT INTO jobs (
+                    id, idempotency_key, prompt, status, created_at
+                ) VALUES (?, ?, ?, 'queued', ?)
+                """,
+                (job_id, idempotency_key, prompt, created_at),
+            )
+            row = db.execute(
+                "SELECT * FROM jobs WHERE id = ?",
+                (job_id,),
+            ).fetchone()
+            db.execute("COMMIT")
+            return row_to_job(row)
+        except Exception:
+            db.execute("ROLLBACK")
+            raise
+
+
+def get_job(job_id: str) -&gt; dict[str, Any] | None:
+    with connect() as db:
+        row = db.execute(
+            "SELECT * FROM jobs WHERE id = ?",
+            (job_id,),
+        ).fetchone()
+        return row_to_job(row)
+
+
+def claim_job() -&gt; dict[str, Any] | None:
+    settings = get_settings()
+    now = utc_now()
+    lease_until = now + timedelta(seconds=settings.job_lease_seconds)
+
+    with connect() as db:
+        db.execute("BEGIN IMMEDIATE")
+        try:
+            row = db.execute(
+                """
+                SELECT *
+                FROM jobs
+                WHERE status = 'queued'
+                   OR (
+                       status = 'running'
+                       AND lease_expires_at IS NOT NULL
+                       AND lease_expires_at &lt; ?
+                   )
+                ORDER BY created_at
+                LIMIT 1
+                """,
+                (iso(now),),
+            ).fetchone()
+
+            if row is None:
+                db.execute("COMMIT")
+                return None
+
+            started_at = row["started_at"] or iso(now)
+            db.execute(
+                """
+                UPDATE jobs
+                SET status = 'running',
+                    started_at = ?,
+                    heartbeat_at = ?,
+                    lease_expires_at = ?,
+                    attempt = attempt + 1,
+                    error_json = NULL
+                WHERE id = ?
+                """,
+                (started_at, iso(now), iso(lease_until), row["id"]),
+            )
+            claimed = db.execute(
+                "SELECT * FROM jobs WHERE id = ?",
+                (row["id"],),
+            ).fetchone()
+            db.execute("COMMIT")
+            return dict(claimed)
+        except Exception:
+            db.execute("ROLLBACK")
+            raise
+
+
+def heartbeat(job_id: str) -&gt; None:
+    settings = get_settings()
+    now = utc_now()
+    lease_until = now + timedelta(seconds=settings.job_lease_seconds)
+
+    with connect() as db:
+        db.execute(
+            """
+            UPDATE jobs
+            SET heartbeat_at = ?, lease_expires_at = ?
+            WHERE id = ? AND status = 'running'
+            """,
+            (iso(now), iso(lease_until), job_id),
+        )
+
+
+def complete_job(job_id: str, result: dict[str, Any]) -&gt; None:
+    with connect() as db:
+        db.execute(
+            """
+            UPDATE jobs
+            SET status = 'succeeded',
+                result_json = ?,
+                finished_at = ?,
+                heartbeat_at = NULL,
+                lease_expires_at = NULL
+            WHERE id = ? AND status = 'running'
+            """,
+            (
+                json.dumps(result, ensure_ascii=False),
+                iso(),
+                job_id,
+            ),
+        )
+
+
+def fail_job(job_id: str, error: dict[str, Any]) -&gt; None:
+    with connect() as db:
+        db.execute(
+            """
+            UPDATE jobs
+            SET status = 'failed',
+                error_json = ?,
+                finished_at = ?,
+                heartbeat_at = NULL,
+                lease_expires_at = NULL
+            WHERE id = ? AND status = 'running'
+            """,
+            (
+                json.dumps(error, ensure_ascii=False),
+                iso(),
+                job_id,
+            ),
+        )</code></pre>
+
+        <p><code>BEGIN IMMEDIATE</code> сериализует операцию выбора и захвата задания. Два worker-процесса не смогут одновременно забрать одну строку. Lease восстанавливает потерянную работу, но создаёт важное следствие: выполнение в общем случае имеет семантику «как минимум один раз». Поэтому изменяющие инструменты обязаны принимать собственный ключ идемпотентности.</p>
+      </section>
+
+      <section>
+        <h2>Шаг 3. API постановки задачи и получения статуса</h2>
+        <p>Файл <code>app/api.py</code>:</p>
+
+        <pre><code>from contextlib import asynccontextmanager
+from typing import Literal
+
+from fastapi import FastAPI, Header, HTTPException, Response, status
+from pydantic import BaseModel, Field
+
+from app.db import create_job, get_job, init_db
+
+
+class CreateJobRequest(BaseModel):
+    prompt: str = Field(min_length=10, max_length=20_000)
+
+
+class JobCreated(BaseModel):
+    id: str
+    status: Literal["queued", "running", "succeeded", "failed"]
+    status_url: str
+
+
+class JobStatus(BaseModel):
+    id: str
+    status: Literal["queued", "running", "succeeded", "failed"]
+    result: dict | None = None
+    error: dict | None = None
+    attempt: int
+    created_at: str
+    started_at: str | None = None
+    finished_at: str | None = None
+
+
+@asynccontextmanager
+async def lifespan(_: FastAPI):
+    init_db()
+    yield
+
+
+app = FastAPI(
+    title="Managed Background Agent",
+    version="1.0.0",
+    lifespan=lifespan,
+)
+
+
+@app.post(
+    "/v1/jobs",
+    response_model=JobCreated,
+    status_code=status.HTTP_202_ACCEPTED,
+)
+def submit_job(
+    body: CreateJobRequest,
+    response: Response,
+    idempotency_key: str | None = Header(
+        default=None,
+        alias="Idempotency-Key",
+        max_length=200,
+    ),
+):
+    job = create_job(body.prompt, idempotency_key)
+    status_url = f"/v1/jobs/{job['id']}"
+    response.headers["Location"] = status_url
+    response.headers["Retry-After"] = "2"
+    return {
+        "id": job["id"],
+        "status": job["status"],
+        "status_url": status_url,
+    }
+
+
+@app.get("/v1/jobs/{job_id}", response_model=JobStatus)
+def read_job(job_id: str):
+    job = get_job(job_id)
+    if job is None:
+        raise HTTPException(status_code=404, detail="Job not found")
+    return job
+
+
+@app.get("/health/live")
+def live():
+    return {"status": "ok"}</code></pre>
+
+        <p>Endpoint не запускает <code>asyncio.create_task()</code>. Такая «фоновая» задача принадлежала бы процессу API и исчезла бы при перезапуске. Здесь HTTP-ответ отправляется только после фиксации строки в базе.</p>
+      </section>
+
+      <section>
+        <h2>Шаг 4. Удалённый MCP-сервер</h2>
+        <p><a href="glossary.html#tool-calling">Вызов инструментов</a> отделён от модели. MCP-сервер объявляет имя операции, описание и входную <a href="glossary.html#json-schema">JSON Schema</a>. Gemini решает, когда вызвать функцию, а наше приложение проверяет запрос и пересылает его MCP-серверу.</p>
+
+        <p>Файл <code>mcp_server/server.py</code>:</p>
+
+        <pre><code>from mcp.server.fastmcp import FastMCP
+
+
+mcp = FastMCP(
+    "internal-runbooks",
+    host="0.0.0.0",
+    port=8001,
+)
+
+
+RUNBOOKS = {
+    "billing": {
+        "service": "billing",
+        "owner": "payments-platform",
+        "safe_checks": [
+            "Сравнить долю 503 до и после релиза",
+            "Проверить доступность upstream payment-gateway",
+            "Сопоставить ошибки по версии приложения",
+            "Проверить насыщение пула соединений",
+        ],
+        "rollback_condition": (
+            "Рост 503 статистически и по времени связан с новой версией, "
+            "а upstream остаётся здоровым"
+        ),
+    },
+    "catalog": {
+        "service": "catalog",
+        "owner": "commerce-platform",
+        "safe_checks": [
+            "Проверить задержку базы данных",
+            "Проверить исчерпание пула соединений",
+            "Сравнить ошибки по зонам доступности",
+        ],
+        "rollback_condition": (
+            "Ошибки появились после релиза и локализованы в новой версии"
+        ),
+    },
+}
+
+
+@mcp.tool()
+def lookup_runbook(service: str) -&gt; dict:
+    """Возвращает безопасные диагностические шаги для внутреннего сервиса."""
+    normalized = service.strip().lower()
+    if normalized not in RUNBOOKS:
+        return {
+            "found": False,
+            "service": normalized,
+            "message": "Инструкция для сервиса не найдена",
+        }
+
+    return {
+        "found": True,
+        "runbook": RUNBOOKS[normalized],
+    }
+
+
+if __name__ == "__main__":
+    mcp.run(transport="streamable-http")</code></pre>
+
+        <p>Запустите сервер:</p>
+
+        <pre><code>source .venv/bin/activate
+python -m mcp_server.server</code></pre>
+
+        <p>В зависимости от версии Python SDK точный путь Streamable HTTP может задаваться настройкой сервера. Проверьте фактический endpoint при старте и приведите <code>MCP_URL</code> к нему. Для приведённой конфигурации ожидается <code>http://127.0.0.1:8001/mcp</code>.</p>
+
+        <h3>Что изменить перед реальным развёртыванием</h3>
+        <p>Учебный сервер слушает локальный адрес и не реализует аутентификацию. Не публикуйте его в интернет в таком виде. В рабочей сети поставьте перед MCP endpoint API gateway или reverse proxy, который:</p>
+        <ul>
+          <li>проверяет короткоживущий сервисный токен;</li>
+          <li>завершает TLS;</li>
+          <li>ограничивает размер тела запроса и ответа;</li>
+          <li>разрешает доступ только с подсети worker;</li>
+          <li>пишет аудит имени инструмента, субъекта и результата;</li>
+          <li>не пересылает секреты в прикладные журналы.</li>
+        </ul>
+
+        <p>Для production предпочтителен <a href="glossary.html#oauth-2">OAuth 2.0</a> с отдельной машинной учётной записью или взаимный TLS. Статический bearer-токен в примере клиента предусмотрен как минимальный механизм для закрытой тестовой среды.</p>
+      </section>
+
+      <section>
+        <h2>Шаг 5. Агентный цикл Gemini ↔ MCP</h2>
+        <p>Главная часть системы выполняет пять действий:</p>
+        <ol>
+          <li>подключается к MCP-серверу;</li>
+          <li>получает список доступных инструментов;</li>
+          <li>преобразует их схемы в объявления функций Gemini;</li>
+          <li>передаёт вызовы модели MCP-серверу;</li>
+          <li>возвращает результаты инструментов модели до получения финального текста.</li>
+        </ol>
+
+        <p>Файл <code>app/agent.py</code>:</p>
+
+        <pre><code>import asyncio
+import json
+from typing import Any
+
+from google import genai
+from google.genai import types
+from mcp import ClientSession
+from mcp.client.streamable_http import streamablehttp_client
+
+from app.config import get_settings
+
+
+SYSTEM_INSTRUCTION = """
+Ты — помощник дежурного инженера.
+
+Правила:
+1. Для внутренних инструкций используй доступный инструмент.
+2. Не утверждай, что проверка выполнена, если инструмент вернул только инструкцию.
+3. Не придумывай метрики, события, версии, владельцев или результаты команд.
+4. Сначала предложи безопасные проверки, затем условия эскалации или отката.
+5. Если данных недостаточно, явно перечисли, что требуется уточнить.
+6. Ответ должен быть на русском языке.
+""".strip()
+
+
+def mcp_tools_to_gemini(mcp_tools: list[Any]) -&gt; list[types.FunctionDeclaration]:
+    declarations: list[types.FunctionDeclaration] = []
+
+    for tool in mcp_tools:
+        schema = tool.inputSchema or {
+            "type": "object",
+            "properties": {},
+        }
+        declarations.append(
+            types.FunctionDeclaration(
+                name=tool.name,
+                description=tool.description or "",
+                parameters_json_schema=schema,
+            )
+        )
+
+    return declarations
+
+
+def serialize_tool_result(result: Any) -&gt; dict[str, Any]:
+    if hasattr(result, "model_dump"):
+        return result.model_dump(mode="json")
+    return {"content": str(result)}
+
+
+def final_text(content: types.Content) -&gt; str:
+    chunks: list[str] = []
+    for part in content.parts or []:
+        if getattr(part, "text", None):
+            chunks.append(part.text)
+    return "\n".join(chunks).strip()
+
+
+async def execute_agent(prompt: str) -&gt; dict[str, Any]:
+    settings = get_settings()
+    client = genai.Client(api_key=settings.gemini_api_key)
+
+    headers = {}
+    if settings.mcp_bearer_token:
+        headers["Authorization"] = (
+            f"Bearer {settings.mcp_bearer_token}"
+        )
+
+    async with streamablehttp_client(
+        settings.mcp_url,
+        headers=headers,
+    ) as (read_stream, write_stream, _):
+        async with ClientSession(
+            read_stream,
+            write_stream,
+        ) as session:
+            await session.initialize()
+
+            listed = await asyncio.wait_for(
+                session.list_tools(),
+                timeout=settings.tool_timeout_seconds,
+            )
+            declarations = mcp_tools_to_gemini(listed.tools)
+            allowed_names = {tool.name for tool in listed.tools}
+
+            contents: list[types.Content] = [
+                types.Content(
+                    role="user",
+                    parts=[types.Part.from_text(text=prompt)],
+                )
+            ]
+
+            for step in range(1, settings.max_agent_steps + 1):
+                response = await client.aio.models.generate_content(
+                    model=settings.gemini_model,
+                    contents=contents,
+                    config=types.GenerateContentConfig(
+                        system_instruction=SYSTEM_INSTRUCTION,
+                        tools=[
+                            types.Tool(
+                                function_declarations=declarations
+                            )
+                        ],
+                        temperature=0.2,
+                    ),
+                )
+
+                if not response.candidates:
+                    raise RuntimeError(
+                        "Gemini не вернул ни одного кандидата"
+                    )
+
+                candidate = response.candidates[0]
+                model_content = candidate.content
+                if model_content is None:
+                    raise RuntimeError(
+                        "Gemini вернул кандидата без содержимого"
+                    )
+
+                contents.append(model_content)
+
+                calls = [
+                    part.function_call
+                    for part in (model_content.parts or [])
+                    if getattr(part, "function_call", None) is not None
+                ]
+
+                if not calls:
+                    text = final_text(model_content)
+                    if not text:
+                        raise RuntimeError(
+                            "Агент завершился без текстового ответа"
+                        )
+                    return {
+                        "answer": text,
+                        "steps": step,
+                    }
+
+                tool_response_parts: list[types.Part] = []
+
+                for call in calls:
+                    if call.name not in allowed_names:
+                        payload = {
+                            "is_error": True,
+                            "error": "Инструмент не разрешён",
+                        }
+                    else:
+                        arguments = dict(call.args or {})
+                        try:
+                            result = await asyncio.wait_for(
+                                session.call_tool(
+                                    call.name,
+                                    arguments=arguments,
+                                ),
+                                timeout=settings.tool_timeout_seconds,
+                            )
+                            payload = serialize_tool_result(result)
+                        except asyncio.TimeoutError:
+                            payload = {
+                                "is_error": True,
+                                "error": "Тайм-аут MCP-инструмента",
+                            }
+                        except Exception as exc:
+                            payload = {
+                                "is_error": True,
+                                "error": (
+                                    f"Ошибка MCP-инструмента: "
+                                    f"{type(exc).__name__}"
+                                ),
+                            }
+
+                    tool_response_parts.append(
+                        types.Part.from_function_response(
+                            name=call.name,
+                            response={"result": payload},
+                        )
+                    )
+
+                contents.append(
+                    types.Content(
+                        role="user",
+                        parts=tool_response_parts,
+                    )
+                )
+
+    raise RuntimeError(
+        "MCP-сессия завершилась до ответа агента"
+    )</code></pre>
+
+        <p>После цикла добавьте явную ошибку превышения лимита. В данном варианте она должна стоять сразу после блока <code>for</code>, но до выхода из MCP-сессии:</p>
+
+        <pre><code>            raise RuntimeError(
+                f"Агент превысил лимит {settings.max_agent_steps} шагов"
+            )</code></pre>
+
+        <p>Отступ этого фрагмента должен совпадать с отступом строки <code>for step</code>. Он выполняется, если модель продолжала вызывать инструменты на каждом шаге.</p>
+
+        <h3>Почему список инструментов нельзя брать из ответа модели</h3>
+        <p>Разрешённые имена формируются только из результата <code>session.list_tools()</code>. Модель не получает возможность задать произвольный URL или выбрать внутренний метод, которого нет в allowlist. Аргументы всё равно должны валидироваться на MCP-сервере: модель считается недоверенным источником ввода.</p>
+
+        <h3>Ограничение размера результата</h3>
+        <p>Учебный инструмент возвращает небольшой объект. В реальном приложении перед отправкой результата модели ограничьте размер, удалите бинарные поля и персональные данные. Большой результат быстро заполняет <a href="glossary.html#context-window">контекстное окно</a> и увеличивает стоимость каждого следующего шага.</p>
+      </section>
+
+      <section>
+        <h2>Шаг 6. Worker с heartbeat</h2>
+        <p>Worker работает отдельно от веб-приложения. Он периодически пытается захватить задачу и продлевает lease, пока агент выполняется.</p>
+
+        <p>Файл <code>app/worker.py</code>:</p>
+
+        <pre><code>import asyncio
+import logging
+import signal
+
+from app.agent import execute_agent
+from app.config import get_settings
+from app.db import (
+    claim_job,
+    complete_job,
+    fail_job,
+    heartbeat,
+    init_db,
+)
+
+
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s %(levelname)s %(message)s",
+)
+logger = logging.getLogger("agent-worker")
+
+
+async def heartbeat_loop(
+    job_id: str,
+    stop: asyncio.Event,
+) -&gt; None:
+    settings = get_settings()
+    interval = max(5, settings.job_lease_seconds // 3)
+
+    while not stop.is_set():
+        try:
+            await asyncio.wait_for(stop.wait(), timeout=interval)
+        except asyncio.TimeoutError:
+            await asyncio.to_thread(heartbeat, job_id)
+
+
+async def process_job(job: dict) -&gt; None:
+    stop_heartbeat = asyncio.Event()
+    heartbeat_task = asyncio.create_task(
+        heartbeat_loop(job["id"], stop_heartbeat)
+    )
+
+    try:
+        result = await execute_agent(job["prompt"])
+        await asyncio.to_thread(complete_job, job["id"], result)
+        logger.info("job_succeeded id=%s", job["id"])
+    except Exception as exc:
+        logger.exception("job_failed id=%s", job["id"])
+        error = {
+            "code": type(exc).__name__,
+            "message": str(exc)[:1000],
+            "retryable": False,
+        }
+        await asyncio.to_thread(fail_job, job["id"], error)
+    finally:
+        stop_heartbeat.set()
+        await heartbeat_task
+
+
+async def run_worker() -&gt; None:
+    init_db()
+    stopping = asyncio.Event()
+    loop = asyncio.get_running_loop()
+
+    for signal_name in (signal.SIGINT, signal.SIGTERM):
+        loop.add_signal_handler(signal_name, stopping.set)
+
+    logger.info("worker_started")
+
+    while not stopping.is_set():
+        job = await asyncio.to_thread(claim_job)
+
+        if job is None:
+            try:
+                await asyncio.wait_for(
+                    stopping.wait(),
+                    timeout=1.0,
+                )
+            except asyncio.TimeoutError:
+                pass
+            continue
+
+        logger.info(
+            "job_started id=%s attempt=%s",
+            job["id"],
+            job["attempt"],
+        )
+        await process_job(job)
+
+    logger.info("worker_stopped")
+
+
+if __name__ == "__main__":
+    asyncio.run(run_worker())</code></pre>
+
+        <p>Worker обрабатывает одну задачу за раз. Это осознанно упрощает контроль нагрузки. Горизонтальное масштабирование достигается запуском нескольких процессов, а не неограниченным созданием coroutine внутри одного процесса.</p>
+
+        <p>Heartbeat продлевает lease через каждую треть его длительности. Значение lease должно быть заметно больше интервала heartbeat и ожидаемых коротких пауз планировщика.</p>
+      </section>
+
+      <section>
+        <h2>Шаг 7. Запуск всей системы</h2>
+        <p>Откройте три терминала в каталоге проекта.</p>
+
+        <p>Первый терминал — MCP-сервер:</p>
+        <pre><code>source .venv/bin/activate
+python -m mcp_server.server</code></pre>
+
+        <p>Второй терминал — API:</p>
+        <pre><code>source .venv/bin/activate
+uvicorn app.api:app --host 127.0.0.1 --port 8000</code></pre>
+
+        <p>Третий терминал — worker:</p>
+        <pre><code>source .venv/bin/activate
+python -m app.worker</code></pre>
+
+        <p>Проверка liveness API:</p>
+        <pre><code>curl --fail http://127.0.0.1:8000/health/live</code></pre>
+
+        <p>Ожидается структурный ответ:</p>
+        <pre><code>{"status":"ok"}</code></pre>
+
+        <p>Он подтверждает только то, что API-процесс отвечает. Он не доказывает доступность Gemini, MCP или worker.</p>
+      </section>
+
+      <section>
+        <h2>Шаг 8. Запуск фоновой задачи</h2>
+        <p>Создайте задание:</p>
+
+        <pre><code>curl -i \
+  -X POST http://127.0.0.1:8000/v1/jobs \
+  -H 'Content-Type: application/json' \
+  -H 'Idempotency-Key: billing-503-demo-1' \
+  --data '{
+    "prompt": "После релиза у сервиса billing выросло число ответов 503. Получи внутреннюю инструкцию и подготовь безопасный план диагностики."
+  }'</code></pre>
+
+        <p>Скопируйте поле <code>id</code> и запросите состояние:</p>
+
+        <pre><code>curl http://127.0.0.1:8000/v1/jobs/JOB_ID</code></pre>
+
+        <p>Повторяйте запрос до терминального статуса. Для ручной проверки достаточно следующего shell-цикла:</p>
+
+        <pre><code>JOB_ID="вставьте-id"
+
+while true; do
+  BODY="$(curl --silent --fail \
+    "http://127.0.0.1:8000/v1/jobs/${JOB_ID}")" || exit 1
+
+  printf '%s\n' "$BODY"
+
+  STATUS="$(printf '%s' "$BODY" | python -c \
+    'import json,sys; print(json.load(sys.stdin)["status"])')"
+
+  case "$STATUS" in
+    succeeded|failed) break ;;
+  esac
+
+  sleep 2
+done</code></pre>
+
+        <p>Для production-клиента используйте <a href="glossary.html#exponential-backoff">экспоненциальную задержку</a> с jitter, например 1, 2, 4, 8 секунд с верхней границей 15–30 секунд. Учитывайте заголовок <code>Retry-After</code>, если сервер его возвращает.</p>
+      </section>
+
+      <section>
+        <h2>Проверка результата без выдуманных ожиданий</h2>
+        <p>Нельзя заранее утверждать, какой именно текст сгенерирует модель. Проверять следует контракт и наблюдаемые свойства системы, а не дословный ответ.</p>
+
+        <h3>1. API действительно отвечает асинхронно</h3>
+        <ul>
+          <li><code>POST /v1/jobs</code> возвращает <code>202</code>;</li>
+          <li>в ответе есть непустые <code>id</code> и <code>status_url</code>;</li>
+          <li>задача сохранена до отправки ответа;</li>
+          <li>закрытие клиента не меняет жизненный цикл задания.</li>
+        </ul>
+
+        <h3>2. Состояния имеют допустимый порядок</h3>
+        <p>Нормальная последовательность:</p>
+        <pre><code>queued → running → succeeded
+queued → running → failed</code></pre>
+
+        <p>После терминального состояния задача не должна снова становиться <code>running</code>. Поле <code>finished_at</code> должно быть заполнено только для <code>succeeded</code> или <code>failed</code>.</p>
+
+        <h3>3. Идемпотентность работает</h3>
+        <p>Дважды отправьте одинаковый запрос с одним <code>Idempotency-Key</code>:</p>
+
+        <pre><code>for n in 1 2; do
+  curl --silent \
+    -X POST http://127.0.0.1:8000/v1/jobs \
+    -H 'Content-Type: application/json' \
+    -H 'Idempotency-Key: same-operation-42' \
+    --data '{"prompt":"Получить runbook для billing и составить план диагностики."}'
+  printf '\n'
+done</code></pre>
+
+        <p>Оба ответа должны ссылаться на один идентификатор. Если содержимое запроса может различаться при одинаковом ключе, сохраните также хеш нормализованного тела и возвращайте <code>409 Conflict</code> при несовпадении.</p>
+
+        <h3>4. MCP действительно вызывается</h3>
+        <p>Временно добавьте в MCP-сервер структурный журнал имени инструмента и сервиса без текста пользовательского запроса и секретов. Затем убедитесь, что задание с упоминанием <code>billing</code> приводит к вызову <code>lookup_runbook</code>. Не считайте наличие текста о runbook доказательством вызова: модель могла сформулировать общий совет самостоятельно.</p>
+
+        <h3>5. Ответ не приписывает системе несуществующие действия</h3>
+        <p>Результат может предложить команды и проверки, но не должен утверждать, что метрики уже исследованы или откат выполнен. Наш инструмент возвращает инструкцию, а не телеметрию.</p>
+      </section>
+
+      <section>
+        <h2>Проверка отказов</h2>
+        <p>Надёжность агента определяется не успешной демонстрацией, а поведением на границах.</p>
+
+        <h3>MCP-сервер недоступен</h3>
+        <p>Остановите MCP-процесс и создайте задачу. Ожидаемое свойство: HTTP-запрос создания по-прежнему получает <code>202</code>, а worker переводит задачу в <code>failed</code> с диагностическим кодом. Пользовательский ответ не должен содержать traceback, URL с секретом или токен.</p>
+
+        <h3>Неверный ключ Gemini</h3>
+        <p>Укажите заведомо тестовое нерабочее значение и перезапустите worker. Задача должна завершиться контролируемой ошибкой. Не записывайте сам ключ в поле <code>error</code> или журнал.</p>
+
+        <h3>Инструмент отвечает слишком долго</h3>
+        <p>Добавьте в учебный инструмент задержку, превышающую <code>TOOL_TIMEOUT_SECONDS</code>. Агент получит структурированную ошибку инструмента и сможет либо сформировать ограниченный ответ, либо закончить работу ошибкой. Тайм-аут должен действовать на каждый вызов, а не только на задачу целиком.</p>
+
+        <h3>Worker завершён посреди задачи</h3>
+        <p>Завершите worker во время статуса <code>running</code>. После истечения lease другой worker должен суметь захватить строку. Это проверяет восстановление, но не гарантирует однократное выполнение внешнего действия. Изменяющие MCP-инструменты всё равно требуют идемпотентного ключа.</p>
+
+        <h3>Модель вызывает инструмент бесконечно</h3>
+        <p>Установите <code>MAX_AGENT_STEPS=1</code> и дайте задачу, для которой инструмент обязателен. Если после первого вызова модель не успевает сформировать ответ, задача должна завершиться ошибкой лимита, а не продолжаться бесконечно.</p>
+
+        <h3>Повреждённый или огромный ответ инструмента</h3>
+        <p>MCP-клиент должен считать результат недоверенным. Перед отправкой в Gemini добавьте:</p>
+        <ul>
+          <li>лимит сериализованного размера;</li>
+          <li>удаление лишних полей;</li>
+          <li>нормализацию кодировки;</li>
+          <li>маркер усечения;</li>
+          <li>запрет на автоматическую интерпретацию результата как системной инструкции.</li>
+        </ul>
+      </section>
+
+      <section>
+        <h2>Безопасность удалённого MCP</h2>
+        <p>Удалённый MCP решает проблему интеграции, но одновременно создаёт новую сетевую границу. Её следует проектировать как привилегированный внутренний API.</p>
+
+        <h3>Не позволяйте модели выбирать адрес</h3>
+        <p><code>MCP_URL</code> задаётся оператором, а не пользовательским prompt и не ответом модели. Иначе появляется риск <a href="glossary.html#ssrf">SSRF</a>: агент может обратиться к metadata endpoint, панели администрирования или другому внутреннему адресу.</p>
+
+        <h3>Разделяйте инструменты чтения и изменения</h3>
+        <p>Для чтения достаточно строгой схемы, лимитов и аудита. Инструменты, меняющие состояние, требуют дополнительных мер:</p>
+        <ul>
+          <li>явного подтверждения человеком для опасных операций;</li>
+          <li>идемпотентного operation ID;</li>
+          <li>проверки прав на стороне инструмента;</li>
+          <li>короткого срока действия авторизации;</li>
+          <li>журнала до и после выполнения;</li>
+          <li>отдельного лимита частоты;</li>
+          <li>возможности запуска в режиме dry-run.</li>
+        </ul>
+
+        <h3>Считайте содержимое инструмента недоверенным</h3>
+        <p>Документ из базы знаний может содержать текст, похожий на инструкцию модели. Это форма <a href="glossary.html#prompt-injection">prompt injection</a>. Системная инструкция должна явно говорить, что данные инструмента — источник фактов, а не новые правила. Для чувствительных операций одной инструкции недостаточно: политика разрешений должна исполняться обычным кодом.</p>
+
+        <h3>Минимизируйте полномочия</h3>
+        <p>Worker для анализа инцидента не должен получать универсальный токен администратора. Лучше опубликовать отдельный read-only инструмент с узким ответом, чем давать агенту общий SQL endpoint или shell.</p>
+      </section>
+
+      <section>
+        <h2>Повторы и классификация ошибок</h2>
+        <p>В учебной реализации любая ошибка переводит задачу в <code>failed</code>. Автоматические повторы следует добавлять только после классификации причин.</p>
+
+        <table>
+          <thead>
+            <tr>
+              <th>Ситуация</th>
+              <th>Повтор</th>
+              <th>Почему</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td>Сетевой сбой до начала ответа</td>
+              <td>Обычно да</td>
+              <td>Кратковременная инфраструктурная ошибка</td>
+            </tr>
+            <tr>
+              <td>Ограничение частоты</td>
+              <td>Да, с backoff</td>
+              <td>Нужно учитывать рекомендованную задержку</td>
+            </tr>
+            <tr>
+              <td>Невалидные аргументы инструмента</td>
+              <td>Нет автоматически</td>
+              <td>Повтор тех же данных ничего не изменит</td>
+            </tr>
+            <tr>
+              <td>Отказ в доступе</td>
+              <td>Нет</td>
+              <td>Требуется исправление конфигурации или прав</td>
+            </tr>
+            <tr>
+              <td>Неизвестен результат изменяющей операции</td>
+              <td>Только с operation ID</td>
+              <td>Первый вызов мог выполниться до разрыва</td>
+            </tr>
+            <tr>
+              <td>Превышен лимит шагов</td>
+              <td>Нет</td>
+              <td>Нужно менять prompt, инструменты или лимит</td>
+            </tr>
+          </tbody>
+        </table>
+
+        <p>Для повторов добавьте состояния <code>retry_wait</code> и поле <code>next_attempt_at</code>. Не удерживайте worker через длительный <code>sleep</code>: верните задачу в очередь с будущим временем запуска.</p>
+      </section>
+
+      <section>
+        <h2>Наблюдаемость</h2>
+        <p>Каждая задача должна иметь единый correlation ID, совпадающий с <code>job_id</code>. Передавайте его в журналы worker и, если протокол инструмента допускает метаданные, в MCP-слой.</p>
+
+        <p>Минимальные метрики:</p>
+        <ul>
+          <li>число задач по статусам;</li>
+          <li>возраст самой старой задачи <code>queued</code>;</li>
+          <li>время от создания до начала;</li>
+          <li>время выполнения;</li>
+          <li>число шагов модели;</li>
+          <li>число и длительность вызовов каждого инструмента;</li>
+          <li>ошибки Gemini и MCP по классу;</li>
+          <li>количество задач, повторно захваченных после истечения lease.</li>
+        </ul>
+
+        <p>Не записывайте полный prompt и результаты инструментов по умолчанию. Они могут содержать персональные данные, внутренние адреса или коммерческую информацию. Для отладки полезнее хранить размеры, хеши, имена инструментов и безопасные коды результата.</p>
+      </section>
+
+      <section>
+        <h2>Отмена задачи</h2>
+        <p>В базовую реализацию отмена не включена, потому что корректная отмена требует согласования нескольких уровней. Одной смены статуса недостаточно: внешний запрос к модели или инструменту может уже выполняться.</p>
+
+        <p>Для поддержки отмены добавьте состояния <code>cancel_requested</code> и <code>cancelled</code>. Worker должен проверять флаг:</p>
+        <ul>
+          <li>перед вызовом Gemini;</li>
+          <li>перед каждым инструментом;</li>
+          <li>после возврата внешнего вызова;</li>
+          <li>перед сохранением финального результата.</li>
+        </ul>
+
+        <p>Если изменяющий инструмент уже начал необратимую операцию, задача не может честно называться отменённой. В таком случае сохраните состояние вроде <code>cancellation_pending</code> или результат с описанием уже выполненного эффекта.</p>
+      </section>
+
+      <section>
+        <h2>Когда заменить SQLite</h2>
+        <p>SQLite подходит для одного хоста, умеренного потока заданий и учебного развёртывания. WAL улучшает параллельное чтение, но не превращает файл в распределённую очередь.</p>
+
+        <p>Переходите на PostgreSQL или специализированный брокер, если:</p>
+        <ul>
+          <li>API и worker работают на разных хостах;</li>
+          <li>несколько worker часто конкурируют за запись;</li>
+          <li>нужны приоритеты и планирование на будущее;</li>
+          <li>требуется высокая пропускная способность;</li>
+          <li>нужны dead-letter queue и развитая политика повторов;</li>
+          <li>локальный диск контейнера не является постоянным.</li>
+        </ul>
+
+        <p>В PostgreSQL захват задания обычно строится на транзакции с <code>SELECT … FOR UPDATE SKIP LOCKED</code>. При использовании брокера статус и результат всё равно удобно хранить в отдельной базе, потому что очередь не обязана быть пользовательским API состояния.</p>
+      </section>
+
+      <section>
+        <h2>Ограничения решения</h2>
+        <ul>
+          <li><strong>Нет строгого exactly-once.</strong> Lease обеспечивает восстановление, но одна работа может начаться повторно.</li>
+          <li><strong>Нет встроенного планировщика повторов.</strong> Ошибки сейчас терминальны.</li>
+          <li><strong>Нет потоковой выдачи частичного ответа.</strong> Клиент получает только статус и итог.</li>
+          <li><strong>Один worker выполняет одну задачу.</strong> Масштабирование требует дополнительных процессов и контроля квот.</li>
+          <li><strong>История диалога не хранится отдельно.</strong> Система реализует задачу, а не многоходовую пользовательскую сессию.</li>
+          <li><strong>MCP-сервер из примера не готов для публичной сети.</strong> Нужны TLS, авторизация, аудит и сетевые ограничения.</li>
+          <li><strong>Схемы SDK могут меняться.</strong> Зафиксируйте проверенные версии зависимостей после успешного воспроизводимого запуска.</li>
+          <li><strong>Стоимость не ограничена токенами напрямую.</strong> Лимит шагов помогает, но следует также ограничить длину prompt, объём результатов и бюджет на задачу.</li>
+        </ul>
+      </section>
+
+      <section>
+        <h2>Production-чеклист</h2>
+        <ul>
+          <li>API возвращает <code>202</code> только после надёжной записи задания.</li>
+          <li>Есть уникальный ключ идемпотентности и проверка хеша тела.</li>
+          <li>Worker отделён от API-процесса.</li>
+          <li>Захват задания атомарен.</li>
+          <li>Lease и heartbeat проверены принудительным завершением worker.</li>
+          <li>Есть лимиты времени, шагов, размера prompt и ответа инструмента.</li>
+          <li>MCP URL нельзя задать пользовательским вводом.</li>
+          <li>Имена инструментов сверяются с allowlist.</li>
+          <li>Аргументы валидируются на MCP-сервере.</li>
+          <li>Изменяющие инструменты имеют operation ID и отдельную авторизацию.</li>
+          <li>Секреты не попадают в результат задачи и журналы.</li>
+          <li>Клиент использует polling с backoff и прекращает его на терминальном статусе.</li>
+          <li>Есть метрики очереди, длительности, ошибок и повторного захвата.</li>
+          <li>Версии Python-зависимостей зафиксированы после проверки.</li>
+          <li>Проведены тесты недоступности Gemini, MCP и базы.</li>
+        </ul>
+      </section>
+
+      <section>
+        <h2>Итог</h2>
+        <p>Надёжный управляемый агент — это не один длинный запрос к модели. Это конечный автомат задачи, персистентная очередь, отдельный worker, ограниченный агентный цикл и защищённая граница инструментов.</p>
+
+        <p>В собранной схеме Gemini отвечает за выбор следующего шага и формирование результата, MCP стандартизирует подключение внутренних возможностей, а ваш код сохраняет контроль над временем выполнения, разрешениями, повторами и состоянием. Именно это разделение позволяет переживать разрывы HTTP-соединения и не превращать доступ модели к внутренней сети в набор специальных интеграций.</p>
+
+        <p>Продолжить практику можно в разделе <a href="guides.html">гайдов Agent Lab Journal</a>. Определения использованных понятий и протоколов собраны в <a href="glossary.html">глоссарии</a>.</p>
+      </section>
+    </article>
+  </main>
+
+  <footer class="site-footer">
+    <div class="container">
+      <p>Agent Lab Journal — практические материалы об AI-агентах, инструментах и надёжной автоматизации.</p>
+    </div>
+  </footer>
+</body>
+</html>
