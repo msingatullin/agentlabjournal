@@ -88,4 +88,7 @@ if homepage.returncode:
 rss = subprocess.run([sys.executable, str(ROOT / "scripts/build-rss.py")], cwd=ROOT)
 if rss.returncode:
     raise SystemExit("Publication blocked: RSS could not be built")
+news_sitemap = subprocess.run([sys.executable, str(ROOT / "scripts/build-news-sitemap.py")], cwd=ROOT)
+if news_sitemap.returncode:
+    raise SystemExit("Publication blocked: news sitemap could not be built")
 print(f"Registered: {filename}")

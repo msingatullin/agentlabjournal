@@ -13,6 +13,9 @@ required = {
     "canonical": "canonical URL",
     "meta name=\"description\"": "description",
     '"@type":"Article"': "Article JSON-LD",
+    'og:image': "Open Graph image",
+    'twitter:card': "Twitter card",
+    'dateModified': "JSON-LD modification date",
 }
 errors = []
 titles = {}
@@ -38,6 +41,7 @@ for page in english_guides:
 
 catalog = (ROOT / "guides.html").read_text()
 sitemap = (ROOT / "sitemap.xml").read_text()
+news_sitemap = (ROOT / "news-sitemap.xml").read_text()
 llms = (ROOT / "llms.txt").read_text()
 
 for page in guides:
@@ -46,6 +50,8 @@ for page in guides:
         errors.append(f"{url}: missing from guides.html")
     if url not in sitemap:
         errors.append(f"{url}: missing from sitemap.xml")
+    if url not in news_sitemap:
+        errors.append(f"{url}: missing from news-sitemap.xml")
     if url not in llms:
         errors.append(f"{url}: missing from llms.txt")
     if not any(url in (ROOT / f"section-{section}.html").read_text() for section in ("news", "practice", "companies", "tools", "experiments", "errors", "security", "money", "opinions")):
@@ -55,6 +61,8 @@ for page in english_guides:
     url = f"en/{page.name}"
     if url not in sitemap:
         errors.append(f"{url}: missing from sitemap.xml")
+    if url not in news_sitemap:
+        errors.append(f"{url}: missing from news-sitemap.xml")
     if f"https://agentlabjournal.online/{url}" not in llms:
         errors.append(f"{url}: missing from llms.txt")
 
