@@ -25,6 +25,12 @@ text = article.read_text()
 if "reading-meta" not in text or "canonical" not in text:
     raise SystemExit("Article must contain reading-meta and canonical before registration")
 
+# Normalize discovery metadata before any index or publication gate runs.
+seo = subprocess.run([sys.executable, str(ROOT / "scripts/upgrade-seo-metadata.py")], cwd=ROOT)
+if seo.returncode:
+    raise SystemExit("Publication blocked: SEO metadata could not be normalized")
+text = article.read_text()
+
 url = f"https://agentlabjournal.online/{filename}"
 summary = escape(args.summary)
 title = escape(article.stem.replace("-", " ").title())
