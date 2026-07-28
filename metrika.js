@@ -6,6 +6,17 @@
 })(window, document, 'script', 'https://mc.yandex.ru/metrika/tag.js?id=110942679', 'ym');
 ym(110942679, 'init', {ssr:true, webvisor:true, clickmap:true, ecommerce:'dataLayer', referrer:document.referrer, url:location.href, accurateTrackBounce:true, trackLinks:true});
 
+// Keep acquisition context visible in analytics without storing personal data.
+document.addEventListener('DOMContentLoaded', function () {
+    var params = new URLSearchParams(window.location.search);
+    if (params.get('utm_source') === 'telegram') {
+        ym(110942679, 'reachGoal', 'telegram_visit', {
+            campaign: params.get('utm_campaign') || 'unknown',
+            content: params.get('utm_content') || 'unknown'
+        });
+    }
+});
+
 document.addEventListener('DOMContentLoaded', function () {
     document.querySelectorAll('audio[data-podcast-id]').forEach(function (audio) {
         var sent = {};
