@@ -45,6 +45,11 @@ if relative.parts and relative.parts[0] == "en":
     llms_text = llms.read_text()
     if url not in llms_text:
         llms.write_text(llms_text.replace("## Навигация", f"- [English: {title}]({url}): {summary}.\n\n## Навигация", 1))
+    # Rebuild the news sitemap before the gate: the English page is created
+    # before this registration step and must be present in the sitemap.
+    news_sitemap = subprocess.run([sys.executable, str(ROOT / "scripts/build-news-sitemap.py")], cwd=ROOT)
+    if news_sitemap.returncode:
+        raise SystemExit("Publication blocked: news sitemap could not be built")
     gate = subprocess.run([sys.executable, str(ROOT / "scripts/check-publication.py")], cwd=ROOT)
     if gate.returncode:
         raise SystemExit("Publication blocked: fix the gate output before committing")

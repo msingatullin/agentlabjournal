@@ -1,0 +1,1293 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+
+  <title>Diff-first code review: как сократить стоимость проверки AI-агентом — Agent Lab Journal</title>
+  <meta name="description" content="Практическое руководство по diff-first code review: два варианта AI-агента, ограничение исследования репозитория и воспроизводимый бенчмарк качества, стоимости и вызовов инструментов.">
+  <link rel="canonical" href="https://agentlabjournal.online/diff-first-agent-code-review.html">
+
+  <link rel="stylesheet" href="style.css">
+  <link rel="stylesheet" href="reading.css">
+
+  <meta property="og:type" content="article">
+  <meta property="og:locale" content="ru_RU">
+  <meta property="og:site_name" content="Agent Lab Journal">
+  <meta property="og:title" content="Diff-first code review: как сократить стоимость проверки AI-агентом">
+  <meta property="og:description" content="Два варианта AI-агента для code review и повторяемый протокол измерения качества, стоимости, токенов и числа вызовов инструментов.">
+  <meta property="og:url" content="https://agentlabjournal.online/diff-first-agent-code-review.html">
+  <meta property="og:image" content="https://agentlabjournal.online/podcast-cover.png">
+  <meta property="article:modified_time" content="2026-07-27">
+
+  <meta name="twitter:card" content="summary_large_image">
+  <meta name="twitter:title" content="Diff-first code review: как сократить стоимость проверки AI-агентом">
+  <meta name="twitter:description" content="Как сравнить repo-first и diff-first агентов на одинаковых изменениях без выдуманных результатов и скрытых различий в окружении.">
+  <meta name="twitter:image" content="https://agentlabjournal.online/podcast-cover.png">
+
+  <script type="application/ld+json">
+  {
+    "@context": "https://schema.org",
+    "@type": "Article",
+    "headline": "Diff-first code review: как сократить стоимость проверки AI-агентом",
+    "description": "Практическое руководство по diff-first code review: два варианта AI-агента, ограничение исследования репозитория и воспроизводимый бенчмарк качества, стоимости и вызовов инструментов.",
+    "image": [
+      "https://agentlabjournal.online/podcast-cover.png"
+    ],
+    "dateModified": "2026-07-27",
+    "author": {
+      "@type": "Organization",
+      "name": "Agent Lab Journal",
+      "url": "https://agentlabjournal.online/"
+    },
+    "publisher": {
+      "@type": "Organization",
+      "name": "Agent Lab Journal",
+      "url": "https://agentlabjournal.online/",
+      "logo": {
+        "@type": "ImageObject",
+        "url": "https://agentlabjournal.online/podcast-cover.png"
+      }
+    },
+    "mainEntityOfPage": {
+      "@type": "WebPage",
+      "@id": "https://agentlabjournal.online/diff-first-agent-code-review.html"
+    },
+    "inLanguage": "ru"
+  }
+  </script>
+</head>
+<body>
+  <header class="site-header">
+    <div class="container">
+      <a class="site-name" href="index.html">Agent Lab Journal</a>
+      <nav aria-label="Основная навигация">
+        <a href="guides.html">Руководства</a>
+        <a href="glossary.html">Глоссарий</a>
+      </nav>
+    </div>
+  </header>
+
+  <main>
+    <article class="reading">
+      <header class="article-header">
+        <p class="eyebrow">Практика · AI-разработка · Code review</p>
+        <h1>Diff-first code review: как сократить стоимость проверки AI-агентом</h1>
+        <div class="reading-meta" aria-label="Информация о материале">
+          <span>Уровень: продвинутый</span>
+          <span>Время чтения и практики: 75 минут</span>
+          <span>Результат: два агента и воспроизводимый бенчмарк качества, стоимости и вызовов инструментов</span>
+        </div>
+        <p class="lead">
+          <strong>Дорогой code review часто начинается не с большой модели, а с неправильной точки входа.</strong>
+          Получив задачу «проверь изменение», <a class="term-link" href="glossary.html#ai-agent">AI-агент</a> перечисляет каталоги, читает README, ищет архитектурные документы, открывает десятки соседних модулей и только потом возвращается к изменённым строкам. Его <a class="term-link" href="glossary.html#context">контекст</a> уже заполнен материалом, который не помог подтвердить ни одной новой ошибки. В этом руководстве мы построим две сравнимые версии reviewer-агента: обычную repo-first и управляемую diff-first. Затем измерим их на одном наборе изменений, не подменяя качество впечатлением от красивого отчёта.
+        </p>
+      </header>
+
+      <nav class="table-of-contents" aria-label="Содержание">
+        <h2>Содержание</h2>
+        <ol>
+          <li><a href="#result">Что получится</a></li>
+          <li><a href="#problem">Почему исследование всего репозитория дорого</a></li>
+          <li><a href="#case">Конкретный кейс</a></li>
+          <li><a href="#contract">Контракт хорошего review</a></li>
+          <li><a href="#variants">Два варианта агента</a></li>
+          <li><a href="#diff-first">Алгоритм diff-first</a></li>
+          <li><a href="#workspace">Структура стенда</a></li>
+          <li><a href="#prompts">Инструкции для агентов</a></li>
+          <li><a href="#trace">Учёт инструментов и токенов</a></li>
+          <li><a href="#dataset">Набор задач и эталон</a></li>
+          <li><a href="#matching">Сопоставление найденных проблем</a></li>
+          <li><a href="#runner">Повторяемый запуск</a></li>
+          <li><a href="#metrics">Метрики качества и стоимости</a></li>
+          <li><a href="#verification">Проверка честности эксперимента</a></li>
+          <li><a href="#failures">Типичные провалы</a></li>
+          <li><a href="#limitations">Ограничения метода</a></li>
+          <li><a href="#production">Перенос в рабочий процесс</a></li>
+        </ol>
+      </nav>
+
+      <section id="result">
+        <h2>Что получится</h2>
+        <p>
+          Итогом будет локальный <a class="term-link" href="glossary.html#benchmark">бенчмарк</a>, который запускает две стратегии на одинаковых Git-изменениях:
+        </p>
+        <ol>
+          <li><strong>Repo-first.</strong> Агент свободно исследует репозиторий, а затем проверяет изменение.</li>
+          <li><strong>Diff-first.</strong> Агент начинает с патча, формулирует конкретные гипотезы риска и получает только тот соседний код, который нужен для проверки этих гипотез.</li>
+        </ol>
+        <p>Для каждого запуска стенд сохранит:</p>
+        <ul>
+          <li>структурированный список замечаний;</li>
+          <li>входные и выходные <a class="term-link" href="glossary.html#token">токены</a> по данным провайдера или локального runtime;</li>
+          <li>число и типы <a class="term-link" href="glossary.html#tool-calling">вызовов инструментов</a>;</li>
+          <li>объём прочитанных файлов и строк;</li>
+          <li>продолжительность запуска;</li>
+          <li>полноту, точность и покрытие критических дефектов;</li>
+          <li>причину каждого дополнительного чтения в diff-first режиме.</li>
+        </ul>
+        <p>
+          Руководство не содержит заранее объявленного победителя и не приписывает стратегиям выдуманные проценты экономии. Вы получите формат, команды и правила оценки, а численные выводы рассчитаете на своих репозиториях и выбранной модели.
+        </p>
+
+        <aside class="note">
+          <h3>Основная гипотеза</h3>
+          <p>
+            Если начинать с изменённых строк и разрешать расширение контекста только для проверяемой гипотезы, агент совершит меньше нерелевантных чтений. Гипотеза считается подтверждённой только тогда, когда снижение стоимости и числа вызовов не сопровождается неприемлемой потерей качества.
+          </p>
+        </aside>
+      </section>
+
+      <section id="problem">
+        <h2>Почему исследование всего репозитория дорого</h2>
+        <p>
+          Просмотр кода человеком обычно имеет естественный якорь: pull request показывает изменённые файлы и строки. Reviewer сначала понимает намерение патча, затем открывает определения типов, вызываемые функции, тесты и конфигурацию, если конкретное замечание требует такого перехода.
+        </p>
+        <p>
+          Агент без явной стратегии часто действует иначе. Общий <a class="term-link" href="glossary.html#prompt">промпт</a> «изучи репозиторий и проведи тщательное review» превращает полноту в бесконечное исследование. Модель не знает, какой объём знакомства достаточен, поэтому страх пропустить зависимость толкает её к новым поискам.
+        </p>
+
+        <pre><code>list_repository
+→ read README
+→ read package manifest
+→ list src
+→ search changed symbol globally
+→ read several implementations
+→ inspect test tree
+→ inspect configuration
+→ finally read diff
+→ repeat searches after context compression</code></pre>
+
+        <p>Стоимость растёт сразу по нескольким каналам:</p>
+        <ul>
+          <li><strong>Вход модели.</strong> Результаты чтения попадают в последующие запросы.</li>
+          <li><strong>Инструменты.</strong> Каждый поиск и файл создаёт отдельный цикл принятия решения.</li>
+          <li><strong>Задержка.</strong> Последовательные вызовы нельзя полностью распараллелить.</li>
+          <li><strong>Загрязнение контекста.</strong> Соседний, но неизменённый код начинает конкурировать с патчем за внимание модели.</li>
+          <li><strong>Повторное чтение.</strong> После сокращения истории агент может заново искать уже виденные данные.</li>
+          <li><strong>Ложные замечания.</strong> Модель начинает рецензировать старый код, который не относится к изменению.</li>
+        </ul>
+        <p>
+          Важно не запретить исследование репозитория, а сделать его условным. Некоторые дефекты невозможно увидеть в одном diff: изменение сигнатуры может нарушить внешний вызов, новый путь — обойти авторизацию, а перестановка операций — сломать транзакционный инвариант. Поэтому diff-first — не режим «читать только патч». Это режим «сначала патч, затем минимально достаточное доказательство».
+        </p>
+
+        <blockquote>
+          Контекст для review должен расширяться по причине, а не по любопытству.
+        </blockquote>
+      </section>
+
+      <section id="case">
+        <h2>Конкретный кейс: повторная отправка платежа</h2>
+        <p>
+          Рассмотрим синтетическое изменение без привязки к клиенту или реальному продукту. В сервисе появился повтор сетевого запроса при временной ошибке:
+        </p>
+
+        <pre><code>diff --git a/src/payments/charge.py b/src/payments/charge.py
+index 2a71b10..e6d94b2 100644
+--- a/src/payments/charge.py
++++ b/src/payments/charge.py
+@@ -38,7 +38,12 @@ def create_charge(order, gateway):
+-    return gateway.charge(order.total, order.currency)
++    for attempt in range(3):
++        try:
++            return gateway.charge(order.total, order.currency)
++        except TemporaryGatewayError:
++            if attempt == 2:
++                raise</code></pre>
+
+        <p>
+          Из патча уже выводится проверяемая гипотеза: повтор небезопасен, если операция не идемпотентна. Чтобы подтвердить или опровергнуть её, агенту не нужен весь репозиторий. Ему нужны ответы на три конкретных вопроса:
+        </p>
+        <ol>
+          <li>Принимает ли <code>gateway.charge</code> ключ идемпотентности?</li>
+          <li>Передаёт ли вызывающий код устойчивый идентификатор заказа или операции?</li>
+          <li>Есть ли тест, моделирующий ситуацию «провайдер выполнил списание, но клиент получил временную ошибку»?</li>
+        </ol>
+        <p>
+          Diff-first агент сначала ищет определение или протокол <code>charge</code>, затем ближайшие вызовы и тесты повтора. Если интерфейс поддерживает <code>idempotency_key</code>, но новый код его не передаёт, появляется доказуемое замечание. Если нижний слой сам гарантирует идемпотентность, гипотеза закрывается без замечания.
+        </p>
+
+        <h3>Как ведёт себя repo-first вариант</h3>
+        <p>
+          Свободный агент может сначала прочитать структуру проекта, модели заказов, настройки провайдера, общие исключения, документацию по запуску, остальные платёжные операции и весь каталог тестов. Часть данных потенциально полезна, но причинная связь между чтением и проверяемым риском не фиксируется.
+        </p>
+
+        <h3>Как ведёт себя diff-first вариант</h3>
+        <p>
+          Управляемый агент строит короткую цепочку:
+        </p>
+
+        <pre><code>изменённая операция
+→ риск повторного побочного эффекта
+→ контракт gateway.charge
+→ место формирования idempotency_key
+→ негативный тест сетевой неопределённости
+→ подтверждённое замечание или закрытая гипотеза</code></pre>
+
+        <p>
+          Такая трасса полезна даже при одинаковом итоговом замечании: она показывает, почему каждый фрагмент кода попал в контекст.
+        </p>
+      </section>
+
+      <section id="contract">
+        <h2>Сначала зафиксируйте контракт хорошего review</h2>
+        <p>
+          Нельзя оптимизировать стоимость, пока неизвестно, что считается полезным результатом. В этом стенде замечание принимается только при выполнении всех условий:
+        </p>
+        <ol>
+          <li>Оно относится к поведению, добавленному или изменённому патчем.</li>
+          <li>В нём описан конкретный сценарий отказа, а не общее пожелание.</li>
+          <li>Указано место в изменённом файле.</li>
+          <li>Есть доказательство из diff, соседнего контракта, вызова, теста или конфигурации.</li>
+          <li>Предложена проверяемая коррекция или тест, который воспроизводит проблему.</li>
+          <li>Уверенность отделена от серьёзности.</li>
+        </ol>
+
+        <p>Структура одного замечания:</p>
+
+        <pre><code>{
+  "title": "Повтор может создать второе списание",
+  "severity": "high",
+  "confidence": 0.93,
+  "category": "side_effect",
+  "file": "src/payments/charge.py",
+  "line": 41,
+  "changed_line": true,
+  "scenario": "Провайдер выполнил первое списание, но соединение оборвалось до ответа; цикл отправляет операцию снова.",
+  "evidence": [
+    "В новом цикле повторяется gateway.charge",
+    "Контракт принимает idempotency_key, но этот вызов его не передаёт"
+  ],
+  "suggested_check": "Смоделировать успешное списание с TemporaryGatewayError на стороне клиента и проверить единственность операции."
+}</code></pre>
+
+        <p>
+          Не включайте в основной score замечания о стиле, именовании и рефакторинге, если они не связаны с дефектом. Их можно хранить в отдельном массиве <code>non_blocking_notes</code>, чтобы разговор о предпочтениях не искажал измерение обнаружения ошибок.
+        </p>
+      </section>
+
+      <section id="variants">
+        <h2>Два варианта агента</h2>
+
+        <h3>Вариант A: repo-first</h3>
+        <p>
+          Это контрольная стратегия. Агент получает путь к рабочей копии, базовую и проверяемую ревизии, доступные инструменты и задачу провести review. Порядок исследования не ограничивается.
+        </p>
+        <p>Разрешённые действия:</p>
+        <ul>
+          <li>получить diff;</li>
+          <li>перечислять каталоги;</li>
+          <li>читать любые файлы рабочей копии;</li>
+          <li>искать строки и символы;</li>
+          <li>запускать разрешённые тесты и статические проверки;</li>
+          <li>возвращать замечания по заданной JSON-схеме.</li>
+        </ul>
+        <p>
+          Repo-first агент нужен не как карикатурный «плохой» baseline. Его инструкция должна требовать такой же формат доказательств и запрещать замечания вне патча. Отличаться должна стратегия получения контекста, а не строгость оценки.
+        </p>
+
+        <h3>Вариант B: diff-first</h3>
+        <p>
+          Этот агент получает diff первым сообщением. До чтения дополнительных файлов он обязан построить карту изменения:
+        </p>
+        <ul>
+          <li>изменённые сущности;</li>
+          <li>новые и удалённые ветви;</li>
+          <li>побочные эффекты;</li>
+          <li>изменения контрактов и форматов;</li>
+          <li>границы доверия и разрешений;</li>
+          <li>изменения конкурентности, времени и порядка операций;</li>
+          <li>недостающие или изменённые проверки.</li>
+        </ul>
+        <p>
+          После этого каждое внешнее чтение оформляется как запрос контекста с причиной:
+        </p>
+
+        <pre><code>{
+  "hypothesis_id": "H3",
+  "question": "Поддерживает ли gateway.charge ключ идемпотентности?",
+  "target": "определение символа gateway.charge",
+  "stop_when": "найдена сигнатура и реализация адаптера",
+  "max_files": 3
+}</code></pre>
+
+        <p>
+          Если агент не может назвать проверяемый вопрос и условие остановки, дополнительное чтение не разрешается.
+        </p>
+
+        <h3>Что должно быть одинаковым</h3>
+        <table>
+          <thead>
+            <tr>
+              <th>Параметр</th>
+              <th>Требование</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td>Модель и версия</td>
+              <td>Одинаковые в парной серии</td>
+            </tr>
+            <tr>
+              <td>Параметры генерации</td>
+              <td>Одинаковая температура, лимит вывода и режим рассуждения</td>
+            </tr>
+            <tr>
+              <td>Репозиторий</td>
+              <td>Одинаковый закреплённый commit</td>
+            </tr>
+            <tr>
+              <td>Diff</td>
+              <td>Одинаковые base и head</td>
+            </tr>
+            <tr>
+              <td>Инструменты</td>
+              <td>Одинаковый набор и одинаковые ограничения безопасности</td>
+            </tr>
+            <tr>
+              <td>Выходная схема</td>
+              <td>Одинаковая JSON-схема замечаний</td>
+            </tr>
+            <tr>
+              <td>Таймаут</td>
+              <td>Одинаковый общий предел</td>
+            </tr>
+            <tr>
+              <td>Кэш</td>
+              <td>Либо отключён для всех, либо измеряется отдельно</td>
+            </tr>
+          </tbody>
+        </table>
+      </section>
+
+      <section id="diff-first">
+        <h2>Алгоритм diff-first по шагам</h2>
+
+        <h3>Шаг 1. Подготовьте патч как самостоятельный вход</h3>
+        <pre><code>git diff --no-ext-diff --unified=40 BASE_SHA HEAD_SHA -- &gt; change.diff
+git diff --name-status BASE_SHA HEAD_SHA -- &gt; changed-files.txt
+git diff --numstat BASE_SHA HEAD_SHA -- &gt; change-numstat.tsv</code></pre>
+        <p>
+          Сорок строк окружения — стартовое значение, а не универсальная норма. Оно помогает увидеть функцию целиком для небольших изменений. Большие сгенерированные файлы, снимки и lock-файлы лучше пометить отдельно, но не скрывать: агент должен знать, что они изменились.
+        </p>
+
+        <h3>Шаг 2. Разделите патч на смысловые блоки</h3>
+        <p>
+          Единицей анализа служит не файл, а логическое изменение: новый retry, изменение проверки доступа, перенос записи после сетевого вызова, новое поле схемы, удалённая валидация. Один файл может содержать несколько независимых блоков.
+        </p>
+
+        <h3>Шаг 3. Сформируйте гипотезы</h3>
+        <p>Для каждого блока агент заполняет таблицу:</p>
+
+        <table>
+          <thead>
+            <tr>
+              <th>Поле</th>
+              <th>Вопрос</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td><code>risk</code></td>
+              <td>Что конкретно может сломаться?</td>
+            </tr>
+            <tr>
+              <td><code>trigger</code></td>
+              <td>При каком входе, состоянии или порядке событий?</td>
+            </tr>
+            <tr>
+              <td><code>evidence_in_diff</code></td>
+              <td>Какая строка патча породила гипотезу?</td>
+            </tr>
+            <tr>
+              <td><code>missing_fact</code></td>
+              <td>Какого факта не хватает для решения?</td>
+            </tr>
+            <tr>
+              <td><code>lookup</code></td>
+              <td>Какой минимальный поиск даст этот факт?</td>
+            </tr>
+            <tr>
+              <td><code>stop_condition</code></td>
+              <td>Когда исследование по гипотезе завершено?</td>
+            </tr>
+          </tbody>
+        </table>
+
+        <h3>Шаг 4. Выдайте бюджет на расширение</h3>
+        <p>
+          Начальный бюджет можно задать конфигурацией. Значения ниже — не доказанная оптимальная настройка, а явная отправная точка, которую следует калибровать на своём наборе:
+        </p>
+
+        <pre><code>context_policy:
+  initial_source: diff
+  max_lookup_rounds: 8
+  max_files_per_hypothesis: 4
+  max_lines_per_read: 240
+  max_total_file_lines: 2400
+  allow_full_file_when_lines_below: 320
+  require_lookup_reason: true
+  require_stop_condition: true
+  changed_files_first: true
+  allow_budget_escape: true</code></pre>
+
+        <p>
+          Жёсткий запрет на превышение опасен: сложное изменение действительно может потребовать больше контекста. Поэтому предусмотрите escape hatch. Агент может запросить дополнительный бюджет, но обязан записать:
+        </p>
+        <ul>
+          <li>какую гипотезу нельзя закрыть;</li>
+          <li>что уже проверено;</li>
+          <li>какие новые файлы нужны;</li>
+          <li>почему результат влияет на серьёзность или существование замечания.</li>
+        </ul>
+
+        <h3>Шаг 5. Сначала закрывайте гипотезы, потом пишите отчёт</h3>
+        <p>
+          Состояние каждой гипотезы должно стать одним из четырёх:
+        </p>
+        <dl>
+          <dt><strong>Confirmed</strong></dt>
+          <dd>Есть конкретный сценарий отказа и достаточное доказательство.</dd>
+          <dt><strong>Rejected</strong></dt>
+          <dd>Соседний контракт или тест показывает, что риск уже закрыт.</dd>
+          <dt><strong>Unresolved</strong></dt>
+          <dd>Доступного контекста недостаточно; вывод нельзя выдавать за дефект.</dd>
+          <dt><strong>Out of scope</strong></dt>
+          <dd>Проблема существует, но не создана и не усилена данным diff.</dd>
+        </dl>
+        <p>
+          В итоговые замечания попадают только подтверждённые гипотезы. Неопределённые вопросы можно вернуть отдельным разделом <code>open_questions</code>.
+        </p>
+      </section>
+
+      <section id="workspace">
+        <h2>Структура воспроизводимого стенда</h2>
+        <pre><code>review-bench/
+├── config/
+│   ├── common.json
+│   ├── repo-first.json
+│   └── diff-first.json
+├── prompts/
+│   ├── common-contract.md
+│   ├── repo-first.md
+│   └── diff-first.md
+├── schemas/
+│   ├── review-output.schema.json
+│   └── trace-event.schema.json
+├── cases/
+│   ├── manifest.jsonl
+│   ├── case-001/
+│   │   ├── change.diff
+│   │   ├── expected.json
+│   │   └── notes.md
+│   └── case-002/
+├── repos/
+│   └── README.md
+├── scripts/
+│   ├── run_case.py
+│   ├── validate_output.py
+│   ├── match_findings.py
+│   └── summarize.py
+└── runs/
+    └── .gitkeep</code></pre>
+
+        <p>
+          Репозитории не обязательно копировать внутрь стенда. В <code>manifest.jsonl</code> можно хранить абсолютный или разрешённый относительный путь к локальному checkout. Для переносимости лучше указывать URL отдельно, а запуск выполнять только после явного получения репозитория и проверки commit.
+        </p>
+
+        <pre><code>{"case_id":"retry-side-effect-001","repo_path":"../fixtures/payment-service","base_sha":"BASE_COMMIT","head_sha":"HEAD_COMMIT","expected_path":"cases/case-001/expected.json","languages":["python"],"tags":["retry","side_effect"],"max_seconds":900}</code></pre>
+
+        <p>
+          Замените <code>BASE_COMMIT</code> и <code>HEAD_COMMIT</code> настоящими идентификаторами из своего тестового репозитория. Не используйте плавающие ветки вроде <code>main</code> в сохранённом запуске.
+        </p>
+      </section>
+
+      <section id="prompts">
+        <h2>Инструкции для агентов</h2>
+
+        <h3>Общий контракт</h3>
+        <pre><code>Ты проводишь code review изменения между заданными base и head.
+
+Ищи только дефекты, созданные или усиленные изменением.
+Не сообщай о стиле и необязательном рефакторинге.
+Для каждого замечания укажи:
+- файл и изменённую строку;
+- серьёзность и уверенность;
+- конкретный сценарий отказа;
+- доказательства;
+- проверяемую коррекцию или тест.
+
+Не утверждай, что проблема существует, если доступных доказательств
+недостаточно. В таком случае добавь вопрос в open_questions.
+
+Верни только JSON, соответствующий review-output.schema.json.</code></pre>
+
+        <h3>Добавка для repo-first</h3>
+        <pre><code>Исследуй репозиторий в объёме, который считаешь необходимым.
+Ты можешь получать diff, читать файлы, искать символы и запускать
+разрешённые проверки. Сам выбери порядок действий.</code></pre>
+
+        <h3>Добавка для diff-first</h3>
+        <pre><code>Начни с предоставленного diff. До чтения других файлов:
+1. Раздели diff на логические изменения.
+2. Сформируй гипотезы конкретных отказов.
+3. Для каждого дополнительного чтения укажи hypothesis_id,
+   вопрос, цель и условие остановки.
+4. Читай минимальный диапазон строк.
+5. Сначала проверяй изменённые файлы, определения затронутых
+   символов, непосредственных вызывающих и связанные тесты.
+6. Не перечисляй дерево репозитория без гипотезы.
+7. Заверши гипотезу как confirmed, rejected, unresolved
+   или out_of_scope.
+8. Если бюджета недостаточно, запроси budget_escape с причиной.</code></pre>
+
+        <p>
+          Схема ответа должна быть одинаковой. Иначе один вариант может выглядеть дешевле просто потому, что возвращает менее подробный результат.
+        </p>
+
+        <pre><code>{
+  "type": "object",
+  "required": ["findings", "open_questions", "review_summary"],
+  "properties": {
+    "findings": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": [
+          "title", "severity", "confidence", "category",
+          "file", "line", "changed_line", "scenario",
+          "evidence", "suggested_check"
+        ]
+      }
+    },
+    "open_questions": {"type": "array"},
+    "review_summary": {"type": "string"},
+    "hypotheses": {"type": "array"}
+  }
+}</code></pre>
+      </section>
+
+      <section id="trace">
+        <h2>Как учитывать инструменты, прочитанный код и токены</h2>
+        <p>
+          Финальный текст агента не позволяет восстановить стоимость исследования. Все операции нужно проводить через шлюз, который пишет событие до или после каждого разрешённого действия. Это часть <a class="term-link" href="glossary.html#observability">наблюдаемости</a> стенда.
+        </p>
+
+        <h3>Событие вызова инструмента</h3>
+        <pre><code>{"ts":"2026-07-27T10:00:00Z","run_id":"retry-side-effect-001__diff-first__r1","seq":7,"tool":"read_file","target":"src/payments/gateway.py","line_start":1,"line_end":180,"returned_lines":180,"returned_bytes":6240,"hypothesis_id":"H3","reason":"Проверить поддержку idempotency_key","status":"ok","duration_ms":31}</code></pre>
+
+        <p>Минимальные поля трассы:</p>
+        <ul>
+          <li><code>run_id</code> и последовательный <code>seq</code>;</li>
+          <li>имя инструмента;</li>
+          <li>нормализованная цель без секретных параметров;</li>
+          <li>размер возвращённых данных;</li>
+          <li>продолжительность и статус;</li>
+          <li>идентификатор гипотезы для diff-first;</li>
+          <li>причина чтения;</li>
+          <li>признак повторного чтения того же диапазона.</li>
+        </ul>
+
+        <h3>Какие операции считать отдельно</h3>
+        <table>
+          <thead>
+            <tr>
+              <th>Группа</th>
+              <th>Примеры</th>
+              <th>Почему выделять</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td>Навигация</td>
+              <td><code>list_files</code>, <code>tree</code></td>
+              <td>Показывает широкое исследование без чтения содержания</td>
+            </tr>
+            <tr>
+              <td>Поиск</td>
+              <td><code>search_text</code>, <code>find_symbol</code></td>
+              <td>Один поиск может вернуть очень большой результат</td>
+            </tr>
+            <tr>
+              <td>Чтение</td>
+              <td><code>read_file</code>, <code>read_range</code></td>
+              <td>Даёт объём строк и байтов, попавших в контекст</td>
+            </tr>
+            <tr>
+              <td>Git</td>
+              <td><code>show_diff</code>, <code>show_file_at_revision</code></td>
+              <td>Отделяет патч от остального кода</td>
+            </tr>
+            <tr>
+              <td>Выполнение</td>
+              <td><code>run_tests</code>, <code>run_linter</code></td>
+              <td>Время и вычисления несопоставимы с простым чтением</td>
+            </tr>
+          </tbody>
+        </table>
+
+        <h3>Учёт токенов</h3>
+        <p>
+          Используйте значения <code>input_tokens</code>, <code>output_tokens</code>, <code>cached_input_tokens</code> и другие поля, которые реально возвращает выбранный API или runtime. Не оценивайте стоимость делением символов на условный коэффициент, если провайдер даёт фактический usage.
+        </p>
+        <p>
+          Сохраняйте сырые значения каждого модельного вызова:
+        </p>
+
+        <pre><code>{"run_id":"retry-side-effect-001__diff-first__r1","model_call":4,"model":"PINNED_MODEL_ID","input_tokens":8120,"cached_input_tokens":0,"output_tokens":940,"price_snapshot_id":"local-2026-07-27","estimated_cost":null}</code></pre>
+
+        <p>
+          Поле <code>estimated_cost</code> может оставаться <code>null</code>. Денежная стоимость зависит от действующего тарифа, региона, кэширования и типа модели. Для исторически воспроизводимого отчёта сохраняйте собственный снимок цен отдельно и не заменяйте им первичные метрики токенов.
+        </p>
+      </section>
+
+      <section id="dataset">
+        <h2>Как собрать набор задач и эталон</h2>
+        <p>
+          Бенчмарк должен содержать не только удобные локальные ошибки. Включите изменения разного профиля:
+        </p>
+        <ul>
+          <li>локальная ошибка условия;</li>
+          <li>нарушение контракта между модулями;</li>
+          <li>небезопасный повтор побочного эффекта;</li>
+          <li>ошибка авторизации или границы доверия;</li>
+          <li>несовместимое изменение схемы;</li>
+          <li>конкурентный доступ или неверный порядок операций;</li>
+          <li>ошибка обработки времени, пустого значения или кодировки;</li>
+          <li>корректный патч без дефекта;</li>
+          <li>изменение, для которого нужен широкий архитектурный контекст;</li>
+          <li>крупный механический diff с малой смысловой сложностью.</li>
+        </ul>
+
+        <h3>Используйте два источника случаев</h3>
+        <ol>
+          <li>
+            <strong>Исторические изменения.</strong> Возьмите исправленные дефекты, для которых известны исходный патч, последующее исправление и тест. Удалите из задания сообщения коммитов, раскрывающие ответ.
+          </li>
+          <li>
+            <strong>Контролируемые мутации.</strong> Внесите одно заранее описанное нарушение в тестовую ветку: удалите проверку, поменяйте порядок операций, отбросьте параметр или ослабьте условие. Помечайте такие случаи как синтетические.
+          </li>
+        </ol>
+
+        <p>
+          Мутации дают чистую причинность, но не полностью отражают реальные ошибки. Исторические случаи естественнее, однако их эталон часто неполон. Отчёт должен показывать результаты по двум группам отдельно.
+        </p>
+
+        <h3>Эталон одного случая</h3>
+        <pre><code>{
+  "case_id": "retry-side-effect-001",
+  "provenance": "synthetic_mutation",
+  "expected_findings": [
+    {
+      "finding_id": "F1",
+      "category": "side_effect",
+      "severity": "high",
+      "files": ["src/payments/charge.py"],
+      "line_ranges": [[39, 45]],
+      "behavior": "Повтор запроса возможен без устойчивого ключа идемпотентности.",
+      "required_evidence": [
+        "повторяется операция charge",
+        "ключ идемпотентности не передан или не гарантирован нижним слоем"
+      ]
+    }
+  ],
+  "acceptable_alternatives": [],
+  "known_non_findings": [
+    "Само число попыток не является дефектом без сценария повторного побочного эффекта."
+  ]
+}</code></pre>
+
+        <p>
+          Не составляйте эталон после просмотра ответов сравниваемых агентов: это создаёт смещение. Сначала два reviewer-а независимо описывают ожидаемые дефекты, затем разрешают разногласия. Если согласие не достигнуто, случай помечается как спорный и не участвует в основном score.
+        </p>
+
+        <h3>Добавьте отрицательные случаи</h3>
+        <p>
+          Если каждый патч содержит известную ошибку, агент научится всегда писать хотя бы одно замечание. Включите корректные изменения и патчи, где подозрительная конструкция защищена нижним слоем. Они нужны для измерения ложных срабатываний и пользы дополнительного контекста.
+        </p>
+      </section>
+
+      <section id="matching">
+        <h2>Как сопоставлять замечания с эталоном</h2>
+        <p>
+          Сравнение по точному тексту не работает: два корректных review могут описывать один дефект разными словами. Используйте двухэтапную процедуру.
+        </p>
+
+        <h3>Этап 1. Детерминированные кандидаты</h3>
+        <p>Пара считается кандидатом на совпадение, если:</p>
+        <ul>
+          <li>категории совпадают или входят в заранее заданную таблицу эквивалентности;</li>
+          <li>файл совпадает с одним из ожидаемых;</li>
+          <li>строка находится в ожидаемом диапазоне или на ближайшей изменённой строке;</li>
+          <li>описанный сценарий относится к тому же наблюдаемому поведению.</li>
+        </ul>
+
+        <h3>Этап 2. Слепая проверка человеком</h3>
+        <p>
+          Reviewer не должен знать, какой вариант агента сформировал замечание. Он выбирает один статус:
+        </p>
+        <ul>
+          <li><code>true_positive</code> — замечание соответствует эталонному дефекту;</li>
+          <li><code>false_positive</code> — дефект не подтверждается;</li>
+          <li><code>duplicate</code> — повтор уже сопоставленного замечания;</li>
+          <li><code>new_valid_finding</code> — полезная проблема вне исходного эталона;</li>
+          <li><code>uncertain</code> — требуется дополнительная экспертиза.</li>
+        </ul>
+        <p>
+          Новые подтверждённые проблемы добавляйте в расширенный эталон только после завершения основной парной серии. Исходный score сохраните неизменным, а перерасчёт опубликуйте отдельной версией набора.
+        </p>
+
+        <h3>Не считайте дубликаты отдельными находками</h3>
+        <p>
+          Если агент трижды описал одну причину на соседних строках, это один true positive и два дубликата. Иначе многословный вариант искусственно получит преимущество.
+        </p>
+      </section>
+
+      <section id="runner">
+        <h2>Повторяемый запуск</h2>
+        <p>
+          Удобный адаптер запускает любой агентный CLI, который принимает JSON через стандартный ввод, возвращает структурированный ответ и пишет трассу в заданный файл. Имя конкретного продукта не является частью методики.
+        </p>
+
+        <pre><code>{
+  "agent_command": ["YOUR_AGENT_ADAPTER"],
+  "model": "PINNED_MODEL_ID",
+  "temperature": 0,
+  "max_output_tokens": 5000,
+  "timeout_seconds": 900,
+  "repetitions": 3,
+  "environment_allowlist": ["PATH", "LANG"],
+  "network": false
+}</code></pre>
+
+        <p>
+          Не добавляйте ключи API в конфигурацию или артефакты. Адаптер получает необходимые секреты из защищённого окружения, но не переносит их в дочерние инструменты и трассу.
+        </p>
+
+        <h3>Каркас runner-а</h3>
+        <pre><code>from __future__ import annotations
+
+import hashlib
+import json
+import os
+import subprocess
+import time
+from pathlib import Path
+
+
+def sha256(path: Path) -&gt; str:
+    digest = hashlib.sha256()
+    with path.open("rb") as stream:
+        for block in iter(lambda: stream.read(65536), b""):
+            digest.update(block)
+    return digest.hexdigest()
+
+
+def run_once(case, variant, repetition, common):
+    run_id = f"{case['case_id']}__{variant}__r{repetition}"
+    run_dir = Path("runs") / run_id
+    run_dir.mkdir(parents=True, exist_ok=False)
+
+    diff_path = Path("cases") / case["case_id"] / "change.diff"
+    trace_path = run_dir / "trace.jsonl"
+    response_path = run_dir / "review.json"
+
+    request = {
+        "run_id": run_id,
+        "variant": variant,
+        "repo_path": case["repo_path"],
+        "base_sha": case["base_sha"],
+        "head_sha": case["head_sha"],
+        "diff": diff_path.read_text(encoding="utf-8"),
+        "trace_path": str(trace_path.resolve()),
+        "common_prompt_path": "prompts/common-contract.md",
+        "variant_prompt_path": f"prompts/{variant}.md",
+        "output_schema_path": "schemas/review-output.schema.json",
+        "limits": common["limits"]
+    }
+
+    safe_env = {
+        key: os.environ[key]
+        for key in common["environment_allowlist"]
+        if key in os.environ
+    }
+
+    started = time.monotonic()
+    completed = subprocess.run(
+        common["agent_command"],
+        input=json.dumps(request),
+        text=True,
+        capture_output=True,
+        timeout=case["max_seconds"],
+        env=safe_env,
+        check=False
+    )
+    duration_ms = round((time.monotonic() - started) * 1000)
+
+    (run_dir / "stdout.txt").write_text(
+        completed.stdout, encoding="utf-8"
+    )
+    (run_dir / "stderr.txt").write_text(
+        completed.stderr, encoding="utf-8"
+    )
+
+    if completed.returncode != 0:
+        status = "agent_error"
+    else:
+        response_path.write_text(completed.stdout, encoding="utf-8")
+        status = "completed"
+
+    metadata = {
+        "run_id": run_id,
+        "status": status,
+        "exit_code": completed.returncode,
+        "duration_ms": duration_ms,
+        "diff_sha256": sha256(diff_path),
+        "base_sha": case["base_sha"],
+        "head_sha": case["head_sha"],
+        "model": common["model"],
+        "temperature": common["temperature"]
+    }
+    (run_dir / "metadata.json").write_text(
+        json.dumps(metadata, ensure_ascii=False, indent=2),
+        encoding="utf-8"
+    )</code></pre>
+
+        <p>
+          Этот каркас намеренно не предполагает конкретный API. Адаптер отвечает за вызов модели, реализацию разрешённых инструментов, запись usage и выдачу JSON. Сам runner отвечает за одинаковые входы, таймаут, окружение и неизменяемые артефакты.
+        </p>
+
+        <h3>Порядок серии</h3>
+        <ol>
+          <li>Проверьте, что рабочая копия соответствует <code>head_sha</code>.</li>
+          <li>Пересоздайте diff из <code>base_sha..head_sha</code> и сравните его SHA-256 с сохранённым.</li>
+          <li>Случайно перемешайте порядок вариантов внутри каждого случая.</li>
+          <li>Выполните не менее нескольких повторов, если модель или оркестратор недетерминированы.</li>
+          <li>Не запускайте варианты одновременно на одной рабочей копии, если инструменты создают кэш или временные файлы.</li>
+          <li>Валидируйте JSON сразу после запуска.</li>
+          <li>Заморозьте артефакты до ручной разметки.</li>
+        </ol>
+
+        <pre><code>python scripts/run_case.py \
+  --manifest cases/manifest.jsonl \
+  --variants repo-first diff-first \
+  --repetitions 3
+
+python scripts/validate_output.py runs/
+python scripts/match_findings.py --runs runs/ --cases cases/
+python scripts/summarize.py --runs runs/ --output runs/summary.json</code></pre>
+      </section>
+
+      <section id="metrics">
+        <h2>Метрики качества, стоимости и поведения</h2>
+
+        <h3>Качество</h3>
+        <p>Для каждого запуска вычисляйте:</p>
+        <ul>
+          <li><strong>TP</strong> — уникальные эталонные дефекты, найденные агентом;</li>
+          <li><strong>FP</strong> — неподтверждённые замечания;</li>
+          <li><strong>FN</strong> — эталонные дефекты, которые агент пропустил;</li>
+          <li><strong>Precision</strong> = TP / (TP + FP);</li>
+          <li><strong>Recall</strong> = TP / (TP + FN);</li>
+          <li><strong>Critical recall</strong> — полнота только для дефектов с критической серьёзностью;</li>
+          <li><strong>Clean-patch accuracy</strong> — доля корректных патчей, где агент не выдал ложное замечание;</li>
+          <li><strong>Evidence completeness</strong> — доля замечаний с проверяемым сценарием и доказательством.</li>
+        </ul>
+        <p>
+          Если пропуск дефекта дороже ложного замечания, добавьте F2-меру, которая сильнее учитывает recall:
+        </p>
+        <pre><code>F2 = 5 × precision × recall / (4 × precision + recall)</code></pre>
+        <p>
+          Не объединяйте все серьёзности без дополнительного отчёта. Пять мелких находок не компенсируют пропуск одного критического нарушения авторизации.
+        </p>
+
+        <h3>Стоимость</h3>
+        <ul>
+          <li>суммарные входные токены;</li>
+          <li>некэшированные входные токены;</li>
+          <li>выходные токены;</li>
+          <li>число модельных вызовов;</li>
+          <li>денежная оценка по зафиксированному снимку тарифов;</li>
+          <li>медианная и хвостовая продолжительность запуска.</li>
+        </ul>
+
+        <h3>Инструменты и контекст</h3>
+        <ul>
+          <li>общее число вызовов инструментов;</li>
+          <li>число поисков, чтений и запусков команд;</li>
+          <li>уникальные прочитанные файлы;</li>
+          <li>всего возвращённых строк и байтов;</li>
+          <li>доля строк из изменённых файлов;</li>
+          <li>повторно прочитанные диапазоны;</li>
+          <li>число запросов дополнительного бюджета;</li>
+          <li>доля чтений diff-first с заполненной причиной и гипотезой.</li>
+        </ul>
+
+        <h3>Эффективность, а не просто дешевизна</h3>
+        <p>
+          Полезно считать стоимость одной уникальной подтверждённой находки:
+        </p>
+        <pre><code>tokens_per_true_positive = total_tokens / max(TP, 1)
+tool_calls_per_true_positive = tool_calls / max(TP, 1)</code></pre>
+        <p>
+          Но эта метрика не заменяет recall. Агент, который прочитал только diff, нашёл одну очевидную ошибку и пропустил остальные, может выглядеть очень эффективным на одну находку. Поэтому решение принимается через ограниченную оптимизацию:
+        </p>
+        <blockquote>
+          Сначала задайте минимально допустимое качество, затем сравнивайте стоимость стратегий, которые этот порог прошли.
+        </blockquote>
+
+        <h3>Шаблон итоговой таблицы</h3>
+        <table>
+          <thead>
+            <tr>
+              <th>Метрика</th>
+              <th>Repo-first</th>
+              <th>Diff-first</th>
+              <th>Разница</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td>Precision</td>
+              <td>измерить</td>
+              <td>измерить</td>
+              <td>рассчитать</td>
+            </tr>
+            <tr>
+              <td>Recall</td>
+              <td>измерить</td>
+              <td>измерить</td>
+              <td>рассчитать</td>
+            </tr>
+            <tr>
+              <td>Critical recall</td>
+              <td>измерить</td>
+              <td>измерить</td>
+              <td>рассчитать</td>
+            </tr>
+            <tr>
+              <td>Входные токены</td>
+              <td>измерить</td>
+              <td>измерить</td>
+              <td>рассчитать</td>
+            </tr>
+            <tr>
+              <td>Вызовы инструментов</td>
+              <td>измерить</td>
+              <td>измерить</td>
+              <td>рассчитать</td>
+            </tr>
+            <tr>
+              <td>Прочитанные строки</td>
+              <td>измерить</td>
+              <td>измерить</td>
+              <td>рассчитать</td>
+            </tr>
+            <tr>
+              <td>Продолжительность</td>
+              <td>измерить</td>
+              <td>измерить</td>
+              <td>рассчитать</td>
+            </tr>
+            <tr>
+              <td>Ложные замечания на чистый патч</td>
+              <td>измерить</td>
+              <td>измерить</td>
+              <td>рассчитать</td>
+            </tr>
+          </tbody>
+        </table>
+
+        <p>
+          Сохраняйте результаты по каждому случаю, а не только среднее. Агрегат может скрыть, что diff-first выигрывает на локальных изменениях, но систематически теряет дефекты в межмодульных контрактах.
+        </p>
+      </section>
+
+      <section id="verification">
+        <h2>Проверка честности и воспроизводимости</h2>
+
+        <h3>1. Проверьте идентичность входов</h3>
+        <pre><code>git -C ../fixtures/payment-service rev-parse HEAD
+git -C ../fixtures/payment-service diff \
+  --no-ext-diff --unified=40 BASE_COMMIT HEAD_COMMIT \
+  | sha256sum
+
+sha256sum cases/retry-side-effect-001/change.diff</code></pre>
+        <p>Хеши патча должны совпасть, а HEAD — соответствовать манифесту.</p>
+
+        <h3>2. Проверьте трассу</h3>
+        <pre><code>jq -s '
+  {
+    events: length,
+    missing_reason: [
+      .[]
+      | select(.tool != "show_diff")
+      | select((.reason // "") == "")
+    ] | length,
+    missing_hypothesis: [
+      .[]
+      | select(.tool != "show_diff")
+      | select((.hypothesis_id // "") == "")
+    ] | length
+  }
+' runs/CASE__diff-first__r1/trace.jsonl</code></pre>
+        <p>
+          Для diff-first оба счётчика должны быть нулевыми, кроме заранее описанных служебных операций.
+        </p>
+
+        <h3>3. Найдите повторное чтение</h3>
+        <pre><code>jq -r '
+  select(.tool == "read_file" or .tool == "read_range")
+  | [.target, .line_start, .line_end]
+  | @tsv
+' runs/CASE__VARIANT__r1/trace.jsonl \
+  | sort \
+  | uniq -c \
+  | sort -nr</code></pre>
+        <p>
+          Повторы не всегда являются ошибкой, но их нужно видеть. Они могут указывать на потерю рабочего состояния или неудачный формат результатов инструмента.
+        </p>
+
+        <h3>4. Проверьте выходную схему</h3>
+        <p>
+          Отдельный валидатор должен отклонять отсутствующие строки, неизвестные уровни серьёзности, значения уверенности вне диапазона и свободный текст вокруг JSON. Ошибка формата считается не нулём найденных проблем, а техническим провалом запуска.
+        </p>
+
+        <h3>5. Проведите слепую оценку</h3>
+        <p>
+          Перед ручной разметкой удалите из представления поля <code>variant</code>, <code>run_id</code>, порядок запуска и сведения о стоимости. Перемешайте замечания и присвойте временные идентификаторы. Иначе reviewer может бессознательно оценивать предпочитаемую стратегию мягче.
+        </p>
+
+        <h3>6. Повторите на другом порядке</h3>
+        <p>
+          Чередуйте, какой вариант запускается первым. Если инструменты используют общий индекс, кэш сборки или прогретый файловый кэш, порядок способен повлиять на задержку. Токены при этом могут не измениться, поэтому время и модельную стоимость анализируйте отдельно.
+        </p>
+
+        <h3>7. Проверьте стабильность</h3>
+        <p>
+          Сравните повторы одного варианта. Если найденные дефекты сильно меняются, одной средней недостаточно. Покажите долю запусков, в которых обнаружен каждый эталонный дефект, и диапазон стоимости.
+        </p>
+
+        <aside class="note">
+          <h3>Критерий готовности стенда</h3>
+          <p>
+            Другой разработчик должен суметь получить те же diff, конфигурацию, трассы, выходную схему и процедуру разметки. Совпадение конкретного текста модели не требуется; воспроизводимыми должны быть условия и способ измерения.
+          </p>
+        </aside>
+      </section>
+
+      <section id="failures">
+        <h2>Типичные провалы и способы их обнаружить</h2>
+
+        <h3>Diff-first превращается в diff-only</h3>
+        <p>
+          Агент делает уверенный вывод по изменённым строкам, не проверяя контракт вызываемой функции. Результат — ложные замечания и пропуск межмодульных дефектов.
+        </p>
+        <p>
+          <strong>Проверка:</strong> добавьте отрицательный случай, где подозрительное поведение защищено нижним слоем. Хороший агент должен прочитать этот слой и отклонить гипотезу.
+        </p>
+
+        <h3>Бюджет становится целью</h3>
+        <p>
+          Агент избегает нужного чтения, чтобы уложиться в лимит инструментов. Дешёвый запуск выглядит успешным до сравнения с эталоном.
+        </p>
+        <p>
+          <strong>Исправление:</strong> оставьте запрос дополнительного бюджета и оценивайте его обоснованность. Порог качества важнее числа вызовов.
+        </p>
+
+        <h3>Repo-first получает более удобную инструкцию</h3>
+        <p>
+          Если baseline просят «тщательно изучить весь репозиторий», а diff-first — «найти конкретные дефекты», сравнение измеряет качество промптов, а не порядок получения контекста.
+        </p>
+        <p>
+          <strong>Исправление:</strong> вынесите критерии замечаний, схему ответа и ограничения области в общий контракт.
+        </p>
+
+        <h3>Один поиск возвращает половину репозитория</h3>
+        <p>
+          Счётчик вызовов показывает экономию, хотя единственный глобальный поиск вернул тысячи строк.
+        </p>
+        <p>
+          <strong>Исправление:</strong> измеряйте не только calls, но и возвращённые строки, байты и число уникальных файлов.
+        </p>
+
+        <h3>Запуски тестов неограниченны</h3>
+        <p>
+          Агент несколько раз запускает весь набор, и вычислительная стоимость начинает доминировать над модельной.
+        </p>
+        <p>
+          <strong>Исправление:</strong> разделите быстрые целевые проверки и полный прогон. Для каждого запуска команды сохраняйте причину, продолжительность и код возврата.
+        </p>
+
+        <h3>Эталон знает только одну формулировку</h3>
+        <p>
+          Корректное замечание признаётся ложным, потому что использует другой термин или указывает соседнюю строку.
+        </p>
+        <p>
+          <strong>Исправление:</strong> сопоставляйте наблюдаемое поведение, категорию, файл и доказательство, а не текстовое сходство.
+        </p>
+
+        <h3>Исторический патч раскрывает ответ</h3>
+        <p>
+          Сообщение коммита, имя ветки, тест <code>test_prevent_double_charge</code> или комментарий напрямую называют дефект.
+        </p>
+        <p>
+          <strong>Исправление:</strong> аудитируйте утечки ответа до включения случая. Сохраняйте исходное происхождение отдельно от данных, видимых агенту.
+        </p>
+
+        <h3>Агент рецензирует старый код</h3>
+        <p>
+          Технически верная проблема не создана изменением и не должна блокировать этот review.
+        </p>
+        <p>
+          <strong>Исправление:</strong> требуйте привязку к изменённой строке и объяснение причинной связи с патчем. Старые проблемы сохраняйте отдельно.
+        </p>
+
+        <h3>Стоимость сравнивается по текущей цене</h3>
+        <p>
+          После изменения тарифов старый отчёт начинает показывать новые денежные значения.
+        </p>
+        <p>
+          <strong>Исправление:</strong> первичными метриками оставляйте токены и вызовы, а цену рассчитывайте по версионированному снимку.
+        </p>
+      </section>
+
+      <section id="limitations">
+        <h2>Ограничения diff-first подхода</h2>
+        <p>
+          Diff-first лучше всего работает, когда изменение имеет ясную локальную поверхность и репозиторий позволяет быстро переходить от символа к определению, вызовам и тестам. Есть классы задач, где широкий контекст нужен раньше:
+        </p>
+        <ul>
+          <li>массовая архитектурная миграция;</li>
+          <li>изменение глобального протокола или схемы событий;</li>
+          <li>удаление инфраструктурного компонента;</li>
+          <li>генерация кода, где diff не отражает источник изменения;</li>
+          <li>поведение, распределённое между несколькими репозиториями;</li>
+          <li>изменение сборки, упаковки или deployment-контура;</li>
+          <li>ошибка, возникающая только при полном системном тесте;</li>
+          <li>репозиторий с динамическими связями, которые не находятся обычным поиском.</li>
+        </ul>
+        <p>
+          В таких случаях полезен адаптивный режим: diff остаётся точкой входа, но классификатор изменения заранее повышает бюджет и разрешает чтение архитектурной карты, публичных контрактов или связанных репозиториев.
+        </p>
+        <p>
+          Ещё одно ограничение — неполнота эталона. Code review не имеет абсолютно полного списка возможных дефектов. Человеческая проверка новых находок остаётся обязательной, особенно для безопасности, конкурентности и доменных инвариантов.
+        </p>
+        <p>
+          Наконец, результаты относятся только к закреплённой комбинации модели, инструментария, промптов и набора задач. Нельзя автоматически переносить экономию с Python-сервиса на монорепозиторий мобильного приложения или с локальных исправлений на инфраструктурные миграции.
+        </p>
+      </section>
+
+      <section id="production">
+        <h2>Как перенести стратегию в рабочий review</h2>
+        <p>
+          После бенчмарка оформите diff-first review как явный <a class="term-link" href="glossary.html#workflow">рабочий процесс</a>, а не как совет внутри длинной инструкции:
+        </p>
+        <ol>
+          <li>CI сохраняет base, head, diff и список изменённых файлов.</li>
+          <li>Предварительный этап классифицирует размер и тип изменения.</li>
+          <li>Reviewer получает diff и строит гипотезы.</li>
+          <li>Шлюз разрешает чтение только внутри репозитория и ведёт трассу.</li>
+          <li>Превышение мягкого бюджета требует обоснования, но не блокируется автоматически.</li>
+          <li>Ответ валидируется по схеме.</li>
+          <li>Замечания без изменённой строки или сценария отказа отправляются в неблокирующий раздел.</li>
+          <li>Метрики стоимости агрегируются по типу изменения, языку и размеру diff.</li>
+          <li>Выборочная человеческая проверка отслеживает деградацию precision и recall.</li>
+        </ol>
+
+        <h3>Маршрутизация по размеру и риску</h3>
+        <table>
+          <thead>
+            <tr>
+              <th>Тип изменения</th>
+              <th>Стартовая стратегия</th>
+              <th>Расширение</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td>Локальный патч, один модуль</td>
+              <td>Diff-first с малым бюджетом</td>
+              <td>Определения, вызовы, ближайшие тесты</td>
+            </tr>
+            <tr>
+              <td>Изменение публичного контракта</td>
+              <td>Diff-first с повышенным бюджетом</td>
+              <td>Все прямые потребители и проверки совместимости</td>
+            </tr>
+            <tr>
+              <td>Авторизация, платежи, данные</td>
+              <td>Diff-first с обязательными risk-checklist</td>
+              <td>Политики, границы доверия, негативные тесты</td>
+            </tr>
+            <tr>
+              <td>Архитектурная миграция</td>
+              <td>Hybrid</td>
+              <td>Архитектурная карта до детального review</td>
+            </tr>
+            <tr>
+              <td>Сгенерированные артефакты</td>
+              <td>Review источника генерации</td>
+              <td>Проверка воспроизводимости результата</td>
+            </tr>
+          </tbody>
+        </table>
+
+        <h3>Практический критерий принятия</h3>
+        <p>
+          Не вводите diff-first только потому, что он прочитал меньше файлов. Зафиксируйте до эксперимента:
+        </p>
+        <ul>
+          <li>минимально допустимый общий recall;</li>
+          <li>отдельный порог critical recall;</li>
+          <li>максимальный уровень ложных замечаний на чистых патчах;</li>
+          <li>желаемое снижение некэшированных входных токенов;</li>
+          <li>желаемое снижение вызовов и прочитанных строк;</li>
+          <li>правила автоматического перехода в расширенный режим.</li>
+        </ul>
+        <p>
+          Если стратегия дешевле, но не проходит порог качества, её нельзя использовать как единственного reviewer-а. Если качество сохраняется только на локальных патчах, применяйте маршрутизацию вместо глобальной замены.
+        </p>
+
+        <aside class="note">
+          <h3>Итог</h3>
+          <p>
+            Diff-first сокращает стоимость не запретом на знания о репозитории, а дисциплиной получения доказательств. Патч создаёт гипотезу, гипотеза разрешает поиск, найденный контракт закрывает вопрос. Воспроизводимый бенчмарк показывает, где эта дисциплина действительно экономит ресурсы, а где широкое исследование остаётся необходимой частью качественного review.
+          </p>
+        </aside>
+      </section>
+
+      <section id="checklist">
+        <h2>Короткий чек-лист повторения</h2>
+        <ol>
+          <li>Закрепите модель, base SHA, head SHA и параметры генерации.</li>
+          <li>Сохраните diff и его SHA-256.</li>
+          <li>Подготовьте общий контракт замечаний.</li>
+          <li>Создайте repo-first и diff-first инструкции.</li>
+          <li>Пропустите все инструменты через журналируемый шлюз.</li>
+          <li>Соберите исторические, синтетические и чистые случаи.</li>
+          <li>Разметьте эталон до запуска агентов.</li>
+          <li>Перемешайте порядок парных запусков.</li>
+          <li>Сохраните сырые usage, трассы и ответы.</li>
+          <li>Проведите слепое сопоставление замечаний.</li>
+          <li>Сравните качество до стоимости.</li>
+          <li>Изучите результаты по типам изменений, а не только общий итог.</li>
+          <li>Настройте escape hatch для случаев, которым нужен широкий контекст.</li>
+          <li>Повторите серию после изменения модели, промпта или набора инструментов.</li>
+        </ol>
+      </section>
+
+      <p class="back">
+        <a class="text-link" href="guides.html">← Все руководства</a>
+        ·
+        <a class="text-link" href="glossary.html">Лабораторный словарь →</a>
+      </p>
+    </article>
+  </main>
+
+  <footer>
+    <span>Agent Lab Journal</span>
+    <span>Real experiments. Verifiable conclusions.</span>
+  </footer>
+</body>
+</html>

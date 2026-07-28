@@ -1,0 +1,750 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+
+  <title>Interactive GitHub Issue Triage with Copilot Canvas | Agent Lab Journal</title>
+  <meta name="description" content="Build an interactive Copilot Canvas for GitHub Issue triage with cards, accept and reject actions, persistent decisions, approval gates, safe synchronization, and repeatable verification.">
+  <link rel="canonical" href="https://agentlabjournal.online/en/copilot-canvas-issue-triage.html">
+
+  <meta name="author" content="Agent Lab Journal">
+  <meta name="robots" content="index,follow,max-image-preview:large,max-snippet:-1,max-video-preview:-1">
+  <meta name="date" content="2026-07-27">
+
+  <meta property="og:type" content="article">
+  <meta property="og:locale" content="en_US">
+  <meta property="og:site_name" content="Agent Lab Journal">
+  <meta property="og:title" content="Interactive GitHub Issue Triage with Copilot Canvas">
+  <meta property="og:description" content="A practical guide to building a card-based Copilot Canvas that records Issue decisions and applies approved changes safely.">
+  <meta property="og:url" content="https://agentlabjournal.online/en/copilot-canvas-issue-triage.html">
+  <meta property="og:image" content="https://agentlabjournal.online/podcast-cover.png">
+  <meta property="og:image:width" content="1200">
+  <meta property="og:image:height" content="630">
+  <meta property="article:modified_time" content="2026-07-27">
+
+  <meta name="twitter:card" content="summary_large_image">
+  <meta name="twitter:title" content="Interactive GitHub Issue Triage with Copilot Canvas">
+  <meta name="twitter:description" content="Issue cards, fast accept and reject actions, a decision log, approval gates, and safe GitHub synchronization.">
+  <meta name="twitter:image" content="https://agentlabjournal.online/podcast-cover.png">
+
+  <link rel="stylesheet" href="../style.css">
+  <link rel="stylesheet" href="../reading.css">
+
+  <script type="application/ld+json">
+  {
+    "@context": "https://schema.org",
+    "@type": "Article",
+    "headline": "Interactive GitHub Issue Triage with Copilot Canvas",
+    "description": "Build an interactive Copilot Canvas for GitHub Issue triage with cards, accept and reject actions, persistent decisions, approval gates, safe synchronization, and repeatable verification.",
+    "image": [
+      "https://agentlabjournal.online/podcast-cover.png"
+    ],
+    "dateModified": "2026-07-27",
+    "author": {
+      "@type": "Organization",
+      "name": "Agent Lab Journal",
+      "url": "https://agentlabjournal.online/"
+    },
+    "publisher": {
+      "@type": "Organization",
+      "name": "Agent Lab Journal",
+      "url": "https://agentlabjournal.online/",
+      "logo": {
+        "@type": "ImageObject",
+        "url": "https://agentlabjournal.online/podcast-cover.png"
+      }
+    },
+    "mainEntityOfPage": {
+      "@type": "WebPage",
+      "@id": "https://agentlabjournal.online/en/copilot-canvas-issue-triage.html"
+    },
+    "inLanguage": "en"
+  }
+  </script>
+</head>
+<body>
+  <header class="site-header">
+    <a class="brand" href="./">
+      <span class="brand-mark">AL</span>
+      <span>Agent Lab Journal</span>
+    </a>
+    <nav>
+      <a href="guides.html">← Guides</a>
+      <a href="glossary.html">Glossary</a>
+    </nav>
+  </header>
+
+  <main class="article">
+    <article>
+      <p class="eyebrow">PRACTICAL GUIDE</p>
+      <h1>Interactive GitHub Issue Triage with Copilot Canvas</h1>
+
+      <div class="reading-meta" aria-label="Article details">
+        <span>Level: intermediate</span>
+        <span>Reading time: 30 minutes</span>
+        <span>Outcome: an interactive Issue triage canvas</span>
+      </div>
+
+      <p class="lead"><strong>A large task queue is difficult to process in chat: decisions disappear between explanations, while a spreadsheet rarely provides enough context for confident action.</strong> In this guide, you will create a <a class="term-link" href="glossary.html#copilot-canvas">Copilot Canvas</a> that loads <a class="term-link" href="glossary.html#github-issues">GitHub Issues</a>, presents them as cards, records accept, defer, and reject decisions, and applies only the changes that a person has explicitly approved.</p>
+
+      <section id="outcome">
+        <h2>What you will build</h2>
+
+        <p>The finished interface separates decision-making from repository changes. A reviewer first classifies cards inside the canvas. Those choices enter a pending queue but do not immediately change GitHub. A second action previews and applies the approved operations.</p>
+
+        <pre><code>GitHub Issues
+    ↓ load
+cards on the canvas
+    ↓ accept / defer / reject
+local decision store
+    ↓ human review
+approved operation plan
+    ↓ apply
+labels, comments, or closure in GitHub</code></pre>
+
+        <p>The minimum useful version should be able to:</p>
+
+        <ul>
+          <li>load open Issues from an explicitly selected repository;</li>
+          <li>display the number, title, author, labels, age, URL, and a short summary;</li>
+          <li>filter cards by label, author, decision, and free-text search;</li>
+          <li>record <code>accept</code>, <code>defer</code>, or <code>reject</code> without immediately writing to GitHub;</li>
+          <li>require a reason for deferred and rejected cards;</li>
+          <li>allow a reviewer to undo a local choice;</li>
+          <li>show every pending operation before synchronization;</li>
+          <li>record the result of each GitHub operation separately;</li>
+          <li>avoid repeating an operation that was already applied successfully.</li>
+        </ul>
+      </section>
+
+      <section id="problem">
+        <h2>Why chat and spreadsheets stop working</h2>
+
+        <p><a class="term-link" href="glossary.html#issue-triage">Issue triage</a> is more than sorting titles. A reviewer must decide whether a report is reproducible, whether it contains enough information, whether it belongs to the project, whether it duplicates another report, and whether the team should act now.</p>
+
+        <p>Chat is useful for discussing one ambiguous Issue. It is much less useful for maintaining dozens of parallel states. After several messages, it becomes difficult to see which cards remain undecided, which choices are drafts, and why a particular report was rejected.</p>
+
+        <p>A spreadsheet offers a better overview but usually forces the reviewer to switch between a row and the original GitHub page. Long descriptions, labels, comment fragments, and related Issues do not fit naturally into one row. The spreadsheet also tends to blur the distinction between a proposed decision and an action already applied to the repository.</p>
+
+        <p>A canvas provides a shared working surface. People can manipulate visible cards while an <a class="term-link" href="glossary.html#ai-agent">AI agent</a> loads data, prepares summaries, identifies possible duplicates, and performs only authorized operations.</p>
+      </section>
+
+      <section id="case">
+        <h2>Concrete case: an incoming bug queue</h2>
+
+        <p>Consider a repository identified here as <code>OWNER/REPOSITORY</code>. It has accumulated open reports with labels such as <code>bug</code>, <code>needs-info</code>, and <code>enhancement</code>. Some reports describe actionable defects, some lack reproduction steps, and several may share the same underlying cause.</p>
+
+        <p>The team wants to run a short review session and give every card one decision:</p>
+
+        <table>
+          <thead>
+            <tr>
+              <th>Decision</th>
+              <th>Meaning</th>
+              <th>Planned GitHub change</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td><code>accept</code></td>
+              <td>The Issue is clear enough and belongs in the active queue</td>
+              <td>Add <code>triage:accepted</code> and remove <code>triage:pending</code></td>
+            </tr>
+            <tr>
+              <td><code>defer</code></td>
+              <td>A decision depends on additional information or a later date</td>
+              <td>Add <code>triage:deferred</code> and preserve the reason</td>
+            </tr>
+            <tr>
+              <td><code>reject</code></td>
+              <td>The work is not planned, is a duplicate, or is outside the project scope</td>
+              <td>Add <code>triage:rejected</code>; closing remains a separate action</td>
+            </tr>
+          </tbody>
+        </table>
+
+        <p>Define this mapping before generating the interface. A Reject button must not have a hidden meaning. If one reviewer expects it to add a label while another expects it to close the Issue without a comment, the automation will create conflict instead of reducing work.</p>
+      </section>
+
+      <section id="safety-model">
+        <h2>Separate a decision from an external action</h2>
+
+        <p>The central rule of this <a class="term-link" href="glossary.html#workflow">workflow</a> is that clicking a card records intent but does not perform an irreversible operation. Changes reach GitHub only through a separate <a class="term-link" href="glossary.html#approval-gate">approval gate</a>.</p>
+
+        <p>Each decision therefore needs two independent states:</p>
+
+        <pre><code>decision.status:
+  undecided | accept | defer | reject
+
+sync.status:
+  draft | pending | applying | applied | failed</code></pre>
+
+        <p>These fields answer different questions:</p>
+
+        <ul>
+          <li>What did the reviewer decide?</li>
+          <li>Was that decision successfully reflected in GitHub?</li>
+        </ul>
+
+        <p>Do not combine them into one status. If a network or permission error interrupts synchronization, the human decision must remain available for review and retry.</p>
+      </section>
+
+      <section id="prepare">
+        <h2>Step 1. Prepare the repository and access</h2>
+
+        <p>Open the repository or its local folder in the GitHub Copilot app and start an agent session. The signed-in user needs read access to load Issues. Adding labels, posting comments, or closing Issues requires permission to modify them.</p>
+
+        <p>Before generating the canvas, verify the repository with <a class="term-link" href="glossary.html#github-cli">GitHub CLI</a>. The following commands are read-only:</p>
+
+        <pre><code>gh auth status
+
+gh repo view OWNER/REPOSITORY \
+  --json nameWithOwner,url,hasIssuesEnabled
+
+gh issue list \
+  --repo OWNER/REPOSITORY \
+  --state open \
+  --limit 20 \
+  --json number,title,author,labels,createdAt,updatedAt,url</code></pre>
+
+        <p>Replace <code>OWNER/REPOSITORY</code> with the real owner and repository name. Do not paste access tokens into the canvas request, generated source files, or decision records. The application and CLI should use their configured authorization.</p>
+
+        <p>If <code>hasIssuesEnabled</code> is <code>false</code>, enable Issues in the repository settings before continuing. If <code>gh issue list</code> returns a permission error, the canvas will encounter the same boundary until access is corrected.</p>
+      </section>
+
+      <section id="labels">
+        <h2>Step 2. Define the decision vocabulary</h2>
+
+        <p>Agree on the labels that represent triage results. The following names are example configuration, not a GitHub standard:</p>
+
+        <pre><code>triage:pending
+triage:accepted
+triage:deferred
+triage:rejected
+needs-info
+duplicate</code></pre>
+
+        <p>Inspect existing labels before creating anything:</p>
+
+        <pre><code>gh label list \
+  --repo OWNER/REPOSITORY \
+  --limit 200</code></pre>
+
+        <p>If the labels do not exist, create them manually in GitHub or use commands like these after reviewing the names, colors, and descriptions:</p>
+
+        <pre><code>gh label create "triage:pending" \
+  --repo OWNER/REPOSITORY \
+  --color "D4C5F9" \
+  --description "Issue is waiting for a triage decision"
+
+gh label create "triage:accepted" \
+  --repo OWNER/REPOSITORY \
+  --color "0E8A16" \
+  --description "Issue was accepted into the working queue"
+
+gh label create "triage:deferred" \
+  --repo OWNER/REPOSITORY \
+  --color "FBCA04" \
+  --description "Issue decision was deferred"
+
+gh label create "triage:rejected" \
+  --repo OWNER/REPOSITORY \
+  --color "B60205" \
+  --description "Issue was rejected during triage"</code></pre>
+
+        <p>These commands modify the repository. Run them only after the team has approved the vocabulary. If the repository already has a label system, configure the canvas to use it instead of creating a parallel taxonomy.</p>
+      </section>
+
+      <section id="create">
+        <h2>Step 3. Generate the canvas</h2>
+
+        <p>Start or open an agent session in the GitHub Copilot app. In the prompt box, invoke:</p>
+
+        <pre><code>/create-canvas</code></pre>
+
+        <p>Then provide a precise <a class="term-link" href="glossary.html#prompt">prompt</a>. Describe both the interface and the boundaries of every action:</p>
+
+        <pre><code>Create a canvas for triaging GitHub Issues in
+OWNER/REPOSITORY.
+
+Human interface:
+- show open Issues as cards;
+- display number, title, author, labels, createdAt,
+  updatedAt, URL, and a short summary;
+- add search and filters for label and decision;
+- add Accept, Defer, and Reject buttons;
+- require a reason and optional date for Defer;
+- require a reason for Reject;
+- allow a local decision to be undone;
+- show counters for undecided, accepted, deferred,
+  and rejected;
+- add a separate Pending changes panel.
+
+Safety:
+- card actions update only local draft state;
+- never close Issues automatically;
+- show the exact GitHub operations before applying them;
+- apply changes only after explicit confirmation;
+- never store tokens or secrets in canvas state;
+- record applied or failed after every operation;
+- reapplying an applied operation must be safe;
+- block application if the source Issue changed after review.
+
+Agent-callable capabilities:
+- load_issues;
+- get_board_state;
+- set_decision;
+- clear_decision;
+- preview_changes;
+- apply_approved_changes;
+- retry_failed_changes.
+
+Persist decisions in a JSON artifact inside the extension.
+For each record, store repository, issueNumber, issueUrl,
+decision, reason, deferredUntil, decidedAt, decidedBy,
+sourceUpdatedAt, syncStatus, appliedAt, and error.
+
+Do not overwrite unapplied local decisions during refresh.
+If an Issue changed after sourceUpdatedAt, mark the card
+as stale and require another confirmation.</code></pre>
+
+        <p>When generation completes, the canvas should open in the app’s side panel. Test its controls on a few cards before enabling any function that writes to GitHub.</p>
+      </section>
+
+      <section id="scope">
+        <h2>Step 4. Choose where the canvas lives</h2>
+
+        <p>A canvas extension can be personal or associated with the project:</p>
+
+        <ul>
+          <li><code>~/.copilot/extensions</code> is suitable for a personal prototype on one machine;</li>
+          <li><code>.github/extensions</code> is suitable for a team canvas stored and reviewed with the repository.</li>
+        </ul>
+
+        <p>Use personal scope for the first iteration. Move the extension into the repository only after validating the decision model, action names, and state format. A shared canvas becomes part of the project and should be reviewed like other automation code.</p>
+
+        <p>The generated structure can vary, but a canvas extension commonly includes metadata, an entry file, and optional artifacts:</p>
+
+        <pre><code>issue-triage-canvas/
+├── package.json
+├── extension.mjs
+└── artifacts/
+    ├── decisions.json
+    └── audit-log.jsonl</code></pre>
+
+        <p>Do not assume the exact entry filename. Inspect the generated directory and work with the files that the current version of the app actually created.</p>
+      </section>
+
+      <section id="data-contract">
+        <h2>Step 5. Inspect the state contract</h2>
+
+        <p>Store decisions in an explicit <a class="term-link" href="glossary.html#json">JSON</a> artifact. This makes it possible to inspect the state without opening the interface and to restore a session after closing the application.</p>
+
+        <p>A minimal decision record can look like this:</p>
+
+        <pre><code>{
+  "repository": "OWNER/REPOSITORY",
+  "issueNumber": 123,
+  "issueUrl": "https://github.com/OWNER/REPOSITORY/issues/123",
+  "sourceUpdatedAt": "2026-07-27T09:30:00Z",
+  "decision": "reject",
+  "reason": "The report does not contain reproduction steps",
+  "deferredUntil": null,
+  "decidedAt": "2026-07-27T10:05:00Z",
+  "decidedBy": "current-user",
+  "syncStatus": "draft",
+  "appliedAt": null,
+  "error": null
+}</code></pre>
+
+        <p>The values are illustrative. The canvas must use the current Issue data, the actual reviewer identity available to the application, and the real decision time.</p>
+
+        <p>Four fields are especially important:</p>
+
+        <ul>
+          <li><code>sourceUpdatedAt</code> reveals whether the Issue changed after it was loaded;</li>
+          <li><code>reason</code> preserves the reviewer’s rationale;</li>
+          <li><code>syncStatus</code> distinguishes a draft from an applied repository change;</li>
+          <li><code>error</code> preserves failure details so that the decision does not need to be made again.</li>
+        </ul>
+
+        <p>The state file must not contain access tokens, private keys, unnecessary copies of private discussions, or complete Issue bodies when a number, timestamp, status, and reason are sufficient.</p>
+      </section>
+
+      <section id="capabilities">
+        <h2>Step 6. Keep capabilities narrow</h2>
+
+        <p>A universal function such as <code>update_issue</code> is too broad. It is difficult to see what it changes, which permission it requires, and whether it is safe to retry. Use small capabilities with explicit inputs and outputs.</p>
+
+        <h3><code>load_issues</code></h3>
+
+        <p>Load only the required slice of the queue. Do not request every Issue in the repository’s history during the first iteration. Limit the state, labels, and page size:</p>
+
+        <pre><code>{
+  "repository": "OWNER/REPOSITORY",
+  "state": "open",
+  "labels": ["triage:pending"],
+  "limit": 50
+}</code></pre>
+
+        <h3><code>set_decision</code></h3>
+
+        <p>Update local draft state and send nothing to GitHub:</p>
+
+        <pre><code>{
+  "issueNumber": 123,
+  "decision": "defer",
+  "reason": "Logs from the current release are required",
+  "deferredUntil": "2026-08-03"
+}</code></pre>
+
+        <h3><code>preview_changes</code></h3>
+
+        <p>Convert decisions into concrete operations. The preview must show more than “update three Issues.” It should identify the Issue, labels, comment, and closure state:</p>
+
+        <pre><code>Issue #123
+  add labels: triage:deferred
+  remove labels: triage:pending
+  comment: "Triage: deferred. Reason: current release logs required."
+  close: false</code></pre>
+
+        <h3><code>apply_approved_changes</code></h3>
+
+        <p>Accept only an explicitly confirmed operation list. Before writing, retrieve the current <code>updatedAt</code> value and compare it with <code>sourceUpdatedAt</code>. This is a simple form of <a class="term-link" href="glossary.html#optimistic-concurrency">optimistic concurrency control</a>: if the record changed, stop and return it for review.</p>
+
+        <h3><code>retry_failed_changes</code></h3>
+
+        <p>Retry only records with a <code>failed</code> synchronization status. Skip operations already marked <code>applied</code>. This <a class="term-link" href="glossary.html#idempotency">idempotency</a> rule prevents duplicate comments and repeated label changes after a partial network failure.</p>
+      </section>
+
+      <section id="interface">
+        <h2>Step 7. Make each card decision-ready</h2>
+
+        <p>If the generated card contains only a title, ask Copilot to revise the interface. A reviewer usually needs:</p>
+
+        <ul>
+          <li>the Issue number and a clickable link to the original page;</li>
+          <li>the title and the first useful part of the description;</li>
+          <li>the author, labels, creation time, and last update time;</li>
+          <li>the number of comments when it is available in the loaded data;</li>
+          <li>a short summary clearly marked as model-generated;</li>
+          <li>a possible-duplicate warning with links, not an automatic merge or closure;</li>
+          <li>the current local decision and synchronization status;</li>
+          <li>Accept, Defer, Reject, and Undo controls;</li>
+          <li>a visible <code>stale</code> indicator when the source changes.</li>
+        </ul>
+
+        <p>A practical layout presents one active card prominently and advances to the next after a choice. A side panel should still show the entire queue and all pending changes, allowing the reviewer to return to any previous decision.</p>
+
+        <p>Add keyboard actions only after visible buttons work correctly:</p>
+
+        <pre><code>A — accept
+D — defer
+R — reject
+U — undo the local decision
+Enter — open Issue details</code></pre>
+
+        <p>A keyboard shortcut must never apply changes to GitHub. Keep synchronization behind a separate button and confirmation screen.</p>
+      </section>
+
+      <section id="summaries">
+        <h2>Step 8. Constrain AI-generated summaries</h2>
+
+        <p>A short summary can accelerate review, but it is not a source of truth. The model can omit a reproduction condition, combine unrelated comments, or make an overly confident inference. This is a form of model <a class="term-link" href="glossary.html#hallucination">hallucination</a>.</p>
+
+        <p>Separate source data from the agent’s interpretation:</p>
+
+        <pre><code>Source data:
+- title;
+- description;
+- labels;
+- author;
+- timestamps;
+- original URL.
+
+AI summary:
+- observed problem;
+- expected behavior;
+- presence of reproduction steps;
+- missing information;
+- possible duplicates;
+- confidence level.</code></pre>
+
+        <p>If the summary says that an Issue may be a duplicate, the card should show the proposed original Issue. Without a link and human comparison, the claim remains a hypothesis and cannot justify closure.</p>
+
+        <p>Do not load every comment by default. For long discussions, show a compact overview and open the full conversation on demand. This reduces unnecessary model <a class="term-link" href="glossary.html#context">context</a> and keeps manual verification practical.</p>
+      </section>
+
+      <section id="apply">
+        <h2>Step 9. Preview operations before applying them</h2>
+
+        <p>After classifying several cards, open the pending changes panel. For every record, verify:</p>
+
+        <ol>
+          <li>the repository owner and name;</li>
+          <li>the Issue number and title;</li>
+          <li>the labels to add and remove;</li>
+          <li>whether a comment will be published;</li>
+          <li>whether closure is planned and separately authorized;</li>
+          <li>whether the Issue changed after the decision;</li>
+          <li>whether <code>defer</code> and <code>reject</code> have meaningful reasons.</li>
+        </ol>
+
+        <p>Knowing the equivalent CLI operations helps with manual inspection. Accepting an Issue might produce:</p>
+
+        <pre><code>gh issue edit 123 \
+  --repo OWNER/REPOSITORY \
+  --add-label "triage:accepted" \
+  --remove-label "triage:pending"</code></pre>
+
+        <p>Rejecting without closing could produce:</p>
+
+        <pre><code>gh issue edit 123 \
+  --repo OWNER/REPOSITORY \
+  --add-label "triage:rejected" \
+  --remove-label "triage:pending"
+
+gh issue comment 123 \
+  --repo OWNER/REPOSITORY \
+  --body "Triage: rejected. Reason: reproduction steps are missing."</code></pre>
+
+        <p>Closure should remain a separate operation:</p>
+
+        <pre><code>gh issue close 123 \
+  --repo OWNER/REPOSITORY \
+  --reason "not planned"</code></pre>
+
+        <p>Do not run these examples literally against Issue <code>#123</code>. The canvas must generate operations for the cards that were actually selected and must wait for confirmation before executing them.</p>
+      </section>
+
+      <section id="audit">
+        <h2>Step 10. Preserve the decision history</h2>
+
+        <p>Current state alone is insufficient. If a reviewer changes a decision from <code>reject</code> to <code>accept</code>, the team may need to know when and why that happened. Add an append-only <a class="term-link" href="glossary.html#audit-log">audit log</a> whose previous events are not overwritten.</p>
+
+        <pre><code>{
+  "eventId": "decision-123-20260727T100500Z",
+  "repository": "OWNER/REPOSITORY",
+  "issueNumber": 123,
+  "action": "decision_changed",
+  "from": "undecided",
+  "to": "reject",
+  "reason": "Reproduction steps are missing",
+  "actor": "current-user",
+  "createdAt": "2026-07-27T10:05:00Z"
+}</code></pre>
+
+        <p>Record synchronization separately:</p>
+
+        <pre><code>{
+  "eventId": "sync-123-20260727T101200Z",
+  "repository": "OWNER/REPOSITORY",
+  "issueNumber": 123,
+  "action": "github_update",
+  "status": "applied",
+  "operations": [
+    "add:triage:rejected",
+    "remove:triage:pending"
+  ],
+  "createdAt": "2026-07-27T10:12:00Z"
+}</code></pre>
+
+        <p>This history reconstructs a review session and reveals whether a local choice reached GitHub. It supplements the Issue history with draft and failed operations; it does not replace GitHub’s own event history.</p>
+      </section>
+
+      <section id="verification">
+        <h2>Verify the result</h2>
+
+        <p>Do not begin with the full production queue. Create a test Issue or select a safe card on which the team has authorized label changes. Then perform the checks below.</p>
+
+        <h3>1. Loading</h3>
+
+        <ul>
+          <li>The canvas shows the same number, title, URL, and labels as GitHub.</li>
+          <li>A label filter does not silently hide cards with pending local decisions.</li>
+          <li>Refreshing the source does not duplicate the same card.</li>
+          <li>Cards use <code>repository + issueNumber</code> as their stable identity.</li>
+        </ul>
+
+        <h3>2. Draft decisions</h3>
+
+        <ol>
+          <li>Press Accept on the test card.</li>
+          <li>Confirm that the card enters the local accepted group.</li>
+          <li>Refresh the corresponding page in GitHub.</li>
+          <li>Verify that no labels or comments have changed yet.</li>
+        </ol>
+
+        <p>If GitHub changes immediately after the card click, the separation between decision and execution is broken.</p>
+
+        <h3>3. Undo</h3>
+
+        <ol>
+          <li>Undo the local choice.</li>
+          <li>Confirm that it disappears from the pending queue.</li>
+          <li>Close and reopen the canvas.</li>
+          <li>Verify that the cancelled operation does not reappear.</li>
+        </ol>
+
+        <h3>4. Approved application</h3>
+
+        <ol>
+          <li>Accept the test Issue again.</li>
+          <li>Open the operation preview.</li>
+          <li>Compare the repository, number, and labels with the original card.</li>
+          <li>Confirm the operation.</li>
+          <li>Open the Issue in GitHub and inspect its final labels.</li>
+          <li>Verify that <code>syncStatus</code> changed to <code>applied</code>.</li>
+        </ol>
+
+        <h3>5. Safe retry</h3>
+
+        <p>Attempt to apply the same decision again. The canvas should report that the operation was already completed. It must not post another identical comment.</p>
+
+        <h3>6. Stale data protection</h3>
+
+        <ol>
+          <li>Record a decision but do not apply it.</li>
+          <li>Edit the Issue description or add a GitHub comment.</li>
+          <li>Refresh the canvas data.</li>
+          <li>Verify that the card receives a <code>stale</code> status.</li>
+          <li>Confirm that application is blocked until the reviewer checks the updated Issue.</li>
+        </ol>
+
+        <h3>7. Permission failure</h3>
+
+        <p>When a safe test repository or read-only test identity is available, attempt an approved write without sufficient permission. The operation should become <code>failed</code> with a useful error, while the original decision remains stored.</p>
+
+        <h3>8. Partial failure</h3>
+
+        <p>If one operation in a batch fails, successful operations should stay <code>applied</code> and failed operations should remain retryable. The canvas must not replay the entire batch blindly.</p>
+
+        <blockquote>A canvas is ready when every confirmed decision can be traced from the card click to the resulting GitHub state—not merely when cards move smoothly on screen.</blockquote>
+      </section>
+
+      <section id="failure-cases">
+        <h2>Failure cases and fixes</h2>
+
+        <h3>Cards are duplicated after refresh</h3>
+
+        <p>The implementation uses the array position or title as the identity. Use <code>repository + issueNumber</code>. Titles can change, and different Issues can share the same title.</p>
+
+        <h3>Local decisions disappear during reload</h3>
+
+        <p>The loader replaces the entire state with the latest GitHub response. Merge remote fields with local decisions using the stable identity. Do not delete an unapplied draft merely because the current filtered response does not contain its card.</p>
+
+        <h3>Reject closes the Issue immediately</h3>
+
+        <p>The canvas has combined classification with an external action. Separate <code>set_decision</code> from <code>apply_approved_changes</code>. Make closure an additional flag that is disabled by default.</p>
+
+        <h3>Comments are posted twice</h3>
+
+        <p>The application replays the entire batch after a partial failure. Give each operation a stable key and persist its individual result:</p>
+
+        <pre><code>operationKey =
+  repository + ":" +
+  issueNumber + ":" +
+  decisionVersion + ":" +
+  operationType</code></pre>
+
+        <p>A retry must skip an operation already marked <code>applied</code>.</p>
+
+        <h3>A decision is applied to an outdated Issue</h3>
+
+        <p>The canvas does not compare source versions. Store <code>sourceUpdatedAt</code>, retrieve the current <code>updatedAt</code> before writing, and require review when the values differ.</p>
+
+        <h3>Filters hide unfinished work</h3>
+
+        <p>A selected label can remove a card with a draft decision from the visible queue. Keep pending counters and a dedicated drafts panel visible independently of the active filter.</p>
+
+        <h3>Large loads begin failing</h3>
+
+        <p>The query may be too broad or may encounter a GitHub <a class="term-link" href="glossary.html#rate-limit">rate limit</a>. Load Issues in pages, cache cards already fetched, and avoid refreshing every card through a separate request.</p>
+
+        <h3>The AI summary is treated as evidence</h3>
+
+        <p>Separate summaries visually, link back to the original Issue, and prevent the model from closing a report solely because of its own classification. The human reviewer remains responsible for the decision.</p>
+
+        <h3>The log contains unnecessary private data</h3>
+
+        <p>The canvas stores full descriptions and discussions even though recovery requires only identifiers, timestamps, statuses, and reasons. Minimize the artifact and exclude secrets. A private repository remains private, but an exported decision file can create a separate disclosure risk.</p>
+      </section>
+
+      <section id="limitations">
+        <h2>Limitations</h2>
+
+        <ul>
+          <li>The canvas accelerates repeated decisions but does not determine product priorities for the repository owner.</li>
+          <li>An AI summary can omit a critical detail from a long discussion. Open the original Issue before rejection or closure.</li>
+          <li>Duplicate detection is probabilistic. Similar wording does not prove that two defects have the same cause.</li>
+          <li>The signed-in user’s permissions limit the canvas. The interface must not attempt to bypass repository policy.</li>
+          <li>Canvas extension structure and available GitHub Copilot app capabilities can change. Inspect the files generated by the version you are using.</li>
+          <li>A local JSON artifact is convenient for one reviewer but does not solve concurrent editing.</li>
+          <li>A team version needs locking, version checks, or a merge strategy so two reviewers cannot silently process the same Issue.</li>
+          <li>Bulk closure remains risky even with a good interface. Begin with labels and small, manually reviewed batches.</li>
+          <li>The canvas is not a backup or a <a class="term-link" href="glossary.html#rollback">rollback</a> system. Preserve previous labels and states if bulk changes may need to be reversed.</li>
+        </ul>
+      </section>
+
+      <section id="production">
+        <h2>Move from prototype to team use</h2>
+
+        <p>After testing several Issues, move the extension into project scope and include its files in the normal review process. Before shared use, document:</p>
+
+        <ul>
+          <li>the repositories the canvas may access;</li>
+          <li>the decision and label vocabulary;</li>
+          <li>required reasons for rejection and deferral;</li>
+          <li>the maximum approved batch size;</li>
+          <li>whether automated comments are permitted;</li>
+          <li>who may authorize Issue closure;</li>
+          <li>how long decision history is retained;</li>
+          <li>how a partial synchronization failure is recovered.</li>
+        </ul>
+
+        <p>For the first working session, set a small batch limit—for example, no more than ten confirmed cards per application. This is a safety rule, not a performance claim. Compare the decision log with GitHub after each batch before increasing the scope.</p>
+
+        <p>If several people triage simultaneously, store the decision owner and version. Warn the reviewer when another participant has already created a newer decision for the same Issue.</p>
+      </section>
+
+      <section id="checklist">
+        <h2>Final checklist</h2>
+
+        <ul>
+          <li>The repository is explicit and is not inferred from an unrelated current directory.</li>
+          <li>Every card is identified by repository and Issue number.</li>
+          <li>Accept, Defer, and Reject have documented meanings.</li>
+          <li>A reason is mandatory for <code>defer</code> and <code>reject</code>.</li>
+          <li>Card clicks modify local draft state only.</li>
+          <li>The complete operation list appears before synchronization.</li>
+          <li>Issue closure is disabled by default.</li>
+          <li>A stale card blocks application until it is reviewed again.</li>
+          <li>Every external operation receives an individual status.</li>
+          <li>A successful operation is not repeated after restart.</li>
+          <li>Errors remain attached to their decisions.</li>
+          <li>The log contains no tokens or unnecessary Issue content.</li>
+          <li>The final result is verified both in the canvas and on GitHub.</li>
+        </ul>
+      </section>
+
+      <section id="conclusion">
+        <h2>Conclusion</h2>
+
+        <p>A useful Copilot Canvas for Issues is not merely a board with three columns. It is a controlled process in which the source card, the reviewer’s decision, and the resulting GitHub operation remain distinct and traceable.</p>
+
+        <p>Begin with read-only loading and local choices. Add operation previews, explicit confirmation, stale-data protection, individual synchronization statuses, and an append-only history. Allow repository writes only after a small test batch has been inspected manually.</p>
+
+        <p>The result turns a long queue into a practical decision surface: every card presents the required context, each choice takes one clear action, the reason remains available, and every repository change can be verified or retried safely.</p>
+
+        <p class="back"><a class="text-link" href="guides.html">← All practical guides</a> · <a class="text-link" href="glossary.html">Lab glossary →</a></p>
+      </section>
+    </article>
+  </main>
+
+  <footer>
+    <span>Agent Lab Journal</span>
+    <span>Real experiments. Verifiable conclusions.</span>
+  </footer>
+</body>
+</html>
