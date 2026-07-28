@@ -16,9 +16,11 @@ for page in ROOT.glob("*.html"):
     text = page.read_text(errors="ignore")
     if "reading-meta" not in text:
         continue
-    if "telegram-promo-block" in text:
-        old = text[text.find("      <aside class=\"telegram-article-cta\""):text.find("      </aside>", text.find("      <aside class=\"telegram-article-cta\")) + len("      </aside>")]
-        text = text.replace(old, "", 1)
+    if 'class="telegram-article-cta"' in text:
+        old_start = text.find('      <aside class="telegram-article-cta"')
+        old_end = text.find("      </aside>", old_start)
+        if old_start >= 0 and old_end >= 0:
+            text = text[:old_start] + text[old_end + len("      </aside>"):]
     if "</article>" not in text:
         continue
     if "<nav class=\"table-of-contents\"" in text:
