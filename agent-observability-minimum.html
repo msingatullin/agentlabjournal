@@ -1,0 +1,341 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Минимальная наблюдаемость AI-агента без тяжёлой платформы — Agent Lab Journal</title>
+  <meta name="description" content="Практическое руководство по минимальной наблюдаемости AI-агента: корреляционный ID, структурированные события, метрики стоимости, проверка результата и типовые ошибки.">
+  <link rel="canonical" href="https://agentlabjournal.online/agent-observability-minimum.html">
+  <link rel="stylesheet" href="style.css">
+  <link rel="stylesheet" href="reading.css">
+
+  <meta property="og:type" content="article">
+  <meta property="og:locale" content="ru_RU">
+  <meta property="og:site_name" content="Agent Lab Journal">
+  <meta property="og:title" content="Минимальная наблюдаемость AI-агента без тяжёлой платформы">
+  <meta property="og:description" content="Как понять, где ошибся AI-агент и сколько стоил запуск, используя корреляционный ID, события и несколько метрик.">
+  <meta property="og:url" content="https://agentlabjournal.online/agent-observability-minimum.html">
+
+  <meta name="twitter:card" content="summary">
+  <meta name="twitter:title" content="Минимальная наблюдаемость AI-агента без тяжёлой платформы">
+  <meta name="twitter:description" content="Корреляционный ID, структурированные события и метрики стоимости без отдельной observability-платформы.">
+
+  <script type="application/ld+json">
+  {
+    "@context": "https://schema.org",
+    "@type": "Article",
+    "headline": "Минимальная наблюдаемость AI-агента без тяжёлой платформы",
+    "description": "Практическое руководство по минимальной наблюдаемости AI-агента: корреляционный ID, структурированные события, метрики стоимости, проверка результата и типовые ошибки.",
+    "inLanguage": "ru",
+    "mainEntityOfPage": {
+      "@type": "WebPage",
+      "@id": "https://agentlabjournal.online/agent-observability-minimum.html"
+    },
+    "author": {
+      "@type": "Organization",
+      "name": "Agent Lab Journal"
+    },
+    "publisher": {
+      "@type": "Organization",
+      "name": "Agent Lab Journal",
+      "url": "https://agentlabjournal.online/"
+    },
+    "url": "https://agentlabjournal.online/agent-observability-minimum.html",
+    "isPartOf": {
+      "@type": "WebSite",
+      "name": "Agent Lab Journal",
+      "url": "https://agentlabjournal.online/"
+    },
+    "articleSection": "Практика",
+    "timeRequired": "PT8M",
+    "keywords": [
+      "AI-агент",
+      "наблюдаемость",
+      "корреляционный ID",
+      "структурированные события",
+      "метрики",
+      "стоимость запуска"
+    ]
+  }
+  </script>
+</head>
+<body>
+  <header class="site-header">
+    <div class="container">
+      <a class="site-name" href="index.html" aria-label="Agent Lab Journal — главная">Agent Lab Journal</a>
+      <nav aria-label="Основная навигация">
+        <a href="guides.html">Руководства</a>
+        <a href="glossary.html">Глоссарий</a>
+      </nav>
+    </div>
+  </header>
+
+  <main>
+    <article class="reading container">
+      <header class="article-header">
+        <p class="eyebrow">Практика · Средний уровень</p>
+        <h1>Минимальная наблюдаемость AI-агента без тяжёлой платформы</h1>
+        <p class="lead">Если запуск агента завершился неправильным ответом или неожиданно дорогим счётом, обычной записи «что-то пошло не так» недостаточно. Ниже — минимальная схема, которая связывает один запуск, его шаги, ошибки, токены и оценочную стоимость.</p>
+        <div class="reading-meta" aria-label="Информация о статье">
+          <span>Уровень: средний</span>
+          <span>Чтение: до 8 минут</span>
+          <span>Результат: correlation ID, события и метрики</span>
+        </div>
+      </header>
+
+      <section>
+        <h2>Что именно нужно увидеть</h2>
+        <p><a href="glossary.html">Наблюдаемость</a> — возможность восстановить состояние системы по данным, которые она оставляет во время работы. Для небольшого AI-агента не обязательно сразу разворачивать отдельный стек трассировки и мониторинга.</p>
+        <p>Начните с трёх элементов:</p>
+        <ul>
+          <li><strong>корреляционный ID</strong> связывает все записи одного запуска;</li>
+          <li><strong>структурированные события</strong> показывают последовательность решений и вызовов;</li>
+          <li><strong>агрегируемые метрики</strong> отвечают, сколько длился и сколько стоил запуск.</li>
+        </ul>
+        <p>Минимальный результат — один JSON-объект на строку в стандартном выводе. Такие записи можно читать вручную, фильтровать командной строкой или позднее отправить в выбранное хранилище без изменения формата событий.</p>
+      </section>
+
+      <section>
+        <h2>1. Определите контракт события</h2>
+        <p>Каждая запись должна иметь одинаковую основу. Не записывайте полный prompt, ответ модели, секреты, персональные данные или содержимое документов по умолчанию.</p>
+        <pre><code>{
+  "timestamp": "2026-01-15T10:30:00.000Z",
+  "event": "model_call_finished",
+  "run_id": "4b563e3e-72eb-4da3-8391-f8d4f35f88d7",
+  "step": "plan",
+  "duration_ms": 842,
+  "status": "ok",
+  "model": "example-model",
+  "input_tokens": 640,
+  "output_tokens": 118,
+  "estimated_cost": 0.001234
+}</code></pre>
+        <p>Это пример формата, а не запись реального запуска. Поле <code>estimated_cost</code> является расчётной величиной: его точность зависит от актуальных тарифов, правил округления и того, какие категории токенов возвращает провайдер.</p>
+
+        <h3>Минимальные поля</h3>
+        <dl>
+          <dt><code>timestamp</code></dt>
+          <dd>Время события в UTC и формате ISO 8601.</dd>
+
+          <dt><code>event</code></dt>
+          <dd>Стабильное машинное имя события.</dd>
+
+          <dt><code>run_id</code></dt>
+          <dd>Случайный UUID, созданный на входе и переданный во все шаги.</dd>
+
+          <dt><code>step</code></dt>
+          <dd>Короткое имя этапа: <code>plan</code>, <code>tool_search</code>, <code>answer</code>.</dd>
+
+          <dt><code>duration_ms</code></dt>
+          <dd>Продолжительность завершившейся операции.</dd>
+
+          <dt><code>status</code></dt>
+          <dd>Ограниченный набор значений, например <code>ok</code> или <code>error</code>.</dd>
+        </dl>
+      </section>
+
+      <section>
+        <h2>2. Добавьте маленький эмиттер событий</h2>
+        <p>Следующий воспроизводимый пример использует только стандартную библиотеку Python. Он пишет JSON Lines в стандартный вывод, поэтому не создаёт файлы и не требует секретов.</p>
+        <pre><code>import json
+import sys
+import time
+import uuid
+from datetime import datetime, timezone
+from typing import Any
+
+
+def utc_now() -&gt; str:
+    return datetime.now(timezone.utc).isoformat(timespec="milliseconds")
+
+
+def emit(event: str, run_id: str, **fields: Any) -&gt; None:
+    record = {
+        "timestamp": utc_now(),
+        "event": event,
+        "run_id": run_id,
+        **fields,
+    }
+    print(
+        json.dumps(record, ensure_ascii=False, separators=(",", ":")),
+        file=sys.stdout,
+        flush=True,
+    )
+
+
+def run_agent(task: str) -&gt; None:
+    run_id = str(uuid.uuid4())
+    started = time.perf_counter()
+    emit("run_started", run_id, task_length=len(task), status="ok")
+
+    try:
+        step_started = time.perf_counter()
+
+        # Пример шага. Здесь вызывается модель или инструмент.
+        result = task.strip().upper()
+
+        emit(
+            "step_finished",
+            run_id,
+            step="transform",
+            status="ok",
+            duration_ms=round(
+                (time.perf_counter() - step_started) * 1000
+            ),
+            result_length=len(result),
+        )
+        emit(
+            "run_finished",
+            run_id,
+            status="ok",
+            duration_ms=round((time.perf_counter() - started) * 1000),
+        )
+    except Exception as exc:
+        emit(
+            "run_finished",
+            run_id,
+            status="error",
+            duration_ms=round((time.perf_counter() - started) * 1000),
+            error_type=type(exc).__name__,
+        )
+        raise
+
+
+run_agent("проверочный запуск")</code></pre>
+        <p>Сохраняйте <code>run_id</code> в контексте запуска и явно передавайте его функциям. Глобальная переменная удобна только до появления параллельных задач: затем события разных запусков начинают смешиваться.</p>
+      </section>
+
+      <section>
+        <h2>3. Оберните вызовы модели и инструментов</h2>
+        <p>Фиксируйте начало и завершение внешней операции. Для метрик длительности используйте монотонный таймер, а календарное время оставьте для <code>timestamp</code>.</p>
+        <pre><code>def observed_model_call(run_id, step, call_model, request):
+    started = time.perf_counter()
+    emit("model_call_started", run_id, step=step, status="ok")
+
+    try:
+        response = call_model(request)
+        usage = response.usage
+
+        emit(
+            "model_call_finished",
+            run_id,
+            step=step,
+            status="ok",
+            duration_ms=round(
+                (time.perf_counter() - started) * 1000
+            ),
+            model=response.model,
+            input_tokens=usage.input_tokens,
+            output_tokens=usage.output_tokens,
+        )
+        return response
+    except Exception as exc:
+        emit(
+            "model_call_finished",
+            run_id,
+            step=step,
+            status="error",
+            duration_ms=round(
+                (time.perf_counter() - started) * 1000
+            ),
+            error_type=type(exc).__name__,
+        )
+        raise</code></pre>
+        <p><code>call_model</code>, <code>response</code> и поля <code>usage</code> здесь условные. Сопоставьте их с интерфейсом используемого SDK. Не подставляйте примерные значения токенов, если API их не вернул: отсутствие данных честнее вымышленной точности.</p>
+      </section>
+
+      <section>
+        <h2>4. Рассчитайте стоимость отдельно</h2>
+        <p>Храните тарифы в конфигурации, а не внутри функции вызова. Ниже приведён пример структуры с условными числами — это не тарифы какого-либо провайдера.</p>
+        <pre><code>{
+  "example-model": {
+    "input_per_million": 1.00,
+    "output_per_million": 4.00,
+    "currency": "USD"
+  }
+}</code></pre>
+        <pre><code>def estimate_cost(input_tokens, output_tokens, price):
+    return round(
+        input_tokens * price["input_per_million"] / 1_000_000
+        + output_tokens * price["output_per_million"] / 1_000_000,
+        8,
+    )</code></pre>
+        <p>Записывайте вместе с результатом валюту и версию тарифа, например <code>pricing_version</code>. Тогда исторические запуски останутся объяснимыми после изменения цен. Финансовым источником истины должен оставаться счёт провайдера, а не локальная оценка.</p>
+      </section>
+
+      <section>
+        <h2>5. Соберите минимальные метрики</h2>
+        <p>Для начала достаточно агрегировать завершённые события по часовому или дневному окну:</p>
+        <ul>
+          <li>число запусков по <code>status</code>;</li>
+          <li>доля неуспешных запусков;</li>
+          <li>медиана и высокий перцентиль <code>duration_ms</code>;</li>
+          <li>сумма входных и выходных токенов;</li>
+          <li>суммарная оценочная стоимость;</li>
+          <li>число вызовов модели и инструментов на запуск.</li>
+        </ul>
+        <p>Не превращайте <code>run_id</code>, текст ошибки или имя пользовательского файла в метку временного ряда. Такие значения имеют высокую кардинальность и быстро делают систему метрик дорогой. Они подходят для событий, но не для группировки метрик.</p>
+      </section>
+
+      <section>
+        <h2>Проверка результата</h2>
+        <p>Сохраните пример в <code>agent_observed.py</code> и выполните безопасную локальную команду:</p>
+        <pre><code>python3 agent_observed.py</code></pre>
+        <p>Ожидаемый результат — три JSON-строки: <code>run_started</code>, <code>step_finished</code> и <code>run_finished</code>. Конкретные UUID, отметки времени и длительности будут отличаться.</p>
+        <p>Если доступна утилита <code>jq</code>, проверьте синтаксис каждой строки без записи на диск:</p>
+        <pre><code>python3 agent_observed.py | jq -c .</code></pre>
+        <p>Для полной проверки убедитесь, что:</p>
+        <ol>
+          <li>во всех строках одного запуска совпадает <code>run_id</code>;</li>
+          <li>последнее событие содержит итоговый <code>status</code> и <code>duration_ms</code>;</li>
+          <li>ошибка создаёт событие со значением <code>status: error</code> и типом исключения;</li>
+          <li>события не содержат prompt, ответ, ключ API или персональные данные;</li>
+          <li>сумма токенов отдельных вызовов согласуется с итогом запуска, если итог рассчитывается.</li>
+        </ol>
+      </section>
+
+      <section>
+        <h2>Типовые ошибки</h2>
+
+        <h3>Новый ID на каждом шаге</h3>
+        <p>Так трасса распадается на несвязанные записи. Создавайте UUID один раз на границе запуска. При наличии входящего доверенного ID можно сохранить его отдельно как <code>parent_run_id</code>, предварительно проверив формат и длину.</p>
+
+        <h3>Только сообщение об ошибке</h3>
+        <p>Текст нестабилен и может содержать чувствительные данные. Записывайте безопасный <code>error_type</code>, этап, статус и длительность. Подробности исключения отправляйте только в защищённый канал с установленным сроком хранения.</p>
+
+        <h3>Событие завершения теряется</h3>
+        <p>Используйте <code>try/except</code> или <code>try/finally</code>, немедленно сбрасывайте буфер вывода и повторно возбуждайте исключение после записи. Не маскируйте исходную ошибку сбоем логирования.</p>
+
+        <h3>Стоимость считается по устаревшей цене</h3>
+        <p>Версионируйте таблицу тарифов и явно помечайте сумму как оценочную. Если модель неизвестна конфигурации, оставляйте стоимость пустой и создавайте отдельное событие о пропущенном расчёте.</p>
+
+        <h3>Логи превращаются в копию пользовательских данных</h3>
+        <p>Вместо содержимого записывайте длину, тип, количество элементов и разрешённые категориальные признаки. Хеш также может оставаться идентификатором чувствительных данных, поэтому его применение требует отдельного решения о рисках.</p>
+      </section>
+
+      <section>
+        <h2>Ограничения минимального подхода</h2>
+        <p>JSON Lines хорошо подходит для одного процесса и ранней эксплуатации, но сам по себе не обеспечивает долговременное хранение, поиск между узлами, контроль доступа, автоматические оповещения и гарантированную доставку.</p>
+        <p>При нескольких сервисах потребуется передавать корреляционный контекст через очереди и HTTP-запросы. При высокой нагрузке понадобятся буферизация, ограничение объёма, политика выборки и централизованное хранилище. Для строгого учёта стоимости необходимо учитывать повторные запросы, кэширование, специальные категории токенов и правила конкретного провайдера.</p>
+        <p>Переходить к более тяжёлой системе стоит тогда, когда локальный файл или стандартный вывод уже не позволяют быстро ответить на три вопроса: какой запуск пострадал, на каком шаге и каков его ресурсный итог.</p>
+      </section>
+
+      <section>
+        <h2>Итоговая схема</h2>
+        <p>Создайте <code>run_id</code> на входе, передайте его каждому шагу, пишите структурированные события начала и завершения, измеряйте длительность монотонным таймером и суммируйте фактические данные usage. Этого достаточно, чтобы локализовать большинство сбоев и оценить стоимость запуска без отдельной observability-платформы.</p>
+        <p>Продолжить настройку можно по материалам раздела <a href="guides.html">«Руководства»</a>, а определения терминов сверить в <a href="glossary.html">глоссарии Agent Lab Journal</a>.</p>
+      </section>
+    </article>
+  </main>
+
+  <footer class="site-footer">
+    <div class="container">
+      <p>Agent Lab Journal — практические материалы о разработке AI-агентов.</p>
+      <nav aria-label="Навигация в подвале">
+        <a href="guides.html">Руководства</a>
+        <a href="glossary.html">Глоссарий</a>
+      </nav>
+    </div>
+  </footer>
+</body>
+</html>

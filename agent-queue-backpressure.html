@@ -1,0 +1,475 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Очередь задач AI-агента: как пережить всплеск нагрузки — Agent Lab Journal</title>
+  <meta name="description" content="Практическое руководство по ограничению параллельности и backpressure в очереди AI-агента: воспроизводимый пример, безопасная конфигурация, проверка и типовые ошибки.">
+  <link rel="canonical" href="https://agentlabjournal.online/agent-queue-backpressure.html">
+  <link rel="stylesheet" href="style.css">
+  <link rel="stylesheet" href="reading.css">
+
+  <meta property="og:type" content="article">
+  <meta property="og:locale" content="ru_RU">
+  <meta property="og:site_name" content="Agent Lab Journal">
+  <meta property="og:title" content="Очередь задач AI-агента: как пережить всплеск нагрузки">
+  <meta property="og:description" content="Ограничиваем параллельность, вводим backpressure и не позволяем одновременным заданиям забить память процесса.">
+  <meta property="og:url" content="https://agentlabjournal.online/agent-queue-backpressure.html">
+
+  <meta name="twitter:card" content="summary">
+  <meta name="twitter:title" content="Очередь задач AI-агента: как пережить всплеск нагрузки">
+  <meta name="twitter:description" content="Практическая схема очереди AI-агента с ограничением параллельности и backpressure.">
+
+  <meta name="reading-meta" content="Продвинутый · 8 минут · Результат: ограничение параллельности и backpressure">
+
+  <script type="application/ld+json">
+  {
+    "@context": "https://schema.org",
+    "@type": "Article",
+    "headline": "Очередь задач AI-агента: как пережить всплеск нагрузки",
+    "description": "Практическое руководство по ограничению параллельности и backpressure в очереди AI-агента.",
+    "inLanguage": "ru-RU",
+    "mainEntityOfPage": {
+      "@type": "WebPage",
+      "@id": "https://agentlabjournal.online/agent-queue-backpressure.html"
+    },
+    "url": "https://agentlabjournal.online/agent-queue-backpressure.html",
+    "publisher": {
+      "@type": "Organization",
+      "name": "Agent Lab Journal",
+      "url": "https://agentlabjournal.online/"
+    },
+    "isAccessibleForFree": true,
+    "articleSection": "Практические руководства",
+    "proficiencyLevel": "Advanced",
+    "timeRequired": "PT8M",
+    "keywords": [
+      "AI-агент",
+      "очередь задач",
+      "ограничение параллельности",
+      "backpressure",
+      "управление памятью"
+    ]
+  }
+  </script>
+</head>
+<body>
+  <header class="site-header">
+    <nav aria-label="Основная навигация">
+      <a href="index.html">Agent Lab Journal</a>
+      <a href="guides.html">Руководства</a>
+      <a href="glossary.html">Глоссарий</a>
+    </nav>
+  </header>
+
+  <main>
+    <article>
+      <header class="article-header">
+        <p class="eyebrow">Практика эксплуатации</p>
+        <h1>Очередь задач AI-агента: как пережить всплеск нагрузки</h1>
+        <div class="reading-meta" aria-label="Параметры статьи">
+          <span>Продвинутый уровень</span>
+          <span>До 8 минут</span>
+          <span>Результат: ограничение параллельности и backpressure</span>
+        </div>
+        <p class="lead">
+          Если запускать каждое входящее задание сразу, одновременные вызовы модели, инструменты и история диалога начинают конкурировать за память, процессор и сетевые соединения. Решение — поставить задания в <a href="glossary.html#task-queue">очередь задач</a>, ограничить число активных обработчиков и отклонять либо задерживать новые запросы, когда внутренний буфер заполнен.
+        </p>
+      </header>
+
+      <section>
+        <h2>Что именно нужно контролировать</h2>
+        <p>
+          Ограничение параллельности отвечает на вопрос «сколько заданий выполняется сейчас». Backpressure — «что происходит с новым заданием, когда система уже не успевает». Это разные механизмы: один без другого лишь переносит проблему.
+        </p>
+        <p>
+          Например, лимит в четыре обработчика защищает исполнитель, но не память: если принять сто тысяч заданий в массив, процесс всё равно может исчерпать доступный объём памяти. Поэтому очередь должна иметь конечную ёмкость.
+        </p>
+
+        <div class="callout">
+          <p><strong>Целевая схема:</strong> входящий запрос → проверка ёмкости → ограниченная очередь → фиксированное число обработчиков → результат.</p>
+        </div>
+
+        <p>Для минимальной рабочей конфигурации понадобятся четыре параметра:</p>
+        <ul>
+          <li><code>CONCURRENCY</code> — максимальное число одновременно выполняемых заданий;</li>
+          <li><code>MAX_QUEUE</code> — максимальное число ожидающих заданий;</li>
+          <li><code>TASK_TIMEOUT_MS</code> — предельное время одного задания;</li>
+          <li><code>RETRY_AFTER_SECONDS</code> — подсказка перегруженному клиенту, когда повторить запрос.</li>
+        </ul>
+      </section>
+
+      <section>
+        <h2>Шаг 1. Создайте ограниченную очередь</h2>
+        <p>
+          Ниже — самостоятельный пример на Node.js без сторонних пакетов. Это учебная реализация, а не утверждение о конкретной производственной системе. Она показывает механику: очередь не принимает больше заданного числа ожидающих работ, а число активных работ никогда не превышает лимит.
+        </p>
+
+        <pre><code class="language-js">class QueueFullError extends Error {
+  constructor(message = "Task queue is full") {
+    super(message);
+    this.name = "QueueFullError";
+  }
+}
+
+class AgentQueue {
+  constructor({ concurrency, maxQueue, taskTimeoutMs }) {
+    if (!Number.isInteger(concurrency) || concurrency &lt; 1) {
+      throw new TypeError("concurrency must be a positive integer");
+    }
+    if (!Number.isInteger(maxQueue) || maxQueue &lt; 0) {
+      throw new TypeError("maxQueue must be a non-negative integer");
+    }
+    if (!Number.isInteger(taskTimeoutMs) || taskTimeoutMs &lt; 1) {
+      throw new TypeError("taskTimeoutMs must be a positive integer");
+    }
+
+    this.concurrency = concurrency;
+    this.maxQueue = maxQueue;
+    this.taskTimeoutMs = taskTimeoutMs;
+    this.active = 0;
+    this.pending = [];
+    this.accepted = 0;
+    this.rejected = 0;
+    this.completed = 0;
+    this.failed = 0;
+  }
+
+  submit(task) {
+    if (typeof task !== "function") {
+      return Promise.reject(new TypeError("task must be a function"));
+    }
+
+    if (this.active &gt;= this.concurrency &amp;&amp;
+        this.pending.length &gt;= this.maxQueue) {
+      this.rejected += 1;
+      return Promise.reject(new QueueFullError());
+    }
+
+    this.accepted += 1;
+
+    return new Promise((resolve, reject) =&gt; {
+      this.pending.push({ task, resolve, reject });
+      this.drain();
+    });
+  }
+
+  drain() {
+    while (
+      this.active &lt; this.concurrency &amp;&amp;
+      this.pending.length &gt; 0
+    ) {
+      const job = this.pending.shift();
+      this.active += 1;
+      void this.run(job);
+    }
+  }
+
+  async run({ task, resolve, reject }) {
+    let timer;
+
+    try {
+      const timeout = new Promise((_, rejectTimeout) =&gt; {
+        timer = setTimeout(() =&gt; {
+          rejectTimeout(new Error("Task timed out"));
+        }, this.taskTimeoutMs);
+      });
+
+      const result = await Promise.race([
+        Promise.resolve().then(task),
+        timeout
+      ]);
+
+      this.completed += 1;
+      resolve(result);
+    } catch (error) {
+      this.failed += 1;
+      reject(error);
+    } finally {
+      clearTimeout(timer);
+      this.active -= 1;
+      this.drain();
+    }
+  }
+
+  stats() {
+    return {
+      active: this.active,
+      queued: this.pending.length,
+      accepted: this.accepted,
+      rejected: this.rejected,
+      completed: this.completed,
+      failed: this.failed
+    };
+  }
+}</code></pre>
+
+        <p>
+          Проверка ёмкости учитывает только ожидающие задания. Если есть свободный обработчик, новое задание можно принять даже при <code>MAX_QUEUE=0</code>. Это позволяет использовать очередь как «нулевой буфер»: выполнять только то, для чего уже есть свободная ёмкость.
+        </p>
+      </section>
+
+      <section>
+        <h2>Шаг 2. Подключите обработчик агента</h2>
+        <p>
+          Не помещайте секреты, токены или полные пользовательские запросы в пример и диагностический вывод. Функция <code>runAgent</code> ниже намеренно условна: замените её вызовом собственного агента и передавайте секреты через штатное защищённое хранилище среды.
+        </p>
+
+        <pre><code class="language-js">const queue = new AgentQueue({
+  concurrency: readInteger("AGENT_CONCURRENCY", 4, 1, 64),
+  maxQueue: readInteger("AGENT_MAX_QUEUE", 100, 0, 10000),
+  taskTimeoutMs: readInteger(
+    "AGENT_TASK_TIMEOUT_MS",
+    120000,
+    1000,
+    900000
+  )
+});
+
+function readInteger(name, fallback, min, max) {
+  const raw = process.env[name];
+  if (raw === undefined) return fallback;
+
+  const value = Number(raw);
+  if (!Number.isInteger(value) || value &lt; min || value &gt; max) {
+    throw new Error(`${name} must be an integer from ${min} to ${max}`);
+  }
+  return value;
+}
+
+async function runAgent(input, { signal }) {
+  // Пример: здесь вызывается ваш исполнитель агента.
+  // Он должен учитывать AbortSignal и освобождать свои ресурсы.
+  if (signal.aborted) throw signal.reason;
+  return { taskId: input.taskId, status: "done" };
+}
+
+function makeTask(input) {
+  return async () =&gt; {
+    const controller = new AbortController();
+    return runAgent(input, { signal: controller.signal });
+  };
+}</code></pre>
+
+        <p>
+          Важное ограничение: <code>Promise.race</code> прекращает ожидание, но сам по себе не останавливает фоновую операцию. Реальный исполнитель должен поддерживать отмену. Практичнее передавать созданный очередью <code>AbortSignal</code> и вызывать <code>abort()</code> при тайм-ауте; конкретная интеграция зависит от используемого HTTP-клиента, SDK и инструментов агента.
+        </p>
+      </section>
+
+      <section>
+        <h2>Шаг 3. Верните явный сигнал перегрузки</h2>
+        <p>
+          Для синхронного HTTP API переполнение очереди удобно обозначать кодом <code>503 Service Unavailable</code> и заголовком <code>Retry-After</code>. Код <code>429</code> также применим, если перегрузка оформлена как лимит запросов конкретного потребителя. Главное — выбрать одну семантику и документировать её.
+        </p>
+
+        <pre><code class="language-js">async function handleTaskRequest(request, response) {
+  const input = await readValidatedInput(request);
+
+  try {
+    const result = await queue.submit(makeTask(input));
+
+    response.writeHead(200, {
+      "Content-Type": "application/json; charset=utf-8"
+    });
+    response.end(JSON.stringify(result));
+  } catch (error) {
+    if (error instanceof QueueFullError) {
+      response.writeHead(503, {
+        "Content-Type": "application/json; charset=utf-8",
+        "Retry-After": "5",
+        "Cache-Control": "no-store"
+      });
+      response.end(JSON.stringify({
+        error: "agent_overloaded",
+        retryable: true
+      }));
+      return;
+    }
+
+    response.writeHead(500, {
+      "Content-Type": "application/json; charset=utf-8",
+      "Cache-Control": "no-store"
+    });
+    response.end(JSON.stringify({
+      error: "task_failed",
+      retryable: false
+    }));
+  }
+}</code></pre>
+
+        <p>
+          Функция <code>readValidatedInput</code> здесь является заглушкой. В рабочем сервисе она должна ограничивать размер тела запроса, проверять типы и удалять поля, которые агенту не нужны. Не записывайте необработанный ввод в логи.
+        </p>
+      </section>
+
+      <section>
+        <h2>Шаг 4. Задайте безопасные начальные пределы</h2>
+        <p>
+          Следующие значения — пример отправной точки, а не универсальная рекомендация. Они не содержат секретов и безопасны для локального эксперимента:
+        </p>
+
+        <pre><code class="language-sh">AGENT_CONCURRENCY=4 \
+AGENT_MAX_QUEUE=100 \
+AGENT_TASK_TIMEOUT_MS=120000 \
+node server.js</code></pre>
+
+        <p>
+          Не увеличивайте <code>CONCURRENCY</code>, пока не измерили пиковое потребление памяти одним заданием. Приближённая верхняя граница:
+        </p>
+
+        <pre><code>доступная память для заданий
+────────────────────────────── = теоретический предел параллельности
+пиковая память одного задания</code></pre>
+
+        <p>
+          Затем уменьшите результат, оставив запас для процесса, библиотек, сетевых буферов и сборщика мусора. Если задания неоднородны, ориентируйтесь не на среднее, а на высокий наблюдаемый перцентиль и проверяйте систему нагрузочным экспериментом в своей среде.
+        </p>
+      </section>
+
+      <section>
+        <h2>Шаг 5. Проверьте результат воспроизводимым сценарием</h2>
+        <p>
+          Для проверки механизма не нужен реальный вызов модели. Временная функция ниже имитирует работу длительностью 200 мс и фиксирует максимальное число одновременных запусков:
+        </p>
+
+        <pre><code class="language-js">let running = 0;
+let observedMax = 0;
+
+function simulatedTask(id) {
+  return async () =&gt; {
+    running += 1;
+    observedMax = Math.max(observedMax, running);
+
+    try {
+      await new Promise((resolve) =&gt; setTimeout(resolve, 200));
+      return id;
+    } finally {
+      running -= 1;
+    }
+  };
+}
+
+const checkQueue = new AgentQueue({
+  concurrency: 2,
+  maxQueue: 3,
+  taskTimeoutMs: 2000
+});
+
+const attempts = Array.from({ length: 8 }, (_, id) =&gt;
+  checkQueue.submit(simulatedTask(id))
+    .then(() =&gt; ({ outcome: "completed" }))
+    .catch((error) =&gt; ({ outcome: error.name }))
+);
+
+const outcomes = await Promise.all(attempts);
+
+console.log({
+  observedMax,
+  outcomes,
+  stats: checkQueue.stats()
+});</code></pre>
+
+        <p>
+          Сохраните очередь и проверочный фрагмент в локальном файле, например <code>queue-check.mjs</code>, затем выполните:
+        </p>
+
+        <pre><code class="language-sh">node queue-check.mjs</code></pre>
+
+        <p>Проверка считается успешной, если одновременно выполняются следующие инварианты:</p>
+        <ul>
+          <li><code>observedMax</code> не превышает <code>2</code>;</li>
+          <li><code>stats.active</code> и <code>stats.queued</code> после завершения равны нулю;</li>
+          <li>часть одновременных попыток завершается с <code>QueueFullError</code>, потому что ёмкость исполнителей и буфера конечна;</li>
+          <li><code>accepted + rejected</code> равно общему числу попыток;</li>
+          <li>процесс завершается самостоятельно и не оставляет активных таймеров.</li>
+        </ul>
+
+        <p>
+          Не закрепляйте в проверке порядок завершения разных заданий, если он не является контрактом системы. При параллельном исполнении такой порядок может меняться.
+        </p>
+      </section>
+
+      <section>
+        <h2>Наблюдаемость и настройка</h2>
+        <p>
+          Одного счётчика длины очереди недостаточно. Минимально полезный набор метрик:
+        </p>
+        <ul>
+          <li>текущие <code>active</code> и <code>queued</code>;</li>
+          <li>число принятых, завершённых, ошибочных и отклонённых заданий;</li>
+          <li>время ожидания до начала исполнения отдельно от времени обработки;</li>
+          <li>доля тайм-аутов и отмен;</li>
+          <li>потребление памяти процесса и частота длительных пауз сборщика мусора.</li>
+        </ul>
+        <p>
+          Стабильно заполненная очередь означает, что входящий поток превышает пропускную способность. Увеличение буфера лишь откладывает отказ и повышает задержку. Сначала сокращайте стоимость задания, масштабируйте исполнителей либо ограничивайте источник нагрузки; размер очереди меняйте только после измерений.
+        </p>
+      </section>
+
+      <section>
+        <h2>Типовые ошибки</h2>
+
+        <h3>Безразмерный массив ожидания</h3>
+        <p>
+          Лимит обработчиков есть, но все входящие задания сохраняются в памяти. Под всплеском растут задержка, память и вероятность аварийного завершения. Исправление: конечный <code>MAX_QUEUE</code> и явный отказ при переполнении.
+        </p>
+
+        <h3>Повторы без случайной задержки</h3>
+        <p>
+          Если все клиенты повторяют запрос ровно через пять секунд, возникает новый синхронный всплеск. Клиентам следует использовать экспоненциальную задержку со случайным разбросом и ограничивать число попыток.
+        </p>
+
+        <h3>Тайм-аут без отмены</h3>
+        <p>
+          HTTP-ответ уже вернул ошибку, а модель или инструмент продолжает работу и занимает слот внешнего ресурса. Используйте отменяемые операции и проверяйте, что соединения и файловые дескрипторы освобождаются.
+        </p>
+
+        <h3>Смешение коротких и тяжёлых заданий</h3>
+        <p>
+          Несколько долгих заданий могут заблокировать лёгкие. Возможные меры: отдельные очереди по классу стоимости, взвешенные лимиты или планировщик с приоритетами. Приоритеты требуют защиты от вечного голодания низкоприоритетных работ.
+        </p>
+
+        <h3>Повтор неидемпотентной операции</h3>
+        <p>
+          После тайм-аута клиент не всегда знает, выполнилось ли действие. Для операций с побочными эффектами используйте идентификатор задания или ключ идемпотентности и храните состояние выполнения вне памяти одного процесса.
+        </p>
+
+        <h3>Логи с контекстом агента</h3>
+        <p>
+          История диалога, результаты инструментов и системные инструкции могут содержать чувствительные данные. Для метрик достаточно идентификатора, статуса, длительности и размеров; содержимое задания логируйте только по явно определённой политике.
+        </p>
+      </section>
+
+      <section>
+        <h2>Ограничения решения</h2>
+        <p>
+          Очередь в памяти подходит для одного процесса и допускает потерю ожидающих заданий при перезапуске. Она не обеспечивает распределённую координацию, долговечное хранение, повтор после сбоя или строгое выполнение ровно один раз.
+        </p>
+        <p>
+          При нескольких экземплярах приложения каждый экземпляр применяет собственный лимит. Общая параллельность становится примерно равна произведению числа экземпляров на локальный лимит, если нет внешнего координатора. Это важно, когда все экземпляры обращаются к одной модели, базе данных или другому общему ресурсу.
+        </p>
+        <p>
+          Для долговечных фоновых работ понадобится внешний брокер или хранилище состояния. При переходе к нему сохраните те же инварианты: ограниченную выдачу работ, контроль числа активных заданий, видимый сигнал перегрузки, отмену, дедлайн и идемпотентную обработку. Выбор конкретной технологии должен следовать из требований к доставке и восстановлению, а не только из максимальной пропускной способности.
+        </p>
+      </section>
+
+      <section>
+        <h2>Критерий готовности</h2>
+        <p>
+          Система переживает всплеск предсказуемо, если число активных заданий ограничено, очередь имеет конечный размер, переполнение быстро возвращает документированную ошибку, тайм-ауты освобождают реальные ресурсы, а метрики позволяют отличить ожидание от исполнения. После этого рост нагрузки превращается из неконтролируемого расхода памяти в управляемую деградацию сервиса.
+        </p>
+      </section>
+
+      <footer class="article-footer">
+        <p>
+          Продолжить настройку можно в разделе <a href="guides.html">практических руководств</a>. Определения терминов собраны в <a href="glossary.html">глоссарии Agent Lab Journal</a>.
+        </p>
+      </footer>
+    </article>
+  </main>
+
+  <footer class="site-footer">
+    <p><a href="index.html">Agent Lab Journal</a></p>
+  </footer>
+</body>
+</html>

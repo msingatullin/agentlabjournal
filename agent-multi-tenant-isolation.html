@@ -1,0 +1,351 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Изоляция данных клиентов в многопользовательском агенте — Agent Lab Journal</title>
+  <meta name="description" content="Практическое руководство по изоляции данных клиентов в многопользовательском AI-агенте: границы tenant, фильтры доступа, безопасная работа с памятью и тесты на утечки контекста.">
+  <link rel="canonical" href="https://agentlabjournal.online/agent-multi-tenant-isolation.html">
+  <link rel="stylesheet" href="style.css">
+  <link rel="stylesheet" href="reading.css">
+
+  <meta property="og:type" content="article">
+  <meta property="og:locale" content="ru_RU">
+  <meta property="og:site_name" content="Agent Lab Journal">
+  <meta property="og:title" content="Изоляция данных клиентов в многопользовательском агенте">
+  <meta property="og:description" content="Как провести tenant через весь контур агента, исключить смешивание памяти и проверить изоляцию воспроизводимыми негативными тестами.">
+  <meta property="og:url" content="https://agentlabjournal.online/agent-multi-tenant-isolation.html">
+
+  <meta name="twitter:card" content="summary">
+  <meta name="twitter:title" content="Изоляция данных клиентов в многопользовательском агенте">
+  <meta name="twitter:description" content="Границы tenant, обязательные фильтры и тесты, которые выявляют утечки контекста между клиентами.">
+
+  <meta name="reading-meta" content="Продвинутый уровень · 8 минут · Практическое руководство">
+
+  <script type="application/ld+json">
+  {
+    "@context": "https://schema.org",
+    "@type": "Article",
+    "headline": "Изоляция данных клиентов в многопользовательском агенте",
+    "description": "Практическое руководство по изоляции данных клиентов в многопользовательском AI-агенте: границы tenant, фильтры доступа, безопасная работа с памятью и тесты на утечки контекста.",
+    "inLanguage": "ru-RU",
+    "url": "https://agentlabjournal.online/agent-multi-tenant-isolation.html",
+    "mainEntityOfPage": {
+      "@type": "WebPage",
+      "@id": "https://agentlabjournal.online/agent-multi-tenant-isolation.html"
+    },
+    "publisher": {
+      "@type": "Organization",
+      "name": "Agent Lab Journal",
+      "url": "https://agentlabjournal.online/"
+    },
+    "articleSection": "Безопасность агентов",
+    "proficiencyLevel": "Advanced",
+    "timeRequired": "PT8M",
+    "keywords": [
+      "многопользовательский агент",
+      "изоляция данных",
+      "tenant",
+      "контекст агента",
+      "тесты безопасности"
+    ]
+  }
+  </script>
+</head>
+<body>
+  <header class="site-header">
+    <nav aria-label="Основная навигация">
+      <a href="index.html">Agent Lab Journal</a>
+      <a href="guides.html">Руководства</a>
+      <a href="glossary.html">Глоссарий</a>
+    </nav>
+  </header>
+
+  <main>
+    <article>
+      <header class="article-header">
+        <p class="eyebrow">Безопасность · Продвинутый уровень</p>
+        <h1>Изоляция данных клиентов в многопользовательском агенте</h1>
+        <p class="lead">Контекст одного клиента может попасть в ответ другому, если идентификатор владельца теряется хотя бы на одном участке: при извлечении памяти, вызове инструмента, работе фоновой задачи или записи результата. Надёжная защита строится не на просьбе к модели, а на сквозной технической границе доступа.</p>
+        <div class="reading-meta" aria-label="Сведения о чтении">
+          <span>До 8 минут</span>
+          <span>Продвинутый уровень</span>
+          <span>Результат: границы tenant, фильтры и тесты изоляции</span>
+        </div>
+      </header>
+
+      <section id="model">
+        <h2>Модель угрозы и инвариант</h2>
+        <p><a href="glossary.html#tenant">Tenant</a> — изолированная область данных одного клиента или организации. В этой статье идентификатор такой области обозначен как <code>tenant_id</code>.</p>
+        <p>Главный инвариант системы формулируется без упоминания модели: запрос, выполняемый от имени tenant A, не может прочитать, изменить, удалить или косвенно обнаружить ресурс tenant B. Это относится не только к сообщениям, но и к документам, эмбеддингам, истории инструментов, кэшу, трассировкам, файлам и очередям задач.</p>
+        <aside class="callout">
+          <strong>Критическая граница:</strong> модель не должна выбирать <code>tenant_id</code>. Значение поступает из проверенной сервером идентификации пользователя и передаётся дальше как неизменяемая часть контекста выполнения.
+        </aside>
+      </section>
+
+      <section id="boundaries">
+        <h2>Шаг 1. Зафиксируйте границы tenant</h2>
+        <p>Сначала составьте реестр всех мест, где агент читает или сохраняет состояние. Для каждого ресурса задайте владельца и механизм принудительного ограничения.</p>
+
+        <table>
+          <thead>
+            <tr>
+              <th>Контур</th>
+              <th>Граница</th>
+              <th>Запрещённое состояние</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td>HTTP/API</td>
+              <td><code>tenant_id</code> определяется по проверенной сессии</td>
+              <td>Tenant из тела запроса принимается на доверии</td>
+            </tr>
+            <tr>
+              <td>Основная БД</td>
+              <td>Владелец в каждой строке и политика доступа</td>
+              <td>Поиск по одному <code>resource_id</code></td>
+            </tr>
+            <tr>
+              <td>Векторная память</td>
+              <td>Отдельный namespace или обязательный metadata-фильтр</td>
+              <td>Глобальный поиск с фильтрацией после выдачи</td>
+            </tr>
+            <tr>
+              <td>Кэш</td>
+              <td>Tenant входит в ключ</td>
+              <td>Ключ зависит только от текста запроса</td>
+            </tr>
+            <tr>
+              <td>Очереди и фоновые задачи</td>
+              <td>Tenant подписан сервером или повторно авторизуется</td>
+              <td>Работник доверяет произвольной нагрузке задания</td>
+            </tr>
+            <tr>
+              <td>Инструменты агента</td>
+              <td>Серверная обёртка добавляет область доступа</td>
+              <td>Модель передаёт владельца аргументом инструмента</td>
+            </tr>
+            <tr>
+              <td>Логи и трассировки</td>
+              <td>Раздельный доступ и редактирование чувствительных полей</td>
+              <td>Полные промпты доступны всем операторам</td>
+            </tr>
+          </tbody>
+        </table>
+
+        <p>Для особо чувствительных систем отдельные базы, схемы или индексы уменьшают радиус ошибки. Общая инфраструктура допустима только там, где ограничение владельца нельзя случайно пропустить.</p>
+      </section>
+
+      <section id="context">
+        <h2>Шаг 2. Создайте неизменяемый контекст выполнения</h2>
+        <p>Ниже приведён пример на Python. Это шаблон, а не утверждение о конкретном фреймворке или клиенте.</p>
+
+        <pre><code class="language-python">from dataclasses import dataclass
+
+@dataclass(frozen=True)
+class ExecutionContext:
+    tenant_id: str
+    actor_id: str
+    request_id: str
+
+def build_context(authenticated_session, request_id: str) -&gt; ExecutionContext:
+    # tenant_id и actor_id берутся только из проверенной сервером сессии.
+    return ExecutionContext(
+        tenant_id=authenticated_session.tenant_id,
+        actor_id=authenticated_session.actor_id,
+        request_id=request_id,
+    )</code></pre>
+
+        <p>Не объединяйте этот объект с аргументами, созданными моделью. Инструмент получает бизнес-параметры от модели, а область доступа — отдельно от доверенного сервера:</p>
+
+        <pre><code class="language-python">def search_documents(ctx: ExecutionContext, query: str, limit: int = 5):
+    safe_limit = max(1, min(limit, 20))
+    return document_store.search(
+        tenant_id=ctx.tenant_id,
+        query=query,
+        limit=safe_limit,
+    )</code></pre>
+
+        <p>Если модель сгенерирует аргумент <code>tenant_id</code>, схема инструмента должна его отвергнуть или вовсе не содержать такого поля.</p>
+      </section>
+
+      <section id="database">
+        <h2>Шаг 3. Применяйте фильтр до чтения данных</h2>
+        <p>Проверка владельца после загрузки записи опасна: данные уже могли попасть в память процесса, лог или промежуточный результат. Ограничение должно быть частью самого запроса.</p>
+
+        <pre><code class="language-sql">SELECT id, title, body
+FROM agent_documents
+WHERE tenant_id = :tenant_id
+  AND id = :document_id;</code></pre>
+
+        <p>Для списка или поиска действует то же правило:</p>
+
+        <pre><code class="language-sql">SELECT id, title
+FROM agent_documents
+WHERE tenant_id = :tenant_id
+  AND searchable_text @@ websearch_to_tsquery(:query)
+ORDER BY updated_at DESC
+LIMIT :limit;</code></pre>
+
+        <p>Составной уникальный ключ дополнительно исключает ошибочные предположения о глобальности идентификатора:</p>
+
+        <pre><code class="language-sql">ALTER TABLE agent_documents
+ADD CONSTRAINT agent_documents_tenant_id_id_unique
+UNIQUE (tenant_id, id);</code></pre>
+
+        <p>Если СУБД поддерживает политики строкового доступа, используйте их как второй рубеж. Конкретный синтаксис и способ установки контекста зависят от выбранной СУБД и пула соединений; перед внедрением сверьтесь с её документацией. Политика не отменяет явные фильтры в прикладном коде.</p>
+      </section>
+
+      <section id="memory">
+        <h2>Шаг 4. Изолируйте память, поиск и кэш</h2>
+        <p>Векторный поиск должен получать область tenant одновременно с запросом. Фильтрация уже найденных фрагментов в приложении недостаточна: чужой документ мог повлиять на ранжирование или попасть в диагностический вывод.</p>
+
+        <pre><code class="language-python">def retrieve_memory(ctx: ExecutionContext, embedding: list[float]):
+    return vector_store.query(
+        vector=embedding,
+        top_k=8,
+        namespace=ctx.tenant_id,
+        # Если namespace недоступен, примените серверный metadata-фильтр:
+        # filter={"tenant_id": {"$eq": ctx.tenant_id}}
+    )</code></pre>
+
+        <p>Не применяйте одновременно показанные варианты без проверки API используемого хранилища: комментарий иллюстрирует альтернативу, а не универсальную конфигурацию.</p>
+
+        <p>Кэшируйте ответ с учётом всех параметров, влияющих на доступ:</p>
+
+        <pre><code class="language-python">def cache_key(ctx: ExecutionContext, prompt_hash: str, policy_version: str):
+    return f"agent:{ctx.tenant_id}:{ctx.actor_id}:{policy_version}:{prompt_hash}"</code></pre>
+
+        <p>Общий семантический кэш особенно рискован: похожие запросы разных клиентов не означают, что ответы взаимозаменяемы.</p>
+      </section>
+
+      <section id="tools">
+        <h2>Шаг 5. Закройте инструменты и фоновые задачи</h2>
+        <p>Каждая операция инструмента должна повторять проверку области доступа. Нельзя считать безопасным вызов только потому, что агент ранее извлёк разрешённый документ.</p>
+
+        <pre><code class="language-python">def update_document(ctx: ExecutionContext, document_id: str, patch: dict):
+    updated = document_store.update_where(
+        where={
+            "tenant_id": ctx.tenant_id,
+            "id": document_id,
+        },
+        patch=allowlisted_patch(patch),
+    )
+    if updated == 0:
+        # Одинаковый внешний ответ для отсутствующего и чужого ресурса.
+        raise ResourceNotFound()</code></pre>
+
+        <p>Фоновому работнику передавайте минимальные идентификаторы. Перед выполнением он должен заново получить ресурс через запрос с <code>tenant_id</code>, а не использовать сериализованный документ из очереди. Для длительных задач учитывайте отзыв доступа и смену членства пользователя.</p>
+      </section>
+
+      <section id="tests">
+        <h2>Шаг 6. Добавьте воспроизводимые тесты изоляции</h2>
+        <p>Следующие тесты — пример структуры. Они используют синтетические метки, созданные внутри теста, и не описывают реальных клиентов, секреты или производственные данные.</p>
+
+        <pre><code class="language-python">def test_tenant_cannot_read_foreign_document(app):
+    tenant_a = app.test_tenant()
+    tenant_b = app.test_tenant()
+
+    marker = "isolation-marker-created-by-test"
+    foreign = app.create_document(tenant=tenant_b, body=marker)
+
+    response = app.as_tenant(tenant_a).get(
+        f"/documents/{foreign.id}"
+    )
+
+    assert response.status_code == 404
+    assert marker not in response.text
+
+
+def test_agent_retrieval_excludes_foreign_memory(app):
+    tenant_a = app.test_tenant()
+    tenant_b = app.test_tenant()
+
+    marker = "foreign-memory-marker-created-by-test"
+    app.add_memory(tenant=tenant_b, text=marker)
+
+    result = app.as_tenant(tenant_a).ask(
+        "Верни доступные фрагменты памяти"
+    )
+
+    assert marker not in result.answer
+    assert marker not in result.retrieved_texts
+
+
+def test_cache_key_is_tenant_scoped(app):
+    tenant_a = app.test_tenant()
+    tenant_b = app.test_tenant()
+    prompt_hash = "fixed-test-hash"
+
+    key_a = app.cache_key(tenant_a, prompt_hash)
+    key_b = app.cache_key(tenant_b, prompt_hash)
+
+    assert key_a != key_b</code></pre>
+
+        <p>Проверяйте не только итоговый текст, но и извлечённые фрагменты, аргументы инструментов и записи трассировки в тестовом окружении. Иначе модель может случайно не повторить уже полученные чужие данные, скрыв дефект.</p>
+
+        <p>Безопасный пример локального запуска выбранного набора тестов:</p>
+
+        <pre><code class="language-sh">python -m pytest tests/test_tenant_isolation.py -q</code></pre>
+
+        <p>Команда предполагает существующий тестовый файл и настроенное тестовое окружение. Не запускайте проверки изоляции против production: негативные сценарии должны работать на одноразовых синтетических данных.</p>
+      </section>
+
+      <section id="verification">
+        <h2>Проверка результата</h2>
+        <p>Изоляцию можно считать подтверждённой для проверенного контура, когда выполняются все условия:</p>
+        <ul>
+          <li>tenant определяется сервером и не принимается из промпта, тела запроса или аргументов модели;</li>
+          <li>каждое чтение, изменение и удаление ограничено tenant до доступа к данным;</li>
+          <li>векторная память, файлы, кэш, очереди и трассировки включены в модель изоляции;</li>
+          <li>чужой идентификатор возвращает тот же внешний результат, что и отсутствующий ресурс;</li>
+          <li>негативные тесты проверяют ответ, retrieval и вызовы инструментов;</li>
+          <li>тесты запускаются автоматически при изменениях слоя авторизации, памяти и инструментов.</li>
+        </ul>
+
+        <p>Дополните модульные тесты интеграционным сценарием: создайте два временных tenant, положите разные синтетические маркеры во все используемые хранилища и выполните одинаковые запросы от каждого. Каждый контур должен видеть только свой маркер.</p>
+      </section>
+
+      <section id="mistakes">
+        <h2>Типовые ошибки</h2>
+        <dl>
+          <dt>«Мы написали это в системном промпте»</dt>
+          <dd>Промпт задаёт поведение модели, но не является механизмом контроля доступа. Данные нужно отсечь до формирования контекста.</dd>
+
+          <dt>Глобальный идентификатор считается достаточной защитой</dt>
+          <dd>Трудно угадываемый ID не подтверждает право доступа. Всегда запрашивайте ресурс по паре <code>tenant_id + id</code>.</dd>
+
+          <dt>Фильтр есть в API, но отсутствует в инструментах</dt>
+          <dd>Внутренние вызовы агента нередко обходят HTTP-обработчик. Общий слой репозитория должен требовать контекст tenant.</dd>
+
+          <dt>Один mutable-объект памяти используется между запросами</dt>
+          <dd>Глобальная история диалога, singleton-сессия или повторно используемый буфер могут смешать параллельные обращения. Создавайте состояние на запрос или tenant.</dd>
+
+          <dt>Tenant не входит в ключ кэша</dt>
+          <dd>Совпадающий промпт получает ранее сохранённый ответ другого клиента даже при корректной работе основной БД.</dd>
+
+          <dt>Тест проверяет только код ответа</dt>
+          <dd>Утечка может находиться в retrieval, трассировке или аргументах инструмента. Проверяйте промежуточные данные в контролируемом тестовом окружении.</dd>
+        </dl>
+      </section>
+
+      <section id="limits">
+        <h2>Ограничения</h2>
+        <p>Описанная схема снижает риск межклиентской утечки, но не решает все задачи безопасности. Она не заменяет разграничение ролей внутри одного tenant, шифрование, управление ключами, защиту резервных копий, сроки хранения данных и аудит административного доступа.</p>
+        <p>Разделение через логический фильтр зависит от корректности каждого адаптера и миграции. Физическое разделение уменьшает последствия программной ошибки, но повышает стоимость эксплуатации. Выбор должен учитывать чувствительность данных, требования организации и допустимый радиус отказа.</p>
+        <p>Наконец, успешные тесты доказывают только проверенные пути. При добавлении нового инструмента, хранилища, кэша или фоновой задачи реестр границ и набор негативных сценариев нужно обновлять.</p>
+      </section>
+
+      <section id="next">
+        <h2>Что делать дальше</h2>
+        <p>Используйте этот материал как основу для threat model и обязательного checklist при ревью. Другие практические материалы собраны в <a href="guides.html">руководствах Agent Lab Journal</a>, а определения терминов — в <a href="glossary.html">глоссарии</a>.</p>
+      </section>
+    </article>
+  </main>
+
+  <footer class="site-footer">
+    <p><a href="index.html">Agent Lab Journal</a> — практические материалы о проектировании и эксплуатации AI-агентов.</p>
+  </footer>
+</body>
+</html>

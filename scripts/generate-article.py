@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Generate an article draft with Codex, then pass it through publication checks."""
 from argparse import ArgumentParser
+import os
 from pathlib import Path
 import re
 import subprocess
@@ -44,10 +45,22 @@ special term must link to glossary.html using an existing or appropriate anchor.
 invent test results, credentials, customer facts, or external citations. The article must
 be useful to a reader who wants to repeat the work."""
 
+if args.language == "ru" and os.environ.get("AGENTLAB_BATCH_MODE") == "1":
+    prompt = f"""Напиши практическую русскоязычную статью для Agent Lab Journal.
+Тема: {args.title}
+Проблема: {args.problem}
+Уровень: {args.level}; чтение: до {min(args.minutes, 12)} минут; результат: {args.result}.
+Верни только полный HTML-документ без Markdown и пояснений. Используй style.css и reading.css.
+Обязательно добавь title, description, canonical https://agentlabjournal.online/{filename}, Open Graph,
+Twitter card, reading-meta и Article JSON-LD. Дай введение, воспроизводимые шаги, безопасные команды или
+конфигурацию, проверку результата, типовые ошибки, ограничения и ссылки на guides.html и glossary.html.
+Не выдумывай тесты, клиентов, секреты или внешние источники; отличай пример от факта. Первый специальный
+термин свяжи с glossary.html. Верни только HTML."""
+
 with tempfile.TemporaryDirectory() as tmp:
     output = Path(tmp) / "article.txt"
     result = subprocess.run([
-        "codex", "exec", "--ephemeral", "--sandbox", "read-only",
+        "codex", "exec", "-c", "model_reasoning_effort=low", "--ephemeral", "--sandbox", "read-only",
         "--skip-git-repo-check", "-C", str(ROOT), "-o", str(output), prompt,
     ], text=True, capture_output=True)
     if result.returncode:

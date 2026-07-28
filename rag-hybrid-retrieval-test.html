@@ -1,0 +1,547 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Как выбрать поиск для RAG: SQL, BM25, векторы или гибрид — Agent Lab Journal</title>
+  <meta name="description" content="Воспроизводимый тест четырех схем retrieval для RAG на одном корпусе: SQL, BM25, векторный и гибридный поиск. Сравниваем recall@k, nDCG, задержку, размер контекста, права доступа и свежесть данных.">
+  <link rel="canonical" href="https://agentlabjournal.online/rag-hybrid-retrieval-test.html">
+  <link rel="stylesheet" href="style.css">
+  <link rel="stylesheet" href="reading.css">
+
+  <meta property="og:type" content="article">
+  <meta property="og:locale" content="ru_RU">
+  <meta property="og:site_name" content="Agent Lab Journal">
+  <meta property="og:title" content="Как выбрать поиск для RAG: SQL, BM25, векторы или гибрид">
+  <meta property="og:description" content="Практический тест SQL, BM25, векторного и гибридного retrieval с recall@k, nDCG, задержкой и размером контекста.">
+  <meta property="og:url" content="https://agentlabjournal.online/rag-hybrid-retrieval-test.html">
+
+  <meta name="twitter:card" content="summary">
+  <meta name="twitter:title" content="Как выбрать поиск для RAG: SQL, BM25, векторы или гибрид">
+  <meta name="twitter:description" content="Воспроизводимое сравнение четырех схем retrieval для RAG на одном корпусе.">
+
+  <script type="application/ld+json">
+  {
+    "@context": "https://schema.org",
+    "@type": "Article",
+    "headline": "Как выбрать поиск для RAG: SQL, BM25, векторы или гибрид",
+    "description": "Воспроизводимый тест четырех схем retrieval для RAG на одном корпусе: SQL, BM25, векторный и гибридный поиск.",
+    "inLanguage": "ru-RU",
+    "mainEntityOfPage": {
+      "@type": "WebPage",
+      "@id": "https://agentlabjournal.online/rag-hybrid-retrieval-test.html"
+    },
+    "author": {
+      "@type": "Organization",
+      "name": "Agent Lab Journal",
+      "url": "https://agentlabjournal.online/"
+    },
+    "publisher": {
+      "@type": "Organization",
+      "name": "Agent Lab Journal",
+      "url": "https://agentlabjournal.online/"
+    },
+    "isAccessibleForFree": true,
+    "articleSection": "RAG и поиск",
+    "keywords": [
+      "RAG",
+      "retrieval",
+      "SQL",
+      "BM25",
+      "векторный поиск",
+      "гибридный поиск",
+      "recall@k",
+      "nDCG"
+    ]
+  }
+  </script>
+</head>
+<body>
+  <header class="site-header">
+    <div class="container">
+      <a href="index.html" class="site-name">Agent Lab Journal</a>
+      <nav aria-label="Основная навигация">
+        <a href="guides.html">Гайды</a>
+        <a href="glossary.html">Глоссарий</a>
+      </nav>
+    </div>
+  </header>
+
+  <main>
+    <article class="reading">
+      <header class="article-header">
+        <p class="eyebrow">Практика · RAG и поиск</p>
+        <h1>Как выбрать поиск для RAG: SQL, BM25, векторы или гибрид</h1>
+        <p class="lead">Векторный поиск полезен, когда запрос и документ выражают одну мысль разными словами. Но номер договора, ограничение доступа и только что изменившийся статус — не семантические догадки. Проверим четыре схемы retrieval на одном корпусе и зафиксируем не только качество, но также задержку и размер переданного модели контекста.</p>
+        <div class="reading-meta" aria-label="Информация о статье">
+          <span>Уровень: средний</span>
+          <span>Чтение: до 12 минут</span>
+          <span>Результат: воспроизводимый тест 4 схем</span>
+        </div>
+      </header>
+
+      <section>
+        <h2>Что именно выбираем</h2>
+        <p><a href="glossary.html#rag">RAG</a> — это схема, в которой система сначала извлекает подходящие фрагменты, а затем передает их языковой модели вместе с запросом. Ошибка retrieval не исправляется хорошим промптом: если нужного фрагмента нет в контексте, генератору остается отказаться от ответа или предположить его.</p>
+        <p>У четырех подходов разные сильные стороны:</p>
+        <table>
+          <thead>
+            <tr>
+              <th>Схема</th>
+              <th>Лучше всего работает с</th>
+              <th>Типичный риск</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td>SQL</td>
+              <td>точными ID, статусами, датами, владельцами и ACL</td>
+              <td>не понимает перефразирование</td>
+            </tr>
+            <tr>
+              <td>BM25</td>
+              <td>названиями, кодами ошибок и редкими терминами</td>
+              <td>зависит от совпадения слов и токенизации</td>
+            </tr>
+            <tr>
+              <td>Векторы</td>
+              <td>смыслом, синонимами и естественными вопросами</td>
+              <td>может приблизительно сопоставить то, где нужна точность</td>
+            </tr>
+            <tr>
+              <td>Гибрид</td>
+              <td>смешанными запросами</td>
+              <td>сложнее настраивать, измерять и объяснять</td>
+            </tr>
+          </tbody>
+        </table>
+        <p>Практический вывод заранее не задаем. Вместо общего вопроса «какой поиск лучше?» проверим, какой механизм лучше для каждого класса запросов и какие ограничения должны выполняться до ранжирования.</p>
+      </section>
+
+      <section>
+        <h2>Дизайн эксперимента</h2>
+        <p>Ниже используется небольшой синтетический корпус служебных документов. Это учебный пример, а не результат промышленного бенчмарка. В нем нет реальных клиентов, ключей, договоров или внутренних данных.</p>
+        <p>Каждый документ имеет текст и структурированные поля:</p>
+        <ul>
+          <li><code>doc_id</code> — точный идентификатор;</li>
+          <li><code>tenant</code> — организация, которой принадлежит документ;</li>
+          <li><code>acl</code> — роли с правом чтения;</li>
+          <li><code>updated_at</code> — время обновления;</li>
+          <li><code>status</code> — актуальный структурированный статус;</li>
+          <li><code>text</code> — содержимое для полнотекстового и векторного поиска.</li>
+        </ul>
+        <p>Набор запросов размечается вручную: для каждого запроса известны релевантные документы и их градуированная полезность. Один и тот же список кандидатов оценивается для SQL, BM25, векторов и гибрида.</p>
+
+        <aside class="callout">
+          <h3>Важное правило безопасности</h3>
+          <p>Фильтры <code>tenant</code> и <code>acl</code> применяются до ранжирования. Нельзя сначала получить глобальный top-k, а затем убрать запрещенные документы: разрешенный документ может не попасть в исходный top-k, а сам промежуточный результат уже будет содержать чужие данные.</p>
+        </aside>
+      </section>
+
+      <section>
+        <h2>Что измеряем</h2>
+        <dl>
+          <dt><code>recall@k</code></dt>
+          <dd>Доля релевантных документов, найденных среди первых k результатов. Метрика отвечает на вопрос: «Не потеряли ли мы нужный материал?»</dd>
+
+          <dt><code>nDCG@k</code></dt>
+          <dd>Качество порядка с учетом разной степени релевантности. Самый полезный документ должен стоять выше частично полезного.</dd>
+
+          <dt>Задержка</dt>
+          <dd>Медиана и 95-й перцентиль времени retrieval. Разовый первый запуск отделяем от прогретых запусков.</dd>
+
+          <dt>Размер контекста</dt>
+          <dd>Количество символов и приблизительное число токенов в выбранных фрагментах. Для оперативной оценки используем <code>ceil(characters / 4)</code>. Это только приближение: точное значение зависит от токенизатора конкретной модели.</dd>
+        </dl>
+        <p>Для ACL дополнительно нужна бинарная проверка: запрещенных документов в выдаче должно быть ровно ноль. Высокий recall не компенсирует утечку доступа.</p>
+      </section>
+
+      <section>
+        <h2>Шаг 1. Подготовьте изолированное окружение</h2>
+        <p>Команды создают локальное виртуальное окружение и устанавливают зафиксированные версии библиотек. Они не требуют прав администратора и не изменяют системный Python.</p>
+        <pre><code>python3 -m venv .venv
+. .venv/bin/activate
+python -m pip install --upgrade pip
+python -m pip install \
+  numpy==2.1.3 \
+  rank-bm25==0.2.2 \
+  sentence-transformers==3.3.1</code></pre>
+        <p>Векторная модель при первом запуске может загружаться из настроенного репозитория моделей. Для полностью автономного запуска заранее сохраните проверенный артефакт во внутреннем хранилище, зафиксируйте его контрольную сумму и передайте локальный путь через переменную <code>MODEL_PATH</code>. Не помещайте токены доступа в код или командную историю.</p>
+      </section>
+
+      <section>
+        <h2>Шаг 2. Создайте корпус и разметку</h2>
+        <p>Сохраните следующий файл как <code>benchmark.py</code>. Данные вымышлены специально для теста. В запросах представлены точный ID, терминологическое совпадение, перефразирование, свежий статус и проверка прав.</p>
+        <pre><code>import math
+import os
+import re
+import statistics
+import time
+from datetime import datetime, timezone
+
+import numpy as np
+from rank_bm25 import BM25Okapi
+from sentence_transformers import SentenceTransformer
+
+DOCS = [
+    {
+        "doc_id": "POL-1042", "tenant": "alpha", "acl": {"support", "admin"},
+        "updated_at": "2026-06-10T09:00:00Z", "status": "active",
+        "text": "Регламент возврата: заявку можно отменить до передачи заказа курьеру."
+    },
+    {
+        "doc_id": "POL-2091", "tenant": "alpha", "acl": {"finance", "admin"},
+        "updated_at": "2026-06-12T11:00:00Z", "status": "active",
+        "text": "Правила компенсации комиссии при ошибочном двойном списании."
+    },
+    {
+        "doc_id": "INC-7318", "tenant": "alpha", "acl": {"support", "admin"},
+        "updated_at": "2026-06-15T14:00:00Z", "status": "resolved",
+        "text": "Ошибка E_CONN_RESET возникает при разрыве соединения с платежным шлюзом."
+    },
+    {
+        "doc_id": "OPS-3307", "tenant": "alpha", "acl": {"support", "admin"},
+        "updated_at": "2026-06-18T08:00:00Z", "status": "active",
+        "text": "Если доставка еще не началась, покупатель может отозвать заказ."
+    },
+    {
+        "doc_id": "SEC-9001", "tenant": "alpha", "acl": {"security", "admin"},
+        "updated_at": "2026-06-20T10:00:00Z", "status": "active",
+        "text": "Инструкция по ротации служебных учетных данных."
+    },
+    {
+        "doc_id": "POL-1042", "tenant": "beta", "acl": {"support", "admin"},
+        "updated_at": "2026-06-21T09:00:00Z", "status": "active",
+        "text": "Регламент организации beta: возврат оформляется после проверки склада."
+    },
+    {
+        "doc_id": "KB-5520", "tenant": "alpha", "acl": {"support", "admin"},
+        "updated_at": "2026-06-22T12:00:00Z", "status": "deprecated",
+        "text": "Старый порядок отмены заказа через обращение оператору."
+    },
+    {
+        "doc_id": "KB-5521", "tenant": "alpha", "acl": {"support", "admin"},
+        "updated_at": "2026-06-27T12:00:00Z", "status": "active",
+        "text": "Новый порядок: отмена доступна в карточке заказа до начала доставки."
+    }
+]
+
+QUERIES = [
+    {
+        "name": "exact_id", "text": "Покажи POL-1042",
+        "tenant": "alpha", "role": "support",
+        "relevance": {"POL-1042": 3}
+    },
+    {
+        "name": "rare_error", "text": "Что означает E_CONN_RESET?",
+        "tenant": "alpha", "role": "support",
+        "relevance": {"INC-7318": 3}
+    },
+    {
+        "name": "paraphrase", "text": "Можно ли передумать до приезда курьера?",
+        "tenant": "alpha", "role": "support",
+        "relevance": {"OPS-3307": 3, "POL-1042": 2, "KB-5521": 1}
+    },
+    {
+        "name": "fresh_status", "text": "Как сейчас отменить заказ?",
+        "tenant": "alpha", "role": "support",
+        "relevance": {"KB-5521": 3, "POL-1042": 1}
+    },
+    {
+        "name": "acl", "text": "Как ротировать служебные учетные данные?",
+        "tenant": "alpha", "role": "support",
+        "relevance": {}
+    }
+]
+
+TOKEN_RE = re.compile(r"[A-Za-zА-Яа-яЁё0-9_+-]+")
+
+def tokenize(text):
+    return TOKEN_RE.findall(text.lower())
+
+def allowed(doc, query):
+    return doc["tenant"] == query["tenant"] and query["role"] in doc["acl"]
+
+def exact_ids(text):
+    return set(re.findall(r"\b[A-Z]{2,5}-\d{3,8}\b", text.upper()))
+
+def sql_rank(query):
+    ids = exact_ids(query["text"])
+    candidates = [d for d in DOCS if allowed(d, query)]
+    if ids:
+        return [d for d in candidates if d["doc_id"] in ids]
+    terms = set(tokenize(query["text"]))
+    scored = []
+    for doc in candidates:
+        score = 0
+        if doc["status"].lower() in terms:
+            score += 2
+        if doc["doc_id"].lower() in terms:
+            score += 4
+        if score:
+            scored.append((score, doc))
+    return [d for _, d in sorted(scored, key=lambda x: x[0], reverse=True)]
+
+def prepare_bm25():
+    return BM25Okapi([tokenize(d["doc_id"] + " " + d["text"]) for d in DOCS])
+
+def bm25_rank(query, engine):
+    scores = engine.get_scores(tokenize(query["text"]))
+    pairs = [(float(scores[i]), d) for i, d in enumerate(DOCS) if allowed(d, query)]
+    pairs.sort(key=lambda x: x[0], reverse=True)
+    return [d for score, d in pairs if score &gt; 0]
+
+def prepare_vectors():
+    model_path = os.environ.get(
+        "MODEL_PATH",
+        "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2"
+    )
+    model = SentenceTransformer(model_path)
+    texts = [d["doc_id"] + ". " + d["text"] for d in DOCS]
+    matrix = model.encode(texts, normalize_embeddings=True)
+    return model, np.asarray(matrix)
+
+def vector_rank(query, model, matrix):
+    q = model.encode([query["text"]], normalize_embeddings=True)[0]
+    pairs = [(float(matrix[i] @ q), d) for i, d in enumerate(DOCS) if allowed(d, query)]
+    pairs.sort(key=lambda x: x[0], reverse=True)
+    return [d for _, d in pairs]
+
+def rrf(*rankings, constant=60):
+    scores = {}
+    docs = {}
+    for ranking in rankings:
+        for position, doc in enumerate(ranking, start=1):
+            key = (doc["tenant"], doc["doc_id"])
+            docs[key] = doc
+            scores[key] = scores.get(key, 0.0) + 1.0 / (constant + position)
+    ordered = sorted(scores, key=scores.get, reverse=True)
+    return [docs[key] for key in ordered]
+
+def hybrid_rank(query, engine, model, matrix):
+    exact = sql_rank(query)
+    lexical = bm25_rank(query, engine)
+    semantic = vector_rank(query, model, matrix)
+    ids = exact_ids(query["text"])
+    if ids and exact:
+        return exact
+    return rrf(lexical, semantic)
+
+def gain(query, doc):
+    return query["relevance"].get(doc["doc_id"], 0)
+
+def recall_at_k(query, ranking, k):
+    relevant = {doc_id for doc_id, grade in query["relevance"].items() if grade &gt; 0}
+    if not relevant:
+        return 1.0 if not ranking[:k] else 0.0
+    found = {d["doc_id"] for d in ranking[:k]}
+    return len(relevant &amp; found) / len(relevant)
+
+def ndcg_at_k(query, ranking, k):
+    grades = [gain(query, d) for d in ranking[:k]]
+    dcg = sum((2 ** grade - 1) / math.log2(i + 2) for i, grade in enumerate(grades))
+    ideal = sorted(query["relevance"].values(), reverse=True)[:k]
+    idcg = sum((2 ** grade - 1) / math.log2(i + 2) for i, grade in enumerate(ideal))
+    return dcg / idcg if idcg else (1.0 if not ranking[:k] else 0.0)
+
+def context_size(ranking, k):
+    chars = sum(len(d["text"]) for d in ranking[:k])
+    return chars, math.ceil(chars / 4)
+
+def percentile(values, p):
+    ordered = sorted(values)
+    index = math.ceil(p * len(ordered)) - 1
+    return ordered[max(0, index)]
+
+def benchmark(name, search, repeats=100, k=3):
+    recalls, ndcgs, chars, tokens, latencies = [], [], [], [], []
+    leaks = 0
+    for query in QUERIES:
+        ranking = search(query)
+        recalls.append(recall_at_k(query, ranking, k))
+        ndcgs.append(ndcg_at_k(query, ranking, k))
+        size_chars, size_tokens = context_size(ranking, k)
+        chars.append(size_chars)
+        tokens.append(size_tokens)
+        leaks += sum(not allowed(doc, query) for doc in ranking[:k])
+
+        for _ in range(repeats):
+            started = time.perf_counter_ns()
+            search(query)
+            latencies.append((time.perf_counter_ns() - started) / 1_000_000)
+
+    print({
+        "scheme": name,
+        "recall@3": round(statistics.mean(recalls), 3),
+        "nDCG@3": round(statistics.mean(ndcgs), 3),
+        "latency_p50_ms": round(statistics.median(latencies), 3),
+        "latency_p95_ms": round(percentile(latencies, 0.95), 3),
+        "context_chars_avg": round(statistics.mean(chars)),
+        "context_tokens_est_avg": round(statistics.mean(tokens)),
+        "acl_leaks": leaks
+    })
+
+def main():
+    np.random.seed(7)
+    bm25 = prepare_bm25()
+    model, matrix = prepare_vectors()
+
+    schemes = {
+        "sql": sql_rank,
+        "bm25": lambda q: bm25_rank(q, bm25),
+        "vector": lambda q: vector_rank(q, model, matrix),
+        "hybrid": lambda q: hybrid_rank(q, bm25, model, matrix)
+    }
+
+    for search in schemes.values():
+        for query in QUERIES:
+            search(query)
+
+    for name, search in schemes.items():
+        benchmark(name, search)
+
+if __name__ == "__main__":
+    main()</code></pre>
+        <p>Повторяющийся <code>doc_id</code> у организаций alpha и beta добавлен намеренно: он проверяет, что точный поиск не обходит tenant-фильтр. Запрос к закрытому документу <code>SEC-9001</code> должен вернуть пустой результат для роли support.</p>
+      </section>
+
+      <section>
+        <h2>Шаг 3. Запустите тест</h2>
+        <pre><code>. .venv/bin/activate
+python benchmark.py</code></pre>
+        <p>Не копируйте ожидаемые числа из чужого запуска. Задержка зависит от процессора, версии библиотек, фоновой нагрузки, модели и состояния кэша. Скрипт печатает фактически измеренные результаты вашей машины.</p>
+        <p>Для фиксации окружения сохраните версии рядом с результатом:</p>
+        <pre><code>python --version
+python -m pip freeze
+python benchmark.py &gt; results.txt</code></pre>
+        <p>Перенаправление перезапишет только файл <code>results.txt</code> в текущем каталоге. Если он уже содержит нужные измерения, выберите другое имя.</p>
+      </section>
+
+      <section>
+        <h2>Как читать результат</h2>
+        <p>Каждая строка содержит метрики одной схемы. Сначала проверьте <code>acl_leaks</code>: допустимое значение — только <code>0</code>. Затем сравните качество, задержку и объем контекста.</p>
+        <ul>
+          <li>Низкий <code>recall@3</code> означает, что retrieval пропускает документы из разметки.</li>
+          <li>При похожем recall более высокий <code>nDCG@3</code> означает лучший порядок.</li>
+          <li>Большой контекст при том же качестве — лишняя стоимость и дополнительный шум для генератора.</li>
+          <li><code>p95</code> важнее среднего значения для пользовательского SLA: он показывает медленные запросы в хвосте распределения.</li>
+        </ul>
+        <p>SQL в этом примере намеренно узок: он уверенно обслуживает точные поля, но не изображает семантический поиск. В production SQL-ветка обычно также обрабатывает диапазоны дат, типы сущностей, версии, статусы и другие детерминированные условия.</p>
+        <p>BM25 должен получить преимущество на редком токене вроде <code>E_CONN_RESET</code>. Векторная схема имеет шанс лучше обработать перефразирование. Гибрид объединяет ранги BM25 и векторов через Reciprocal Rank Fusion, а точный ID направляет по детерминированной ветке. Это гипотезы конструкции теста; подтверждением служит только ваш фактический вывод.</p>
+      </section>
+
+      <section>
+        <h2>Проверка результата по отдельным запросам</h2>
+        <p>Сводная метрика может скрыть ошибку в конкретном классе. Для проверки добавьте перед вызовами <code>benchmark</code> следующий диагностический блок:</p>
+        <pre><code>for query in QUERIES:
+    print("\nQUERY", query["name"], repr(query["text"]))
+    for name, search in schemes.items():
+        ranking = search(query)[:3]
+        print(name, [(d["tenant"], d["doc_id"]) for d in ranking])</code></pre>
+        <p>Проверьте четыре инварианта:</p>
+        <ol>
+          <li>Для <code>Покажи POL-1042</code> результат принадлежит tenant alpha, а не beta.</li>
+          <li>Для <code>E_CONN_RESET</code> среди первых результатов присутствует <code>INC-7318</code>.</li>
+          <li>Запрос с ролью support никогда не возвращает <code>SEC-9001</code>.</li>
+          <li>Актуальная инструкция <code>KB-5521</code> ранжируется выше устаревшей <code>KB-5520</code> после добавления политики свежести.</li>
+        </ol>
+        <p>Последний пункт текущий базовый скрипт автоматически не гарантирует. Он показывает проблему: embedding текста не знает, какой статус хранится в базе и какую версию бизнес считает действующей.</p>
+      </section>
+
+      <section>
+        <h2>Как учесть свежесть без магии</h2>
+        <p>Свежесть лучше задавать явным правилом. Если устаревшие документы нельзя использовать, исключайте их до поиска:</p>
+        <pre><code>def allowed(doc, query):
+    return (
+        doc["tenant"] == query["tenant"]
+        and query["role"] in doc["acl"]
+        and doc["status"] != "deprecated"
+    )</code></pre>
+        <p>Если старые версии иногда полезны, не удаляйте их безусловно. Добавьте версию документа, период действия и отдельный режим исторического запроса. Временной бонус к score уместен лишь тогда, когда «новее» действительно означает «релевантнее» для предметной области.</p>
+        <p>После изменения фильтра запустите весь тест заново и сохраните результаты под новым именем. Сравнение до и после покажет, улучшили ли вы свежесть, не потеряв исторические ответы.</p>
+      </section>
+
+      <section>
+        <h2>Типовые ошибки</h2>
+
+        <h3>Один embedding для всех задач</h3>
+        <p>Идентификатор <code>INV-00421</code> — не смысловая категория. Нормализуйте формат и ищите его точным оператором. Векторную ветку подключайте для текста вокруг сущности.</p>
+
+        <h3>ACL после top-k</h3>
+        <p>Такой порядок одновременно ухудшает полноту и создает риск утечки. Область разрешенных документов должна быть сформирована до вычисления окончательного top-k.</p>
+
+        <h3>Смешивание score</h3>
+        <p>Косинусная близость и BM25 имеют разные шкалы. Складывать их как есть ненадежно. RRF объединяет позиции, а не несопоставимые значения. Если используется взвешенная сумма, нормализацию и веса нужно подбирать на отдельной разметке.</p>
+
+        <h3>Оценка только «приятных» запросов</h3>
+        <p>Добавляйте точные коды, опечатки, короткие запросы, длинные вопросы, отсутствие ответа, запрещенный доступ и конфликт версий. Доля каждого класса должна отражать рабочий трафик, а не удобство демонстрации.</p>
+
+        <h3>Измерение вместе с генерацией</h3>
+        <p>Сначала измеряйте retrieval отдельно. Иначе задержка модели и вариативность ответа скроют изменение поискового слоя.</p>
+
+        <h3>Проверка на тех же запросах, где подбирались веса</h3>
+        <p>Разделяйте наборы настройки и оценки. Иначе гибрид может запомнить особенности маленького теста и не перенестись на новые формулировки.</p>
+
+        <h3>Сравнение разного размера контекста</h3>
+        <p>Схема, которой разрешили десять фрагментов, получает преимущество перед схемой с тремя. Сравнивайте одинаковый k или одинаковый бюджет токенов, а лучше публикуйте оба среза.</p>
+      </section>
+
+      <section>
+        <h2>Ограничения этого теста</h2>
+        <ul>
+          <li>Корпус мал и синтетичен; числа нельзя переносить на production.</li>
+          <li>Разметка содержит мало запросов и служит проверкой процедуры, а не статистически надежным выводом.</li>
+          <li>BM25 работает в памяти и использует простую токенизацию без морфологии русского языка.</li>
+          <li>Векторный поиск выполняется полным перебором, а не через ANN-индекс. На большом корпусе профиль задержки будет другим.</li>
+          <li>Приблизительный подсчет токенов не заменяет токенизатор выбранной модели.</li>
+          <li>Тест не измеряет качество финального ответа, стоимость генерации и устойчивость к prompt injection в документах.</li>
+          <li>Модель эмбеддингов и зависимости нужно проверять по правилам безопасности вашей инфраструктуры.</li>
+        </ul>
+        <p>Следующий практический шаг — заменить <code>DOCS</code> обезличенной выборкой собственного корпуса, а <code>QUERIES</code> — размеченными рабочими запросами. Сохраните одинаковые фильтры, k, бюджет контекста и метод измерения для всех схем.</p>
+      </section>
+
+      <section>
+        <h2>Рабочая архитектура для большинства RAG-систем</h2>
+        <p>Выбор редко сводится к одному индексу. Устойчивая последовательность выглядит так:</p>
+        <ol>
+          <li>Разобрать детерминированные ограничения: tenant, ACL, ID, тип, статус и период действия.</li>
+          <li>Сформировать только разрешенный и актуальный набор кандидатов.</li>
+          <li>Для точного ID выполнить SQL lookup и при однозначном результате не расширять поиск без необходимости.</li>
+          <li>Для текстового запроса получить кандидатов BM25 и векторной веткой.</li>
+          <li>Объединить ранги, удалить дубликаты и при необходимости применить reranker.</li>
+          <li>Обрезать результат по измеренному бюджету контекста.</li>
+          <li>Передать генератору идентификаторы источников, версии и время обновления вместе с текстом.</li>
+        </ol>
+        <p>SQL здесь не конкурент BM25 или векторам. Он задает границы допустимого и обслуживает точные условия. Лексический и семантический поиск ранжируют содержимое внутри этих границ.</p>
+      </section>
+
+      <section>
+        <h2>Критерий выбора</h2>
+        <p>Начните с распределения запросов, а не с модного индекса:</p>
+        <ul>
+          <li>Если преобладают коды, номера и структурированные условия — сделайте SQL-маршрут первым.</li>
+          <li>Если важны редкие термины, имена функций и сообщения об ошибках — используйте BM25.</li>
+          <li>Если пользователи часто перефразируют инструкции — добавьте векторный поиск.</li>
+          <li>Если все классы встречаются одновременно — применяйте гибрид с явными фильтрами и маршрутизацией.</li>
+        </ul>
+        <p>Победитель — не схема с максимальным одним числом. Подход должен пройти пороги по recall и ACL, уложиться в p95 и бюджет контекста, а затем показать приемлемую стоимость эксплуатации.</p>
+      </section>
+
+      <section class="article-next">
+        <h2>Что изучить дальше</h2>
+        <p>Продолжите с практическими материалами в разделе <a href="guides.html">«Гайды»</a>. Определения RAG, embeddings, BM25, reranking и других терминов собраны в <a href="glossary.html">глоссарии</a>.</p>
+      </section>
+    </article>
+  </main>
+
+  <footer class="site-footer">
+    <div class="container">
+      <p>Agent Lab Journal — практические материалы об агентах, RAG и инженерии AI-систем.</p>
+      <nav aria-label="Навигация в подвале">
+        <a href="guides.html">Гайды</a>
+        <a href="glossary.html">Глоссарий</a>
+      </nav>
+    </div>
+  </footer>
+</body>
+</html>

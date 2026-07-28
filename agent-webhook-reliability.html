@@ -1,0 +1,371 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Надёжные webhook для AI-агента: приём, дедупликация и повторная обработка — Agent Lab Journal</title>
+  <meta name="description" content="Практическая схема надёжного приёма webhook для AI-агента: журнал событий, идемпотентность, дедупликация, повторная обработка, backoff и проверка сбоев.">
+  <link rel="canonical" href="https://agentlabjournal.online/agent-webhook-reliability.html">
+  <link rel="stylesheet" href="style.css">
+  <link rel="stylesheet" href="reading.css">
+
+  <meta property="og:type" content="article">
+  <meta property="og:locale" content="ru_RU">
+  <meta property="og:site_name" content="Agent Lab Journal">
+  <meta property="og:title" content="Надёжные webhook для AI-агента">
+  <meta property="og:description" content="Как не терять входящие события при таймаутах и повторной доставке: устойчивый приём, дедупликация и повторная обработка.">
+  <meta property="og:url" content="https://agentlabjournal.online/agent-webhook-reliability.html">
+
+  <meta name="twitter:card" content="summary">
+  <meta name="twitter:title" content="Надёжные webhook для AI-агента">
+  <meta name="twitter:description" content="Практическая архитектура приёма событий, дедупликации и повторной обработки для AI-агента.">
+
+  <script type="application/ld+json">
+  {
+    "@context": "https://schema.org",
+    "@type": "Article",
+    "headline": "Надёжные webhook для AI-агента",
+    "description": "Практическая схема надёжного приёма webhook для AI-агента: журнал событий, идемпотентность, дедупликация, повторная обработка, backoff и проверка сбоев.",
+    "inLanguage": "ru-RU",
+    "mainEntityOfPage": {
+      "@type": "WebPage",
+      "@id": "https://agentlabjournal.online/agent-webhook-reliability.html"
+    },
+    "url": "https://agentlabjournal.online/agent-webhook-reliability.html",
+    "publisher": {
+      "@type": "Organization",
+      "name": "Agent Lab Journal",
+      "url": "https://agentlabjournal.online/"
+    },
+    "articleSection": "Инженерия AI-агентов",
+    "keywords": [
+      "webhook",
+      "AI-агент",
+      "идемпотентность",
+      "дедупликация",
+      "повторная обработка"
+    ]
+  }
+  </script>
+</head>
+<body>
+  <header class="site-header">
+    <nav aria-label="Основная навигация">
+      <a href="index.html">Agent Lab Journal</a>
+      <a href="guides.html">Гайды</a>
+      <a href="glossary.html">Глоссарий</a>
+    </nav>
+  </header>
+
+  <main>
+    <article>
+      <header class="article-header">
+        <p class="eyebrow">Инженерия AI-агентов</p>
+        <h1>Надёжные webhook для AI-агента</h1>
+        <p class="lead">Как принимать события без потерь, переживать таймауты отправителя и безопасно запускать повторную обработку.</p>
+        <div class="reading-meta" aria-label="Параметры статьи">
+          <span>Продвинутый уровень</span>
+          <span>До 8 минут</span>
+          <span>Результат: приём, дедупликация и повторная обработка</span>
+        </div>
+      </header>
+
+      <section>
+        <h2>Почему обычный HTTP-обработчик ненадёжен</h2>
+        <p><a href="glossary.html#webhook">Webhook</a> — входящий HTTP-запрос, которым внешняя система сообщает о событии. Отправитель обычно ждёт быстрый успешный ответ. Если сеть оборвалась или ответ пришёл поздно, он может доставить то же событие повторно.</p>
+        <p>Опасны две симметричные ситуации:</p>
+        <ul>
+          <li>агент выполнил действие, но отправитель не получил ответ и повторил запрос;</li>
+          <li>сервер вернул успешный ответ до сохранения события, затем процесс завершился и событие исчезло.</li>
+        </ul>
+        <p>Поэтому HTTP-запрос нельзя считать единицей обработки. Его задача — проверить подлинность, сохранить неизменяемое событие и быстро подтвердить приём. Медленные операции агента выполняет отдельный worker.</p>
+      </section>
+
+      <section>
+        <h2>Целевая схема</h2>
+        <pre><code>Отправитель
+    │ POST /webhooks/provider
+    ▼
+Приёмник ── проверка подписи и размера
+    │
+    ├── INSERT события с UNIQUE(provider, event_id)
+    │
+    └── 202 Accepted
+             │
+             ▼
+          Worker ── действие AI-агента
+             │
+             ├── done
+             └── retry_at + last_error</code></pre>
+        <p>Гарантия здесь — не «ровно один запрос», а «как минимум одна доставка плюс идемпотентная обработка». Абсолютную exactly-once семантику между независимыми системами обычно заменить нечем: её практический эквивалент строится на уникальном ключе события и идемпотентности каждого внешнего эффекта.</p>
+      </section>
+
+      <section>
+        <h2>Шаг 1. Создайте журнал входящих событий</h2>
+        <p>Ниже — пример схемы PostgreSQL. Названия полей и интервалы являются примером конфигурации, а не обязательным стандартом.</p>
+        <pre><code>CREATE TABLE webhook_events (
+    id              bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+    provider        text        NOT NULL,
+    event_id        text        NOT NULL,
+    event_type      text        NOT NULL,
+    payload         jsonb       NOT NULL,
+    payload_sha256  text        NOT NULL,
+    status          text        NOT NULL DEFAULT 'pending'
+                                CHECK (status IN ('pending', 'processing', 'done', 'retry', 'dead')),
+    attempt_count   integer     NOT NULL DEFAULT 0,
+    next_attempt_at timestamptz NOT NULL DEFAULT now(),
+    locked_at       timestamptz,
+    last_error      text,
+    received_at     timestamptz NOT NULL DEFAULT now(),
+    processed_at    timestamptz,
+    UNIQUE (provider, event_id)
+);
+
+CREATE INDEX webhook_events_ready_idx
+    ON webhook_events (next_attempt_at, id)
+    WHERE status IN ('pending', 'retry');</code></pre>
+        <p><code>event_id</code> должен приходить от поставщика и оставаться одинаковым при повторной доставке. Если поставщик его не даёт, временным ключом можно сделать хеш канонического тела и ограничить дедупликацию небольшим временным окном. Это слабее: два законных одинаковых события могут ошибочно слиться.</p>
+        <p><code>payload_sha256</code> помогает обнаружить нарушение контракта: одинаковый <code>event_id</code> не должен неожиданно сопровождаться другим телом. Сам хеш не заменяет проверку подписи.</p>
+      </section>
+
+      <section>
+        <h2>Шаг 2. Сначала сохраните, затем отвечайте</h2>
+        <p>Приёмник должен читать исходные байты тела, потому что подпись часто вычисляется именно по ним. Конкретный формат заголовка, алгоритм и допустимое окно времени определяются контрактом поставщика.</p>
+        <pre><code>// Псевдокод: адаптируйте названия заголовков под контракт поставщика.
+async function receiveWebhook(request) {
+  const rawBody = await readBodyWithLimit(request, 256 * 1024);
+  const signature = request.headers.get("x-webhook-signature");
+
+  if (!verifyProviderSignature(rawBody, signature)) {
+    return response(401);
+  }
+
+  const event = parseAndValidateJson(rawBody);
+  const hash = sha256Hex(rawBody);
+
+  const result = await db.query(`
+    INSERT INTO webhook_events
+      (provider, event_id, event_type, payload, payload_sha256)
+    VALUES ($1, $2, $3, $4::jsonb, $5)
+    ON CONFLICT (provider, event_id) DO NOTHING
+    RETURNING id
+  `, ["provider-name", event.id, event.type, rawBody, hash]);
+
+  if (result.inserted) {
+    return response(202);
+  }
+
+  const stored = await findByProviderAndEventId("provider-name", event.id);
+
+  if (stored.payload_sha256 !== hash) {
+    recordSecurityAlertWithoutPayload(event.id);
+    return response(409);
+  }
+
+  return response(200);
+}</code></pre>
+        <p>Повтор уже сохранённого события получает успешный ответ: отправителю больше не нужно повторять доставку. Ответ <code>202</code> означает, что событие принято, но работа агента ещё не завершена.</p>
+        <aside>
+          <h3>Минимальные меры безопасности</h3>
+          <ul>
+            <li>проверяйте подпись до разбора и сохранения содержимого;</li>
+            <li>ограничивайте размер тела и время чтения;</li>
+            <li>не записывайте подписи, токены и полное тело в обычный лог;</li>
+            <li>проверяйте тип события и обязательные поля по явной схеме;</li>
+            <li>при наличии метки времени отклоняйте слишком старые запросы согласно контракту;</li>
+            <li>храните секрет проверки вне кода и не показывайте его в диагностике.</li>
+          </ul>
+        </aside>
+      </section>
+
+      <section>
+        <h2>Шаг 3. Забирайте задачи конкурентно и без гонок</h2>
+        <p>Несколько worker-процессов могут безопасно выбирать разные события через <code>FOR UPDATE SKIP LOCKED</code>. Транзакция выбора должна быть короткой: сетевой вызов AI-модели нельзя держать внутри неё.</p>
+        <pre><code>BEGIN;
+
+WITH picked AS (
+    SELECT id
+    FROM webhook_events
+    WHERE status IN ('pending', 'retry')
+      AND next_attempt_at &lt;= now()
+    ORDER BY next_attempt_at, id
+    FOR UPDATE SKIP LOCKED
+    LIMIT 10
+)
+UPDATE webhook_events AS e
+SET status = 'processing',
+    locked_at = now(),
+    attempt_count = attempt_count + 1
+FROM picked
+WHERE e.id = picked.id
+RETURNING e.*;
+
+COMMIT;</code></pre>
+        <p>После фиксации worker обрабатывает возвращённые строки. На успехе он обновляет только событие, которое всё ещё принадлежит текущей попытке:</p>
+        <pre><code>UPDATE webhook_events
+SET status = 'done',
+    processed_at = now(),
+    locked_at = NULL,
+    last_error = NULL
+WHERE id = $1
+  AND status = 'processing'
+  AND locked_at = $2;</code></pre>
+        <p>Для строгой защиты от позднего worker лучше хранить отдельный случайный <code>lease_token</code> и сверять его при завершении. Это не секрет, а идентификатор аренды задачи.</p>
+      </section>
+
+      <section>
+        <h2>Шаг 4. Сделайте действия агента идемпотентными</h2>
+        <p>Дедупликация входа не исключает сбой после внешнего эффекта. Например, агент мог создать ответ в целевой системе, а процесс завершился до установки статуса <code>done</code>. Следующая попытка не должна создать второй ответ.</p>
+        <p>Передавайте устойчивый ключ идемпотентности во все внешние API, которые его поддерживают:</p>
+        <pre><code>idempotency_key = "provider-name:" + event_id + ":send-reply:v1"</code></pre>
+        <p>Если целевая система не поддерживает такой ключ, заведите локальную таблицу эффектов:</p>
+        <pre><code>CREATE TABLE agent_effects (
+    effect_key  text PRIMARY KEY,
+    event_id    bigint      NOT NULL REFERENCES webhook_events(id),
+    status      text        NOT NULL CHECK (status IN ('started', 'done')),
+    result_ref  text,
+    created_at  timestamptz NOT NULL DEFAULT now(),
+    updated_at  timestamptz NOT NULL DEFAULT now()
+);</code></pre>
+        <p>Локальная запись не может атомарно зафиксировать операцию в чужой системе. Поэтому при неопределённом результате сначала ищите созданный объект по устойчивому внешнему ключу, а не сразу повторяйте создание.</p>
+      </section>
+
+      <section>
+        <h2>Шаг 5. Настройте повторные попытки и карантин</h2>
+        <p>Повторяйте только временные ошибки: сетевые сбои, таймауты, ограничение частоты и серверные ответы класса 5xx. Ошибки схемы, запрещённые действия и неподдерживаемые типы событий обычно требуют исправления данных или кода.</p>
+        <pre><code>// Псевдокод задержки с ограничением и случайным разбросом.
+baseSeconds = 2
+capSeconds = 900
+delay = random(0, min(capSeconds, baseSeconds * 2 ** attemptCount))
+nextAttemptAt = now() + delay</code></pre>
+        <pre><code>UPDATE webhook_events
+SET status = CASE WHEN attempt_count &gt;= 8 THEN 'dead' ELSE 'retry' END,
+    next_attempt_at = now() + ($2 * interval '1 second'),
+    locked_at = NULL,
+    last_error = left($3, 1000)
+WHERE id = $1
+  AND status = 'processing'
+  AND locked_at = $4;</code></pre>
+        <p>Число попыток, предел задержки и максимальная длина ошибки выше — пример. Выбирайте их по допустимой задержке и поведению зависимостей. Статус <code>dead</code> — карантин, а не удаление.</p>
+        <p>Зависшие задачи возвращает отдельная операция. Порог должен превышать максимальное ожидаемое время обработки:</p>
+        <pre><code>UPDATE webhook_events
+SET status = 'retry',
+    next_attempt_at = now(),
+    locked_at = NULL,
+    last_error = 'processing lease expired'
+WHERE status = 'processing'
+  AND locked_at &lt; now() - interval '15 minutes';</code></pre>
+      </section>
+
+      <section>
+        <h2>Безопасная ручная повторная обработка</h2>
+        <p>Не меняйте payload при повторе. Верните выбранное событие из карантина в очередь и сохраните причину операции в отдельном аудите, если он предусмотрен системой.</p>
+        <pre><code>BEGIN;
+
+UPDATE webhook_events
+SET status = 'retry',
+    next_attempt_at = now(),
+    locked_at = NULL,
+    last_error = NULL
+WHERE id = :event_id
+  AND status = 'dead';
+
+COMMIT;</code></pre>
+        <p><code>:event_id</code> — параметр подготовленного запроса, а не строка для подстановки. Перед выполнением проверьте идентификатор и убедитесь, что ошибка исправлена. Массовый replay запускайте небольшими партиями: он способен перегрузить AI API и downstream-системы.</p>
+      </section>
+
+      <section>
+        <h2>Проверка результата</h2>
+        <p>Проверку можно провести локально на тестовом событии без настоящих клиентов и секретов. Значения ниже — искусственный пример.</p>
+        <ol>
+          <li>Отправьте один и тот же тестовый запрос дважды с одинаковым <code>event_id</code>.</li>
+          <li>Убедитесь, что в таблице появилась одна строка.</li>
+          <li>Остановите worker после получения задачи, но до фиксации успеха.</li>
+          <li>Запустите возврат просроченной аренды и снова включите worker.</li>
+          <li>Сымитируйте временную ошибку зависимости и проверьте переход <code>processing → retry → processing → done</code>.</li>
+          <li>Сымитируйте постоянную ошибку и проверьте переход в <code>dead</code> после настроенного числа попыток.</li>
+        </ol>
+        <pre><code>SELECT provider, event_id, count(*)
+FROM webhook_events
+GROUP BY provider, event_id
+HAVING count(*) &gt; 1;
+
+SELECT status, count(*)
+FROM webhook_events
+GROUP BY status
+ORDER BY status;</code></pre>
+        <p>Первый запрос должен вернуть ноль строк. Во втором распределение зависит от проведённого сценария. Дополнительно проверьте, что повторный HTTP-запрос не создаёт второй внешний эффект с тем же ключом идемпотентности.</p>
+      </section>
+
+      <section>
+        <h2>Что наблюдать в эксплуатации</h2>
+        <ul>
+          <li>число принятых и дублированных событий по поставщику;</li>
+          <li>возраст самого старого <code>pending</code> или <code>retry</code> события;</li>
+          <li>длительность от <code>received_at</code> до <code>processed_at</code>;</li>
+          <li>число повторов, просроченных аренд и событий в <code>dead</code>;</li>
+          <li>долю конфликтов, где один <code>event_id</code> пришёл с разными хешами;</li>
+          <li>ошибки downstream-систем по классифицированным причинам.</li>
+        </ul>
+        <p>Алерт по размеру очереди полезен, но возраста старейшего события обычно достаточно, чтобы заметить реальную задержку даже при небольшом потоке.</p>
+      </section>
+
+      <section>
+        <h2>Типовые ошибки</h2>
+        <dl>
+          <dt>Запуск агента прямо в HTTP-обработчике</dt>
+          <dd>Ответ задерживается, отправитель повторяет запрос, а длительная операция становится уязвимой к обрыву процесса.</dd>
+
+          <dt>Ответ 200 до фиксации INSERT</dt>
+          <dd>При падении процесса подтверждённое событие теряется без возможности восстановления.</dd>
+
+          <dt>Дедупликация в памяти или кеше с TTL</dt>
+          <dd>Состояние исчезает при рестарте или вытеснении; слишком короткий TTL пропускает поздний повтор.</dd>
+
+          <dt>Использование времени получения как ключа</dt>
+          <dd>Повтор приходит в другое время и выглядит новым событием.</dd>
+
+          <dt>Повтор всех ошибок</dt>
+          <dd>Невалидное событие бесконечно занимает worker и создаёт нагрузку.</dd>
+
+          <dt>Длительная транзакция вокруг вызова модели</dt>
+          <dd>Блокировки удерживаются во время непредсказуемой сетевой операции.</dd>
+
+          <dt>Логирование полного payload</dt>
+          <dd>В журнал могут попасть персональные данные, сообщения пользователей и служебные поля.</dd>
+
+          <dt>Слепой replay из dead-letter очереди</dt>
+          <dd>Если причина не устранена, повтор лишь воспроизводит ошибку и может дублировать внешние эффекты.</dd>
+        </dl>
+      </section>
+
+      <section>
+        <h2>Ограничения</h2>
+        <p>Описанная схема защищает от повторной доставки и большинства сбоев процесса, но не создаёт глобальную транзакцию между базой, AI API и внешними сервисами. Каждый необратимый эффект всё равно требует собственного ключа идемпотентности или процедуры сверки.</p>
+        <p>PostgreSQL подходит для умеренной очереди и упрощает атомарный приём. При очень высоком потоке, длительном хранении или сложной маршрутизации может понадобиться специализированный брокер. Даже тогда журнал входа, стабильный идентификатор, карантин и идемпотентные consumers остаются необходимыми.</p>
+        <p>Наконец, дедупликация не определяет бизнес-семантику порядка. Если события одной сущности должны применяться последовательно, добавьте номер версии или sequence от поставщика и сериализуйте обработку по ключу сущности.</p>
+      </section>
+
+      <section>
+        <h2>Итоговый контрольный список</h2>
+        <ul>
+          <li>подпись проверяется по исходному телу;</li>
+          <li>событие фиксируется до успешного HTTP-ответа;</li>
+          <li><code>(provider, event_id)</code> защищён уникальным ограничением;</li>
+          <li>HTTP-приём отделён от работы AI-агента;</li>
+          <li>worker использует короткую аренду и защищён от позднего завершения;</li>
+          <li>временные ошибки повторяются с backoff и jitter;</li>
+          <li>постоянные ошибки переходят в карантин;</li>
+          <li>каждый внешний эффект имеет устойчивый ключ;</li>
+          <li>ручной replay параметризован, ограничен и наблюдаем.</li>
+        </ul>
+        <p>Другие практические материалы собраны в <a href="guides.html">разделе гайдов</a>, а определения терминов — в <a href="glossary.html">глоссарии Agent Lab Journal</a>.</p>
+      </section>
+    </article>
+  </main>
+
+  <footer class="site-footer">
+    <p><a href="index.html">Agent Lab Journal</a> — практическая инженерия AI-агентов.</p>
+  </footer>
+</body>
+</html>

@@ -1,0 +1,361 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Контур подтверждения для опасных действий AI-агента — Agent Lab Journal</title>
+  <meta name="description" content="Практическое руководство по созданию очереди подтверждений и журнала решений для удаления, оплаты и публикации AI-агентом.">
+  <link rel="canonical" href="https://agentlabjournal.online/agent-approval-workflow.html">
+  <link rel="stylesheet" href="style.css">
+  <link rel="stylesheet" href="reading.css">
+
+  <meta property="og:type" content="article">
+  <meta property="og:locale" content="ru_RU">
+  <meta property="og:site_name" content="Agent Lab Journal">
+  <meta property="og:title" content="Контур подтверждения для опасных действий AI-агента">
+  <meta property="og:description" content="Как остановить автоматизацию перед удалением, оплатой или публикацией и получить очередь подтверждений с журналом решений.">
+  <meta property="og:url" content="https://agentlabjournal.online/agent-approval-workflow.html">
+
+  <meta name="twitter:card" content="summary">
+  <meta name="twitter:title" content="Контур подтверждения для опасных действий AI-агента">
+  <meta name="twitter:description" content="Практическая реализация очереди подтверждений и журнала решений для опасных действий AI-агента.">
+
+  <script type="application/ld+json">
+  {
+    "@context": "https://schema.org",
+    "@type": "Article",
+    "headline": "Контур подтверждения для опасных действий AI-агента",
+    "description": "Практическое руководство по созданию очереди подтверждений и журнала решений для удаления, оплаты и публикации AI-агентом.",
+    "inLanguage": "ru",
+    "mainEntityOfPage": {
+      "@type": "WebPage",
+      "@id": "https://agentlabjournal.online/agent-approval-workflow.html"
+    },
+    "url": "https://agentlabjournal.online/agent-approval-workflow.html",
+    "publisher": {
+      "@type": "Organization",
+      "name": "Agent Lab Journal",
+      "url": "https://agentlabjournal.online/"
+    },
+    "author": {
+      "@type": "Organization",
+      "name": "Agent Lab Journal"
+    },
+    "articleSection": "Практические руководства",
+    "keywords": [
+      "AI-агенты",
+      "подтверждение действий",
+      "human in the loop",
+      "очередь подтверждений",
+      "журнал аудита"
+    ]
+  }
+  </script>
+</head>
+<body>
+  <header class="site-header">
+    <nav aria-label="Основная навигация">
+      <a href="index.html">Agent Lab Journal</a>
+      <a href="guides.html">Руководства</a>
+      <a href="glossary.html">Глоссарий</a>
+    </nav>
+  </header>
+
+  <main>
+    <article>
+      <header class="article-header">
+        <p class="eyebrow">Практическое руководство</p>
+        <h1>Контур подтверждения для опасных действий AI-агента</h1>
+        <p class="lead">Как остановить автоматизацию перед удалением, оплатой или публикацией, передать решение человеку и сохранить проверяемую историю событий.</p>
+        <div class="reading-meta" data-reading-time="8">
+          <span>Уровень: средний</span>
+          <span>Чтение: до 8 минут</span>
+          <span>Результат: очередь подтверждений и журнал решений</span>
+        </div>
+      </header>
+
+      <section aria-labelledby="intro">
+        <h2 id="intro">Зачем нужен отдельный контур</h2>
+        <p><a href="glossary.html">AI-агент</a> может самостоятельно составить план и вызвать доступные ему инструменты. Это удобно, пока действие обратимо: прочитать файл, подготовить черновик или рассчитать сумму. Удаление данных, перевод денег и публичная отправка меняют внешнее состояние и могут причинить ущерб даже при формально правильном вызове.</p>
+        <p>Поэтому опасная операция не должна выполняться непосредственно из ответа модели. Между намерением агента и рабочим API нужен контур подтверждения: агент создаёт неизменяемое описание операции, система помещает его в очередь, уполномоченный человек принимает решение, а исполнитель повторно проверяет условия и только затем вызывает API.</p>
+        <aside class="note">
+          <p><strong>Целевое правило:</strong> отсутствие подтверждения означает запрет. Сбой очереди, истечение срока или неполное решение не должны превращаться в автоматическое разрешение.</p>
+        </aside>
+      </section>
+
+      <section aria-labelledby="model">
+        <h2 id="model">Минимальная модель</h2>
+        <p>Разделим систему на четыре компонента:</p>
+        <ol>
+          <li><strong>Планировщик</strong> получает намерение агента, но не имеет полномочий на опасный вызов.</li>
+          <li><strong>Очередь подтверждений</strong> хранит нормализованное описание операции со статусом <code>pending</code>.</li>
+          <li><strong>Интерфейс проверяющего</strong> показывает последствия и принимает явное решение.</li>
+          <li><strong>Исполнитель</strong> читает подтверждённую запись, проверяет срок, целостность и права, после чего выполняет действие не более одного раза.</li>
+        </ol>
+        <p>Журнал решений отделён от текущего состояния заявки. Смена статуса удобна для работы очереди, но сама по себе не объясняет, кто и когда принял решение. Поэтому каждое событие записывается дополнительно и не редактируется задним числом.</p>
+
+        <table>
+          <thead>
+            <tr>
+              <th scope="col">Класс действия</th>
+              <th scope="col">Что показывать проверяющему</th>
+              <th scope="col">Дополнительное условие</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td>Удаление</td>
+              <td>Тип и идентификатор объекта, область удаления</td>
+              <td>Версия объекта или контрольная сумма</td>
+            </tr>
+            <tr>
+              <td>Оплата</td>
+              <td>Получатель, сумма, валюта, назначение</td>
+              <td>Лимит и идемпотентный ключ</td>
+            </tr>
+            <tr>
+              <td>Публикация</td>
+              <td>Канал, аудитория, финальный текст или его снимок</td>
+              <td>Запрет незаметного изменения после одобрения</td>
+            </tr>
+          </tbody>
+        </table>
+      </section>
+
+      <section aria-labelledby="steps">
+        <h2 id="steps">Воспроизводимая реализация</h2>
+
+        <h3>Шаг 1. Введите политику действий</h3>
+        <p>Политика должна находиться в обычном коде или конфигурации, а не только в системном промпте. Следующий фрагмент — пример конфигурации, а не универсальный стандарт:</p>
+        <pre><code class="language-yaml">actions:
+  read_document:
+    approval: never
+
+  delete_record:
+    approval: required
+    expires_in_seconds: 900
+
+  create_payment:
+    approval: required
+    expires_in_seconds: 300
+    max_amount_minor: 100000
+
+  publish_post:
+    approval: required
+    expires_in_seconds: 1800
+
+default:
+  approval: required</code></pre>
+        <p>Безопасное значение по умолчанию — <code>required</code>. Новое действие тогда не станет автономным только потому, что разработчик забыл добавить его в список.</p>
+
+        <h3>Шаг 2. Опишите заявку как снимок намерения</h3>
+        <p>Заявка должна содержать только нормализованные параметры, необходимые для решения и выполнения. Не сохраняйте в ней пароли, токены доступа и полные секретные заголовки.</p>
+        <pre><code class="language-json">{
+  "approval_id": "appr_example_001",
+  "action": "publish_post",
+  "resource": {
+    "channel_id": "channel_example",
+    "content": "Пример текста публикации"
+  },
+  "risk": "public_write",
+  "requested_by": "agent_example",
+  "created_at": "2030-01-01T10:00:00Z",
+  "expires_at": "2030-01-01T10:30:00Z",
+  "status": "pending",
+  "payload_hash": "sha256:EXAMPLE_NOT_A_REAL_DIGEST",
+  "idempotency_key": "idem_example_001"
+}</code></pre>
+        <p>Значения выше намеренно условные. Метка <code>payload_hash</code> должна вычисляться приложением по каноническому представлению полей, влияющих на действие. Если текст, сумма, адресат или объект изменились, прежнее подтверждение недействительно.</p>
+
+        <h3>Шаг 3. Создайте таблицы очереди и журнала</h3>
+        <p>Ниже приведён минимальный пример для реляционной базы данных. Типы и функции времени при необходимости адаптируйте к выбранной СУБД.</p>
+        <pre><code class="language-sql">CREATE TABLE approval_requests (
+  approval_id       VARCHAR(64) PRIMARY KEY,
+  action_name       VARCHAR(80) NOT NULL,
+  payload_json      TEXT NOT NULL,
+  payload_hash      VARCHAR(80) NOT NULL,
+  status            VARCHAR(16) NOT NULL
+                    CHECK (status IN ('pending', 'approved', 'rejected',
+                                      'expired', 'executed', 'failed')),
+  requested_by      VARCHAR(128) NOT NULL,
+  created_at        TIMESTAMP NOT NULL,
+  expires_at        TIMESTAMP NOT NULL,
+  idempotency_key   VARCHAR(128) NOT NULL UNIQUE,
+  decided_by        VARCHAR(128),
+  decided_at        TIMESTAMP,
+  executed_at       TIMESTAMP
+);
+
+CREATE TABLE approval_events (
+  event_id          VARCHAR(64) PRIMARY KEY,
+  approval_id       VARCHAR(64) NOT NULL,
+  event_type        VARCHAR(32) NOT NULL,
+  actor_id          VARCHAR(128) NOT NULL,
+  occurred_at       TIMESTAMP NOT NULL,
+  payload_hash      VARCHAR(80) NOT NULL,
+  reason            VARCHAR(500),
+  FOREIGN KEY (approval_id)
+    REFERENCES approval_requests(approval_id)
+);</code></pre>
+        <p>В рабочей системе запретите обычной роли приложения изменять и удалять строки <code>approval_events</code>. Политика хранения и доступ аудиторов зависят от вашей инфраструктуры и требований организации.</p>
+
+        <h3>Шаг 4. Разорвите прямой путь к опасному API</h3>
+        <p>Инструмент агента не должен называться и работать как <code>delete_now</code> или <code>pay_now</code>. Для опасных операций предоставьте ему только создание заявки:</p>
+        <pre><code class="language-python">def request_action(actor, action, payload):
+    policy = load_policy(action)
+
+    if policy.approval != "required":
+        return execute_safe_action(actor, action, payload)
+
+    normalized = normalize_and_validate(action, payload)
+    request = create_pending_request(
+        actor=actor,
+        action=action,
+        payload=normalized,
+        expires_in=policy.expires_in_seconds,
+    )
+    append_event(request, "requested", actor, reason=None)
+    return {
+        "status": "approval_required",
+        "approval_id": request.approval_id
+    }</code></pre>
+        <p>Это псевдокод-пример. Существенно не имя функции, а граница полномочий: учётные данные планировщика не должны позволять ему обойти очередь и вызвать опасный API напрямую.</p>
+
+        <h3>Шаг 5. Принимайте решение атомарно</h3>
+        <p>Проверяющий должен видеть точные параметры, последствия, инициатора и срок действия. Кнопка подтверждения передаёт идентификатор заявки и ожидаемую контрольную сумму:</p>
+        <pre><code class="language-sql">BEGIN;
+
+UPDATE approval_requests
+SET status = 'approved',
+    decided_by = :reviewer_id,
+    decided_at = CURRENT_TIMESTAMP
+WHERE approval_id = :approval_id
+  AND payload_hash = :visible_payload_hash
+  AND status = 'pending'
+  AND expires_at &gt; CURRENT_TIMESTAMP;
+
+-- Продолжать только если изменена ровно одна строка.
+
+INSERT INTO approval_events (
+  event_id, approval_id, event_type, actor_id,
+  occurred_at, payload_hash, reason
+) VALUES (
+  :event_id, :approval_id, 'approved', :reviewer_id,
+  CURRENT_TIMESTAMP, :visible_payload_hash, :reason
+);
+
+COMMIT;</code></pre>
+        <p>Отклонение оформляется таким же переходом из <code>pending</code> в <code>rejected</code>. Причина полезна для разбора, но не должна содержать секреты.</p>
+
+        <h3>Шаг 6. Повторно проверьте заявку перед выполнением</h3>
+        <p>Исполнитель не доверяет одному полю <code>status</code>. Он сверяет срок, хеш, политику, права проверяющего и ключ идемпотентности. Затем резервирует заявку атомарной операцией и выполняет ровно тот снимок, который был показан человеку.</p>
+        <pre><code class="language-python">def execute_approved(approval_id):
+    request = load_for_update(approval_id)
+
+    require(request.status == "approved")
+    require(now() &lt; request.expires_at)
+    require(hash_payload(request.payload) == request.payload_hash)
+    require(reviewer_is_authorized(request.decided_by, request.action))
+    require(current_policy_allows(request))
+
+    claim_once(request.approval_id, request.idempotency_key)
+    result = call_external_api(
+        action=request.action,
+        payload=request.payload,
+        idempotency_key=request.idempotency_key,
+    )
+    mark_executed_and_append_event(request, result)
+    return result</code></pre>
+        <p>Если целевой API не поддерживает идемпотентность, локальная блокировка снижает риск повторов, но не устраняет неопределённость после сетевого сбоя. Для платежей это ограничение следует учитывать при выборе провайдера и проектировании сверки.</p>
+      </section>
+
+      <section aria-labelledby="verification">
+        <h2 id="verification">Проверка результата</h2>
+        <p>Проверяйте контур в изолированной среде на фиктивных объектах. Не используйте реальные платежи, публичные каналы или ценные данные.</p>
+        <ol>
+          <li>Создайте тестовую заявку на удаление фиктивной записи. Убедитесь, что до решения объект остаётся на месте.</li>
+          <li>Отклоните заявку. Исполнитель должен отказаться от вызова, а журнал — содержать события <code>requested</code> и <code>rejected</code>.</li>
+          <li>Создайте новую заявку и подтвердите её. Проверьте, что выполнился именно показанный набор параметров.</li>
+          <li>Повторно отправьте команду выполнения. Второго внешнего эффекта быть не должно.</li>
+          <li>Измените снимок после создания заявки. Сверка контрольной суммы должна остановить выполнение.</li>
+          <li>Дождитесь истечения короткого тестового срока. Просроченная заявка должна перейти в <code>expired</code> или быть отклонена исполнителем.</li>
+          <li>Попробуйте подтвердить заявку учётной записью без нужной роли. Решение не должно сохраниться.</li>
+        </ol>
+
+        <p>Для ручной проверки очереди безопасен запрос только на чтение:</p>
+        <pre><code class="language-sql">SELECT approval_id, action_name, status,
+       requested_by, created_at, expires_at
+FROM approval_requests
+WHERE status = 'pending'
+ORDER BY created_at ASC;</code></pre>
+
+        <p>А этим запросом можно сопоставить решение и последующее выполнение:</p>
+        <pre><code class="language-sql">SELECT approval_id, event_type, actor_id,
+       occurred_at, payload_hash, reason
+FROM approval_events
+WHERE approval_id = :approval_id
+ORDER BY occurred_at ASC;</code></pre>
+
+        <p>Ожидаемый результат — непрерывная последовательность событий без выполнения до <code>approved</code>, с одинаковой контрольной суммой на всех этапах.</p>
+      </section>
+
+      <section aria-labelledby="errors">
+        <h2 id="errors">Типовые ошибки</h2>
+        <dl>
+          <dt>Подтверждение хранится только в чате</dt>
+          <dd>Фраза «да, продолжай» неоднозначна и может относиться к другому плану. Решение должно ссылаться на конкретную заявку и её контрольную сумму.</dd>
+
+          <dt>Человеку показывают краткий пересказ</dt>
+          <dd>Формулировка «опубликовать отчёт» скрывает канал, аудиторию и содержание. Подтверждать нужно фактический снимок операции.</dd>
+
+          <dt>Агент и исполнитель используют одинаковые полномочия</dt>
+          <dd>Тогда очередь можно обойти прямым вызовом. Разделите роли и учётные данные на уровне инфраструктуры.</dd>
+
+          <dt>Разрешение действует бессрочно</dt>
+          <dd>Контекст успевает измениться: цена, версия документа или владелец ресурса уже другие. Добавьте короткий срок и повторную проверку.</dd>
+
+          <dt>Кнопку можно нажать дважды</dt>
+          <dd>Двойная доставка, повтор HTTP-запроса и перезапуск процесса нормальны для распределённых систем. Используйте атомарный переход статуса и ключ идемпотентности.</dd>
+
+          <dt>В журнал попадают секреты</dt>
+          <dd>Аудит не оправдывает хранение токенов или платёжных реквизитов без необходимости. Записывайте идентификаторы, хеши и минимальные безопасные атрибуты.</dd>
+
+          <dt>Ошибки автоматически считаются разрешением</dt>
+          <dd>Недоступная база, повреждённая политика или невозможность проверить роль должны останавливать действие.</dd>
+        </dl>
+      </section>
+
+      <section aria-labelledby="limits">
+        <h2 id="limits">Ограничения</h2>
+        <p>Контур подтверждения снижает риск ошибочного действия, но не гарантирует правильность решения человека. Проверяющий может невнимательно прочитать заявку, а скомпрометированная учётная запись — подтвердить вредоносную операцию.</p>
+        <p>Для особенно чувствительных действий могут потребоваться два независимых решения, лимиты суммы, задержка исполнения, отдельное уведомление владельца ресурса или возможность отмены. Эти меры следует выбирать по модели угроз, а не добавлять формально.</p>
+        <p>Очередь также увеличивает задержку и создаёт операционную нагрузку. Не стоит отправлять туда каждое чтение: классифицируйте действия по последствиям, оставляя обязательное подтверждение для необратимых, финансовых и публичных изменений.</p>
+        <p>Наконец, журнал решений показывает, что система намеревалась сделать и какое решение получила. Он не заменяет журналы целевого сервиса: для расследования полезно связывать заявку с идентификатором фактической операции во внешней системе.</p>
+      </section>
+
+      <section aria-labelledby="checklist">
+        <h2 id="checklist">Критерии готовности</h2>
+        <ul>
+          <li>опасный инструмент недоступен планировщику напрямую;</li>
+          <li>каждая заявка содержит точные параметры, срок и контрольную сумму;</li>
+          <li>неизвестное действие по умолчанию требует подтверждения;</li>
+          <li>решение принимает авторизованный человек, а не сама модель;</li>
+          <li>изменение параметров аннулирует прежнее разрешение;</li>
+          <li>повторная доставка не создаёт повторного эффекта;</li>
+          <li>события запроса, решения и выполнения сохраняются отдельно;</li>
+          <li>сбой проверки завершает процесс запретом.</li>
+        </ul>
+        <p>После выполнения этих условий агент может готовить опасные операции, но граница окончательного решения остаётся контролируемой и проверяемой.</p>
+      </section>
+
+      <footer class="article-footer">
+        <p>Продолжить изучение: <a href="guides.html">практические руководства</a> и <a href="glossary.html">глоссарий терминов</a>.</p>
+      </footer>
+    </article>
+  </main>
+
+  <footer class="site-footer">
+    <p>Agent Lab Journal</p>
+  </footer>
+</body>
+</html>

@@ -1,0 +1,419 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Сколько производительности отнимает Confidential AI на NVIDIA Blackwell — практический бенчмарк</title>
+  <meta name="description" content="Воспроизводимый план сравнения обычного и confidential-инференса на NVIDIA Blackwell: пропускная способность, TTFT, время загрузки модели, сетевой трафик и обмен CPU–GPU.">
+  <link rel="canonical" href="https://agentlabjournal.online/blackwell-confidential-ai-benchmark.html">
+  <link rel="stylesheet" href="style.css">
+  <link rel="stylesheet" href="reading.css">
+
+  <meta property="og:type" content="article">
+  <meta property="og:locale" content="ru_RU">
+  <meta property="og:site_name" content="Agent Lab Journal">
+  <meta property="og:title" content="Сколько производительности отнимает Confidential AI на NVIDIA Blackwell">
+  <meta property="og:description" content="Как отделить накладные расходы GPU-защиты от передачи данных, загрузки модели, аттестации и настроек inference-сервера.">
+  <meta property="og:url" content="https://agentlabjournal.online/blackwell-confidential-ai-benchmark.html">
+
+  <meta name="twitter:card" content="summary">
+  <meta name="twitter:title" content="Сколько производительности отнимает Confidential AI на NVIDIA Blackwell">
+  <meta name="twitter:description" content="Воспроизводимый A/B-протокол для обычного и защищенного инференса на Blackwell.">
+
+  <meta name="reading-meta" content="Продвинутый уровень · 12 минут чтения">
+  <meta property="article:section" content="Инфраструктура AI">
+  <meta property="article:published_time" content="2026-07-28">
+  <meta property="article:modified_time" content="2026-07-28">
+
+  <script type="application/ld+json">
+  {
+    "@context": "https://schema.org",
+    "@type": "Article",
+    "headline": "Сколько производительности отнимает Confidential AI на NVIDIA Blackwell",
+    "description": "Воспроизводимый план сравнения обычного и confidential-инференса на NVIDIA Blackwell по пропускной способности, времени загрузки модели и объему передаваемых данных.",
+    "inLanguage": "ru-RU",
+    "datePublished": "2026-07-28",
+    "dateModified": "2026-07-28",
+    "mainEntityOfPage": {
+      "@type": "WebPage",
+      "@id": "https://agentlabjournal.online/blackwell-confidential-ai-benchmark.html"
+    },
+    "author": {
+      "@type": "Organization",
+      "name": "Agent Lab Journal"
+    },
+    "publisher": {
+      "@type": "Organization",
+      "name": "Agent Lab Journal",
+      "url": "https://agentlabjournal.online/"
+    },
+    "articleSection": "Инфраструктура AI",
+    "keywords": [
+      "NVIDIA Blackwell",
+      "Confidential AI",
+      "confidential computing",
+      "инференс",
+      "бенчмарк",
+      "пропускная способность"
+    ],
+    "timeRequired": "PT12M"
+  }
+  </script>
+</head>
+<body>
+  <header class="site-header">
+    <nav aria-label="Основная навигация">
+      <a href="index.html">Agent Lab Journal</a>
+      <a href="guides.html">Гайды</a>
+      <a href="glossary.html">Глоссарий</a>
+    </nav>
+  </header>
+
+  <main>
+    <article>
+      <header class="article-header">
+        <p class="eyebrow">Практика · Инфраструктура AI</p>
+        <h1>Сколько производительности отнимает Confidential AI на NVIDIA Blackwell</h1>
+        <p class="lead">Одна цифра «потери производительности» почти бесполезна. Защищенный запуск может замедлиться из-за отправки коротких GPU-команд, обмена CPU–GPU, аттестации, чтения весов, виртуализации или неравных настроек сервера. Ниже — план эксперимента, который разделяет эти причины.</p>
+        <div class="reading-meta" aria-label="Метаданные чтения">
+          <span>Продвинутый уровень</span>
+          <span>До 12 минут</span>
+          <time datetime="2026-07-28">28 июля 2026</time>
+        </div>
+      </header>
+
+      <section>
+        <h2>Что именно мы измеряем</h2>
+        <p><a href="glossary.html#confidential-computing">Confidential computing</a> — режим выполнения, в котором данные и код защищаются аппаратно, а состояние среды может проверяться аттестацией. Для GPU-инференса это не одна функция, а цепочка: доверенная CPU-среда, GPU в CC-режиме, защищенные соединения, прошивки, драйвер, виртуализация и политика выдачи ключей.</p>
+        <p>Поэтому эксперимент должен отвечать не только на вопрос «на сколько процентов стало медленнее», но и на четыре отдельных вопроса:</p>
+        <ol>
+          <li>Изменилась ли установившаяся пропускная способность генерации?</li>
+          <li>Изменились ли TTFT и время на выходной токен при одинаковой нагрузке?</li>
+          <li>Увеличилось ли время от старта процесса до готовности модели?</li>
+          <li>Как изменились сетевой трафик и обмен между хостом и GPU?</li>
+        </ol>
+        <aside class="note">
+          <p><strong>Факт, а не результат этой статьи.</strong> NVIDIA указывает для Blackwell два вероятных источника накладных расходов: задержку защищенной отправки GPU-работы и пониженную эффективную полосу CPU–GPU при зашифрованных передачах. Компания также публикует собственные результаты для конкретной конфигурации HGX B300 и конкретной модели. Их нельзя переносить на другой сервер как ожидаемый результат.</p>
+        </aside>
+      </section>
+
+      <section>
+        <h2>Дизайн A/B-сравнения</h2>
+        <p>Сравниваются два режима: <strong>OFF</strong> — обычный инференс и <strong>CC</strong> — полный confidential-инференс с проверенной аттестацией. Простое включение CC-флага без проверки доверенной среды не считается вариантом CC.</p>
+        <p>Лучший вариант — две одинаковые ноды из одной аппаратной партии. Если доступна одна нода, выполните серии OFF → CC → OFF и учитывайте перезагрузки, смену GPU-режима и прогрев. Такой эксперимент дольше, зато повторный OFF помогает заметить дрейф температуры, частот или фоновой нагрузки.</p>
+
+        <table>
+          <thead>
+            <tr>
+              <th>Что фиксировать</th>
+              <th>Что должно совпадать</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td>Аппаратная платформа</td>
+              <td>Модель и число GPU, CPU, NUMA, память, NVLink/NVSwitch, PCIe-топология</td>
+            </tr>
+            <tr>
+              <td>Системный стек</td>
+              <td>VBIOS, firmware, драйвер NVIDIA, CUDA, ядро, контейнер и inference-сервер</td>
+            </tr>
+            <tr>
+              <td>Модель</td>
+              <td>Один локальный снимок весов, tokenizer, dtype/квантизация и tensor parallel</td>
+            </tr>
+            <tr>
+              <td>Планировщик</td>
+              <td>Batching, CUDA Graphs, KV-cache, лимиты памяти и число worker-процессов</td>
+            </tr>
+            <tr>
+              <td>Запросы</td>
+              <td>Точный набор токенизированных входов, длина выхода, seed и параметры decoding</td>
+            </tr>
+            <tr>
+              <td>Эксплуатация</td>
+              <td>Power limit, clocks, охлаждение, CPU affinity, NUMA и отсутствие соседних задач</td>
+            </tr>
+          </tbody>
+        </table>
+
+        <p>Не сравнивайте bare metal OFF с Kata-контейнером CC, а затем не называйте разницу «ценой шифрования GPU». Это цена всей смены среды. Полезны два среза:</p>
+        <ul>
+          <li><strong>Прикладной:</strong> обычная производственная среда против полной защищенной среды.</li>
+          <li><strong>Диагностический:</strong> максимально одинаковые VM, контейнеры и серверные настройки; меняется только допустимый CC-режим.</li>
+        </ul>
+      </section>
+
+      <section>
+        <h2>Шаг 1. Снимок конфигурации</h2>
+        <p>Следующие команды только читают состояние. Запускайте их внутри той среды, где работает inference-сервер, а сведения о гипервизоре и хосте собирайте отдельно. Сохранение вывода в файлы показано как пример; каталог должен уже существовать и не содержать секретов.</p>
+
+        <pre><code>RUN_DIR="/var/tmp/blackwell-bench/off-run-01"
+
+uname -a &gt; "$RUN_DIR/uname.txt"
+lscpu &gt; "$RUN_DIR/lscpu.txt"
+numactl --hardware &gt; "$RUN_DIR/numa.txt"
+nvidia-smi -L &gt; "$RUN_DIR/gpus.txt"
+nvidia-smi -q &gt; "$RUN_DIR/nvidia-smi-q.txt"
+nvidia-smi topo -m &gt; "$RUN_DIR/topology.txt"
+nvidia-smi --query-gpu=name,uuid,driver_version,vbios_version,pstate,power.limit,clocks.sm,clocks.mem,temperature.gpu,memory.total \
+  --format=csv,noheader &gt; "$RUN_DIR/gpu-state.csv"</code></pre>
+
+        <p>Дополнительно сохраните digest контейнера, commit или версию inference-сервера, его полную командную строку и хеш файла с настройками. Не записывайте токены доступа, ключи расшифрования модели, содержимое аттестационных секретов и пользовательские промпты.</p>
+
+        <p>На Blackwell используйте только комбинации GPU, VBIOS, драйвера и CC-режима, указанные в актуальной <a href="https://docs.nvidia.com/nvtrust/index.html">документации NVIDIA Trusted Computing</a> и матрице совместимости. Режим нельзя считать переменной обычного приложения: его переключение может требовать административных действий и перезапуска. В Kubernetes NVIDIA отдельно предупреждает, что смена режима не останавливает пользовательские workload автоматически.</p>
+      </section>
+
+      <section>
+        <h2>Шаг 2. Сделайте запросы детерминированными</h2>
+        <p>Подготовьте локальный JSONL-набор без чувствительных данных. Храните уже токенизированные длины или проверяйте их тем же tokenizer: одинаковое число символов не означает одинакового числа токенов.</p>
+
+        <pre><code>{"id":"p0001","prompt":"&lt;синтетический текст&gt;","input_tokens":1024,"max_new_tokens":256}
+{"id":"p0002","prompt":"&lt;синтетический текст&gt;","input_tokens":1024,"max_new_tokens":256}</code></pre>
+
+        <p>Это <strong>формат примера</strong>, а не готовый тестовый набор. Создайте несколько корзин: короткий и длинный контекст, короткая и длинная генерация. Для каждой корзины испытайте несколько уровней concurrency, включая низкую нагрузку и насыщение GPU.</p>
+        <p>Если сервер поддерживает deterministic decoding, зафиксируйте temperature, top-p, seed и максимальное число новых токенов. При потоковом API клиент должен измерять время первого полученного фрагмента отдельно от полного времени ответа.</p>
+      </section>
+
+      <section>
+        <h2>Шаг 3. Разделите холодный старт на этапы</h2>
+        <p>Одного таймера «контейнер запущен — endpoint готов» недостаточно. Размечайте минимум пять событий:</p>
+        <ol>
+          <li><code>T0</code>: запуск VM, pod или процесса;</li>
+          <li><code>T1</code>: завершение аттестации и разрешение выдачи ключа;</li>
+          <li><code>T2</code>: начало чтения весов;</li>
+          <li><code>T3</code>: веса размещены, сервер выполняет инициализацию;</li>
+          <li><code>T4</code>: readiness успешна и пробный запрос завершен.</li>
+        </ol>
+        <p>Если сервер не экспортирует эти события, используйте монотонные timestamps в его логах. Измерение только wall-clock дает полезный прикладной итог, но не объясняет причину.</p>
+
+        <pre><code>START_NS="$(date +%s%N)"
+until curl --silent --show-error --fail \
+  --connect-timeout 2 --max-time 3 \
+  "http://127.0.0.1:8000/health/ready" &gt;/dev/null
+do
+  sleep 1
+done
+READY_NS="$(date +%s%N)"
+awk -v start="$START_NS" -v ready="$READY_NS" \
+  'BEGIN { printf "ready_seconds=%.3f\n", (ready-start)/1000000000 }'</code></pre>
+
+        <p>Адрес health endpoint — пример: замените его на документированный endpoint своего сервера. Выполните отдельные серии с весами в page cache и после настоящего холодного старта. Не очищайте системный cache на общей машине: это влияет на другие workload. Для холодного чтения безопаснее использовать выделенную ноду, новый экземпляр VM или управляемый экспериментальный том.</p>
+      </section>
+
+      <section>
+        <h2>Шаг 4. Измерьте steady-state</h2>
+        <p>После готовности модели отправьте короткий прогрев, который не входит в результат. Затем выполните не менее пяти независимых повторов каждой комбинации длины и concurrency. Порядок комбинаций лучше перемешать, но последовательность должна быть одинаковой в OFF и CC.</p>
+
+        <p>Клиент должен сохранять по каждому запросу:</p>
+        <ul>
+          <li>монотонное время отправки, первого байта и завершения;</li>
+          <li>число входных и реально сгенерированных токенов;</li>
+          <li>HTTP-статус, timeout и признак отмены;</li>
+          <li>число отправленных и полученных байтов;</li>
+          <li>идентификатор запуска, режим, корзину и concurrency.</li>
+        </ul>
+
+        <p>Для единичной проверки HTTP-трафика подходит <code>curl</code>:</p>
+
+        <pre><code>curl --silent --show-error --output /dev/null \
+  --request POST "http://127.0.0.1:8000/v1/completions" \
+  --header "Content-Type: application/json" \
+  --data-binary @request.json \
+  --write-out \
+'http_code=%{http_code}
+time_starttransfer=%{time_starttransfer}
+time_total=%{time_total}
+size_upload=%{size_upload}
+size_download=%{size_download}
+'</code></pre>
+
+        <p>Это диагностический пример, не генератор конкурентной нагрузки. Для основного прогона используйте один и тот же клиент в обоих режимах. Клиент размещайте на отдельной закрепленной машине либо запускайте локально в обоих вариантах. Иначе сетевой RTT и CPU клиента попадут в «цену CC».</p>
+
+        <p>Основные показатели рассчитываются так:</p>
+        <ul>
+          <li><strong>Throughput:</strong> сумма успешно сгенерированных токенов, деленная на длительность измерительного окна.</li>
+          <li><strong>Throughput/GPU:</strong> throughput, деленный на число занятых GPU.</li>
+          <li><strong>TTFT:</strong> время от отправки до первого элемента потокового ответа.</li>
+          <li><strong>TPOT:</strong> время после первого токена, деленное на число последующих токенов.</li>
+          <li><strong>Goodput:</strong> число запросов, уложившихся в заданные SLO, за секунду.</li>
+        </ul>
+
+        <p>Публикуйте медиану, p95, число успешных запросов и доверительный интервал между повторами. Относительное изменение throughput удобно считать как <code>100 × (CC / OFF − 1)</code>. Для latency используйте <code>100 × (CC / OFF − 1)</code>, но помните: здесь положительное значение означает ухудшение.</p>
+      </section>
+
+      <section>
+        <h2>Шаг 5. Найдите место замедления</h2>
+
+        <h3>GPU и сервер</h3>
+        <p>Во время каждого прогона собирайте utilization, память, мощность, частоты и температуру. Доступные поля зависят от драйвера, поэтому сначала проверьте список:</p>
+
+        <pre><code>nvidia-smi --help-query-gpu
+nvidia-smi dmon --help
+nvidia-smi dmon -s pucmt -d 1 -o DT</code></pre>
+
+        <p>Если CC теряет throughput при более низкой загрузке GPU, но без нехватки памяти и без throttling, исследуйте CPU scheduler, частоту и размер GPU-запусков, CUDA Graphs и синхронные копирования. Если GPU постоянно насыщен, а разница мала, вычислительные ядра, вероятно, не являются главным ограничением.</p>
+
+        <h3>Передача CPU–GPU</h3>
+        <p>Соберите PCIe Rx/Tx штатной телеметрией платформы, если эти счетчики поддерживаются именно вашей комбинацией GPU и драйвера. Сопоставляйте интеграл байтов за измерительное окно, а не один пик. Для профилирования отдельного короткого прогона можно применять Nsight Systems, но трассировка сама создает overhead, поэтому ее результаты не смешивают с итоговым throughput.</p>
+        <p>Признак транспортного ограничения: при увеличении размера входа растет разница OFF/CC, GPU получает интервалы простоя, а объем или длительность host-to-device операций заметно увеличиваются. Это гипотеза для проверки, а не автоматический диагноз.</p>
+
+        <h3>Сеть</h3>
+        <p><code>size_upload</code> и <code>size_download</code> показывают прикладной объем HTTP-тела, но не Ethernet-трафик, TLS, повторные передачи и служебные пакеты. Для общего сетевого объема снимайте счетчики интерфейса до и после теста:</p>
+
+        <pre><code>IFACE="eth0"
+ip -s link show dev "$IFACE"</code></pre>
+
+        <p>Делайте это на выделенном интерфейсе или ноде: иначе счетчики включат чужой трафик. Если payload одинаков, но wire bytes различаются, проверьте TLS, streaming, keep-alive, прокси, ретраи и service mesh. Эти байты не относятся к PCIe или NVLink.</p>
+
+        <h3>Хранилище и загрузка модели</h3>
+        <p>Собирайте throughput и latency тома штатными средствами облака или ОС. Время загрузки может измениться из-за расшифрования весов, удаленного key release, page cache, компрессии, сетевого хранилища и порядка инициализации. Отчет должен показывать отдельно <code>T1−T0</code>, <code>T3−T2</code> и <code>T4−T0</code>.</p>
+      </section>
+
+      <section>
+        <h2>Минимальная матрица эксперимента</h2>
+        <table>
+          <thead>
+            <tr>
+              <th>Ось</th>
+              <th>Минимальный набор</th>
+              <th>Что обнаруживает</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td>Режим</td>
+              <td>OFF, CC</td>
+              <td>Общую разницу</td>
+            </tr>
+            <tr>
+              <td>Контекст</td>
+              <td>Короткий, длинный</td>
+              <td>Prefill и транспорт входа</td>
+            </tr>
+            <tr>
+              <td>Выход</td>
+              <td>Короткий, длинный</td>
+              <td>Decode и частые GPU-запуски</td>
+            </tr>
+            <tr>
+              <td>Concurrency</td>
+              <td>1, средняя, до насыщения</td>
+              <td>Launch overhead и batching</td>
+            </tr>
+            <tr>
+              <td>Старт</td>
+              <td>Холодный, теплый</td>
+              <td>Хранилище, ключи и инициализацию</td>
+            </tr>
+            <tr>
+              <td>Повторы</td>
+              <td>Не менее пяти серий</td>
+              <td>Разброс и дрейф</td>
+            </tr>
+          </tbody>
+        </table>
+      </section>
+
+      <section>
+        <h2>Как проверить результат</h2>
+        <p>Перед выводом о производительности пройдите контрольный список:</p>
+        <ol>
+          <li>Аттестация CC подтверждена ожидаемой политикой, а не только сообщением «режим включен».</li>
+          <li>Во всех запусках совпадают хеш весов и tokenizer, версии ПО и параметры сервера.</li>
+          <li>Число входных и выходных токенов совпадает по корзинам; ошибки и отмены не потеряны.</li>
+          <li>Нет thermal или power throttling, а фоновые workload отсутствуют.</li>
+          <li>Одинаково настроены batching, CUDA Graphs, KV-cache и tensor parallel.</li>
+          <li>Клиент не достиг собственного предела CPU, сокетов или сетевой полосы.</li>
+          <li>Разница больше межсерийного разброса и повторяется в обратном OFF-прогоне.</li>
+          <li>Трафик разделен на HTTP, сеть хоста, CPU–GPU и GPU–GPU; эти величины не суммируются как одна метрика.</li>
+        </ol>
+
+        <p>Финальная таблица должна содержать абсолютные значения OFF и CC, относительную разницу, разброс и количество наблюдений. Не публикуйте только проценты: потеря 5% при 100 запросах в секунду и при 10&nbsp;000 — разные эксплуатационные ситуации.</p>
+      </section>
+
+      <section>
+        <h2>Интерпретация характерных картин</h2>
+        <table>
+          <thead>
+            <tr>
+              <th>Наблюдение</th>
+              <th>Вероятная область проверки</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td>Сильнее страдают малые batch и низкая concurrency</td>
+              <td>Защищенная отправка работы, kernel-launch overhead, отсутствие CUDA Graphs</td>
+            </tr>
+            <tr>
+              <td>Разрыв растет вместе с длиной входа</td>
+              <td>Prefill, H2D-передачи, CPU-tokenization или batching</td>
+            </tr>
+            <tr>
+              <td>Throughput близок, но TTFT хуже</td>
+              <td>Очередь, аттестация на пути запроса, прокси или синхронизация</td>
+            </tr>
+            <tr>
+              <td>Steady-state близок, холодный старт заметно дольше</td>
+              <td>Key release, расшифрование весов, том, page cache, инициализация VM</td>
+            </tr>
+            <tr>
+              <td>И throughput, и частоты ниже</td>
+              <td>Power limit, охлаждение, P-state или несопоставимая конфигурация</td>
+            </tr>
+            <tr>
+              <td>Сервер стабилен, клиент показывает хвосты</td>
+              <td>Сеть, TLS, service mesh, клиентский CPU или connection pooling</td>
+            </tr>
+          </tbody>
+        </table>
+        <p>Каждая строка — направление диагностики, не доказательство причинности. Подтверждайте гипотезу отдельным контролируемым прогоном.</p>
+      </section>
+
+      <section>
+        <h2>Типовые ошибки</h2>
+        <ul>
+          <li><strong>Сравнивать разные версии сервера.</strong> Изменения autotuner, CUDA Graphs или асинхронного чтения токенов могут быть больше CC-overhead.</li>
+          <li><strong>Считать первый запрос steady-state.</strong> В него попадают JIT-компиляция, autotuning и заполнение cache.</li>
+          <li><strong>Чистить cache на общей ноде.</strong> Это небезопасно для соседних сервисов и портит измерения.</li>
+          <li><strong>Менять режим при активных workload.</strong> Сначала штатно остановите их и следуйте процедуре администратора платформы.</li>
+          <li><strong>Путать CC и PPCIe.</strong> Для актуального Blackwell NVIDIA указывает режим CC <code>on</code> с шифрованием NVLink; конкретная поддержка зависит от совместимого стека.</li>
+          <li><strong>Не учитывать ошибки.</strong> Высокий throughput при большом числе timeout — не выигрыш.</li>
+          <li><strong>Логировать секреты.</strong> Аттестационные токены, ключи, приватные модели и реальные промпты не должны попадать в benchmark bundle.</li>
+          <li><strong>Сравнивать только среднее.</strong> Среднее скрывает хвосты latency и фазовые колебания batching.</li>
+        </ul>
+      </section>
+
+      <section>
+        <h2>Ограничения</h2>
+        <p>Этот протокол не задает универсальный процент потерь. Результат зависит от модели Blackwell, топологии, firmware, драйвера, TEE хоста, inference-фреймворка, формы запросов и режима multi-GPU. Даже два внешне одинаковых сервера могут различаться лимитами мощности и конфигурацией BIOS.</p>
+        <p>Наблюдаемая разница полного прикладного сценария включает виртуализацию, аттестацию, выдачу ключей, storage и сеть. Диагностический A/B-тест помогает локализовать overhead, но не заменяет production-тест с реальной политикой безопасности.</p>
+        <p>Телеметрия внутри доверенной VM может быть ограничена, а профилировщики способны менять тайминги. Отсутствие видимого счетчика не означает отсутствия передачи. Наконец, режим CC защищает данные только в рамках заявленной модели угроз; корректность политики аттестации и управления ключами остается отдельной задачей.</p>
+      </section>
+
+      <section>
+        <h2>Что положить в отчет</h2>
+        <p>Воспроизводимый пакет содержит обезличенный manifest окружения, digest образа, хеш настроек, описание модели без раскрытия закрытых весов, генератор синтетических запросов, сырые результаты по запросам, телеметрию, расчет метрик и журнал исключенных прогонов. Для каждого исключения укажите правило, заданное до анализа.</p>
+        <p>Краткий вывод формулируйте по компонентам: «steady-state throughput», «TTFT/TPOT», «cold start», «HTTP bytes», «сетевые bytes» и «CPU–GPU transfer». Так одна итоговая цифра превращается в инженерное решение: увеличить batch, включить поддерживаемые CUDA Graphs, убрать аттестацию с горячего пути, ускорить загрузку весов или пересмотреть сетевой слой.</p>
+      </section>
+
+      <section>
+        <h2>Официальные материалы</h2>
+        <ul>
+          <li><a href="https://docs.nvidia.com/nvtrust/index.html">NVIDIA Trusted Computing Solutions</a> — документация, release notes и матрица совместимости.</li>
+          <li><a href="https://docs.nvidia.com/cc-deployment-guide-tdx.pdf">NVIDIA Confidential Computing Deployment Guide</a> — настройка Hopper и Blackwell в поддерживаемых режимах.</li>
+          <li><a href="https://docs.nvidia.com/datacenter/cloud-native/confidential-containers/latest/">NVIDIA Confidential Containers</a> — архитектура, ограничения и эксплуатация в Kubernetes.</li>
+          <li><a href="https://docs.nvidia.com/datacenter/cloud-native/confidential-containers/1.0.0/configure-cc-mode.html">Managing the Confidential Computing Mode</a> — режимы CC и процедура переключения.</li>
+          <li><a href="https://developer.nvidia.com/blog/hardware-rooted-ai-security-that-wont-slow-you-down/">Hardware-Rooted AI Security That Won’t Slow You Down</a> — опубликованная NVIDIA методика и результаты для конкретной платформы и модели.</li>
+        </ul>
+        <p>Другие практические материалы доступны в <a href="guides.html">разделе гайдов</a>, а определения терминов — в <a href="glossary.html">глоссарии Agent Lab Journal</a>.</p>
+      </section>
+    </article>
+  </main>
+
+  <footer class="site-footer">
+    <p>© 2026 Agent Lab Journal</p>
+  </footer>
+</body>
+</html>

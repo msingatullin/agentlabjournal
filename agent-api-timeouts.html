@@ -1,0 +1,426 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+
+  <title>Таймауты внешних API в цепочке AI-агента — Agent Lab Journal</title>
+  <meta name="description" content="Практическое руководство по таймаутам внешних API в AI-агенте: локальный стенд, общий дедлайн, fallback, информативные статусы и проверка сценариев отказа.">
+  <link rel="canonical" href="https://agentlabjournal.online/agent-api-timeouts.html">
+
+  <link rel="stylesheet" href="style.css">
+  <link rel="stylesheet" href="reading.css">
+
+  <meta property="og:type" content="article">
+  <meta property="og:locale" content="ru_RU">
+  <meta property="og:site_name" content="Agent Lab Journal">
+  <meta property="og:title" content="Таймауты внешних API в цепочке AI-агента">
+  <meta property="og:description" content="Как ограничить ожидание медленного сервиса, применить безопасный fallback и вернуть пользователю точный статус обработки.">
+  <meta property="og:url" content="https://agentlabjournal.online/agent-api-timeouts.html">
+  <meta property="og:image" content="https://agentlabjournal.online/podcast-cover.png">
+  <meta property="article:modified_time" content="2026-07-28">
+
+  <meta name="twitter:card" content="summary_large_image">
+  <meta name="twitter:title" content="Таймауты внешних API в цепочке AI-агента">
+  <meta name="twitter:description" content="Воспроизводимый пример общего дедлайна, таймаутов отдельных шагов, fallback и статусов AI-агента.">
+  <meta name="twitter:image" content="https://agentlabjournal.online/podcast-cover.png">
+
+  <script type="application/ld+json">
+  {
+    "@context": "https://schema.org",
+    "@type": "Article",
+    "headline": "Таймауты внешних API в цепочке AI-агента",
+    "description": "Практическое руководство по таймаутам внешних API в AI-агенте: локальный стенд, общий дедлайн, fallback, информативные статусы и проверка сценариев отказа.",
+    "image": [
+      "https://agentlabjournal.online/podcast-cover.png"
+    ],
+    "dateModified": "2026-07-28",
+    "author": {
+      "@type": "Organization",
+      "name": "Agent Lab Journal",
+      "url": "https://agentlabjournal.online/"
+    },
+    "publisher": {
+      "@type": "Organization",
+      "name": "Agent Lab Journal",
+      "url": "https://agentlabjournal.online/",
+      "logo": {
+        "@type": "ImageObject",
+        "url": "https://agentlabjournal.online/podcast-cover.png"
+      }
+    },
+    "mainEntityOfPage": {
+      "@type": "WebPage",
+      "@id": "https://agentlabjournal.online/agent-api-timeouts.html"
+    },
+    "inLanguage": "ru"
+  }
+  </script>
+</head>
+<body>
+  <header class="site-header">
+    <div class="container">
+      <a class="site-name" href="index.html">Agent Lab Journal</a>
+      <nav aria-label="Основная навигация">
+        <a href="guides.html">Руководства</a>
+        <a href="glossary.html">Глоссарий</a>
+      </nav>
+    </div>
+  </header>
+
+  <main>
+    <article class="reading">
+      <header class="article-header">
+        <p class="eyebrow">Практика · Надёжность · Интеграции</p>
+        <h1>Таймауты внешних API в цепочке AI-агента</h1>
+        <div class="reading-meta" aria-label="Информация о материале">
+          <span>Уровень: средний</span>
+          <span>Время чтения: до 8 минут</span>
+          <span>Результат: таймауты, fallback и информативные статусы</span>
+        </div>
+        <p class="lead">
+          <strong>Один медленный сервис не должен удерживать весь сценарий.</strong>
+          Если <a class="term-link" href="glossary.html#ai-agent">AI-агент</a> последовательно обращается к профилю пользователя, правилам доступа и модели, зависшее API способно исчерпать всё допустимое время. Исправим это на локальном примере: зададим общий дедлайн операции, ограничим каждый вызов, предусмотрим fallback и отделим частичный результат от успешного.
+        </p>
+      </header>
+
+      <nav class="table-of-contents" aria-label="Содержание">
+        <h2>Содержание</h2>
+        <ol>
+          <li><a href="#model">Модель отказа</a></li>
+          <li><a href="#stand">Локальный стенд</a></li>
+          <li><a href="#timeouts">Обёртка с таймаутом</a></li>
+          <li><a href="#chain">Цепочка агента</a></li>
+          <li><a href="#verification">Проверка результата</a></li>
+          <li><a href="#statuses">Контракт статусов</a></li>
+          <li><a href="#errors">Типовые ошибки</a></li>
+          <li><a href="#limitations">Ограничения</a></li>
+        </ol>
+      </nav>
+
+      <section id="model">
+        <h2>Модель отказа</h2>
+        <p>
+          В примере агент выполняет два внешних шага. Профиль нужен только для персонализации, поэтому при сбое его можно заменить нейтральным значением. Проверка политики критична: если она недоступна, агент не имеет права выдумывать разрешение.
+        </p>
+        <ul>
+          <li><strong>Общий дедлайн:</strong> 1200 мс на всю обработку.</li>
+          <li><strong>Профиль:</strong> не более 400 мс, после чего применяется fallback.</li>
+          <li><strong>Политика:</strong> не более 500 мс и не дольше остатка общего дедлайна.</li>
+          <li><strong>Результат:</strong> итоговый статус и отдельный статус каждого шага.</li>
+        </ul>
+        <p>
+          Числа выбраны только для локальной демонстрации. В рабочей системе их определяют по целевому времени ответа и наблюдаемому распределению задержек, а не копируют из примера.
+        </p>
+      </section>
+
+      <section id="stand">
+        <h2>Шаг 1. Поднимите локальный стенд</h2>
+        <p>
+          Пример использует только встроенные возможности Node.js и не содержит клиентов, секретов или обращений во внешнюю сеть. Сохраните следующий код как <code>server.mjs</code>.
+        </p>
+
+        <pre><code>import http from "node:http";
+
+const profileDelay = Number(process.env.MOCK_PROFILE_MS ?? 100);
+const policyDelay = Number(process.env.MOCK_POLICY_MS ?? 100);
+
+const server = http.createServer((request, response) =&gt; {
+  const routes = {
+    "/profile": {
+      delay: profileDelay,
+      body: { name: "Локальный пользователь" }
+    },
+    "/policy": {
+      delay: policyDelay,
+      body: { allowed: true }
+    }
+  };
+
+  const route = routes[request.url];
+  if (!route) {
+    response.writeHead(404).end();
+    return;
+  }
+
+  setTimeout(() =&gt; {
+    response.writeHead(200, { "content-type": "application/json" });
+    response.end(JSON.stringify(route.body));
+  }, route.delay);
+});
+
+server.listen(4000, "127.0.0.1", () =&gt; {
+  console.log("Mock API: http://127.0.0.1:4000");
+});</code></pre>
+
+        <p>Запустите сервер в отдельном терминале:</p>
+
+        <pre><code>MOCK_PROFILE_MS=1500 MOCK_POLICY_MS=100 node server.mjs</code></pre>
+
+        <p>
+          Это безопасный локальный процесс: он слушает только <code>127.0.0.1</code>. Профиль намеренно отвечает позже своего лимита, а политика остаётся быстрой.
+        </p>
+      </section>
+
+      <section id="timeouts">
+        <h2>Шаг 2. Ограничьте один HTTP-вызов</h2>
+        <p>
+          Сохраните следующий файл как <code>agent.mjs</code>. Функция создаёт собственный <code>AbortController</code>, прекращает ожидание по таймеру и всегда очищает таймер после завершения.
+        </p>
+
+        <pre><code>const API = "http://127.0.0.1:4000";
+
+async function fetchJson(path, timeoutMs) {
+  const controller = new AbortController();
+  const timer = setTimeout(
+    () =&gt; controller.abort(new Error(`timeout after ${timeoutMs} ms`)),
+    timeoutMs
+  );
+
+  try {
+    const response = await fetch(`${API}${path}`, {
+      signal: controller.signal
+    });
+
+    if (!response.ok) {
+      throw new Error(`HTTP ${response.status}`);
+    }
+
+    return await response.json();
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+function classifyError(error) {
+  const message = String(error?.message ?? error);
+
+  if (
+    error?.name === "AbortError" ||
+    message.includes("timeout after")
+  ) {
+    return "timeout";
+  }
+
+  return "error";
+}</code></pre>
+
+        <aside class="note">
+          <h3>Почему одного таймаута недостаточно</h3>
+          <p>
+            Лимит отдельного вызова защищает только этот шаг. Три последовательных вызова по 500 мс всё ещё могут занять 1500 мс. Поэтому цепочке нужен собственный дедлайн, а каждому следующему шагу — лимит не больше оставшегося времени.
+          </p>
+        </aside>
+      </section>
+
+      <section id="chain">
+        <h2>Шаг 3. Добавьте общий дедлайн и fallback</h2>
+        <p>Продолжите <code>agent.mjs</code> следующим кодом:</p>
+
+        <pre><code>function remaining(deadline) {
+  return Math.max(0, deadline - Date.now());
+}
+
+async function runAgent() {
+  const startedAt = Date.now();
+  const deadline = startedAt + 1200;
+  const steps = {};
+
+  let profile = { name: "пользователь" };
+
+  try {
+    profile = await fetchJson(
+      "/profile",
+      Math.min(400, remaining(deadline))
+    );
+    steps.profile = { status: "ok" };
+  } catch (error) {
+    steps.profile = {
+      status: classifyError(error),
+      fallback: "neutral_profile"
+    };
+  }
+
+  const policyBudget = Math.min(500, remaining(deadline));
+
+  if (policyBudget === 0) {
+    steps.policy = { status: "skipped", reason: "deadline_exhausted" };
+
+    return {
+      status: "waiting_external_service",
+      message: "Не удалось проверить правила: общий дедлайн исчерпан.",
+      steps,
+      elapsedMs: Date.now() - startedAt
+    };
+  }
+
+  try {
+    const policy = await fetchJson("/policy", policyBudget);
+    steps.policy = { status: "ok" };
+
+    return {
+      status: steps.profile.status === "ok"
+        ? "completed"
+        : "completed_with_fallback",
+      message: policy.allowed
+        ? `Запрос разрешён для: ${profile.name}`
+        : "Запрос запрещён правилами.",
+      steps,
+      elapsedMs: Date.now() - startedAt
+    };
+  } catch (error) {
+    steps.policy = { status: classifyError(error) };
+
+    return {
+      status: "waiting_external_service",
+      message: "Проверка правил временно недоступна. Решение не принято.",
+      steps,
+      elapsedMs: Date.now() - startedAt
+    };
+  }
+}
+
+console.log(JSON.stringify(await runAgent(), null, 2));</code></pre>
+
+        <p>
+          Fallback применяется только к необязательному профилю. Критическая политика переводит обработку в явное состояние ожидания. Такой ответ честнее, чем <code>completed</code> с непроверенным решением.
+        </p>
+      </section>
+
+      <section id="verification">
+        <h2>Шаг 4. Проверьте три сценария</h2>
+
+        <h3>Медленный необязательный сервис</h3>
+        <p>
+          При уже запущенном сервере выполните:
+        </p>
+
+        <pre><code>node agent.mjs</code></pre>
+
+        <p>Проверьте свойства результата, а не конкретное значение <code>elapsedMs</code>:</p>
+
+        <pre><code>{
+  "status": "completed_with_fallback",
+  "steps": {
+    "profile": {
+      "status": "timeout",
+      "fallback": "neutral_profile"
+    },
+    "policy": {
+      "status": "ok"
+    }
+  }
+}</code></pre>
+
+        <p>
+          Фрагмент выше показывает ожидаемую форму, а не заранее полученный результат измерения. Фактическое время зависит от окружения.
+        </p>
+
+        <h3>Все сервисы отвечают вовремя</h3>
+        <p>Остановите локальный сервер сочетанием <code>Ctrl+C</code> и запустите его снова:</p>
+
+        <pre><code>MOCK_PROFILE_MS=100 MOCK_POLICY_MS=100 node server.mjs</code></pre>
+
+        <p>
+          Новый запуск <code>node agent.mjs</code> должен вернуть <code>completed</code>, а оба шага — <code>ok</code>.
+        </p>
+
+        <h3>Зависла критическая проверка</h3>
+        <p>Снова перезапустите сервер с другой задержкой:</p>
+
+        <pre><code>MOCK_PROFILE_MS=100 MOCK_POLICY_MS=1500 node server.mjs</code></pre>
+
+        <p>
+          Теперь ожидается <code>waiting_external_service</code>, статус политики <code>timeout</code> и сообщение о том, что решение не принято. Это проверяет fail-closed поведение критического шага.
+        </p>
+      </section>
+
+      <section id="statuses">
+        <h2>Контракт информативных статусов</h2>
+        <p>Удобно разделять итог операции и технические состояния шагов:</p>
+
+        <ul>
+          <li><code>completed</code> — все необходимые данные получены;</li>
+          <li><code>completed_with_fallback</code> — ответ готов, но необязательная часть заменена;</li>
+          <li><code>waiting_external_service</code> — критическая зависимость недоступна, решение не принято;</li>
+          <li><code>timeout</code> — шаг превысил выделенное время;</li>
+          <li><code>error</code> — произошла иная ошибка запроса или разбора ответа;</li>
+          <li><code>skipped</code> — шаг не запускался, например из-за исчерпанного дедлайна.</li>
+        </ul>
+
+        <p>
+          Пользовательскому интерфейсу лучше показывать понятное сообщение, а машинные поля сохранять для маршрутизации и наблюдаемости. Не включайте в публичный ответ URL внутренних сервисов, заголовки авторизации или полные тексты ошибок с чувствительными данными.
+        </p>
+      </section>
+
+      <section id="errors">
+        <h2>Типовые ошибки</h2>
+
+        <h3>Одинаковый fallback для всех зависимостей</h3>
+        <p>
+          Нейтральное имя допустимо, выдуманное разрешение — нет. Для каждого шага заранее определите, можно ли продолжать без него и какое состояние считается безопасным.
+        </p>
+
+        <h3>Таймаут без отмены запроса</h3>
+        <p>
+          Простая гонка между запросом и таймером возвращает управление, но запрос может продолжить занимать соединение. Передавайте сигнал отмены HTTP-клиенту и очищайте таймер в <code>finally</code>.
+        </p>
+
+        <h3>Каждый шаг получает полный бюджет</h3>
+        <p>
+          Перед запуском вычисляйте остаток общего дедлайна. Иначе локальные лимиты складываются, а обещанное время ответа нарушается.
+        </p>
+
+        <h3>Все ошибки называются таймаутом</h3>
+        <p>
+          HTTP 500, неверный JSON, отказ соединения и превышение времени требуют разных метрик и действий. Минимум отделяйте <code>timeout</code> от <code>error</code>.
+        </p>
+
+        <h3>Автоматические повторы без проверки операции</h3>
+        <p>
+          Повтор чтения обычно проще обосновать, чем повтор операции с побочным эффектом. Для записи нужны правила идемпотентности, ограничение попыток и отдельный бюджет времени. Иначе retry увеличит задержку или повторит действие.
+        </p>
+
+        <h3>Статус «успех» при деградации</h3>
+        <p>
+          Если fallback влияет на качество ответа, отражайте это в итоговом статусе. Иначе нельзя отличить полноценный результат от частичного ни в интерфейсе, ни в метриках.
+        </p>
+      </section>
+
+      <section id="limitations">
+        <h2>Ограничения и перенос в рабочую систему</h2>
+        <p>
+          Локальный стенд демонстрирует управление временем, но не моделирует балансировщик, очереди, DNS, пул соединений и ограничения конкретного API. В рабочем сценарии дополнительно понадобятся метрики длительности по шагам, счётчики fallback, трассировка одного запуска и ограничение параллелизма.
+        </p>
+        <p>
+          Отмена на стороне клиента также не гарантирует прекращение работы удалённого сервиса. Для операций записи используйте идемпотентные ключи и проверяемое состояние операции. Порог таймаута следует пересматривать по реальным наблюдениям: слишком короткий создаёт ложные отказы, слишком длинный возвращает исходную проблему блокировки.
+        </p>
+        <p>
+          Если независимые шаги можно запускать параллельно, это уменьшит суммарное ожидание, но потребует общего сигнала отмены и ограничения числа одновременных запросов. Не распараллеливайте шаги, между которыми есть зависимость данных или порядка.
+        </p>
+
+        <aside class="note">
+          <h3>Критерий готовности</h3>
+          <p>
+            Решение можно считать рабочим, если медленный необязательный сервис не блокирует итог, критический сервис не заменяется выдуманным ответом, вся цепочка соблюдает общий дедлайн, а результат объясняет состояние каждого шага.
+          </p>
+        </aside>
+
+        <p>
+          Другие практические материалы собраны в разделе <a href="guides.html">«Руководства»</a>. Определения терминов об агентах, инструментах и контексте доступны в <a href="glossary.html">глоссарии</a>.
+        </p>
+      </section>
+    </article>
+  </main>
+
+  <footer class="site-footer">
+    <div class="container">
+      <p>Agent Lab Journal — практические материалы об AI-агентах и надёжных сценариях автоматизации.</p>
+      <nav aria-label="Навигация в подвале">
+        <a href="guides.html">Руководства</a>
+        <a href="glossary.html">Глоссарий</a>
+      </nav>
+    </div>
+  </footer>
+</body>
+</html>

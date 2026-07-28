@@ -1,0 +1,425 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Структурированный вывод AI-агента вместо хрупкого текста — Agent Lab Journal</title>
+  <meta name="description" content="Практическое руководство по структурированному выводу AI-агента: JSON Schema, валидация, повторные попытки и безопасная обработка ошибок между этапами.">
+  <link rel="canonical" href="https://agentlabjournal.online/agent-structured-output.html">
+  <link rel="stylesheet" href="style.css">
+  <link rel="stylesheet" href="reading.css">
+
+  <meta property="og:type" content="article">
+  <meta property="og:locale" content="ru_RU">
+  <meta property="og:site_name" content="Agent Lab Journal">
+  <meta property="og:title" content="Структурированный вывод AI-агента вместо хрупкого текста">
+  <meta property="og:description" content="Как передавать результат AI-агента следующему этапу через схему данных, валидацию и явную обработку ошибок.">
+  <meta property="og:url" content="https://agentlabjournal.online/agent-structured-output.html">
+
+  <meta name="twitter:card" content="summary">
+  <meta name="twitter:title" content="Структурированный вывод AI-агента вместо хрупкого текста">
+  <meta name="twitter:description" content="JSON Schema, валидация и обработка ошибок в многоэтапном AI-процессе.">
+
+  <meta name="reading-meta" content="Уровень: средний; время чтения: до 8 минут; результат: схема данных, валидация и обработка ошибок">
+
+  <script type="application/ld+json">
+  {
+    "@context": "https://schema.org",
+    "@type": "Article",
+    "headline": "Структурированный вывод AI-агента вместо хрупкого текста",
+    "description": "Практическое руководство по структурированному выводу AI-агента: JSON Schema, валидация, повторные попытки и безопасная обработка ошибок между этапами.",
+    "inLanguage": "ru-RU",
+    "mainEntityOfPage": {
+      "@type": "WebPage",
+      "@id": "https://agentlabjournal.online/agent-structured-output.html"
+    },
+    "url": "https://agentlabjournal.online/agent-structured-output.html",
+    "isPartOf": {
+      "@type": "WebSite",
+      "name": "Agent Lab Journal",
+      "url": "https://agentlabjournal.online/"
+    },
+    "author": {
+      "@type": "Organization",
+      "name": "Agent Lab Journal"
+    },
+    "publisher": {
+      "@type": "Organization",
+      "name": "Agent Lab Journal"
+    },
+    "articleSection": "Практика AI-агентов",
+    "keywords": [
+      "AI-агент",
+      "структурированный вывод",
+      "JSON Schema",
+      "валидация",
+      "обработка ошибок"
+    ],
+    "timeRequired": "PT8M"
+  }
+  </script>
+</head>
+<body>
+  <header class="site-header">
+    <div class="container">
+      <a class="site-name" href="index.html">Agent Lab Journal</a>
+      <nav aria-label="Основная навигация">
+        <a href="guides.html">Руководства</a>
+        <a href="glossary.html">Глоссарий</a>
+      </nav>
+    </div>
+  </header>
+
+  <main>
+    <article class="reading">
+      <header class="article-header">
+        <p class="eyebrow">Практика AI-агентов</p>
+        <h1>Структурированный вывод AI-агента вместо хрупкого текста</h1>
+        <p class="lead">Свободный ответ модели удобен человеку, но ненадёжен как вход следующего этапа. Исправим это с помощью контракта данных, строгой валидации и предсказуемой обработки сбоев.</p>
+        <div class="reading-meta" aria-label="Параметры статьи">
+          <span>Уровень: средний</span>
+          <span>Чтение: до 8 минут</span>
+          <span>Результат: схема, валидация, обработка ошибок</span>
+        </div>
+      </header>
+
+      <section aria-labelledby="problem">
+        <h2 id="problem">Почему свободный текст ломает конвейер</h2>
+        <p><a href="glossary.html#structured-output">Структурированный вывод</a> — это ответ модели, форма которого заранее определена машинно проверяемой схемой. В отличие от обычного текста, он задаёт имена полей, их типы, допустимые значения и обязательность.</p>
+        <p>Представим два этапа: первый анализирует обращение, второй назначает исполнителя. Если первый возвращает фразу «Срочно, похоже на проблему с оплатой», второму приходится угадывать категорию и приоритет. Формулировка может измениться, появится Markdown или пояснение перед JSON — и простой парсер перестанет работать.</p>
+        <p>Надёжная граница между этапами выглядит иначе:</p>
+        <pre><code>{
+  "category": "billing",
+  "priority": "high",
+  "summary": "Платёж списан, но заказ не активирован",
+  "needs_human": false
+}</code></pre>
+        <p>Это не гарантирует истинность анализа, но гарантирует проверяемую форму результата. Формат и смысл следует контролировать отдельно.</p>
+      </section>
+
+      <section aria-labelledby="contract">
+        <h2 id="contract">Шаг 1. Определите контракт данных</h2>
+        <p>Начинайте не с промпта, а с решения следующего этапа. В примере маршрутизатору нужны категория, приоритет, краткое описание и признак ручной проверки. Не добавляйте поля «на всякий случай»: каждое поле увеличивает число способов получить некорректный ответ.</p>
+
+        <h3>JSON Schema</h3>
+        <pre><code>{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "agent-analysis.schema.json",
+  "title": "AgentAnalysis",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "category",
+    "priority",
+    "summary",
+    "needs_human"
+  ],
+  "properties": {
+    "category": {
+      "type": "string",
+      "enum": ["billing", "technical", "account", "other"]
+    },
+    "priority": {
+      "type": "string",
+      "enum": ["low", "normal", "high"]
+    },
+    "summary": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 240
+    },
+    "needs_human": {
+      "type": "boolean"
+    }
+  }
+}</code></pre>
+
+        <p><code>additionalProperties: false</code> запрещает неожиданные поля. <code>enum</code> ограничивает значения, а <code>required</code> не позволяет молча пропустить данные, необходимые следующему этапу.</p>
+        <p>Сохраните схему как <code>agent-analysis.schema.json</code>. Команда ниже только проверяет синтаксис JSON и не отправляет данные во внешние сервисы:</p>
+        <pre><code>python3 -m json.tool agent-analysis.schema.json &gt; /dev/null &amp;&amp; echo "JSON syntax: OK"</code></pre>
+      </section>
+
+      <section aria-labelledby="request">
+        <h2 id="request">Шаг 2. Передайте схему модели</h2>
+        <p>Если используемый интерфейс модели поддерживает вывод по JSON Schema, передавайте схему через его параметр структурированного ответа. Точное имя параметра зависит от выбранного API или библиотеки; сверяйтесь с документацией вашей версии.</p>
+        <p>Смысл конфигурации должен быть таким:</p>
+        <pre><code>{
+  "response_format": {
+    "type": "json_schema",
+    "name": "agent_analysis",
+    "strict": true,
+    "schema": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "category",
+        "priority",
+        "summary",
+        "needs_human"
+      ],
+      "properties": {
+        "category": {
+          "type": "string",
+          "enum": ["billing", "technical", "account", "other"]
+        },
+        "priority": {
+          "type": "string",
+          "enum": ["low", "normal", "high"]
+        },
+        "summary": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 240
+        },
+        "needs_human": {
+          "type": "boolean"
+        }
+      }
+    }
+  }
+}</code></pre>
+        <p>Это пример конфигурации, а не универсальный запрос к конкретному провайдеру. Не вставляйте ключи доступа в исходный код, логи или HTML. Получайте секреты из защищённого хранилища или переменных окружения, принятых в вашей среде.</p>
+
+        <h3>Инструкция агенту</h3>
+        <pre><code>Проанализируй обращение для маршрутизации.
+
+Правила:
+- category выбирай только из значений схемы;
+- priority=high используй только при явном риске остановки работы
+  или существенной потери;
+- если данных недостаточно для безопасной маршрутизации,
+  установи needs_human=true;
+- не добавляй сведения, которых нет во входе;
+- верни результат в заданной структурированной форме.</code></pre>
+        <p>Схема контролирует форму, а инструкция — критерии выбора значений. Одно не заменяет другое.</p>
+      </section>
+
+      <section aria-labelledby="validation">
+        <h2 id="validation">Шаг 3. Валидируйте ответ на своей стороне</h2>
+        <p>Даже при строгом режиме не передавайте результат дальше без локальной проверки. Ответ может быть обрезан, транспорт может вернуть ошибку, а возможности конкретной модели или библиотеки могут отличаться.</p>
+        <p>Ниже — воспроизводимый пример на Python. Для проверки схемы используется пакет <code>jsonschema</code>.</p>
+
+        <pre><code>python3 -m venv .venv
+. .venv/bin/activate
+python3 -m pip install jsonschema</code></pre>
+
+        <p>Перед установкой зависимости в рабочем проекте проверьте её допустимость по правилам вашей команды и зафиксируйте согласованную версию в файле зависимостей.</p>
+
+        <pre><code>import json
+from pathlib import Path
+
+from jsonschema import Draft202012Validator
+from jsonschema.exceptions import ValidationError
+
+
+class AgentOutputError(Exception):
+    pass
+
+
+def load_schema(path: str) -&gt; dict:
+    return json.loads(Path(path).read_text(encoding="utf-8"))
+
+
+def parse_agent_output(raw: str, schema: dict) -&gt; dict:
+    try:
+        data = json.loads(raw)
+    except json.JSONDecodeError as exc:
+        raise AgentOutputError(
+            f"Ответ не является корректным JSON: строка {exc.lineno}, "
+            f"столбец {exc.colno}"
+        ) from exc
+
+    validator = Draft202012Validator(schema)
+    errors = sorted(
+        validator.iter_errors(data),
+        key=lambda error: list(error.absolute_path),
+    )
+
+    if errors:
+        first = errors[0]
+        location = ".".join(map(str, first.absolute_path)) or "&lt;root&gt;"
+        raise AgentOutputError(
+            f"Ответ не соответствует схеме: {location}: {first.message}"
+        )
+
+    return data
+
+
+schema = load_schema("agent-analysis.schema.json")
+
+raw_response = """{
+  "category": "billing",
+  "priority": "high",
+  "summary": "Платёж списан, но заказ не активирован",
+  "needs_human": false
+}"""
+
+try:
+    result = parse_agent_output(raw_response, schema)
+except AgentOutputError as exc:
+    print(f"REJECTED: {exc}")
+else:
+    print(f"ACCEPTED: {result['category']} / {result['priority']}")</code></pre>
+
+        <p><code>raw_response</code> здесь — демонстрационный ответ, а не результат реального вызова модели. В приложении подставьте текстовое содержимое, полученное от вашего клиентского слоя.</p>
+      </section>
+
+      <section aria-labelledby="errors">
+        <h2 id="errors">Шаг 4. Обрабатывайте ошибки как отдельные состояния</h2>
+        <p>Не объединяйте все сбои в «модель ответила неправильно». Минимально полезная классификация:</p>
+
+        <table>
+          <thead>
+            <tr>
+              <th>Состояние</th>
+              <th>Пример</th>
+              <th>Действие</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td>Транспортная ошибка</td>
+              <td>Тайм-аут или недоступность сервиса</td>
+              <td>Ограниченный повтор с задержкой</td>
+            </tr>
+            <tr>
+              <td>Обрезанный ответ</td>
+              <td>Достигнут лимит вывода</td>
+              <td>Не парсить как полный результат; повторить с меньшей задачей или большим допустимым лимитом</td>
+            </tr>
+            <tr>
+              <td>Отказ модели</td>
+              <td>Вместо данных получен сигнал отказа</td>
+              <td>Не маскировать под ошибку JSON; направить в безопасный сценарий</td>
+            </tr>
+            <tr>
+              <td>Некорректный JSON</td>
+              <td>Лишний текст или оборванная строка</td>
+              <td>Один исправляющий повтор либо ручная обработка</td>
+            </tr>
+            <tr>
+              <td>Нарушение схемы</td>
+              <td><code>priority: "urgent"</code></td>
+              <td>Повторить с кратким описанием нарушения</td>
+            </tr>
+            <tr>
+              <td>Сомнительный смысл</td>
+              <td>Форма верна, категория не подтверждается входом</td>
+              <td>Бизнес-проверка или <code>needs_human=true</code></td>
+            </tr>
+          </tbody>
+        </table>
+
+        <h3>Ограниченный повтор</h3>
+        <pre><code>def run_with_validation(call_agent, source_text, schema, max_attempts=2):
+    last_error = None
+
+    for attempt in range(max_attempts):
+        raw = call_agent(
+            source_text=source_text,
+            validation_error=str(last_error) if last_error else None,
+        )
+
+        try:
+            return {
+                "status": "ok",
+                "data": parse_agent_output(raw, schema),
+            }
+        except AgentOutputError as exc:
+            last_error = exc
+
+    return {
+        "status": "manual_review",
+        "error_code": "INVALID_AGENT_OUTPUT",
+        "message": str(last_error),
+    }</code></pre>
+
+        <p><code>call_agent</code> — намеренно условная функция: подключите к ней уже выбранный вами клиент. Повтор ограничен двумя попытками, чтобы неисправимый вход не создавал бесконечный цикл и непредсказуемые расходы.</p>
+        <p>Не передавайте модели трассировки стека, секреты и внутренние системные сведения. Для исправляющего запроса достаточно безопасного сообщения вроде: «Поле priority должно быть одним из: low, normal, high».</p>
+      </section>
+
+      <section aria-labelledby="business-rules">
+        <h2 id="business-rules">Шаг 5. Добавьте смысловые ограничения</h2>
+        <p>JSON Schema проверит типы, но не все бизнес-правила. Например, ручная проверка может быть обязательна для категории <code>other</code>. Такое правило проще и надёжнее выразить обычным кодом:</p>
+        <pre><code>def validate_business_rules(data: dict) -&gt; None:
+    if data["category"] == "other" and not data["needs_human"]:
+        raise AgentOutputError(
+            "Для category=other требуется needs_human=true"
+        )</code></pre>
+        <p>Вызывайте эту функцию после проверки JSON Schema и до запуска следующего этапа. Детерминированные правила лучше держать в коде: их легче проверять, изменять и наблюдать.</p>
+      </section>
+
+      <section aria-labelledby="verification">
+        <h2 id="verification">Проверка результата</h2>
+        <p>Сохраните Python-код как <code>validate_output.py</code>, затем выполните:</p>
+        <pre><code>. .venv/bin/activate
+python3 validate_output.py</code></pre>
+        <p>Для приведённого демонстрационного объекта ожидаемый вывод:</p>
+        <pre><code>ACCEPTED: billing / high</code></pre>
+        <p>Затем вручную замените <code>"high"</code> на <code>"urgent"</code>. Валидатор должен отклонить объект с сообщением о поле <code>priority</code>. Удалите <code>needs_human</code> — объект также должен быть отклонён. Добавьте неизвестное поле — сработает запрет <code>additionalProperties</code>.</p>
+        <p>Проверка считается успешной, если следующий этап получает данные только после прохождения обеих границ:</p>
+        <ol>
+          <li>структурная проверка по JSON Schema;</li>
+          <li>проверка бизнес-правил в коде.</li>
+        </ol>
+      </section>
+
+      <section aria-labelledby="common-mistakes">
+        <h2 id="common-mistakes">Типовые ошибки</h2>
+
+        <h3>Извлекать JSON регулярным выражением</h3>
+        <p>Конструкции вроде поиска текста между первой <code>{</code> и последней <code>}</code> ломаются на вложенных объектах, строках со скобками и нескольких фрагментах JSON. Используйте структурированный режим модели и стандартный JSON-парсер.</p>
+
+        <h3>Просить «ответить JSON» только в промпте</h3>
+        <p>Текстовая просьба полезна, но сама по себе не является контрактом. Модель может добавить пояснение, изменить имя поля или вернуть строку вместо логического значения.</p>
+
+        <h3>Исправлять данные молча</h3>
+        <p>Автоматическая замена <code>"urgent"</code> на <code>"high"</code> скрывает нарушение контракта. Если нормализация необходима, задайте явную таблицу преобразований, журналируйте её применение и не используйте для неоднозначных значений.</p>
+
+        <h3>Считать валидный объект правильным</h3>
+        <p>Объект может соответствовать схеме и при этом содержать неверный вывод модели. Проверяйте критичные решения детерминированными правилами, а при недостатке данных направляйте результат человеку.</p>
+
+        <h3>Записывать полный вход и ответ в журнал</h3>
+        <p>В них могут находиться персональные или конфиденциальные данные. Для наблюдаемости обычно достаточно кода ошибки, номера попытки, версии схемы, длительности и технического идентификатора операции.</p>
+      </section>
+
+      <section aria-labelledby="limits">
+        <h2 id="limits">Ограничения подхода</h2>
+        <ul>
+          <li>Схема гарантирует форму, но не фактическую корректность результата.</li>
+          <li>Не все модели и клиентские библиотеки поддерживают одинаковые части JSON Schema.</li>
+          <li>Слишком сложная схема повышает вероятность отказов и затрудняет развитие контракта.</li>
+          <li>Изменение обязательного поля или значения <code>enum</code> может сломать потребителей.</li>
+          <li>Повторный запрос увеличивает задержку и стоимость, поэтому число попыток должно быть ограничено.</li>
+          <li>Для действий с высоким риском структурированный вывод не заменяет авторизацию, бизнес-проверки и подтверждение человеком.</li>
+        </ul>
+        <p>Версионируйте контракт при несовместимых изменениях, например через отдельное поле <code>schema_version</code> или разные имена схем. Сначала обновляйте потребителя так, чтобы он понимал новую версию, и только затем переключайте производителя.</p>
+      </section>
+
+      <section aria-labelledby="checklist">
+        <h2 id="checklist">Короткий контрольный список</h2>
+        <ul>
+          <li>Поля определены потребностями следующего этапа.</li>
+          <li>Указаны <code>required</code>, типы, ограничения и <code>additionalProperties</code>.</li>
+          <li>Схема передаётся через структурированный режим, если он доступен.</li>
+          <li>Ответ повторно валидируется в приложении.</li>
+          <li>Бизнес-правила проверяются отдельно от JSON Schema.</li>
+          <li>Транспортные ошибки, отказ и нарушение схемы различаются.</li>
+          <li>Повторы ограничены, а запасной сценарий определён заранее.</li>
+          <li>В журналы не попадают секреты и лишние пользовательские данные.</li>
+        </ul>
+      </section>
+
+      <footer class="article-footer">
+        <p>Продолжить изучение архитектуры агентов можно в разделе <a href="guides.html">практических руководств</a>. Определения используемых понятий собраны в <a href="glossary.html">глоссарии</a>.</p>
+      </footer>
+    </article>
+  </main>
+
+  <footer class="site-footer">
+    <div class="container">
+      <p>Agent Lab Journal — практические материалы о разработке AI-агентов.</p>
+    </div>
+  </footer>
+</body>
+</html>

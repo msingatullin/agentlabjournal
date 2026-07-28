@@ -1,0 +1,476 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+
+  <title>Подключаем AI-агента к базе данных через MCP Toolbox | Agent Lab Journal</title>
+  <meta name="description" content="Практическая инструкция: локальный MCP Toolbox, тестовая PostgreSQL и ограниченный набор параметризованных инструментов для безопасного чтения и анализа данных.">
+  <link rel="canonical" href="https://agentlabjournal.online/mcp-toolbox-database-agent.html">
+
+  <meta property="og:type" content="article">
+  <meta property="og:locale" content="ru_RU">
+  <meta property="og:site_name" content="Agent Lab Journal">
+  <meta property="og:title" content="Подключаем AI-агента к базе данных через MCP Toolbox">
+  <meta property="og:description" content="Как дать AI-приложению контролируемый доступ к PostgreSQL без отдельного обработчика для каждого запроса.">
+  <meta property="og:url" content="https://agentlabjournal.online/mcp-toolbox-database-agent.html">
+  <meta property="og:image" content="https://agentlabjournal.online/podcast-cover.png">
+  <meta property="article:published_time" content="2026-07-28">
+  <meta property="article:modified_time" content="2026-07-28">
+  <meta property="article:section" content="Практика">
+
+  <meta name="twitter:card" content="summary_large_image">
+  <meta name="twitter:title" content="Подключаем AI-агента к базе данных через MCP Toolbox">
+  <meta name="twitter:description" content="Локальный MCP-сервер с ограниченными инструментами для чтения и анализа тестовой PostgreSQL.">
+  <meta name="twitter:image" content="https://agentlabjournal.online/podcast-cover.png">
+
+  <link rel="stylesheet" href="style.css">
+  <link rel="stylesheet" href="reading.css">
+
+  <script type="application/ld+json">
+  {
+    "@context": "https://schema.org",
+    "@type": "Article",
+    "headline": "Подключаем AI-агента к базе данных через MCP Toolbox",
+    "description": "Практическая инструкция по запуску локального MCP Toolbox с ограниченным набором инструментов для чтения и анализа тестовой PostgreSQL.",
+    "url": "https://agentlabjournal.online/mcp-toolbox-database-agent.html",
+    "mainEntityOfPage": {
+      "@type": "WebPage",
+      "@id": "https://agentlabjournal.online/mcp-toolbox-database-agent.html"
+    },
+    "image": [
+      "https://agentlabjournal.online/podcast-cover.png"
+    ],
+    "datePublished": "2026-07-28",
+    "dateModified": "2026-07-28",
+    "inLanguage": "ru",
+    "articleSection": "Практика",
+    "timeRequired": "PT12M",
+    "author": {
+      "@type": "Organization",
+      "name": "Agent Lab Journal",
+      "url": "https://agentlabjournal.online/"
+    },
+    "publisher": {
+      "@type": "Organization",
+      "name": "Agent Lab Journal",
+      "url": "https://agentlabjournal.online/",
+      "logo": {
+        "@type": "ImageObject",
+        "url": "https://agentlabjournal.online/podcast-cover.png"
+      }
+    }
+  }
+  </script>
+</head>
+<body>
+  <header class="site-header">
+    <a class="brand" href="./">
+      <span class="brand-mark">AL</span>
+      <span>Agent Lab Journal</span>
+    </a>
+    <nav aria-label="Основная навигация">
+      <a href="guides.html">← Инструкции</a>
+      <a href="glossary.html">Словарь</a>
+    </nav>
+  </header>
+
+  <main class="article">
+    <article>
+      <p class="eyebrow">ПРАКТИКА · БАЗЫ ДАННЫХ</p>
+
+      <h1>Подключаем AI-агента к базе данных через MCP Toolbox</h1>
+
+      <div class="reading-meta" aria-label="Информация о материале">
+        <span>Уровень: средний</span>
+        <span>Чтение: до 12 минут</span>
+        <span>Результат: локальный MCP-сервер с инструментами только для чтения</span>
+      </div>
+
+      <p class="lead">Вместо универсального доступа к SQL дадим агенту три заранее определённые операции: получить заказ, показать последние заказы и построить дневную сводку. Запросы останутся на стороне сервера, параметры будут передаваться отдельно, а пользователь базы физически не сможет изменять данные.</p>
+
+      <p><a class="term-link" href="glossary.html">MCP</a> — протокол, через который AI-приложение обнаруживает и вызывает внешние инструменты. MCP Toolbox for Databases реализует серверную часть: подключается к базе, публикует описанные в конфигурации инструменты и выполняет соответствующие SQL-запросы.</p>
+
+      <h2>Что мы собираем</h2>
+
+      <p>Учебный контур состоит из четырёх частей:</p>
+
+      <ol>
+        <li>PostgreSQL в локальном Docker-контейнере;</li>
+        <li>отдельная роль базы данных с правом <code>SELECT</code> и режимом только для чтения;</li>
+        <li>файл <code>tools.yaml</code> с тремя параметризованными запросами;</li>
+        <li>MCP Toolbox, доступный локально по адресу <code>http://127.0.0.1:5000/mcp/analytics</code>.</li>
+      </ol>
+
+      <p>Здесь намеренно нет инструмента наподобие <code>execute_sql</code>. Если разрешить модели присылать произвольный SQL, список фактических возможностей станет шире списка бизнес-задач. Предопределённые запросы дают более узкую и проверяемую границу доступа.</p>
+
+      <aside>
+        <p><strong>Граница примера.</strong> Все имена, заказы, суммы и пароль ниже — искусственные учебные значения. Не переносите демонстрационный пароль в рабочую среду и не запускайте команды на существующей базе без проверки имён контейнера, базы и ролей.</p>
+      </aside>
+
+      <h2>Что понадобится</h2>
+
+      <ul>
+        <li>Docker с доступной командой <code>docker</code>;</li>
+        <li><code>curl</code> для загрузки бинарного файла;</li>
+        <li>Linux AMD64 для приведённой команды установки Toolbox.</li>
+      </ul>
+
+      <p>Для macOS, Windows и ARM нужен другой файл. Выберите его в официальном репозитории MCP Toolbox, а не переименовывайте Linux-бинарник.</p>
+
+      <h2>Шаг 1. Запускаем тестовую PostgreSQL</h2>
+
+      <p>Сначала убедитесь, что имя контейнера не занято:</p>
+
+      <pre><code>docker ps -a --filter name=^/agentlab-postgres$</code></pre>
+
+      <p>Если команда не показывает контейнер, запустите PostgreSQL. Переменные ниже относятся только к изолированному примеру:</p>
+
+      <pre><code>docker run --name agentlab-postgres \
+  --publish 127.0.0.1:55432:5432 \
+  --env POSTGRES_DB=agentlab_demo \
+  --env POSTGRES_USER=demo_admin \
+  --env POSTGRES_PASSWORD=local-demo-admin-password \
+  --detach postgres:16-alpine</code></pre>
+
+      <p>Публикация порта на <code>127.0.0.1</code>, а не на всех интерфейсах, не делает базу полностью защищённой, но не выставляет учебный порт непосредственно во внешнюю сеть.</p>
+
+      <p>Дождитесь готовности сервера:</p>
+
+      <pre><code>docker exec agentlab-postgres \
+  pg_isready --username demo_admin --dbname agentlab_demo</code></pre>
+
+      <p>Продолжайте после сообщения о том, что сервер принимает соединения.</p>
+
+      <h2>Шаг 2. Создаём таблицу и тестовые записи</h2>
+
+      <p>Передадим SQL в <code>psql</code> через стандартный ввод. Команда создаёт только учебную таблицу <code>orders</code> внутри новой базы:</p>
+
+      <pre><code>docker exec -i agentlab-postgres \
+  psql --username demo_admin --dbname agentlab_demo &lt;&lt;'SQL'
+CREATE TABLE public.orders (
+  id bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+  customer_name text NOT NULL,
+  status text NOT NULL CHECK (status IN ('new', 'paid', 'shipped', 'cancelled')),
+  total numeric(12, 2) NOT NULL CHECK (total &gt;= 0),
+  created_at timestamptz NOT NULL DEFAULT now()
+);
+
+INSERT INTO public.orders (customer_name, status, total, created_at) VALUES
+  ('Учебный клиент А', 'paid',      12500.00, '2026-07-24 09:15:00+00'),
+  ('Учебный клиент Б', 'shipped',    7900.00, '2026-07-25 11:40:00+00'),
+  ('Учебный клиент В', 'new',        3200.00, '2026-07-25 14:05:00+00'),
+  ('Учебный клиент Г', 'cancelled',  1800.00, '2026-07-26 08:30:00+00'),
+  ('Учебный клиент Д', 'paid',       6400.00, '2026-07-27 16:20:00+00');
+SQL</code></pre>
+
+      <p>Проверьте количество строк:</p>
+
+      <pre><code>docker exec agentlab-postgres \
+  psql --username demo_admin --dbname agentlab_demo \
+  --command "SELECT count(*) AS order_count FROM public.orders;"</code></pre>
+
+      <p>Для приведённого набора данных значение <code>order_count</code> должно быть равно <code>5</code>.</p>
+
+      <h2>Шаг 3. Создаём отдельного читателя</h2>
+
+      <p>MCP-серверу не нужны права владельца таблицы. Создадим отдельную роль, разрешим ей подключение, доступ к схеме и чтение одной таблицы. Пароль снова является только значением учебного примера:</p>
+
+      <pre><code>docker exec -i agentlab-postgres \
+  psql --username demo_admin --dbname agentlab_demo &lt;&lt;'SQL'
+CREATE ROLE agent_reader
+  LOGIN
+  PASSWORD 'local-demo-reader-password';
+
+GRANT CONNECT ON DATABASE agentlab_demo TO agent_reader;
+GRANT USAGE ON SCHEMA public TO agent_reader;
+GRANT SELECT ON TABLE public.orders TO agent_reader;
+
+ALTER ROLE agent_reader SET default_transaction_read_only = on;
+ALTER ROLE agent_reader SET statement_timeout = '5s';
+SQL</code></pre>
+
+      <p><code>default_transaction_read_only</code> создаёт дополнительный барьер против записи, а <code>statement_timeout</code> ограничивает длительность зависшего запроса. Главной границей всё равно остаются выданные роли привилегии: не предоставляйте читателю <code>INSERT</code>, <code>UPDATE</code>, <code>DELETE</code>, <code>CREATE</code> или членство в привилегированных ролях.</p>
+
+      <p>Проверим роль напрямую:</p>
+
+      <pre><code>docker exec agentlab-postgres \
+  psql "postgresql://agent_reader:local-demo-reader-password@127.0.0.1:5432/agentlab_demo" \
+  --command "SELECT id, status, total FROM public.orders ORDER BY id;"</code></pre>
+
+      <p>Теперь негативная проверка. Она должна завершиться ошибкой режима только для чтения:</p>
+
+      <pre><code>docker exec agentlab-postgres \
+  psql "postgresql://agent_reader:local-demo-reader-password@127.0.0.1:5432/agentlab_demo" \
+  --command "DELETE FROM public.orders WHERE id = 1;"</code></pre>
+
+      <p>Ошибка здесь — ожидаемый результат. После неё повторная проверка количества должна по-прежнему вернуть пять строк.</p>
+
+      <h2>Шаг 4. Устанавливаем MCP Toolbox</h2>
+
+      <p>Для воспроизводимости зафиксируем версию <code>1.7.0</code>. Команда ниже загружает Linux AMD64-бинарник, но не запускает загруженный файл автоматически:</p>
+
+      <pre><code>curl --fail --location \
+  --output toolbox \
+  https://storage.googleapis.com/mcp-toolbox-for-databases/v1.7.0/linux/amd64/toolbox
+
+chmod 0755 toolbox
+./toolbox --version</code></pre>
+
+      <p>В рабочем процессе дополнительно сверяйте контрольную сумму или подпись артефакта с данными конкретного официального релиза. Не заменяйте номер версии на <code>latest</code>: иначе повторный запуск инструкции может получить другой бинарник и поведение.</p>
+
+      <h2>Шаг 5. Описываем разрешённые инструменты</h2>
+
+      <p>Создайте файл <code>tools.yaml</code>. Пароль не записываем в YAML: Toolbox подставит его из переменной <code>TOOLBOX_DB_PASSWORD</code>.</p>
+
+      <pre><code>kind: source
+name: demo-postgres
+type: postgres
+host: 127.0.0.1
+port: 55432
+database: agentlab_demo
+user: agent_reader
+password: ${TOOLBOX_DB_PASSWORD}
+---
+kind: tool
+name: get-order
+type: postgres-sql
+source: demo-postgres
+description: >
+  Возвращает один учебный заказ по точному числовому идентификатору.
+  Не угадывай идентификатор и не используй инструмент для поиска по имени.
+parameters:
+  - name: order_id
+    type: integer
+    description: Положительный идентификатор заказа.
+statement: |
+  SELECT id, customer_name, status, total, created_at
+  FROM public.orders
+  WHERE id = $1;
+---
+kind: tool
+name: list-recent-orders
+type: postgres-sql
+source: demo-postgres
+description: >
+  Возвращает последние учебные заказы. Параметр limit задаёт количество строк.
+parameters:
+  - name: limit
+    type: integer
+    description: Количество строк от 1 до 20.
+statement: |
+  SELECT id, customer_name, status, total, created_at
+  FROM public.orders
+  ORDER BY created_at DESC, id DESC
+  LIMIT LEAST(GREATEST($1, 1), 20);
+---
+kind: tool
+name: summarize-orders-by-day
+type: postgres-sql
+source: demo-postgres
+description: >
+  Строит дневную сводку заказов в заданном полуоткрытом интервале:
+  дата начала включается, дата окончания не включается.
+parameters:
+  - name: date_from
+    type: string
+    description: Дата начала в формате YYYY-MM-DD.
+  - name: date_to
+    type: string
+    description: Дата окончания в формате YYYY-MM-DD.
+statement: |
+  SELECT
+    created_at::date AS day,
+    count(*) AS orders_count,
+    count(*) FILTER (WHERE status = 'paid') AS paid_count,
+    sum(total) AS total_amount
+  FROM public.orders
+  WHERE created_at &gt;= $1::date
+    AND created_at &lt; $2::date
+  GROUP BY created_at::date
+  ORDER BY day;
+---
+kind: toolset
+name: analytics
+tools:
+  - get-order
+  - list-recent-orders
+  - summarize-orders-by-day</code></pre>
+
+      <p>Значения попадают в запрос через позиционные параметры <code>$1</code> и <code>$2</code>, а не через склейку строк. Это снижает риск SQL-инъекции. Ограничение <code>LEAST(GREATEST(...), 20)</code> не позволяет запросить неограниченный объём строк даже при неверном выборе модели.</p>
+
+      <p>Toolset <code>analytics</code> — отдельный список экспортируемых операций. В нём нет служебных, административных и универсальных SQL-инструментов.</p>
+
+      <h2>Шаг 6. Проверяем инструменты без AI-клиента</h2>
+
+      <p>Сначала изолируем базу и конфигурацию от поведения модели. Экспортируйте учебный пароль только в текущую оболочку:</p>
+
+      <pre><code>export TOOLBOX_DB_PASSWORD='local-demo-reader-password'</code></pre>
+
+      <p>Вызовите каждый инструмент через CLI Toolbox:</p>
+
+      <pre><code>./toolbox --config tools.yaml invoke get-order \
+  '{"order_id": 1}'
+
+./toolbox --config tools.yaml invoke list-recent-orders \
+  '{"limit": 3}'
+
+./toolbox --config tools.yaml invoke summarize-orders-by-day \
+  '{"date_from": "2026-07-24", "date_to": "2026-07-28"}'</code></pre>
+
+      <p>Проверка считается успешной, если:</p>
+
+      <ul>
+        <li><code>get-order</code> возвращает не более одной строки с идентификатором <code>1</code>;</li>
+        <li><code>list-recent-orders</code> возвращает три строки в порядке от новых к старым;</li>
+        <li>сводка содержит только даты из интервала с 24 по 27 июля включительно;</li>
+        <li>в конфигурации нет инструмента, принимающего произвольный SQL;</li>
+        <li>роль <code>agent_reader</code> не может удалить тестовую строку.</li>
+      </ul>
+
+      <p>После проверки можно убрать пароль из окружения текущей оболочки:</p>
+
+      <pre><code>unset TOOLBOX_DB_PASSWORD</code></pre>
+
+      <h2>Шаг 7. Запускаем локальный MCP-сервер</h2>
+
+      <p>Верните переменную в окружение процесса и запустите сервер:</p>
+
+      <pre><code>export TOOLBOX_DB_PASSWORD='local-demo-reader-password'
+./toolbox --config tools.yaml \
+  --address 127.0.0.1 \
+  --port 5000 \
+  --disable-reload</code></pre>
+
+      <p>Флаг <code>--address 127.0.0.1</code> оставляет HTTP-сервер локальным. <code>--disable-reload</code> фиксирует загруженную конфигурацию до перезапуска процесса: случайное изменение файла не расширит набор инструментов незаметно для оператора.</p>
+
+      <p>MCP-клиенту укажите адрес конкретного toolset:</p>
+
+      <pre><code>{
+  "mcpServers": {
+    "orders-analytics": {
+      "type": "http",
+      "url": "http://127.0.0.1:5000/mcp/analytics"
+    }
+  }
+}</code></pre>
+
+      <p>Имя файла и точная форма клиентской конфигурации зависят от приложения. Существенная часть здесь — URL с суффиксом <code>/analytics</code>: клиент должен получить только три инструмента из одноимённого набора.</p>
+
+      <h2>Проверка через AI-приложение</h2>
+
+      <p>После подключения откройте список MCP-инструментов в клиенте. Там должны присутствовать только:</p>
+
+      <ul>
+        <li><code>get-order</code>;</li>
+        <li><code>list-recent-orders</code>;</li>
+        <li><code>summarize-orders-by-day</code>.</li>
+      </ul>
+
+      <p>Затем дайте агенту три проверочных задания:</p>
+
+      <ol>
+        <li>«Покажи заказ с идентификатором 2».</li>
+        <li>«Покажи три последних заказа».</li>
+        <li>«Сделай дневную сводку с 24 июля 2026 года включительно до 28 июля не включительно».</li>
+      </ol>
+
+      <p>Оценивайте не литературное качество ответа, а журнал вызовов: выбран ли ожидаемый инструмент, переданы ли правильные параметры и совпадают ли возвращённые строки с прямым вызовом Toolbox CLI.</p>
+
+      <p>Дополнительно попросите: «Удалить заказ 1». Корректный контур не предоставляет подходящего инструмента. Даже если клиент или модель попытаются обойти ограничение, у роли базы нет права на удаление, а транзакции по умолчанию работают только для чтения.</p>
+
+      <h2>Почему здесь несколько уровней защиты</h2>
+
+      <p>Описание инструмента помогает модели выбрать правильное действие, но не является механизмом авторизации. Модель может ошибиться, а входной текст может попытаться изменить её поведение. Поэтому ограничения должны работать ниже уровня промпта:</p>
+
+      <ul>
+        <li>toolset сокращает видимый набор операций;</li>
+        <li>предопределённый SQL исключает свободную генерацию запросов;</li>
+        <li>позиционные параметры отделяют данные от текста SQL;</li>
+        <li>лимиты ограничивают размер ответа;</li>
+        <li>роль PostgreSQL запрещает запись независимо от поведения агента;</li>
+        <li>локальный адрес уменьшает сетевую поверхность;</li>
+        <li>тайм-аут завершает слишком долгий запрос.</li>
+      </ul>
+
+      <h2>Типовые ошибки</h2>
+
+      <h3>Toolbox не подключается к PostgreSQL</h3>
+
+      <p>Проверьте, что контейнер работает и порт опубликован:</p>
+
+      <pre><code>docker ps --filter name=^/agentlab-postgres$
+docker port agentlab-postgres
+docker exec agentlab-postgres \
+  pg_isready --username demo_admin --dbname agentlab_demo</code></pre>
+
+      <p>В конфигурации Toolbox используется порт хоста <code>55432</code>. Внутри контейнера PostgreSQL продолжает слушать <code>5432</code>.</p>
+
+      <h3>Переменная окружения не подставилась</h3>
+
+      <p>Убедитесь, что <code>TOOLBOX_DB_PASSWORD</code> экспортирована в той же оболочке, из которой запускается Toolbox. Не печатайте её в диагностический лог и не добавляйте значение в репозиторий.</p>
+
+      <h3>Ошибка синтаксиса YAML</h3>
+
+      <p>Каждый ресурс отделён строкой <code>---</code>. Отступы сделаны пробелами, а многострочные SQL-запросы начинаются после <code>|</code>. Табуляция и потерянный разделитель часто приводят к тому, что следующий инструмент разбирается как часть предыдущего.</p>
+
+      <h3>Параметр даты не приводится к типу</h3>
+
+      <p>Инструмент принимает строку, но SQL явно приводит её к <code>date</code>. Передавайте даты в однозначном ISO-формате <code>YYYY-MM-DD</code>. Не просите базу угадывать локальную запись вроде <code>07/08/26</code>.</p>
+
+      <h3>Клиент видит больше инструментов</h3>
+
+      <p>Проверьте URL. Подключение к общему <code>/mcp</code> и подключение к <code>/mcp/analytics</code> могут публиковать разные наборы. Для этого примера нужен адрес конкретного toolset.</p>
+
+      <h3>Запросы работают, но время сдвинуто</h3>
+
+      <p><code>created_at</code> хранится как <code>timestamptz</code>, а преобразование к дате зависит от часового пояса сессии PostgreSQL. Для международной системы задайте согласованный часовой пояс или явно выполняйте преобразование через <code>AT TIME ZONE</code> согласно бизнес-правилу.</p>
+
+      <h2>Ограничения решения</h2>
+
+      <ul>
+        <li>Локальный HTTP-сервер без отдельной аутентификации подходит для учебного контура на одной машине, но не для публикации в сети.</li>
+        <li>Toolset ограничивает обнаружение инструментов клиентом, но права базы остаются обязательной последней границей.</li>
+        <li>Параметризованный запрос защищает значения, однако имя таблицы, колонки или направление сортировки нельзя безопасно принимать как обычный SQL-параметр. Такие варианты лучше оформлять отдельными инструментами или строгим списком разрешённых значений.</li>
+        <li>Toolbox не определяет бизнес-смысл данных. Проверка диапазонов, часового пояса, конфиденциальных колонок и допустимой детализации остаётся задачей разработчика.</li>
+        <li>Ответ базы может содержать персональные или коммерческие данные. Перед рабочим запуском нужны маскирование, аудит, политика хранения и ограничение строк или арендаторов.</li>
+        <li>Один читатель базы не обеспечивает изоляцию разных пользователей AI-приложения. Для многопользовательского сценария потребуются авторизация, контекст пользователя и ограничения на уровне строк.</li>
+        <li>В примере не настроены TLS, централизованные секреты, ротация пароля, метрики и трассировка. Это учебный локальный результат, а не готовая производственная архитектура.</li>
+      </ul>
+
+      <h2>Как перенести подход в рабочую систему</h2>
+
+      <p>Начните не со схемы всей базы, а со списка вопросов, которые агент действительно должен решать. Для каждого вопроса создайте отдельный инструмент с минимальным набором колонок, верхним лимитом строк и однозначным описанием параметров.</p>
+
+      <p>Затем создайте отдельную роль базы для приложения, разрешите ей только необходимые представления или таблицы и проверьте запрещённые действия напрямую, без модели. Секрет передавайте через менеджер секретов или защищённое окружение процесса. Сетевой MCP-сервер закрывайте аутентификацией, TLS и правилами доступа.</p>
+
+      <p>Наконец, журналируйте имя инструмента, время, вызывающего пользователя, параметры без секретов, длительность и число возвращённых строк. Полный результат запроса не всегда следует сохранять: журнал сам может стать копией чувствительной базы.</p>
+
+      <h2>Что получилось</h2>
+
+      <p>У нас есть локальный MCP-сервер, через который AI-приложение может читать тестовую PostgreSQL и выполнять ограниченный анализ. Новый вопрос внутри предусмотренных сценариев не требует писать отдельный HTTP-обработчик: агент выбирает один из описанных инструментов и передаёт структурированные параметры.</p>
+
+      <p>При этом свобода модели не превращается в свободу базы данных. Список операций задан конфигурацией, SQL находится на сервере, объём ответа ограничен, а роль PostgreSQL не умеет изменять данные.</p>
+
+      <h2>Официальная документация</h2>
+
+      <ul>
+        <li><a class="text-link" href="https://mcp-toolbox.dev/documentation/configuration/" rel="noopener noreferrer">Конфигурация MCP Toolbox</a></li>
+        <li><a class="text-link" href="https://mcp-toolbox.dev/integrations/postgres/source/" rel="noopener noreferrer">Источник PostgreSQL</a></li>
+        <li><a class="text-link" href="https://github.com/googleapis/mcp-toolbox" rel="noopener noreferrer">Репозиторий MCP Toolbox for Databases</a></li>
+      </ul>
+
+      <p class="back">
+        <a class="text-link" href="guides.html">← Все практические инструкции</a>
+        ·
+        <a class="text-link" href="glossary.html">Лабораторный словарь →</a>
+      </p>
+    </article>
+  </main>
+
+  <footer>
+    <span>Agent Lab Journal</span>
+    <span>Real experiments. Verifiable conclusions.</span>
+  </footer>
+</body>
+</html>

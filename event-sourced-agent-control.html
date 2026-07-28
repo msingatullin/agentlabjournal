@@ -1,0 +1,493 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Контроль действий ИИ-агента через журнал событий — Agent Lab Journal</title>
+  <meta name="description" content="Практический прототип управляющего контура: разрешенные переходы, обязательные проверки, append-only журнал и восстановление состояния ИИ-агента.">
+  <link rel="canonical" href="https://agentlabjournal.online/event-sourced-agent-control.html">
+  <link rel="stylesheet" href="style.css">
+  <link rel="stylesheet" href="reading.css">
+
+  <meta property="og:type" content="article">
+  <meta property="og:locale" content="ru_RU">
+  <meta property="og:site_name" content="Agent Lab Journal">
+  <meta property="og:title" content="Контроль действий ИИ-агента через журнал событий">
+  <meta property="og:description" content="Прототип управляющего контура, который отклоняет запрещенные переходы и восстанавливает состояние агента из append-only журнала.">
+  <meta property="og:url" content="https://agentlabjournal.online/event-sourced-agent-control.html">
+
+  <meta name="twitter:card" content="summary">
+  <meta name="twitter:title" content="Контроль действий ИИ-агента через журнал событий">
+  <meta name="twitter:description" content="Разрешенные переходы, обязательные проверки и восстановление состояния ИИ-агента из append-only журнала.">
+
+  <meta name="reading-meta" content="Продвинутый уровень · 12 минут · Практика">
+  <meta property="article:section" content="Инженерия ИИ-агентов">
+  <meta property="article:tag" content="ИИ-агенты">
+  <meta property="article:tag" content="журнал событий">
+  <meta property="article:tag" content="управляющий контур">
+
+  <script type="application/ld+json">
+  {
+    "@context": "https://schema.org",
+    "@type": "Article",
+    "headline": "Контроль действий ИИ-агента через журнал событий",
+    "description": "Практический прототип управляющего контура: разрешенные переходы, обязательные проверки, append-only журнал и восстановление состояния ИИ-агента.",
+    "inLanguage": "ru-RU",
+    "mainEntityOfPage": {
+      "@type": "WebPage",
+      "@id": "https://agentlabjournal.online/event-sourced-agent-control.html"
+    },
+    "publisher": {
+      "@type": "Organization",
+      "name": "Agent Lab Journal",
+      "url": "https://agentlabjournal.online/"
+    },
+    "isAccessibleForFree": true,
+    "articleSection": "Инженерия ИИ-агентов",
+    "keywords": [
+      "ИИ-агент",
+      "event sourcing",
+      "append-only журнал",
+      "конечный автомат",
+      "управляющий контур"
+    ],
+    "timeRequired": "PT12M"
+  }
+  </script>
+</head>
+<body>
+  <header class="site-header">
+    <nav aria-label="Основная навигация">
+      <a href="index.html">Agent Lab Journal</a>
+      <a href="guides.html">Руководства</a>
+      <a href="glossary.html">Глоссарий</a>
+    </nav>
+  </header>
+
+  <main>
+    <article>
+      <header class="article-header">
+        <p class="eyebrow">Практика · Инженерия агентов</p>
+        <h1>Контроль действий ИИ-агента через журнал событий</h1>
+        <p class="lead">Лог диалога показывает намерения агента, но не доказывает, что изменения выполнялись в разрешенной последовательности. Построим небольшой управляющий контур, который принимает решения до исполнения команды, фиксирует их в неизменяемом журнале и восстанавливает состояние после перезапуска.</p>
+        <div class="reading-meta" aria-label="Параметры статьи">
+          <span>Уровень: продвинутый</span>
+          <span>Чтение: до 12 минут</span>
+          <span>Результат: воспроизводимый прототип</span>
+        </div>
+      </header>
+
+      <section id="problem">
+        <h2>Почему истории диалога недостаточно</h2>
+        <p><a href="glossary.html#event-sourcing">Event Sourcing</a> — подход, при котором текущее состояние получают последовательным применением сохраненных событий. Для управляющего контура это важнее обычного текстового лога: событие описывает не рассказ агента о действии, а решение доверенного посредника.</p>
+        <p>Представим обязательный маршрут изменения проекта:</p>
+        <ol>
+          <li>агент предлагает изменение;</li>
+          <li>контур разрешает запись;</li>
+          <li>агент сообщает о завершении записи;</li>
+          <li>контур требует проверку;</li>
+          <li>только успешная проверка разрешает завершение задачи.</li>
+        </ol>
+        <p>Если агент после записи сразу объявит задачу завершенной, диалог может выглядеть убедительно. Но управляющий контур должен отклонить переход: между изменением и завершением нет подтвержденной проверки.</p>
+
+        <aside class="note">
+          <h3>Граница доверия</h3>
+          <p>Прототип контролирует только действия, прошедшие через его интерфейс. Если процесс агента имеет прямой доступ к файловой системе или оболочке, он может обойти контур. В рабочей системе права на изменение проекта следует оставить исполнителю, а агенту предоставить только API управляющего контура.</p>
+        </aside>
+      </section>
+
+      <section id="model">
+        <h2>Модель состояний</h2>
+        <p>Используем четыре состояния задачи и небольшой набор команд:</p>
+
+        <table>
+          <thead>
+            <tr>
+              <th scope="col">Текущее состояние</th>
+              <th scope="col">Команда</th>
+              <th scope="col">Следующее состояние</th>
+              <th scope="col">Условие</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td><code>idle</code></td>
+              <td><code>propose_change</code></td>
+              <td><code>planned</code></td>
+              <td>Указан непустой путь</td>
+            </tr>
+            <tr>
+              <td><code>planned</code></td>
+              <td><code>apply_change</code></td>
+              <td><code>changed</code></td>
+              <td>Путь совпадает с предложенным</td>
+            </tr>
+            <tr>
+              <td><code>changed</code></td>
+              <td><code>record_check</code></td>
+              <td><code>verified</code> или <code>changed</code></td>
+              <td>Результат проверки успешен или неуспешен</td>
+            </tr>
+            <tr>
+              <td><code>verified</code></td>
+              <td><code>finish</code></td>
+              <td><code>finished</code></td>
+              <td>Есть успешная проверка текущей ревизии</td>
+            </tr>
+          </tbody>
+        </table>
+
+        <p>Каждая запись увеличивает ревизию. Успешная проверка относится к конкретной ревизии, поэтому новое изменение автоматически делает старую проверку недостаточной. В нашем минимальном автомате повторное изменение начинается новой задачей; расширение для нескольких файлов рассмотрим в ограничениях.</p>
+      </section>
+
+      <section id="implementation">
+        <h2>Шаг 1. Создаем управляющий контур</h2>
+        <p>Нужен Python 3 без сторонних пакетов. Создайте отдельный пустой каталог и сохраните следующий файл как <code>controller.py</code>. Код является учебным примером, а не готовым механизмом изоляции.</p>
+
+        <pre><code class="language-python">#!/usr/bin/env python3
+import argparse
+import hashlib
+import json
+import os
+from pathlib import Path
+from typing import Any
+
+LOG_PATH = Path("agent-events.jsonl")
+GENESIS = "0" * 64
+
+def canonical(data: dict[str, Any]) -&gt; bytes:
+    return json.dumps(
+        data, ensure_ascii=False, sort_keys=True, separators=(",", ":")
+    ).encode("utf-8")
+
+def digest(event_without_hash: dict[str, Any]) -&gt; str:
+    return hashlib.sha256(canonical(event_without_hash)).hexdigest()
+
+def initial_state() -&gt; dict[str, Any]:
+    return {
+        "status": "idle",
+        "path": None,
+        "revision": 0,
+        "verified_revision": None
+    }
+
+def reduce_event(state: dict[str, Any], event: dict[str, Any]) -&gt; dict[str, Any]:
+    kind = event["type"]
+    data = event["data"]
+    next_state = dict(state)
+
+    if kind == "change_proposed":
+        next_state.update(status="planned", path=data["path"])
+    elif kind == "change_applied":
+        next_state.update(
+            status="changed",
+            revision=state["revision"] + 1,
+            verified_revision=None
+        )
+    elif kind == "check_recorded":
+        if data["ok"]:
+            next_state.update(
+                status="verified",
+                verified_revision=state["revision"]
+            )
+        else:
+            next_state.update(
+                status="changed",
+                verified_revision=None
+            )
+    elif kind == "task_finished":
+        next_state["status"] = "finished"
+    else:
+        raise ValueError(f"unknown event type: {kind}")
+
+    return next_state
+
+def load() -&gt; tuple[dict[str, Any], str, int]:
+    state = initial_state()
+    previous_hash = GENESIS
+    sequence = 0
+
+    if not LOG_PATH.exists():
+        return state, previous_hash, sequence
+
+    with LOG_PATH.open("r", encoding="utf-8") as stream:
+        for line_number, line in enumerate(stream, 1):
+            event = json.loads(line)
+            supplied_hash = event.pop("hash")
+
+            if event["seq"] != sequence + 1:
+                raise ValueError(f"broken sequence at line {line_number}")
+            if event["prev_hash"] != previous_hash:
+                raise ValueError(f"broken hash chain at line {line_number}")
+            if digest(event) != supplied_hash:
+                raise ValueError(f"invalid event hash at line {line_number}")
+
+            state = reduce_event(state, event)
+            previous_hash = supplied_hash
+            sequence = event["seq"]
+
+    return state, previous_hash, sequence
+
+def append_event(kind: str, data: dict[str, Any]) -&gt; None:
+    state, previous_hash, sequence = load()
+    event = {
+        "seq": sequence + 1,
+        "type": kind,
+        "data": data,
+        "prev_hash": previous_hash
+    }
+    event["hash"] = digest(event)
+
+    flags = os.O_WRONLY | os.O_CREAT | os.O_APPEND
+    descriptor = os.open(LOG_PATH, flags, 0o600)
+    try:
+        payload = canonical(event) + b"\n"
+        os.write(descriptor, payload)
+        os.fsync(descriptor)
+    finally:
+        os.close(descriptor)
+
+    new_state = reduce_event(state, event)
+    print(json.dumps(new_state, ensure_ascii=False, indent=2))
+
+def decide(command: str, args: argparse.Namespace) -&gt; tuple[str, dict[str, Any]]:
+    state, _, _ = load()
+    status = state["status"]
+
+    if command == "propose_change" and status == "idle":
+        path = args.path.strip()
+        if not path or Path(path).is_absolute() or ".." in Path(path).parts:
+            raise ValueError("path must be a safe relative path")
+        return "change_proposed", {"path": path}
+
+    if command == "apply_change" and status == "planned":
+        if args.path != state["path"]:
+            raise ValueError("path differs from approved proposal")
+        return "change_applied", {"path": args.path}
+
+    if command == "record_check" and status == "changed":
+        return "check_recorded", {
+            "name": args.name,
+            "ok": args.result == "pass"
+        }
+
+    if command == "finish" and status == "verified":
+        if state["verified_revision"] != state["revision"]:
+            raise ValueError("current revision is not verified")
+        return "task_finished", {}
+
+    raise ValueError(f"transition {status} -&gt; {command} is forbidden")
+
+def main() -&gt; None:
+    parser = argparse.ArgumentParser()
+    subparsers = parser.add_subparsers(dest="command", required=True)
+
+    propose = subparsers.add_parser("propose_change")
+    propose.add_argument("--path", required=True)
+
+    apply_change = subparsers.add_parser("apply_change")
+    apply_change.add_argument("--path", required=True)
+
+    check = subparsers.add_parser("record_check")
+    check.add_argument("--name", required=True)
+    check.add_argument("--result", choices=("pass", "fail"), required=True)
+
+    subparsers.add_parser("finish")
+    subparsers.add_parser("status")
+
+    args = parser.parse_args()
+
+    try:
+        if args.command == "status":
+            state, last_hash, sequence = load()
+            print(json.dumps({
+                "state": state,
+                "last_hash": last_hash,
+                "events": sequence
+            }, ensure_ascii=False, indent=2))
+            return
+
+        kind, data = decide(args.command, args)
+        append_event(kind, data)
+    except (ValueError, json.JSONDecodeError, KeyError) as error:
+        parser.exit(2, f"rejected: {error}\n")
+
+if __name__ == "__main__":
+    main()
+</code></pre>
+
+        <p>Управляющий контур разделен на три части:</p>
+        <ul>
+          <li><code>decide</code> проверяет команду относительно восстановленного состояния;</li>
+          <li><code>append_event</code> добавляет принятое событие и принудительно передает запись операционной системе;</li>
+          <li><code>load</code> проверяет цепочку хешей и заново строит состояние функцией <code>reduce_event</code>.</li>
+        </ul>
+        <p>Отдельного изменяемого файла состояния нет. Следовательно, журнал остается единственным источником состояния, а логика восстановления совпадает с логикой обычной работы.</p>
+      </section>
+
+      <section id="run">
+        <h2>Шаг 2. Воспроизводим разрешенный маршрут</h2>
+        <p>Следующие команды работают только с файлами в текущем учебном каталоге. Они не запускают сетевые запросы, не требуют секретов и не изменяют реальный проект:</p>
+
+        <pre><code class="language-bash">mkdir agent-control-demo
+cd agent-control-demo
+# Сохраните controller.py в этом каталоге.
+python3 controller.py propose_change --path src/example.py
+python3 controller.py apply_change --path src/example.py
+python3 controller.py record_check --name syntax --result pass
+python3 controller.py finish
+python3 controller.py status
+</code></pre>
+
+        <p>В финальном выводе ожидаются <code>"status": "finished"</code>, <code>"revision": 1</code>, <code>"verified_revision": 1</code> и <code>"events": 4</code>. Значение <code>last_hash</code> зависит от содержимого событий; сравнивать его с заранее заданной строкой не нужно.</p>
+
+        <p>Обратите внимание: команда <code>apply_change</code> в этом прототипе подтверждает факт изменения, но сама не редактирует файл. В реальной архитектуре именно доверенный исполнитель должен выполнить изменение и только после успешного завершения записать <code>change_applied</code>. Нельзя позволять агенту самостоятельно утверждать, что операция состоялась.</p>
+      </section>
+
+      <section id="rejections">
+        <h2>Шаг 3. Проверяем запрещенные переходы</h2>
+        <p>Для чистого сценария используйте новый каталог с копией <code>controller.py</code>. Не удаляйте журнал рабочей системы ради теста.</p>
+
+        <h3>Завершение без изменения</h3>
+        <pre><code class="language-bash">python3 controller.py finish
+</code></pre>
+        <p>Контур должен завершиться с кодом <code>2</code> и сообщением <code>transition idle -&gt; finish is forbidden</code>. Событие при этом не добавляется.</p>
+
+        <h3>Подмена согласованного пути</h3>
+        <pre><code class="language-bash">python3 controller.py propose_change --path src/example.py
+python3 controller.py apply_change --path src/other.py
+</code></pre>
+        <p>Вторая команда должна быть отклонена сообщением <code>path differs from approved proposal</code>. Состояние останется <code>planned</code>.</p>
+
+        <h3>Обход обязательной проверки</h3>
+        <pre><code class="language-bash">python3 controller.py apply_change --path src/example.py
+python3 controller.py finish
+</code></pre>
+        <p>Вторая команда должна быть отклонена: после применения изменения состояние равно <code>changed</code>, а переход к <code>finish</code> разрешен только из <code>verified</code>.</p>
+
+        <h3>Неуспешная проверка</h3>
+        <pre><code class="language-bash">python3 controller.py record_check --name syntax --result fail
+python3 controller.py finish
+</code></pre>
+        <p>Неуспешная проверка сохраняется как факт, но состояние остается <code>changed</code>. Завершение снова отклоняется.</p>
+      </section>
+
+      <section id="recovery">
+        <h2>Шаг 4. Восстанавливаем состояние из журнала</h2>
+        <p>После разрешенного маршрута запустите:</p>
+
+        <pre><code class="language-bash">python3 controller.py status
+</code></pre>
+
+        <p>Процесс стартует без памяти о предыдущих командах. Функция <code>load</code> читает <code>agent-events.jsonl</code>, проверяет номера и хеш-цепочку, а затем применяет события по порядку. Полученное состояние и есть восстановление агента в рамках управляющего автомата.</p>
+
+        <p>Посмотреть структурные поля журнала можно безопасной командой:</p>
+        <pre><code class="language-bash">python3 -m json.tool --json-lines agent-events.jsonl
+</code></pre>
+
+        <p>Каждая строка содержит:</p>
+        <ul>
+          <li><code>seq</code> — монотонный номер события;</li>
+          <li><code>type</code> и <code>data</code> — принятый факт и его параметры;</li>
+          <li><code>prev_hash</code> — хеш предыдущей записи;</li>
+          <li><code>hash</code> — контрольное значение текущей записи.</li>
+        </ul>
+
+        <aside class="warning">
+          <h3>Хеш-цепочка не делает файл неизменяемым</h3>
+          <p>Она обнаруживает случайную порчу и наивное редактирование, но пользователь с правом перезаписи может пересчитать всю цепочку. Для доказательства неизменности нужны внешняя точка доверия, ограничение прав, защищенное хранилище или периодическая фиксация корневого хеша вне машины агента.</p>
+        </aside>
+      </section>
+
+      <section id="integration">
+        <h2>Как встроить контур вокруг реального агента</h2>
+        <p>Схема интеграции должна отделять предложение от исполнения:</p>
+        <ol>
+          <li>агент отправляет структурированную команду контроллеру;</li>
+          <li>контроллер восстанавливает состояние и проверяет переход;</li>
+          <li>доверенный исполнитель применяет разрешенное изменение;</li>
+          <li>контроллер записывает событие с фактическим результатом;</li>
+          <li>проверки запускаются отдельным доверенным процессом;</li>
+          <li>их код завершения преобразуется в событие, а не пересказывается агентом.</li>
+        </ol>
+
+        <p>Минимальный контракт команды может выглядеть так:</p>
+        <pre><code class="language-json">{
+  "task_id": "local-example",
+  "command": "record_check",
+  "arguments": {
+    "name": "syntax",
+    "observed_exit_code": 0
+  },
+  "expected_revision": 1
+}
+</code></pre>
+        <p>Это пример формата. Поле <code>expected_revision</code> позволяет отклонять устаревшие команды при конкуренции. Поле <code>observed_exit_code</code> должен заполнять исполнитель проверки, а не модель.</p>
+
+        <p>Для производственного варианта добавьте идемпотентный <code>command_id</code>, идентификатор задачи, автора решения, версию политики и хеш входных артефактов. Событие должно отвечать на вопрос «что надежно произошло», а не «что агент собирался сделать».</p>
+      </section>
+
+      <section id="verification">
+        <h2>Проверка результата</h2>
+        <p>Прототип выполняет заявленную задачу, если вручную подтверждены все пункты:</p>
+        <ul>
+          <li>разрешенный маршрут создает четыре события и состояние <code>finished</code>;</li>
+          <li><code>finish</code> до успешной проверки возвращает код <code>2</code>;</li>
+          <li>отклоненная команда не увеличивает счетчик событий;</li>
+          <li>новый процесс восстанавливает то же состояние командой <code>status</code>;</li>
+          <li>нарушение последовательности или хеш-цепочки останавливает загрузку журнала;</li>
+          <li>абсолютный путь и путь с компонентом <code>..</code> отклоняются на этапе предложения.</li>
+        </ul>
+        <p>Проверяйте не только сообщения терминала, но и инварианты: завершенная задача всегда имеет <code>verified_revision == revision</code>, а любое принятое событие связано с предыдущим.</p>
+      </section>
+
+      <section id="errors">
+        <h2>Типовые ошибки</h2>
+
+        <h3>Записывать только успешные решения</h3>
+        <p>Такой журнал объясняет состояние, но не показывает попытки обхода. Отказы полезно сохранять в отдельном аудиторском потоке с причиной и идентификатором команды. Не смешивайте их с доменными событиями, иначе reducer может принять отказ за изменение состояния.</p>
+
+        <h3>Доверять полю <code>result: pass</code> от агента</h3>
+        <p>Модель не должна удостоверять собственную проверку. Результат обязан поступать от процесса, который действительно выполнил команду и наблюдал код завершения, тайм-аут и необходимые артефакты.</p>
+
+        <h3>Сначала выполнить, потом спросить политику</h3>
+        <p>Проверка после изменения годится для аудита, но не для контроля. Решение о допустимости пути, инструмента и перехода принимается до побочного эффекта.</p>
+
+        <h3>Считать <code>O_APPEND</code> полной защитой</h3>
+        <p>Флаг предотвращает обычную запись в середину через этот дескриптор, но не запрещает другому процессу обрезать или заменить файл. Нужны права доступа и контроль среды исполнения.</p>
+
+        <h3>Игнорировать частичную запись</h3>
+        <p>Авария может оставить последнюю JSON-строку незавершенной. Производственный загрузчик должен отличать поврежденный хвост от повреждения в середине, применять формализованную процедуру восстановления и никогда не исправлять журнал молча.</p>
+
+        <h3>Не учитывать параллельные команды</h3>
+        <p>Два процесса могут восстановить одну ревизию и одновременно принять несовместимые решения. Файловый пример не реализует межпроцессную блокировку. Для конкурентной работы нужен единственный writer либо транзакционное сравнение ожидаемой ревизии с текущей.</p>
+      </section>
+
+      <section id="limitations">
+        <h2>Ограничения прототипа</h2>
+        <ul>
+          <li>Журнал локальный и не защищен от владельца файла.</li>
+          <li>Один вызов <code>os.write</code> не является универсальной гарантией атомарности для файлов любого размера и любой файловой системы.</li>
+          <li>Нет блокировки нескольких процессов, дедупликации команд и привязки событий к отдельным задачам.</li>
+          <li>Контур фиксирует подтверждение изменения, но не выполняет его и не сверяет содержимое файла.</li>
+          <li>Хеш SHA-256 здесь служит контролем целостности цепочки, а не подписью автора.</li>
+          <li>Снимки состояния не реализованы; восстановление занимает время, пропорциональное числу событий.</li>
+          <li>Политика допускает один путь и одну ревизию. Пакетные изменения потребуют явной модели change set.</li>
+        </ul>
+
+        <p>Следующий практический шаг — перенести журнал в хранилище с транзакционным append, добавить optimistic concurrency по ревизии и запускать операции в изолированном исполнителе. Политика при этом должна оставаться детерминированной: одинаковый журнал обязан восстанавливать одинаковое состояние.</p>
+      </section>
+
+      <section id="conclusion">
+        <h2>Итог</h2>
+        <p>Журнал диалога отвечает на вопрос, что модель сказала. Управляющий журнал отвечает на более строгий вопрос: какие переходы доверенный контур разрешил и какие факты наблюдал исполнитель. В прототипе запрещенное завершение отклоняется до записи события, обязательная проверка привязана к ревизии, а состояние полностью восстанавливается повторным применением append-only последовательности.</p>
+        <p>Для продолжения изучите <a href="guides.html">практические руководства Agent Lab Journal</a> и сверяйтесь с <a href="glossary.html">глоссарием терминов</a> при проектировании политики агента.</p>
+      </section>
+    </article>
+  </main>
+
+  <footer class="site-footer">
+    <p><a href="index.html">Agent Lab Journal</a> · Практические материалы об инженерии ИИ-агентов</p>
+  </footer>
+</body>
+</html>

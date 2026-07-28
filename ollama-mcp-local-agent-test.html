@@ -1,0 +1,724 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+
+  <title>Локальный агент на Ollama и MCP: сборка и проверка вызова инструментов — Agent Lab Journal</title>
+  <meta name="description" content="Практическое руководство по сборке локального агента на Ollama и MCP: тестовый MCP-сервер, цикл вызова инструментов, проверка нескольких моделей и разбор типовых ошибок.">
+  <link rel="canonical" href="https://agentlabjournal.online/ollama-mcp-local-agent-test.html">
+
+  <meta property="og:type" content="article">
+  <meta property="og:locale" content="ru_RU">
+  <meta property="og:site_name" content="Agent Lab Journal">
+  <meta property="og:title" content="Локальный агент на Ollama и MCP: сборка и проверка вызова инструментов">
+  <meta property="og:description" content="Собираем воспроизводимого локального агента, подключаем MCP-инструменты и сравниваем качество tool calling у нескольких моделей Ollama.">
+  <meta property="og:url" content="https://agentlabjournal.online/ollama-mcp-local-agent-test.html">
+
+  <meta name="twitter:card" content="summary">
+  <meta name="twitter:title" content="Локальный агент на Ollama и MCP: сборка и проверка вызова инструментов">
+  <meta name="twitter:description" content="Практическая сборка локального агента и воспроизводимый тест MCP-вызовов на нескольких моделях Ollama.">
+
+  <link rel="stylesheet" href="style.css">
+  <link rel="stylesheet" href="reading.css">
+
+  <script type="application/ld+json">
+  {
+    "@context": "https://schema.org",
+    "@type": "Article",
+    "headline": "Локальный агент на Ollama и MCP: сборка и проверка вызова инструментов",
+    "description": "Практическое руководство по сборке локального агента на Ollama и MCP: тестовый MCP-сервер, цикл вызова инструментов, проверка нескольких моделей и разбор типовых ошибок.",
+    "inLanguage": "ru-RU",
+    "mainEntityOfPage": {
+      "@type": "WebPage",
+      "@id": "https://agentlabjournal.online/ollama-mcp-local-agent-test.html"
+    },
+    "url": "https://agentlabjournal.online/ollama-mcp-local-agent-test.html",
+    "author": {
+      "@type": "Organization",
+      "name": "Agent Lab Journal"
+    },
+    "publisher": {
+      "@type": "Organization",
+      "name": "Agent Lab Journal",
+      "url": "https://agentlabjournal.online/"
+    },
+    "articleSection": "Практические руководства",
+    "keywords": [
+      "Ollama",
+      "MCP",
+      "локальный агент",
+      "вызов инструментов",
+      "tool calling",
+      "локальные модели"
+    ],
+    "timeRequired": "PT12M"
+  }
+  </script>
+</head>
+<body>
+  <header class="site-header">
+    <div class="container">
+      <a class="site-title" href="index.html">Agent Lab Journal</a>
+      <nav aria-label="Основная навигация">
+        <a href="guides.html">Руководства</a>
+        <a href="glossary.html">Глоссарий</a>
+      </nav>
+    </div>
+  </header>
+
+  <main>
+    <article class="reading">
+      <header class="article-header">
+        <p class="eyebrow">Практическое руководство</p>
+        <h1>Локальный агент на Ollama и MCP: сборка и проверка вызова инструментов</h1>
+
+        <div class="reading-meta" aria-label="Параметры статьи">
+          <span>Уровень: средний</span>
+          <span>Чтение: до 12 минут</span>
+          <span>Результат: локальный агент и воспроизводимый тест MCP-вызовов</span>
+        </div>
+
+        <p class="lead">
+          Локальная модель может уверенно вести диалог, но обычного текстового ответа недостаточно, чтобы надежно обращаться к файлам, базам данных или API. В этой статье мы соберем минимальный <a href="glossary.html#agent">агент</a>, который получает описание инструментов от MCP-сервера, передает их Ollama, исполняет выбранный вызов и возвращает результат модели.
+        </p>
+      </header>
+
+      <section>
+        <h2>Что именно мы проверяем</h2>
+
+        <p>
+          MCP и вызов инструментов решают разные части задачи. MCP-сервер публикует список доступных операций и исполняет их. Модель выбирает операцию и формирует аргументы. Клиентский код связывает эти части: преобразует схемы, проверяет запрос модели, вызывает сервер и продолжает диалог.
+        </p>
+
+        <p>
+          Наша проверка отвечает на четыре практических вопроса:
+        </p>
+
+        <ol>
+          <li>Вызывает ли модель инструмент, когда без него нельзя получить точный ответ?</li>
+          <li>Выбирает ли она правильное имя инструмента?</li>
+          <li>Передает ли аргументы, соответствующие JSON Schema?</li>
+          <li>Использует ли результат инструмента в финальном ответе?</li>
+        </ol>
+
+        <aside class="note">
+          <strong>Важно:</strong> MCP сам по себе не делает tool calling надежным. Результат зависит от модели, формулировки задания, схемы инструмента и защитных проверок в агенте.
+        </aside>
+      </section>
+
+      <section>
+        <h2>Схема стенда</h2>
+
+        <pre><code>Пользователь
+    │
+    ▼
+Python-агент ──────► Ollama /api/chat
+    │                    │
+    │                    └── tool_calls
+    ▼
+MCP-клиент
+    │
+    ▼
+Локальный MCP-сервер ──► результат инструмента</code></pre>
+
+        <p>
+          Чтобы тест был безопасным и воспроизводимым, сервер предоставляет только две детерминированные операции: сложение целых чисел и поиск значения в фиксированном локальном каталоге. Он не читает произвольные файлы, не запускает команды и не обращается в сеть.
+        </p>
+      </section>
+
+      <section>
+        <h2>1. Подготовка окружения</h2>
+
+        <p>
+          Нужны установленная Ollama, Python 3.10 или новее и хотя бы одна локальная модель, поддерживающая вызов инструментов. Поддержка зависит от конкретного семейства и тега модели, поэтому ее следует проверять экспериментом, а не только качеством обычного чата.
+        </p>
+
+        <pre><code>mkdir ollama-mcp-lab
+cd ollama-mcp-lab
+
+python3 -m venv .venv
+source .venv/bin/activate
+
+python -m pip install --upgrade pip
+python -m pip install mcp requests</code></pre>
+
+        <p>
+          В Windows PowerShell окружение активируется командой:
+        </p>
+
+        <pre><code>.\.venv\Scripts\Activate.ps1</code></pre>
+
+        <p>
+          Запустите Ollama обычным для вашей системы способом и убедитесь, что локальный API отвечает:
+        </p>
+
+        <pre><code>curl http://127.0.0.1:11434/api/tags</code></pre>
+
+        <p>
+          Команда только читает список локальных моделей. Если список пуст, загрузите выбранную вами модель командой <code>ollama pull ИМЯ_МОДЕЛИ</code>. В статье намеренно не фиксируется «лучшая» модель: доступные теги и их возможности меняются, а подходящий размер зависит от памяти компьютера.
+        </p>
+      </section>
+
+      <section>
+        <h2>2. Создание безопасного MCP-сервера</h2>
+
+        <p>
+          Сохраните следующий код в файл <code>server.py</code>:
+        </p>
+
+        <pre><code>from mcp.server.fastmcp import FastMCP
+
+mcp = FastMCP("local-test-tools")
+
+CATALOG = {
+    "alpha": "синий",
+    "beta": "янтарный",
+    "gamma": "зеленый",
+}
+
+
+@mcp.tool()
+def add_integers(a: int, b: int) -&gt; int:
+    """Сложить два целых числа и вернуть точный результат."""
+    return a + b
+
+
+@mcp.tool()
+def catalog_lookup(key: str) -&gt; str:
+    """Вернуть значение из локального тестового каталога по ключу."""
+    normalized = key.strip().lower()
+    if normalized not in CATALOG:
+        return "NOT_FOUND"
+    return CATALOG[normalized]
+
+
+if __name__ == "__main__":
+    mcp.run(transport="stdio")</code></pre>
+
+        <p>
+          Сервер работает через стандартный ввод и вывод. Не добавляйте в него диагностические <code>print()</code> в stdout: они могут повредить протокол. Для отладки используйте stderr или штатное логирование.
+        </p>
+      </section>
+
+      <section>
+        <h2>3. Агент: Ollama, MCP и цикл инструментов</h2>
+
+        <p>
+          Сохраните код ниже в <code>agent.py</code>. Он запрашивает у MCP-сервера список инструментов, преобразует схемы в формат Ollama и ограничивает число последовательных вызовов.
+        </p>
+
+        <pre><code>import asyncio
+import json
+import os
+import sys
+from typing import Any
+
+import requests
+from mcp import ClientSession, StdioServerParameters
+from mcp.client.stdio import stdio_client
+
+
+OLLAMA_URL = os.getenv(
+    "OLLAMA_URL",
+    "http://127.0.0.1:11434/api/chat",
+)
+MAX_TOOL_ROUNDS = 4
+
+
+def ollama_chat(model: str, messages: list[dict], tools: list[dict]) -&gt; dict:
+    response = requests.post(
+        OLLAMA_URL,
+        json={
+            "model": model,
+            "messages": messages,
+            "tools": tools,
+            "stream": False,
+            "options": {"temperature": 0},
+        },
+        timeout=120,
+    )
+    response.raise_for_status()
+    payload = response.json()
+
+    if "message" not in payload:
+        raise RuntimeError(f"В ответе Ollama нет message: {payload}")
+
+    return payload["message"]
+
+
+def convert_tools(mcp_tools: list[Any]) -&gt; list[dict]:
+    converted = []
+
+    for tool in mcp_tools:
+        converted.append({
+            "type": "function",
+            "function": {
+                "name": tool.name,
+                "description": tool.description or "",
+                "parameters": tool.inputSchema,
+            },
+        })
+
+    return converted
+
+
+def result_to_text(result: Any) -&gt; str:
+    parts = []
+
+    for item in result.content:
+        text = getattr(item, "text", None)
+        if text is not None:
+            parts.append(text)
+
+    return "\n".join(parts) if parts else str(result)
+
+
+async def run_agent(model: str, prompt: str) -&gt; dict:
+    server = StdioServerParameters(
+        command=sys.executable,
+        args=["server.py"],
+    )
+
+    async with stdio_client(server) as (read_stream, write_stream):
+        async with ClientSession(read_stream, write_stream) as session:
+            await session.initialize()
+
+            available = await session.list_tools()
+            tools = convert_tools(available.tools)
+            allowed_names = {tool.name for tool in available.tools}
+
+            messages = [
+                {
+                    "role": "system",
+                    "content": (
+                        "Ты локальный тестовый агент. "
+                        "Если задача требует точного значения, используй доступный "
+                        "инструмент. Не выдумывай результат инструмента."
+                    ),
+                },
+                {"role": "user", "content": prompt},
+            ]
+
+            trace = []
+
+            for round_number in range(1, MAX_TOOL_ROUNDS + 1):
+                assistant = ollama_chat(model, messages, tools)
+                messages.append(assistant)
+                calls = assistant.get("tool_calls") or []
+
+                if not calls:
+                    return {
+                        "status": "completed",
+                        "answer": assistant.get("content", ""),
+                        "trace": trace,
+                    }
+
+                for call in calls:
+                    function = call.get("function", {})
+                    name = function.get("name")
+                    arguments = function.get("arguments", {})
+
+                    if name not in allowed_names:
+                        raise RuntimeError(
+                            f"Модель запросила неизвестный инструмент: {name}"
+                        )
+
+                    if isinstance(arguments, str):
+                        arguments = json.loads(arguments)
+
+                    if not isinstance(arguments, dict):
+                        raise TypeError(
+                            f"Аргументы {name} должны быть объектом JSON"
+                        )
+
+                    result = await session.call_tool(name, arguments)
+                    result_text = result_to_text(result)
+
+                    trace.append({
+                        "round": round_number,
+                        "tool": name,
+                        "arguments": arguments,
+                        "result": result_text,
+                        "is_error": bool(getattr(result, "isError", False)),
+                    })
+
+                    messages.append({
+                        "role": "tool",
+                        "tool_name": name,
+                        "content": result_text,
+                    })
+
+            return {
+                "status": "tool_round_limit",
+                "answer": "",
+                "trace": trace,
+            }
+
+
+async def main() -&gt; None:
+    if len(sys.argv) &lt; 3:
+        raise SystemExit(
+            'Использование: python agent.py "модель" "запрос"'
+        )
+
+    report = await run_agent(sys.argv[1], sys.argv[2])
+    print(json.dumps(report, ensure_ascii=False, indent=2))
+
+
+if __name__ == "__main__":
+    asyncio.run(main())</code></pre>
+
+        <p>
+          Здесь есть три обязательных предохранителя: список разрешенных имен берется у подключенного сервера, строковые аргументы разбираются как JSON, а число раундов ограничено. В рабочем проекте к ним стоит добавить проверку аргументов по схеме, тайм-аут каждого инструмента и отдельные права для опасных операций.
+        </p>
+      </section>
+
+      <section>
+        <h2>4. Одиночная проверка</h2>
+
+        <p>
+          Подставьте точное имя уже установленной локальной модели:
+        </p>
+
+        <pre><code>python agent.py "ИМЯ_МОДЕЛИ" \
+  "Используй инструмент и вычисли сумму 137 и 286. Верни результат."</code></pre>
+
+        <p>
+          Успешный запуск должен содержать вызов <code>add_integers</code> с аргументами <code>137</code> и <code>286</code>, результат <code>423</code> и статус <code>completed</code>. Это ожидаемое поведение тестового стенда, а не заявленный результат для любой модели.
+        </p>
+
+        <p>Пример структуры успешного отчета:</p>
+
+        <pre><code>{
+  "status": "completed",
+  "answer": "423",
+  "trace": [
+    {
+      "round": 1,
+      "tool": "add_integers",
+      "arguments": {
+        "a": 137,
+        "b": 286
+      },
+      "result": "423",
+      "is_error": false
+    }
+  ]
+}</code></pre>
+
+        <p>
+          Затем проверьте инструмент, результат которого нельзя надежно угадать из общего знания модели:
+        </p>
+
+        <pre><code>python agent.py "ИМЯ_МОДЕЛИ" \
+  "Найди через локальный каталог значение ключа beta. Не угадывай."</code></pre>
+
+        <p>
+          В трассировке ожидается <code>catalog_lookup</code> с ключом <code>beta</code>, а результатом сервера будет <code>янтарный</code>.
+        </p>
+      </section>
+
+      <section>
+        <h2>5. Воспроизводимый тест нескольких моделей</h2>
+
+        <p>
+          Одиночный удачный ответ еще не показывает надежность. Для сравнения моделей запустим одинаковый набор заданий и автоматически проверим имя инструмента, аргументы и фактический результат MCP.
+        </p>
+
+        <p>Сохраните файл <code>benchmark.py</code>:</p>
+
+        <pre><code>import asyncio
+import json
+import os
+
+from agent import run_agent
+
+
+CASES = [
+    {
+        "id": "addition",
+        "prompt": (
+            "Используй доступный инструмент и вычисли сумму 137 и 286. "
+            "Не считай самостоятельно."
+        ),
+        "tool": "add_integers",
+        "arguments": {"a": 137, "b": 286},
+        "result": "423",
+    },
+    {
+        "id": "catalog",
+        "prompt": (
+            "Используй локальный каталог и найди значение ключа gamma. "
+            "Не угадывай."
+        ),
+        "tool": "catalog_lookup",
+        "arguments": {"key": "gamma"},
+        "result": "зеленый",
+    },
+    {
+        "id": "missing_key",
+        "prompt": (
+            "Проверь через локальный каталог ключ delta и сообщи "
+            "результат инструмента."
+        ),
+        "tool": "catalog_lookup",
+        "arguments": {"key": "delta"},
+        "result": "NOT_FOUND",
+    },
+]
+
+
+def normalize(value):
+    if isinstance(value, str):
+        return value.strip().lower()
+    return value
+
+
+def check_trace(trace, case):
+    for entry in trace:
+        if entry["tool"] != case["tool"]:
+            continue
+
+        actual_args = {
+            key: normalize(value)
+            for key, value in entry["arguments"].items()
+        }
+        expected_args = {
+            key: normalize(value)
+            for key, value in case["arguments"].items()
+        }
+
+        if (
+            actual_args == expected_args
+            and case["result"] in entry["result"]
+            and not entry["is_error"]
+        ):
+            return True
+
+    return False
+
+
+async def main():
+    raw_models = os.getenv("OLLAMA_MODELS", "")
+    models = [item.strip() for item in raw_models.split(",") if item.strip()]
+
+    if not models:
+        raise SystemExit(
+            "Задайте OLLAMA_MODELS через запятую точными именами "
+            "локально установленных моделей."
+        )
+
+    report = []
+
+    for model in models:
+        for case in CASES:
+            try:
+                result = await run_agent(model, case["prompt"])
+                passed = check_trace(result["trace"], case)
+                report.append({
+                    "model": model,
+                    "case": case["id"],
+                    "passed": passed,
+                    "status": result["status"],
+                    "trace": result["trace"],
+                    "answer": result["answer"],
+                })
+            except Exception as error:
+                report.append({
+                    "model": model,
+                    "case": case["id"],
+                    "passed": False,
+                    "status": "exception",
+                    "error": f"{type(error).__name__}: {error}",
+                })
+
+    print(json.dumps(report, ensure_ascii=False, indent=2))
+
+    print("\nСводка:")
+    for model in models:
+        rows = [row for row in report if row["model"] == model]
+        passed = sum(1 for row in rows if row["passed"])
+        print(f"{model}: {passed}/{len(rows)}")
+
+
+if __name__ == "__main__":
+    asyncio.run(main())</code></pre>
+
+        <p>
+          Укажите несколько точных имен из вывода <code>ollama list</code>. Пример ниже показывает формат команды, а не рекомендуемый набор моделей:
+        </p>
+
+        <pre><code>export OLLAMA_MODELS="МОДЕЛЬ_1,МОДЕЛЬ_2,МОДЕЛЬ_3"
+python benchmark.py &gt; benchmark-results.txt</code></pre>
+
+        <p>Для PowerShell:</p>
+
+        <pre><code>$env:OLLAMA_MODELS="МОДЕЛЬ_1,МОДЕЛЬ_2,МОДЕЛЬ_3"
+python benchmark.py | Tee-Object benchmark-results.txt</code></pre>
+
+        <p>
+          Скрипт выполняет три задания на каждой модели и в конце печатает долю успешных трасс. Он оценивает сам MCP-вызов, а не литературное качество финального ответа.
+        </p>
+      </section>
+
+      <section>
+        <h2>Как записать результаты без самообмана</h2>
+
+        <p>
+          Эта статья не приписывает моделям результаты, которые не были получены на вашем компьютере. Версия Ollama, точный тег модели, квантование и шаблон чата могут менять поведение. После запуска перенесите фактическую сводку в таблицу:
+        </p>
+
+        <div class="table-wrapper">
+          <table>
+            <thead>
+              <tr>
+                <th>Точная модель и тег</th>
+                <th>Сложение</th>
+                <th>Каталог</th>
+                <th>Отсутствующий ключ</th>
+                <th>Итого</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td>Заполнить после запуска</td>
+                <td>PASS / FAIL</td>
+                <td>PASS / FAIL</td>
+                <td>PASS / FAIL</td>
+                <td>0–3 / 3</td>
+              </tr>
+              <tr>
+                <td>Заполнить после запуска</td>
+                <td>PASS / FAIL</td>
+                <td>PASS / FAIL</td>
+                <td>PASS / FAIL</td>
+                <td>0–3 / 3</td>
+              </tr>
+              <tr>
+                <td>Заполнить после запуска</td>
+                <td>PASS / FAIL</td>
+                <td>PASS / FAIL</td>
+                <td>PASS / FAIL</td>
+                <td>0–3 / 3</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+
+        <p>
+          Для более устойчивой оценки повторите набор несколько раз. При <code>temperature: 0</code> ответы обычно становятся менее вариативными, но полная детерминированность не гарантируется. Сохраняйте необработанную трассировку: итоговая фраза «ответ 423» не доказывает, что модель действительно вызвала инструмент.
+        </p>
+      </section>
+
+      <section>
+        <h2>Критерии успешной проверки</h2>
+
+        <p>Локальный агент работает корректно, если одновременно выполнены условия:</p>
+
+        <ul>
+          <li>Ollama возвращает структурированный <code>tool_calls</code>, а не имитацию JSON в обычном тексте;</li>
+          <li>имя операции присутствует в списке, полученном через MCP;</li>
+          <li>аргументы имеют ожидаемые имена и типы;</li>
+          <li>MCP-сервер действительно исполняет операцию;</li>
+          <li>результат добавляется в историю с ролью <code>tool</code>;</li>
+          <li>модель завершает цикл финальным ответом без лишних повторных вызовов.</li>
+        </ul>
+
+        <p>
+          Если модель сразу пишет правильную сумму, но трасса пуста, тест считается проваленным: проверяется инструментальный путь, а не способность модели считать.
+        </p>
+      </section>
+
+      <section>
+        <h2>Типовые ошибки</h2>
+
+        <h3>Модель отвечает текстом и не вызывает инструмент</h3>
+
+        <p>
+          Сначала убедитесь, что выбранный тег поддерживает tool calling через Ollama. Затем сократите системную инструкцию, сделайте описание инструмента однозначным и явно потребуйте использовать инструмент. Большая разговорная модель не обязательно лучше небольшой модели, специально обученной структурированным вызовам.
+        </p>
+
+        <h3>В ответе появляется JSON, но <code>tool_calls</code> отсутствует</h3>
+
+        <p>
+          Это текстовая имитация вызова. Не исполняйте такой фрагмент автоматически. Агент должен доверять только структурированному полю API и сверять имя со списком разрешенных операций.
+        </p>
+
+        <h3>Ошибка 404 или соединение отклонено</h3>
+
+        <p>
+          Проверьте, запущена ли Ollama, совпадает ли адрес с <code>OLLAMA_URL</code> и доступен ли <code>http://127.0.0.1:11434/api/tags</code>. Если Ollama работает на другом хосте, задайте полный адрес явно.
+        </p>
+
+        <h3>MCP-сессия завершается сразу после запуска</h3>
+
+        <p>
+          Запускайте агент из каталога, где лежит <code>server.py</code>. Проверьте активное виртуальное окружение и наличие пакета <code>mcp</code>. Не выводите произвольный текст в stdout MCP-сервера при транспорте stdio.
+        </p>
+
+        <h3>Модель передает числа строками или меняет имена полей</h3>
+
+        <p>
+          Это реальный отказ tool calling, а не косметическая проблема. Для production-сценария проверяйте аргументы по исходной JSON Schema. Автоматическое исправление типов допустимо только как явно измеряемый слой адаптации: иначе сравнение моделей станет нечестным.
+        </p>
+
+        <h3>Агент зацикливается</h3>
+
+        <p>
+          Сохраняйте сообщение ассистента до добавления результатов инструментов и ограничивайте число раундов. Дополнительно можно запретить повтор идентичного вызова с теми же аргументами.
+        </p>
+
+        <h3>Старая версия клиента не принимает поле <code>tool_name</code></h3>
+
+        <p>
+          Форматы интеграции могут различаться между версиями. Проверьте фактический формат сообщений в установленной версии Ollama. Не удаляйте связь результата с вызванным инструментом вслепую: сначала изучите ответ локального API и адаптируйте сериализацию в одном месте — внутри <code>ollama_chat</code>.
+        </p>
+      </section>
+
+      <section>
+        <h2>Ограничения стенда</h2>
+
+        <ul>
+          <li>Три коротких задания не измеряют надежность агента в длительных рабочих сценариях.</li>
+          <li>Стенд не проверяет параллельные вызовы, отмену операций и потоковую выдачу.</li>
+          <li>Не тестируются авторизация, сетевые MCP-серверы и управление секретами.</li>
+          <li>Проверка фиксирует корректность вызова, но не полноту и стиль финального ответа.</li>
+          <li>Качество одной модели может отличаться между тегами, квантованиями и версиями рантайма.</li>
+          <li>Локальное исполнение не делает произвольный инструмент безопасным автоматически.</li>
+        </ul>
+
+        <p>
+          Перед подключением файловой системы, shell, почты или облачных сервисов введите явный список разрешенных действий, минимальные права, подтверждение операций с побочными эффектами и журнал вызовов. Секреты не следует помещать в системный промпт или аргументы модели, если инструмент может получить их самостоятельно из защищенного окружения.
+        </p>
+      </section>
+
+      <section>
+        <h2>Что улучшить дальше</h2>
+
+        <p>
+          Получив базовую трассу, расширяйте стенд постепенно: добавьте валидацию JSON Schema, идентификаторы вызовов, тайм-ауты, повтор только безопасных операций и набор негативных тестов. Полезны задания, где инструмент не нужен, где ключ отсутствует и где пользователь пытается заставить модель вызвать неизвестную функцию.
+        </p>
+
+        <p>
+          Другие практические схемы сборки агентов собраны в разделе <a href="guides.html">«Руководства»</a>. Определения MCP, tool calling, контекста и других терминов доступны в <a href="glossary.html">глоссарии</a>.
+        </p>
+      </section>
+
+      <section>
+        <h2>Итог</h2>
+
+        <p>
+          Рабочий локальный агент — это не только модель в Ollama. Нужен контролируемый цикл: получить схемы от MCP, передать их модели, проверить структурированный вызов, исполнить только разрешенный инструмент и вернуть результат в историю. Представленный стенд дает минимальную реализацию этого цикла и сохраняет фактические результаты сравнения нескольких локальных моделей без заранее придуманных оценок.
+        </p>
+      </section>
+    </article>
+  </main>
+
+  <footer class="site-footer">
+    <div class="container">
+      <p>Agent Lab Journal — практические материалы о локальных моделях и агентных системах.</p>
+    </div>
+  </footer>
+</body>
+</html>

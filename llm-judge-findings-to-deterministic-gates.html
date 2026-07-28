@@ -1,0 +1,543 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Как превратить замечания LLM-судьи в детерминированные проверки — Agent Lab Journal</title>
+  <meta name="description" content="Практическое руководство по переносу повторяющихся замечаний LLM-судьи в быстрые проверки существования цитат, валидности структуры и соответствия ответа исходному материалу.">
+  <link rel="canonical" href="https://agentlabjournal.online/llm-judge-findings-to-deterministic-gates.html">
+  <link rel="stylesheet" href="style.css">
+  <link rel="stylesheet" href="reading.css">
+
+  <meta property="og:type" content="article">
+  <meta property="og:locale" content="ru_RU">
+  <meta property="og:site_name" content="Agent Lab Journal">
+  <meta property="og:title" content="Как превратить замечания LLM-судьи в детерминированные проверки">
+  <meta property="og:description" content="Набор быстрых проверок для существования цитат, валидности структуры и соответствия ответа исходному материалу.">
+  <meta property="og:url" content="https://agentlabjournal.online/llm-judge-findings-to-deterministic-gates.html">
+
+  <meta name="twitter:card" content="summary">
+  <meta name="twitter:title" content="Как превратить замечания LLM-судьи в детерминированные проверки">
+  <meta name="twitter:description" content="Практическое руководство по замене повторяющихся оценок модели-судьи быстрыми воспроизводимыми проверками.">
+
+  <script type="application/ld+json">
+  {
+    "@context": "https://schema.org",
+    "@type": "Article",
+    "headline": "Как превратить замечания LLM-судьи в детерминированные проверки",
+    "description": "Практическое руководство по переносу повторяющихся замечаний LLM-судьи в быстрые проверки существования цитат, валидности структуры и соответствия ответа исходному материалу.",
+    "inLanguage": "ru-RU",
+    "mainEntityOfPage": {
+      "@type": "WebPage",
+      "@id": "https://agentlabjournal.online/llm-judge-findings-to-deterministic-gates.html"
+    },
+    "url": "https://agentlabjournal.online/llm-judge-findings-to-deterministic-gates.html",
+    "publisher": {
+      "@type": "Organization",
+      "name": "Agent Lab Journal",
+      "url": "https://agentlabjournal.online/"
+    },
+    "author": {
+      "@type": "Organization",
+      "name": "Agent Lab Journal"
+    },
+    "articleSection": "Практика",
+    "keywords": [
+      "LLM-судья",
+      "детерминированные проверки",
+      "валидация цитат",
+      "валидация JSON",
+      "grounding",
+      "evaluation gates"
+    ],
+    "timeRequired": "PT12M"
+  }
+  </script>
+</head>
+<body>
+  <header class="site-header">
+    <div class="container">
+      <a class="site-name" href="index.html">Agent Lab Journal</a>
+      <nav aria-label="Основная навигация">
+        <a href="guides.html">Руководства</a>
+        <a href="glossary.html">Глоссарий</a>
+      </nav>
+    </div>
+  </header>
+
+  <main>
+    <article class="reading">
+      <header class="article-header">
+        <p class="eyebrow">Практика оценки LLM-систем</p>
+        <h1>Как превратить замечания LLM-судьи в детерминированные проверки</h1>
+        <p class="lead">Если дорогая модель раз за разом находит отсутствующую цитату, сломанный JSON или утверждение, которого нет в источнике, это уже не задача для модели. Это спецификация будущего программного барьера.</p>
+        <div class="reading-meta" aria-label="Метаданные статьи">
+          <span>Продвинутый уровень</span>
+          <span>До 12 минут</span>
+          <span>Результат: три быстрых проверочных барьера</span>
+        </div>
+      </header>
+
+      <section>
+        <h2>Зачем выносить повторяющиеся ошибки из модельной оценки</h2>
+        <p><a href="glossary.html#llm-judge">LLM-судья</a> полезен там, где требуется оценить смысл, полноту, стиль или качество рассуждения. Но он плохо подходит для инвариантов, которые можно выразить однозначно: существует ли процитированный фрагмент, соответствует ли объект схеме, встречается ли заявленный факт в разрешённом источнике.</p>
+        <p>Оставлять такие проверки модели невыгодно по трём причинам:</p>
+        <ul>
+          <li>каждый прогон расходует токены и увеличивает задержку;</li>
+          <li>одинаковые ответы могут получить разные оценки;</li>
+          <li>текстовое замечание трудно связать с конкретным нарушенным условием.</li>
+        </ul>
+        <p>Цель не в том, чтобы полностью отказаться от судьи. Надёжная схема ставит дешёвые детерминированные барьеры раньше него. Судья получает только ответы, прошедшие синтаксические и проверяемые содержательные ограничения.</p>
+      </section>
+
+      <section>
+        <h2>Что именно можно детерминировать</h2>
+        <p>Хороший кандидат на перенос формулируется как функция с бинарным или конечным результатом:</p>
+        <pre><code>check(answer, source, contract) -&gt; pass | fail(reason, location)</code></pre>
+        <p>В этой статье реализованы три класса проверок:</p>
+        <ol>
+          <li><strong>Существование цитат:</strong> каждый процитированный фрагмент действительно присутствует в исходном материале после заранее определённой нормализации.</li>
+          <li><strong>Валидность структуры:</strong> ответ разбирается как JSON и соответствует зафиксированной JSON Schema.</li>
+          <li><strong>Соответствие источнику:</strong> проверяемые утверждения содержат ссылки на разрешённые фрагменты, а опорный текст этих фрагментов покрывает ключевые термины утверждения.</li>
+        </ol>
+        <p>Третий барьер намеренно не доказывает истинность. Он выявляет отсутствие опоры и грубое рассогласование. Семантические противоречия, числа с изменённым смыслом и сложные выводы всё ещё могут требовать модели-судьи или специализированного анализатора.</p>
+      </section>
+
+      <section>
+        <h2>Шаг 1. Превратите замечания судьи в каталог правил</h2>
+        <p>Не начинайте с кода. Сначала сгруппируйте уже полученные замечания по наблюдаемой причине. Для каждого повторяющегося класса заполните короткую карточку:</p>
+        <pre><code>rule_id: CITATION_NOT_FOUND
+input: answer.citations[*].quote, source.blocks[*].text
+normalization: Unicode NFKC, пробелы, регистр
+pass: нормализованная цитата является подстрокой нормализованного блока
+failure: номер цитаты и source_id
+judge_needed_after_failure: no</code></pre>
+        <p>Правило должно отвечать на четыре вопроса: какие поля читаются, какая нормализация разрешена, что считается прохождением и достаточно ли результата без повторного вызова модели. Если два инженера могут по-разному трактовать условие, оно ещё не готово к детерминизации.</p>
+        <p>Сохраняйте исходное замечание судьи рядом с идентификатором правила, но не используйте свободный текст замечания как исполняемую спецификацию. Текст меняется; идентификатор и контракт должны быть стабильными.</p>
+      </section>
+
+      <section>
+        <h2>Шаг 2. Зафиксируйте контракт ответа</h2>
+        <p>Ниже приведён учебный пример формата. Это не описание реального клиента или производственной системы.</p>
+        <pre><code>{
+  "summary": "Краткий ответ",
+  "claims": [
+    {
+      "text": "Проверяемое утверждение",
+      "source_ids": ["s1"]
+    }
+  ],
+  "citations": [
+    {
+      "source_id": "s1",
+      "quote": "Дословный фрагмент источника"
+    }
+  ]
+}</code></pre>
+        <p>Для него можно использовать следующую схему:</p>
+        <pre><code>{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["summary", "claims", "citations"],
+  "properties": {
+    "summary": {
+      "type": "string",
+      "minLength": 1
+    },
+    "claims": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["text", "source_ids"],
+        "properties": {
+          "text": {
+            "type": "string",
+            "minLength": 1
+          },
+          "source_ids": {
+            "type": "array",
+            "minItems": 1,
+            "uniqueItems": true,
+            "items": {
+              "type": "string",
+              "minLength": 1
+            }
+          }
+        }
+      }
+    },
+    "citations": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["source_id", "quote"],
+        "properties": {
+          "source_id": {
+            "type": "string",
+            "minLength": 1
+          },
+          "quote": {
+            "type": "string",
+            "minLength": 8
+          }
+        }
+      }
+    }
+  }
+}</code></pre>
+        <p><code>additionalProperties: false</code> важен: без него опечатка в имени поля может тихо пройти валидацию. Версию схемы следует хранить вместе с результатом генерации. Иначе после обновления контракта старые ответы начнут падать без понятной причины.</p>
+      </section>
+
+      <section>
+        <h2>Шаг 3. Реализуйте единый проверяющий модуль</h2>
+        <p>Пример ниже использует Python и пакет <code>jsonschema</code>. Код рассчитан на локальные JSON-файлы и ничего не отправляет по сети.</p>
+        <pre><code>from __future__ import annotations
+
+import json
+import re
+import sys
+import unicodedata
+from pathlib import Path
+from typing import Any
+
+from jsonschema import Draft202012Validator
+
+
+WORD_RE = re.compile(r"[^\W_]+", re.UNICODE)
+
+
+def normalize(text: str) -&gt; str:
+    text = unicodedata.normalize("NFKC", text)
+    return " ".join(text.casefold().split())
+
+
+def words(text: str) -&gt; set[str]:
+    return {
+        token.casefold()
+        for token in WORD_RE.findall(text)
+        if len(token) &gt;= 4
+    }
+
+
+def load_json(path: Path) -&gt; Any:
+    with path.open("r", encoding="utf-8") as stream:
+        return json.load(stream)
+
+
+def check_schema(answer: Any, schema: dict[str, Any]) -&gt; list[dict]:
+    validator = Draft202012Validator(schema)
+    failures = []
+
+    for error in sorted(validator.iter_errors(answer), key=lambda item: list(item.path)):
+        location = "$"
+        if error.path:
+            location += "." + ".".join(map(str, error.path))
+        failures.append({
+            "rule_id": "STRUCTURE_INVALID",
+            "location": location,
+            "message": error.message,
+        })
+
+    return failures
+
+
+def index_sources(source: dict[str, Any]) -&gt; dict[str, str]:
+    result = {}
+    for block in source.get("blocks", []):
+        source_id = block.get("id")
+        text = block.get("text")
+        if isinstance(source_id, str) and isinstance(text, str):
+            result[source_id] = text
+    return result
+
+
+def check_citations(answer: dict, source_index: dict[str, str]) -&gt; list[dict]:
+    failures = []
+
+    for index, citation in enumerate(answer.get("citations", [])):
+        source_id = citation["source_id"]
+        quote = citation["quote"]
+        source_text = source_index.get(source_id)
+
+        if source_text is None:
+            failures.append({
+                "rule_id": "SOURCE_ID_UNKNOWN",
+                "location": f"$.citations.{index}.source_id",
+                "message": f"Unknown source_id: {source_id}",
+            })
+            continue
+
+        if normalize(quote) not in normalize(source_text):
+            failures.append({
+                "rule_id": "CITATION_NOT_FOUND",
+                "location": f"$.citations.{index}.quote",
+                "message": f"Quote is absent from source {source_id}",
+            })
+
+    return failures
+
+
+def check_claim_support(
+    answer: dict,
+    source_index: dict[str, str],
+    minimum_overlap: float = 0.55,
+) -&gt; list[dict]:
+    failures = []
+
+    for index, claim in enumerate(answer.get("claims", [])):
+        claim_words = words(claim["text"])
+        source_ids = claim["source_ids"]
+
+        known_texts = [
+            source_index[source_id]
+            for source_id in source_ids
+            if source_id in source_index
+        ]
+
+        unknown_ids = [
+            source_id
+            for source_id in source_ids
+            if source_id not in source_index
+        ]
+
+        if unknown_ids:
+            failures.append({
+                "rule_id": "CLAIM_SOURCE_UNKNOWN",
+                "location": f"$.claims.{index}.source_ids",
+                "message": f"Unknown source ids: {unknown_ids}",
+            })
+            continue
+
+        if not claim_words:
+            failures.append({
+                "rule_id": "CLAIM_NOT_CHECKABLE",
+                "location": f"$.claims.{index}.text",
+                "message": "Claim has no checkable terms",
+            })
+            continue
+
+        support_words = words(" ".join(known_texts))
+        overlap = len(claim_words &amp; support_words) / len(claim_words)
+
+        if overlap &lt; minimum_overlap:
+            failures.append({
+                "rule_id": "CLAIM_LOW_LEXICAL_SUPPORT",
+                "location": f"$.claims.{index}",
+                "message": (
+                    f"Lexical overlap {overlap:.2f} is below "
+                    f"{minimum_overlap:.2f}"
+                ),
+            })
+
+    return failures
+
+
+def main() -&gt; int:
+    if len(sys.argv) != 4:
+        print(
+            "usage: python validate_answer.py "
+            "answer.json source.json answer.schema.json",
+            file=sys.stderr,
+        )
+        return 2
+
+    answer = load_json(Path(sys.argv[1]))
+    source = load_json(Path(sys.argv[2]))
+    schema = load_json(Path(sys.argv[3]))
+
+    failures = check_schema(answer, schema)
+
+    if not failures:
+        source_index = index_sources(source)
+        failures.extend(check_citations(answer, source_index))
+        failures.extend(check_claim_support(answer, source_index))
+
+    report = {
+        "passed": not failures,
+        "failure_count": len(failures),
+        "failures": failures,
+    }
+    print(json.dumps(report, ensure_ascii=False, indent=2))
+    return 0 if not failures else 1
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())</code></pre>
+        <p>Порядок проверок существенен. Сначала валидируется структура, и только затем код обращается к обязательным полям. Это предотвращает вторичные исключения, маскирующие настоящую ошибку контракта.</p>
+      </section>
+
+      <section>
+        <h2>Шаг 4. Подготовьте воспроизводимый локальный прогон</h2>
+        <p>Зафиксируйте версию зависимости в отдельном виртуальном окружении. Команды ниже не удаляют файлы, не используют секреты и не обращаются к пользовательским каталогам за пределами текущего проекта:</p>
+        <pre><code>python3 -m venv .venv
+.venv/bin/python -m pip install "jsonschema==4.23.0"
+.venv/bin/python validate_answer.py \
+  fixtures/answer.json \
+  fixtures/source.json \
+  answer.schema.json</code></pre>
+        <p>Указанная версия здесь является частью воспроизводимого примера, а не заявлением о самой новой версии пакета. В рабочем репозитории зависимость должна проходить принятый в команде процесс обновления и проверки.</p>
+        <p>Пример исходного материала:</p>
+        <pre><code>{
+  "blocks": [
+    {
+      "id": "s1",
+      "text": "Повторяющиеся структурные ошибки следует проверять до запуска модели-судьи."
+    }
+  ]
+}</code></pre>
+        <p>Пример корректного ответа:</p>
+        <pre><code>{
+  "summary": "Структурные проверки выполняются раньше модельной оценки.",
+  "claims": [
+    {
+      "text": "Структурные ошибки проверяются до запуска модели-судьи.",
+      "source_ids": ["s1"]
+    }
+  ],
+  "citations": [
+    {
+      "source_id": "s1",
+      "quote": "структурные ошибки следует проверять до запуска модели-судьи"
+    }
+  ]
+}</code></pre>
+      </section>
+
+      <section>
+        <h2>Шаг 5. Встройте барьеры перед моделью-судьёй</h2>
+        <p>Проверяющий модуль должен завершаться ненулевым кодом при нарушении правил. Тогда его можно поставить отдельным шагом в локальный сценарий, CI или очередь обработки:</p>
+        <pre><code>set -eu
+
+.venv/bin/python validate_answer.py \
+  artifacts/answer.json \
+  artifacts/source.json \
+  answer.schema.json
+
+.venv/bin/python run_model_judge.py \
+  artifacts/answer.json \
+  artifacts/source.json</code></pre>
+        <p>При ошибке первая команда остановит сценарий, и вызова судьи не будет. Имя <code>run_model_judge.py</code> обозначает границу интеграции в примере; сама реализация модельного вызова здесь намеренно не приводится.</p>
+        <p>В сервисной архитектуре используйте ту же последовательность состояний:</p>
+        <pre><code>generated
+  -&gt; structure_valid
+  -&gt; citations_valid
+  -&gt; support_gate_passed
+  -&gt; judge_pending
+  -&gt; accepted | rejected</code></pre>
+        <p>Сохраняйте идентификатор правила, расположение ошибки и версию контракта. Не сохраняйте только строку вроде «валидация не пройдена»: она непригодна для агрегации и отладки.</p>
+      </section>
+
+      <section>
+        <h2>Как проверить результат</h2>
+        <p>Для проверки механизма нужны не выдуманные метрики, а контролируемые изменения входа. Выполните четыре локальных прогона:</p>
+        <ol>
+          <li>Передайте корректный пример. Ожидаются <code>"passed": true</code> и код завершения <code>0</code>.</li>
+          <li>Замените <code>source_id</code> на несуществующий. Ожидается <code>SOURCE_ID_UNKNOWN</code> или <code>CLAIM_SOURCE_UNKNOWN</code>.</li>
+          <li>Измените одно содержательное слово внутри цитаты. Ожидается <code>CITATION_NOT_FOUND</code>.</li>
+          <li>Удалите обязательное поле <code>claims</code>. Ожидается <code>STRUCTURE_INVALID</code>, а содержательные проверки не должны запускаться.</li>
+        </ol>
+        <p>Код завершения можно увидеть безопасной командой:</p>
+        <pre><code>.venv/bin/python validate_answer.py \
+  fixtures/answer.json \
+  fixtures/source.json \
+  answer.schema.json
+status=$?
+printf 'exit_code=%s\n' "$status"</code></pre>
+        <p>В CI дополнительно проверьте, что шаг модельного судьи не стартует после отказа детерминированного барьера. Это свойство конвейера, а не только валидатора.</p>
+      </section>
+
+      <section>
+        <h2>Как выбрать порог соответствия источнику</h2>
+        <p>Порог <code>0.55</code> в примере не является универсальной рекомендацией. Лексическое покрытие зависит от языка, длины утверждений, морфологии и допустимого перефразирования. Настраивайте его на размеченной выборке из собственных входов:</p>
+        <ol>
+          <li>соберите реальные замечания судьи без персональных данных и секретов;</li>
+          <li>разделите их на случаи «нет опоры» и «опора существует»;</li>
+          <li>посчитайте результат правила на нескольких порогах;</li>
+          <li>выберите допустимый баланс ложных отказов и пропусков;</li>
+          <li>зафиксируйте выбор, версию выборки и назначение правила.</li>
+        </ol>
+        <p>Если ложный отказ дорог, используйте лексическое правило как маршрутизатор: пограничные случаи отправляйте судье, а не отклоняйте окончательно. Например, оценки ниже нижней границы можно отклонять, выше верхней — пропускать, а промежуточную зону — оценивать моделью.</p>
+      </section>
+
+      <section>
+        <h2>Типовые ошибки реализации</h2>
+
+        <h3>Слишком агрессивная нормализация цитат</h3>
+        <p>Удаление пунктуации, чисел или отрицаний повышает число ложных совпадений. Нормализация должна устранять только различия представления: Unicode-форму, регистр и повторяющиеся пробелы. Любое более сильное преобразование следует оформлять отдельным правилом.</p>
+
+        <h3>Проверка цитаты по всему корпусу</h3>
+        <p>Цитата может существовать, но не в указанном документе. Ищите её внутри конкретного <code>source_id</code>, иначе неверная атрибуция пройдёт барьер.</p>
+
+        <h3>Смешение структуры и содержания</h3>
+        <p>JSON Schema проверяет форму, но не подтверждает факты. Поле с правильным типом может содержать выдуманное значение. Не называйте структурную валидацию проверкой достоверности.</p>
+
+        <h3>Нестабильный токенизатор</h3>
+        <p>Если правило зависит от сторонней морфологии или обновляемого списка стоп-слов, его результат может измениться после обновления окружения. Версионируйте зависимости и конфигурацию так же, как схему.</p>
+
+        <h3>Один общий код ошибки</h3>
+        <p>Разные причины требуют разных действий. Неизвестный источник указывает на нарушение ссылочной целостности, отсутствующая цитата — на неверное копирование, низкое покрытие — на возможное перефразирование или галлюцинацию.</p>
+
+        <h3>Автоматический перенос каждого замечания</h3>
+        <p>Фразы судьи вроде «ответ недостаточно ясен» или «пропущен важный аспект» нельзя честно свести к регулярному выражению. Попытка сделать это создаёт хрупкий суррогат метрики, который оптимизируется генератором, но не отражает качество.</p>
+      </section>
+
+      <section>
+        <h2>Ограничения</h2>
+        <ul>
+          <li>Подстрочный поиск не обнаруживает корректно перефразированную цитату и не должен использоваться, если формат допускает пересказ вместо дословного цитирования.</li>
+          <li>Лексическое пересечение не понимает отрицание, причинность, единицы измерения и временной контекст.</li>
+          <li>Наличие слов источника не означает, что утверждение логически следует из источника.</li>
+          <li>JSON Schema не проверяет доступность внешнего документа и актуальность его содержимого.</li>
+          <li>Короткие утверждения дают нестабильную долю пересечения; для них полезнее отдельные правила или ручная маршрутизация.</li>
+          <li>Тексты с разными языками, транслитерацией и богатой морфологией требуют адаптированного анализа.</li>
+        </ul>
+        <p>Поэтому детерминированные проверки следует рассматривать как барьеры для известных классов отказа, а не как универсальную оценку ответа.</p>
+      </section>
+
+      <section>
+        <h2>Рабочая граница между кодом и судьёй</h2>
+        <p>Оставляйте в коде то, для чего можно указать точный вход, стабильное преобразование и однозначное ожидаемое состояние. Оставляйте модели задачи, где требуется интерпретация: достаточность аргументации, качество синтеза нескольких источников, существенность пропуска или естественность формулировки.</p>
+        <p>Практический цикл выглядит так:</p>
+        <ol>
+          <li>судья обнаруживает новый класс ошибки;</li>
+          <li>команда проверяет, можно ли выразить его как инвариант;</li>
+          <li>инвариант получает идентификатор, контракт и диагностический вывод;</li>
+          <li>правило прогоняется на сохранённых примерах;</li>
+          <li>после калибровки оно перемещается перед судьёй;</li>
+          <li>статистика отказов показывает, какие ошибки ещё остаются модельными.</li>
+        </ol>
+        <p>Так модель-судья постепенно освобождается от механической работы, но продолжает оценивать то, ради чего она действительно нужна: смысл.</p>
+      </section>
+
+      <section>
+        <h2>Контрольный список внедрения</h2>
+        <ul>
+          <li>Каждое правило связано с повторяющимся наблюдением, а не с гипотетической ошибкой.</li>
+          <li>У правила есть стабильный <code>rule_id</code>.</li>
+          <li>Формат ответа закреплён схемой и версией.</li>
+          <li>Нормализация текста описана явно.</li>
+          <li>Цитата проверяется внутри указанного источника.</li>
+          <li>Отчёт содержит расположение и причину нарушения.</li>
+          <li>Отказ завершает шаг ненулевым кодом.</li>
+          <li>Пограничные семантические случаи направляются модели, а не маскируются эвристикой.</li>
+          <li>Пороговые значения откалиброваны на собственных размеченных данных.</li>
+          <li>Версии кода, схемы и конфигурации сохраняются вместе с результатом.</li>
+        </ul>
+      </section>
+
+      <footer class="article-footer">
+        <p>Продолжить настройку оценочного конвейера можно в разделе <a href="guides.html">практических руководств</a>. Определения терминов собраны в <a href="glossary.html">глоссарии Agent Lab Journal</a>.</p>
+      </footer>
+    </article>
+  </main>
+
+  <footer class="site-footer">
+    <div class="container">
+      <p>Agent Lab Journal — практические материалы о проектировании и оценке агентных систем.</p>
+    </div>
+  </footer>
+</body>
+</html>

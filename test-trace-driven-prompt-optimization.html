@@ -1,0 +1,598 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Автооптимизация промптов по production-трассам: считаем качество и окупаемость — Agent Lab Journal</title>
+  <meta name="description" content="Практическое руководство по созданию OpenAI-совместимого LLM-шлюза, сбору безопасных production-трасс и сравнению промптов по качеству, стоимости, задержке и объёму данных.">
+  <link rel="canonical" href="https://agentlabjournal.online/test-trace-driven-prompt-optimization.html">
+  <link rel="stylesheet" href="style.css">
+  <link rel="stylesheet" href="reading.css">
+
+  <meta property="og:type" content="article">
+  <meta property="og:locale" content="ru_RU">
+  <meta property="og:site_name" content="Agent Lab Journal">
+  <meta property="og:title" content="Автооптимизация промптов по production-трассам: считаем качество и окупаемость">
+  <meta property="og:description" content="Работающий OpenAI-совместимый шлюз и воспроизводимый цикл сравнения промптов по качеству, стоимости, задержке и числу необходимых трасс.">
+  <meta property="og:url" content="https://agentlabjournal.online/test-trace-driven-prompt-optimization.html">
+
+  <meta name="twitter:card" content="summary">
+  <meta name="twitter:title" content="Автооптимизация промптов по production-трассам">
+  <meta name="twitter:description" content="Как превратить логи LLM-шлюза в измеримый цикл улучшения промптов и посчитать окупаемость.">
+
+  <meta name="reading-meta" content="Продвинутый уровень · до 12 минут · Python, FastAPI, SQLite">
+  <meta name="author" content="Agent Lab Journal">
+
+  <script type="application/ld+json">
+  {
+    "@context": "https://schema.org",
+    "@type": "TechArticle",
+    "headline": "Автооптимизация промптов по production-трассам: считаем качество и окупаемость",
+    "description": "Практическое руководство по созданию OpenAI-совместимого LLM-шлюза, сбору безопасных production-трасс и сравнению промптов по качеству, стоимости, задержке и объёму данных.",
+    "inLanguage": "ru-RU",
+    "proficiencyLevel": "Advanced",
+    "timeRequired": "PT12M",
+    "mainEntityOfPage": {
+      "@type": "WebPage",
+      "@id": "https://agentlabjournal.online/test-trace-driven-prompt-optimization.html"
+    },
+    "url": "https://agentlabjournal.online/test-trace-driven-prompt-optimization.html",
+    "author": {
+      "@type": "Organization",
+      "name": "Agent Lab Journal"
+    },
+    "publisher": {
+      "@type": "Organization",
+      "name": "Agent Lab Journal",
+      "url": "https://agentlabjournal.online/"
+    },
+    "about": [
+      "LLM gateway",
+      "Prompt optimization",
+      "Production tracing",
+      "Evaluation"
+    ]
+  }
+  </script>
+</head>
+<body>
+  <main class="reading">
+    <article>
+      <header class="article-header">
+        <p class="eyebrow">Практика · LLMOps</p>
+        <h1>Автооптимизация промптов по production-трассам: считаем качество и окупаемость</h1>
+        <p class="lead">LLM-шлюз уже видит запросы, ответы, токены и задержки. Добавим недостающие части: безопасную выборку реальных случаев, слепое сравнение версий промпта и решение о выпуске, основанное на качестве и деньгах.</p>
+        <p class="reading-meta" aria-label="Параметры статьи">
+          Продвинутый уровень · чтение до 12 минут · результат: OpenAI-совместимый шлюз и отчёт по двум промптам
+        </p>
+      </header>
+
+      <nav class="table-of-contents" aria-label="Содержание">
+        <ol>
+          <li><a href="#architecture">Что именно строим</a></li>
+          <li><a href="#gateway">Шлюз и сбор трасс</a></li>
+          <li><a href="#dataset">Датасет и разметка</a></li>
+          <li><a href="#experiment">Сравнение промптов</a></li>
+          <li><a href="#economics">Окупаемость</a></li>
+          <li><a href="#verification">Проверка результата</a></li>
+          <li><a href="#mistakes">Ошибки и ограничения</a></li>
+        </ol>
+      </nav>
+
+      <section id="introduction">
+        <h2>Логирование ещё не создаёт цикл улучшения</h2>
+        <p><a href="glossary.html#trace">Production-трасса</a> — запись одного реального выполнения модели: вход, версия промпта, ответ, служебные метрики и, если доступно, сигнал результата. В большинстве систем трасса остаётся строкой в хранилище. Чтобы она стала полезной, нужны воспроизводимая выборка, эталон оценки, версия промпта и одинаковая процедура повторного запуска.</p>
+        <p>Цель этой статьи — не найти «самый красивый» промпт. Мы хотим ответить на четыре проверяемых вопроса:</p>
+        <ul>
+          <li>насколько изменилась доля успешных ответов;</li>
+          <li>сколько стоит один запрос и один успешный результат;</li>
+          <li>как изменилась задержка;</li>
+          <li>достаточно ли накоплено независимых трасс для решения.</li>
+        </ul>
+        <aside class="note">
+          <p><strong>Важно:</strong> значения качества и экономии ниже вычисляет ваш запуск. Числа в формулах и иллюстрациях обозначены как примеры и не являются результатами реального теста.</p>
+        </aside>
+      </section>
+
+      <section id="architecture">
+        <h2>Что именно строим</h2>
+        <pre><code>Клиент
+  │ OpenAI-совместимый POST /v1/chat/completions
+  ▼
+FastAPI-шлюз ──► upstream-модель
+  │                  │
+  │ trace_id         └── ответ, usage
+  ▼
+SQLite: очищенный вход, ответ, prompt_version,
+        latency_ms, токены, feedback
+  │
+  ├──► стратифицированная выборка
+  ├──► повторный запуск baseline/candidate
+  └──► отчёт: quality, cost, latency, traces</code></pre>
+        <p>Пример реализует не весь протокол OpenAI, а достаточное для эксперимента подмножество <code>POST /v1/chat/completions</code> без streaming и tool calls. Клиенты, использующие обычные сообщения и JSON-ответ, смогут направить <code>base_url</code> на шлюз.</p>
+
+        <h3>Правила эксперимента</h3>
+        <ol>
+          <li>Единица анализа — пользовательская задача, а не отдельный ретрай.</li>
+          <li>Baseline и candidate запускаются на одних и тех же входах.</li>
+          <li>Оценщик не получает название версии промпта.</li>
+          <li>Трассы оптимизации и финальной проверки не пересекаются.</li>
+          <li>Публикация запрещена, если качество ухудшилось, даже при снижении цены.</li>
+        </ol>
+      </section>
+
+      <section id="gateway">
+        <h2>Шаг 1. Поднимаем OpenAI-совместимый шлюз</h2>
+        <p>Создайте отдельное виртуальное окружение. Команды не меняют системный Python и не содержат реальных ключей:</p>
+        <pre><code>python3 -m venv .venv
+. .venv/bin/activate
+python -m pip install \
+  "fastapi&gt;=0.115,&lt;1" \
+  "uvicorn[standard]&gt;=0.30,&lt;1" \
+  "httpx&gt;=0.27,&lt;1" \
+  "pydantic&gt;=2.8,&lt;3"</code></pre>
+
+        <p>Сохраните следующий пример как <code>gateway.py</code>:</p>
+        <pre><code>import hashlib
+import json
+import os
+import re
+import sqlite3
+import time
+import uuid
+
+import httpx
+from fastapi import FastAPI, Header, HTTPException
+from pydantic import BaseModel, ConfigDict
+
+UPSTREAM_URL = os.environ.get(
+    "UPSTREAM_URL",
+    "http://127.0.0.1:8001/v1/chat/completions",
+)
+UPSTREAM_API_KEY = os.environ.get("UPSTREAM_API_KEY")
+DB_PATH = os.environ.get("TRACE_DB", "traces.sqlite3")
+PROMPT_VERSION = os.environ.get("PROMPT_VERSION", "baseline-v1")
+PROMPT_TEXT = os.environ.get(
+    "SYSTEM_PROMPT",
+    "Отвечай точно и кратко. Если данных недостаточно, сообщи об этом.",
+)
+
+app = FastAPI(title="Trace Gateway", version="0.1.0")
+
+
+class ChatRequest(BaseModel):
+    model_config = ConfigDict(extra="allow")
+    model: str
+    messages: list[dict]
+    stream: bool = False
+
+
+def connect():
+    db = sqlite3.connect(DB_PATH)
+    db.execute("""
+        CREATE TABLE IF NOT EXISTS traces (
+            trace_id TEXT PRIMARY KEY,
+            task_hash TEXT NOT NULL,
+            created_at INTEGER NOT NULL,
+            prompt_version TEXT NOT NULL,
+            request_json TEXT NOT NULL,
+            response_text TEXT NOT NULL,
+            model TEXT NOT NULL,
+            input_tokens INTEGER,
+            output_tokens INTEGER,
+            latency_ms REAL NOT NULL,
+            status_code INTEGER NOT NULL,
+            feedback INTEGER,
+            feedback_source TEXT
+        )
+    """)
+    return db
+
+
+def redact(value):
+    text = json.dumps(value, ensure_ascii=False)
+    text = re.sub(
+        r"[\w.+-]+@[\w.-]+\.[A-Za-z]{2,}",
+        "[EMAIL]",
+        text,
+    )
+    text = re.sub(
+        r"(?&lt;!\d)(?:\+?\d[\s()-]?){10,15}(?!\d)",
+        "[PHONE]",
+        text,
+    )
+    return json.loads(text)
+
+
+def task_hash(messages):
+    normalized = json.dumps(
+        redact(messages),
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+    return hashlib.sha256(normalized.encode()).hexdigest()
+
+
+@app.post("/v1/chat/completions")
+async def chat(
+    body: ChatRequest,
+    authorization: str | None = Header(default=None),
+):
+    if body.stream:
+        raise HTTPException(400, "stream=true в этом примере не поддерживается")
+
+    trace_id = str(uuid.uuid4())
+    safe_messages = redact(body.messages)
+    upstream_messages = [
+        {"role": "system", "content": PROMPT_TEXT},
+        *body.messages,
+    ]
+    payload = body.model_dump(exclude_none=True)
+    payload["messages"] = upstream_messages
+    payload["stream"] = False
+
+    headers = {"Content-Type": "application/json"}
+    if UPSTREAM_API_KEY:
+        headers["Authorization"] = f"Bearer {UPSTREAM_API_KEY}"
+    elif authorization:
+        headers["Authorization"] = authorization
+
+    started = time.perf_counter()
+    async with httpx.AsyncClient(timeout=90.0) as client:
+        response = await client.post(
+            UPSTREAM_URL,
+            headers=headers,
+            json=payload,
+        )
+    latency_ms = (time.perf_counter() - started) * 1000
+
+    try:
+        result = response.json()
+    except ValueError:
+        raise HTTPException(502, "Upstream вернул не-JSON ответ")
+
+    answer = ""
+    if response.is_success:
+        try:
+            answer = result["choices"][0]["message"]["content"] or ""
+        except (KeyError, IndexError, TypeError):
+            raise HTTPException(502, "Неожиданный формат upstream-ответа")
+
+    usage = result.get("usage", {})
+    with connect() as db:
+        db.execute(
+            """INSERT INTO traces VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            (
+                trace_id,
+                task_hash(body.messages),
+                int(time.time()),
+                PROMPT_VERSION,
+                json.dumps(safe_messages, ensure_ascii=False),
+                answer,
+                result.get("model", body.model),
+                usage.get("prompt_tokens"),
+                usage.get("completion_tokens"),
+                latency_ms,
+                response.status_code,
+                None,
+                None,
+            ),
+        )
+
+    response.headers["X-Trace-Id"] = trace_id
+    return result</code></pre>
+
+        <p>Перед запуском задайте адрес OpenAI-совместимого upstream. Не помещайте секрет в файл или командную историю: безопаснее передать его через секрет-хранилище процесса или интерактивный ввод.</p>
+        <pre><code>export UPSTREAM_URL="http://127.0.0.1:8001/v1/chat/completions"
+export PROMPT_VERSION="baseline-v1"
+export SYSTEM_PROMPT="Отвечай точно и кратко. Если данных недостаточно, сообщи об этом."
+
+read -rsp "Upstream API key: " UPSTREAM_API_KEY
+export UPSTREAM_API_KEY
+printf "\n"
+
+uvicorn gateway:app --host 127.0.0.1 --port 8080</code></pre>
+
+        <p>Проверочный запрос:</p>
+        <pre><code>curl --fail-with-body \
+  http://127.0.0.1:8080/v1/chat/completions \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "model": "your-model-id",
+    "messages": [
+      {"role": "user", "content": "Верни JSON с полем status=ok"}
+    ]
+  }'</code></pre>
+
+        <aside class="warning">
+          <p><strong>Не запускайте этот пример как публичный endpoint без аутентификации, TLS, лимитов размера, rate limiting и политики хранения.</strong> Регулярные выражения скрывают только два демонстрационных класса данных. Для production потребуется доменный фильтр персональных данных до записи на диск.</p>
+        </aside>
+      </section>
+
+      <section id="dataset">
+        <h2>Шаг 2. Превращаем трассы в воспроизводимый датасет</h2>
+        <p>Промпт нельзя честно оценить по произвольным удачным примерам. Сначала исключите технические ошибки, повторы одной задачи, пустые ответы и данные без разрешённого срока хранения. Затем зафиксируйте выборку вместе с хешем входов.</p>
+
+        <h3>Разделение данных</h3>
+        <ul>
+          <li><strong>Discovery</strong> — трассы, по которым ищутся типовые ошибки и формируется candidate.</li>
+          <li><strong>Validation</strong> — отдельные трассы для выбора среди кандидатов.</li>
+          <li><strong>Holdout</strong> — нетронутая финальная выборка для решения о выпуске.</li>
+        </ul>
+        <p>Разделяйте по <code>task_hash</code>, пользователю или диалогу, а не по строкам. Иначе соседние сообщения одного разговора попадут в разные части и создадут утечку.</p>
+
+        <p>Минимальная выгрузка уникальных успешных задач:</p>
+        <pre><code>sqlite3 -header -csv traces.sqlite3 "
+WITH ranked AS (
+  SELECT *,
+         ROW_NUMBER() OVER (
+           PARTITION BY task_hash
+           ORDER BY created_at DESC
+         ) AS n
+  FROM traces
+  WHERE status_code BETWEEN 200 AND 299
+    AND response_text != ''
+)
+SELECT trace_id, task_hash, request_json, response_text
+FROM ranked
+WHERE n = 1
+ORDER BY task_hash;
+" &gt; eligible.csv
+
+sha256sum eligible.csv &gt; eligible.csv.sha256</code></pre>
+
+        <p>Случайная выборка без фиксации seed плохо воспроизводится. Практичный детерминированный вариант — сортировать по хешу <code>sha256(experiment_id + task_hash)</code> и брать заранее объявленные диапазоны. Стратифицируйте по типу задачи, языку, каналу и другим признакам, влияющим на сложность.</p>
+
+        <h3>Откуда берётся качество</h3>
+        <p>Лучший сигнал — фактический исход: задача завершена, формат принят валидатором, пользователь не перешёл к оператору. Если такого сигнала нет, создайте рубрику с бинарными обязательными критериями:</p>
+        <ul>
+          <li>ответ решает поставленную задачу;</li>
+          <li>нет неподтверждённых фактов;</li>
+          <li>соблюдены формат и ограничения;</li>
+          <li>нет раскрытия скрытых инструкций или чувствительных данных.</li>
+        </ul>
+        <p>Итог <code>pass=1</code> присваивается только при выполнении всех обязательных критериев. Не используйте оценку той же модели без калибровки на человеческой разметке: такой судья может предпочитать собственный стиль и пропускать доменные ошибки.</p>
+
+        <h3>Сколько нужно трасс</h3>
+        <p>Количество нельзя честно назвать заранее: оно зависит от исходного качества, минимального полезного улучшения и разброса. Для парного сравнения используйте только трассы, где результаты версий различаются.</p>
+        <pre><code>discordant = improved + regressed
+net_gain   = (improved - regressed) / total
+quality_A  = passed_A / total
+quality_B  = passed_B / total</code></pre>
+        <p>До начала теста зафиксируйте минимально значимое улучшение, например 2 процентных пункта, и максимальный допустимый регресс по критическим сегментам. Для статистического вывода применяйте парный тест Мак-Немара или доверительный интервал для разницы парных долей. Не останавливайте эксперимент в момент первого красивого результата.</p>
+      </section>
+
+      <section id="optimization">
+        <h2>Шаг 3. Формируем candidate без утечки holdout</h2>
+        <p>Автоматический оптимизатор получает только обезличенные discovery-примеры: исходную инструкцию, рубрику, вход, ошибочный ответ и корректирующий комментарий. Его задача — вернуть новую системную инструкцию, а не ответить на примеры.</p>
+        <p>Шаблон мета-промпта оптимизатора:</p>
+        <pre><code>Ты редактируешь системную инструкцию прикладного ассистента.
+
+Сохрани назначение исходной инструкции.
+Исправляй только повторяющиеся ошибки из DISCOVERY_EXAMPLES.
+Не добавляй факты из примеров как универсальные правила.
+Не упоминай примеры, разметку и процесс оптимизации.
+Сделай правила проверяемыми и устрани противоречия.
+Верни только текст новой системной инструкции.
+
+ORIGINAL_PROMPT:
+{{baseline_prompt}}
+
+RUBRIC:
+{{rubric}}
+
+DISCOVERY_EXAMPLES:
+{{redacted_failures}}</code></pre>
+        <p>Сохраните результат как неизменяемый артефакт: <code>candidate-v2.txt</code>, его SHA-256, идентификатор модели-оптимизатора, параметры генерации и хеш discovery-набора. Сам кандидат должен пройти ручную проверку на скрытые доменные изменения и prompt injection из пользовательских данных.</p>
+      </section>
+
+      <section id="experiment">
+        <h2>Шаг 4. Повторно запускаем обе версии</h2>
+        <p>Для каждого holdout-входа выполните baseline и candidate с одинаковой моделью и одинаковыми параметрами. Чередуйте порядок запуска, чтобы прогрев кеша или нагрузка upstream не работали в пользу одной версии.</p>
+        <pre><code>for each task in holdout:
+    if stable_hash(task.id) % 2 == 0:
+        run(baseline, task)
+        run(candidate, task)
+    else:
+        run(candidate, task)
+        run(baseline, task)
+
+    record:
+        task_id
+        prompt_version
+        answer
+        input_tokens
+        output_tokens
+        latency_ms
+        status
+        attempt</code></pre>
+        <p>Если провайдер поддерживает детерминированный seed, зафиксируйте его, но не предполагайте абсолютную воспроизводимость. При стохастической генерации выполните несколько повторов на задачу и агрегируйте внутри задачи; иначе повторы будут ошибочно посчитаны независимыми трассами.</p>
+
+        <h3>Единый формат результатов</h3>
+        <pre><code>task_id,prompt_version,passed,input_tokens,output_tokens,latency_ms,error
+t001,baseline-v1,1,312,44,684,
+t001,candidate-v2,1,358,31,702,
+t002,baseline-v1,0,421,89,931,
+t002,candidate-v2,1,463,54,887,</code></pre>
+        <p>Это только иллюстрация схемы CSV, а не полученный результат. Разметчику передавайте ответы как <code>A</code> и <code>B</code> в случайном порядке. Таблица соответствия версий должна оставаться вне интерфейса оценки.</p>
+
+        <h3>Метрики отчёта</h3>
+        <pre><code>quality         = passed / tasks
+p50_latency_ms  = median(latency_ms)
+p95_latency_ms  = percentile(latency_ms, 95)
+
+request_cost =
+    input_tokens  / 1_000_000 * input_price_per_million +
+    output_tokens / 1_000_000 * output_price_per_million
+
+cost_per_success = total_cost / passed
+required_traces  = число независимых holdout-задач</code></pre>
+        <p>Цены передавайте конфигурацией, датированной на день эксперимента. Не зашивайте их в код: тарифы зависят от модели, провайдера, кеширования и могут изменяться.</p>
+
+        <table>
+          <caption>Шаблон итогового сравнения</caption>
+          <thead>
+            <tr>
+              <th scope="col">Метрика</th>
+              <th scope="col">Baseline</th>
+              <th scope="col">Candidate</th>
+              <th scope="col">Разница</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <th scope="row">Quality</th>
+              <td><code>pass_A / N</code></td>
+              <td><code>pass_B / N</code></td>
+              <td>процентные пункты</td>
+            </tr>
+            <tr>
+              <th scope="row">Стоимость запроса</th>
+              <td><code>cost_A / N</code></td>
+              <td><code>cost_B / N</code></td>
+              <td>проценты</td>
+            </tr>
+            <tr>
+              <th scope="row">Стоимость успеха</th>
+              <td><code>cost_A / pass_A</code></td>
+              <td><code>cost_B / pass_B</code></td>
+              <td>проценты</td>
+            </tr>
+            <tr>
+              <th scope="row">p50 / p95</th>
+              <td>из замеров A</td>
+              <td>из замеров B</td>
+              <td>миллисекунды</td>
+            </tr>
+            <tr>
+              <th scope="row">Трассы</th>
+              <td colspan="2">одни и те же <code>N</code> задач</td>
+              <td><code>improved / regressed / ties</code></td>
+            </tr>
+          </tbody>
+        </table>
+      </section>
+
+      <section id="economics">
+        <h2>Шаг 5. Считаем окупаемость, а не только токены</h2>
+        <p>Экономический эффект состоит из изменения модельных расходов и ценности дополнительных успешных задач:</p>
+        <pre><code>monthly_model_delta =
+    monthly_requests * (cost_candidate - cost_baseline)
+
+monthly_quality_value =
+    monthly_requests
+    * (quality_candidate - quality_baseline)
+    * value_per_additional_success
+
+monthly_net_value =
+    monthly_quality_value
+    - monthly_model_delta
+    - monthly_operating_cost
+
+payback_months =
+    one_time_optimization_cost / monthly_net_value</code></pre>
+        <p><code>value_per_additional_success</code> должен происходить из вашей экономики: предотвращённый тикет, завершённая операция или подтверждённая маржа. Если значение неизвестно, покажите сценарии, а не выбирайте удобную цифру.</p>
+
+        <p>Пример сценарного анализа, не результат теста: при 100&nbsp;000 запросов в месяц, улучшении на 0,02, ценности дополнительного успеха 10 условных единиц и дополнительных модельных расходах 300 единиц валовая ценность составит 20&nbsp;000, а эффект до операционных расходов — 19&nbsp;700 условных единиц. Для реального решения подставьте наблюдаемые объёмы, валюту и доверительный интервал качества.</p>
+
+        <p>Candidate допускается к ограниченному rollout, если одновременно выполнены заранее записанные условия:</p>
+        <ul>
+          <li>нижняя граница интервала улучшения выше допустимого порога;</li>
+          <li>нет регресса на критических сегментах;</li>
+          <li>p95 не нарушает SLO;</li>
+          <li>стоимость успеха не превышает лимит;</li>
+          <li>ожидаемый чистый эффект положителен при консервативном сценарии.</li>
+        </ul>
+      </section>
+
+      <section id="verification">
+        <h2>Проверка результата</h2>
+        <ol>
+          <li>
+            <strong>Совместимость.</strong> Клиент получает обычный объект <code>chat.completion</code>, а заголовок ответа содержит <code>X-Trace-Id</code>.
+          </li>
+          <li>
+            <strong>Трассировка.</strong> После запроса запись присутствует в SQLite:
+            <pre><code>sqlite3 traces.sqlite3 "
+SELECT trace_id, prompt_version, model,
+       input_tokens, output_tokens,
+       round(latency_ms, 1), status_code
+FROM traces
+ORDER BY created_at DESC
+LIMIT 5;
+"</code></pre>
+          </li>
+          <li>
+            <strong>Редакция.</strong> Отправьте синтетический адрес вроде <code>user@example.invalid</code> и убедитесь, что в <code>request_json</code> записано <code>[EMAIL]</code>. Не используйте для проверки реальные персональные данные.
+          </li>
+          <li>
+            <strong>Версионирование.</strong> У каждой строки есть <code>prompt_version</code>; текст промпта и его хеш сохранены в реестре эксперимента.
+          </li>
+          <li>
+            <strong>Парность.</strong> Для каждой holdout-задачи присутствует ровно один агрегированный результат каждой версии.
+          </li>
+          <li>
+            <strong>Полнота отчёта.</strong> Указаны <code>N</code>, число улучшений и регрессов, quality, цена запроса, цена успеха, p50/p95 и правила исключения трасс.
+          </li>
+          <li>
+            <strong>Rollback.</strong> Baseline остаётся доступен как конфигурация, а rollout candidate ограничивается долей трафика и автоматически прекращается при нарушении guardrail.
+          </li>
+        </ol>
+      </section>
+
+      <section id="mistakes">
+        <h2>Типовые ошибки</h2>
+        <dl>
+          <dt>Оптимизация и проверка на одних трассах</dt>
+          <dd>Промпт запоминает особенности примеров. Финальная метрика становится оценкой подгонки, а не обобщения.</dd>
+
+          <dt>Оценка непарными средними</dt>
+          <dd>Версии могли получить задачи разной сложности. Повторный запуск на одинаковых входах уменьшает этот шум.</dd>
+
+          <dt>Количество строк принимают за количество задач</dt>
+          <dd>Ретраи и сообщения одного диалога зависимы. Группируйте их до вычисления объёма выборки.</dd>
+
+          <dt>Смотрят только на среднюю задержку</dt>
+          <dd>Среднее скрывает длинный хвост. Для пользовательского SLO обычно важнее p95 или p99.</dd>
+
+          <dt>Сравнивают только токены</dt>
+          <dd>Более дорогой запрос может быть выгоднее, если заметно увеличивает число успешных операций. Используйте стоимость успеха.</dd>
+
+          <dt>LLM-судья знает имя кандидата</dt>
+          <dd>Версия, порядок и служебные поля становятся источником смещения. Ослепляйте и перемешивайте ответы.</dd>
+
+          <dt>Логи становятся вторым хранилищем секретов</dt>
+          <dd>Не сохраняйте заголовки авторизации. Минимизируйте вход, шифруйте хранилище, ограничивайте доступ и задавайте срок удаления.</dd>
+
+          <dt>Prompt injection попадает в мета-промпт</dt>
+          <dd>Пользовательский текст — данные, а не инструкция оптимизатору. Изолируйте его структурой, фильтруйте и проверяйте candidate вручную.</dd>
+        </dl>
+      </section>
+
+      <section id="limitations">
+        <h2>Ограничения подхода</h2>
+        <p>Повторный запуск production-входов измеряет качество на наблюдавшемся распределении, но не гарантирует устойчивость к новым сценариям. Редкие критические случаи следует держать в отдельном экспертном наборе. Исторические трассы также могут закреплять старое поведение продукта и систематические перекосы пользователей.</p>
+        <p>Latency повторного прогона зависит от текущей нагрузки и не полностью воспроизводит исходные условия. Сравнивайте версии в одном временном окне, чередуйте порядок и отдельно отмечайте кешированные запросы. Если модель или инфраструктура upstream изменились между запусками, результат нельзя приписывать только промпту.</p>
+        <p>Наконец, статистическая значимость не равна практической ценности. Улучшение может быть измеримым, но слишком малым для покрытия разметки, повторных запусков, хранения и сопровождения.</p>
+      </section>
+
+      <section id="next">
+        <h2>Что должно остаться после эксперимента</h2>
+        <p>Хороший цикл автооптимизации заканчивается не новым текстовым файлом, а пакетом воспроизводимости:</p>
+        <ul>
+          <li>baseline и candidate с версиями и хешами;</li>
+          <li>хеши discovery, validation и holdout;</li>
+          <li>рубрика и происхождение разметки;</li>
+          <li>модель, параметры и дата каждого запуска;</li>
+          <li>актуальная таблица цен;</li>
+          <li>парный отчёт и критерии rollout/rollback;</li>
+          <li>журнал исключённых трасс с причинами.</li>
+        </ul>
+        <p>Такой пакет позволяет повторить решение после смены модели, проверить эффект на свежем трафике и понять, когда промпт перестал окупаться.</p>
+        <p>Продолжить работу можно по материалам <a href="guides.html">практических руководств Agent Lab Journal</a>. Определения метрик и терминов собраны в <a href="glossary.html">глоссарии</a>.</p>
+      </section>
+    </article>
+  </main>
+</body>
+</html>

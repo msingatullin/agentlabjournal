@@ -1,0 +1,427 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Ловим ошибку в момент передачи задачи между агентами — Agent Lab Journal</title>
+  <meta name="description" content="Практическое руководство по инструментированию границы handoff: снимки состояния, автоматическая проверка расхождений и диагностика повреждения контекста между агентами.">
+  <link rel="canonical" href="https://agentlabjournal.online/multi-agent-handoff-divergence-test.html">
+  <link rel="stylesheet" href="style.css">
+  <link rel="stylesheet" href="reading.css">
+
+  <meta property="og:type" content="article">
+  <meta property="og:locale" content="ru_RU">
+  <meta property="og:site_name" content="Agent Lab Journal">
+  <meta property="og:title" content="Ловим ошибку в момент передачи задачи между агентами">
+  <meta property="og:description" content="Инструментируем границу handoff, сохраняем снимки состояния и автоматически обнаруживаем расхождения до запуска следующего агента.">
+  <meta property="og:url" content="https://agentlabjournal.online/multi-agent-handoff-divergence-test.html">
+
+  <meta name="twitter:card" content="summary">
+  <meta name="twitter:title" content="Ловим ошибку в момент передачи задачи между агентами">
+  <meta name="twitter:description" content="Снимки состояния и автоматическая проверка расхождений на границе handoff.">
+
+  <meta name="reading-meta" content="Продвинутый уровень · до 12 минут · практическое руководство">
+
+  <script type="application/ld+json">
+  {
+    "@context": "https://schema.org",
+    "@type": "Article",
+    "headline": "Ловим ошибку в момент передачи задачи между агентами",
+    "description": "Практическое руководство по инструментированию границы handoff: снимки состояния, автоматическая проверка расхождений и диагностика повреждения контекста между агентами.",
+    "inLanguage": "ru-RU",
+    "mainEntityOfPage": {
+      "@type": "WebPage",
+      "@id": "https://agentlabjournal.online/multi-agent-handoff-divergence-test.html"
+    },
+    "url": "https://agentlabjournal.online/multi-agent-handoff-divergence-test.html",
+    "isPartOf": {
+      "@type": "WebSite",
+      "name": "Agent Lab Journal",
+      "url": "https://agentlabjournal.online/"
+    },
+    "author": {
+      "@type": "Organization",
+      "name": "Agent Lab Journal"
+    },
+    "publisher": {
+      "@type": "Organization",
+      "name": "Agent Lab Journal"
+    },
+    "articleSection": "Multi-agent systems",
+    "proficiencyLevel": "Advanced",
+    "timeRequired": "PT12M",
+    "keywords": [
+      "handoff",
+      "мультиагентные системы",
+      "снимок состояния",
+      "проверка инвариантов",
+      "расхождение состояния",
+      "наблюдаемость"
+    ]
+  }
+  </script>
+</head>
+<body>
+  <header class="site-header">
+    <div class="container">
+      <a class="site-name" href="index.html">Agent Lab Journal</a>
+      <nav aria-label="Основная навигация">
+        <a href="guides.html">Гайды</a>
+        <a href="glossary.html">Глоссарий</a>
+      </nav>
+    </div>
+  </header>
+
+  <main>
+    <article class="reading">
+      <header class="article-header">
+        <p class="eyebrow">Практика · Multi-agent systems</p>
+        <h1>Ловим ошибку в момент передачи задачи между агентами</h1>
+        <p class="lead">Повреждение состояния при передаче задачи часто замечают только по неверному финальному ответу. Перенесём контроль на саму границу между агентами: сохраним состояние до и после передачи, проверим инварианты и остановим выполнение при первом значимом расхождении.</p>
+        <div class="reading-meta" aria-label="Параметры статьи">
+          <span>Продвинутый уровень</span>
+          <span>До 12 минут</span>
+          <span>Результат: инструментированная граница handoff</span>
+        </div>
+      </header>
+
+      <section id="problem">
+        <h2>Почему финальный лог появляется слишком поздно</h2>
+        <p><a href="glossary.html#handoff">Handoff</a> — передача задачи, контекста и ответственности от одного агента другому. На этой границе состояние обычно преобразуется: сообщения сокращаются, поля переименовываются, результаты инструментов сериализуются, а внутренние объекты превращаются в транспортный формат.</p>
+        <p>Если преобразование теряет ограничение пользователя, меняет идентификатор задачи или подставляет устаревшую версию данных, следующий агент продолжает работу с логически корректным, но уже неверным контекстом. Его действия создают новые сообщения и вызовы инструментов, поэтому исходное повреждение быстро скрывается за производными событиями.</p>
+        <p>Обычного журнала «агент A завершён, агент B запущен» недостаточно. Для локализации нужны три вещи:</p>
+        <ul>
+          <li>канонический снимок состояния непосредственно перед экспортом;</li>
+          <li>снимок сразу после импорта, до первого действия принимающего агента;</li>
+          <li>автоматическая проверка обязательных полей и допустимых преобразований.</li>
+        </ul>
+      </section>
+
+      <section id="contract">
+        <h2>Сначала задаём контракт границы</h2>
+        <p>Не сравнивайте целиком внутренние объекты двух агентов. В них могут закономерно различаться кеши, временные метки, счётчики и служебные сообщения. Выделите минимальное переносимое состояние, от которого зависит корректность задачи.</p>
+        <p>Ниже приведён пример контракта, а не универсальный стандарт:</p>
+
+        <pre><code>{
+  "schema_version": 1,
+  "handoff_id": "h-0042",
+  "task": {
+    "id": "task-17",
+    "goal": "Подготовить сводку",
+    "constraints": [
+      "Не отправлять данные во внешние системы"
+    ]
+  },
+  "artifacts": [
+    {
+      "id": "notes",
+      "revision": 3,
+      "sha256": "..."
+    }
+  ],
+  "decisions": [
+    {
+      "id": "scope",
+      "value": "Только локальные материалы"
+    }
+  ]
+}</code></pre>
+
+        <p>Для границы полезно разделить поля на категории:</p>
+        <dl>
+          <dt>Идентичные</dt>
+          <dd><code>handoff_id</code>, идентификатор задачи, цель, ограничения и ссылки на версии артефактов должны пережить передачу без изменений.</dd>
+          <dt>Преобразуемые</dt>
+          <dd>Например, история сообщений может быть заменена структурированной сводкой, если это явно разрешено контрактом.</dd>
+          <dt>Локальные</dt>
+          <dd>Кеши, метрики процесса и внутренние указатели не передаются и не участвуют в сравнении.</dd>
+          <dt>Секретные</dt>
+          <dd>Токены, ключи и необработанные приватные данные не должны попадать в снимки. Сохраняйте только признак наличия или безопасный отпечаток, если он действительно нужен.</dd>
+        </dl>
+      </section>
+
+      <section id="implementation">
+        <h2>Воспроизводимый минимальный стенд</h2>
+        <p>Следующий пример использует только стандартную библиотеку Python. Он намеренно моделирует ошибку: экспортёр забывает перенести ограничения задачи. Команды создают лишь локальные файлы в текущем каталоге и не выполняют сетевых запросов.</p>
+
+        <h3>1. Опишите снимок и канонизацию</h3>
+        <pre><code>from __future__ import annotations
+
+import copy
+import hashlib
+import json
+from pathlib import Path
+from typing import Any
+
+SNAPSHOT_DIR = Path("handoff-snapshots")
+
+VOLATILE_KEYS = {
+    "created_at",
+    "local_cache",
+    "runtime_metrics",
+}
+
+REQUIRED_PATHS = (
+    ("schema_version",),
+    ("handoff_id",),
+    ("task", "id"),
+    ("task", "goal"),
+    ("task", "constraints"),
+    ("artifacts",),
+    ("decisions",),
+)
+
+
+def canonical(value: Any) -&gt; Any:
+    if isinstance(value, dict):
+        return {
+            key: canonical(item)
+            for key, item in sorted(value.items())
+            if key not in VOLATILE_KEYS
+        }
+    if isinstance(value, list):
+        return [canonical(item) for item in value]
+    return value
+
+
+def encoded(value: Any) -&gt; bytes:
+    return json.dumps(
+        canonical(value),
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode("utf-8")
+
+
+def digest(value: Any) -&gt; str:
+    return hashlib.sha256(encoded(value)).hexdigest()
+
+
+def write_snapshot(stage: str, state: dict[str, Any]) -&gt; Path:
+    SNAPSHOT_DIR.mkdir(mode=0o700, exist_ok=True)
+    path = SNAPSHOT_DIR / f"{state['handoff_id']}.{stage}.json"
+    path.write_text(
+        json.dumps(canonical(state), ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
+    return path</code></pre>
+
+        <p>Канонизация удаляет только заранее перечисленные нестабильные поля. Не удаляйте поле из сравнения лишь потому, что оно часто расходится: сначала выясните, почему оно меняется.</p>
+
+        <h3>2. Добавьте проверку структуры и расхождений</h3>
+        <pre><code>class HandoffDivergence(RuntimeError):
+    pass
+
+
+def read_path(state: dict[str, Any], path: tuple[str, ...]) -&gt; Any:
+    current: Any = state
+    for part in path:
+        if not isinstance(current, dict) or part not in current:
+            joined = ".".join(path)
+            raise HandoffDivergence(f"Отсутствует обязательное поле: {joined}")
+        current = current[part]
+    return current
+
+
+def compare_handoff(
+    before: dict[str, Any],
+    after: dict[str, Any],
+) -&gt; None:
+    for path in REQUIRED_PATHS:
+        left = read_path(before, path)
+        right = read_path(after, path)
+        if canonical(left) != canonical(right):
+            joined = ".".join(path)
+            raise HandoffDivergence(
+                f"Расхождение в {joined}: "
+                f"before={left!r}, after={right!r}"
+            )
+
+    if digest(before) != digest(after):
+        raise HandoffDivergence(
+            "Состояние различается вне проверенных путей: "
+            f"before_sha256={digest(before)}, "
+            f"after_sha256={digest(after)}"
+        )</code></pre>
+
+        <p>Двойная проверка намеренна. Сначала она выдаёт понятное сообщение для критических полей, затем общий отпечаток обнаруживает неожиданное изменение в остальной части контракта.</p>
+
+        <h3>3. Оберните саму передачу</h3>
+        <pre><code>def instrumented_handoff(
+    source_state: dict[str, Any],
+    export_state,
+    import_state,
+) -&gt; dict[str, Any]:
+    before = canonical(copy.deepcopy(source_state))
+    write_snapshot("before", before)
+
+    payload = export_state(copy.deepcopy(source_state))
+    after = canonical(import_state(copy.deepcopy(payload)))
+    write_snapshot("after", after)
+
+    compare_handoff(before, after)
+    return after</code></pre>
+
+        <p>Критическая деталь: <code>compare_handoff</code> вызывается до запуска принимающего агента. При расхождении функция возвращать управление не должна. Так повреждённое состояние не успеет породить новые действия.</p>
+
+        <h3>4. Воспроизведите потерю поля</h3>
+        <pre><code>def broken_export(state: dict[str, Any]) -&gt; dict[str, Any]:
+    return {
+        "schema_version": state["schema_version"],
+        "handoff_id": state["handoff_id"],
+        "task": {
+            "id": state["task"]["id"],
+            "goal": state["task"]["goal"],
+            # Ошибка примера: constraints не перенесены.
+        },
+        "artifacts": state["artifacts"],
+        "decisions": state["decisions"],
+    }
+
+
+def import_payload(payload: dict[str, Any]) -&gt; dict[str, Any]:
+    imported = copy.deepcopy(payload)
+    imported["task"].setdefault("constraints", [])
+    return imported
+
+
+state = {
+    "schema_version": 1,
+    "handoff_id": "h-0042",
+    "task": {
+        "id": "task-17",
+        "goal": "Подготовить сводку",
+        "constraints": [
+            "Не отправлять данные во внешние системы"
+        ],
+    },
+    "artifacts": [],
+    "decisions": [],
+}
+
+instrumented_handoff(
+    state,
+    export_state=broken_export,
+    import_state=import_payload,
+)</code></pre>
+
+        <p>Сохраните объединённый пример как <code>handoff_check.py</code> и выполните:</p>
+        <pre><code>python3 handoff_check.py</code></pre>
+
+        <p>Ожидаемый результат именно для этого примера — исключение до запуска второго агента:</p>
+        <pre><code>HandoffDivergence: Расхождение в task.constraints:
+before=['Не отправлять данные во внешние системы'], after=[]</code></pre>
+      </section>
+
+      <section id="fix">
+        <h2>Исправляем экспорт и проверяем результат</h2>
+        <p>Исправленный экспортёр переносит весь контракт задачи:</p>
+
+        <pre><code>def correct_export(state: dict[str, Any]) -&gt; dict[str, Any]:
+    return {
+        "schema_version": state["schema_version"],
+        "handoff_id": state["handoff_id"],
+        "task": copy.deepcopy(state["task"]),
+        "artifacts": copy.deepcopy(state["artifacts"]),
+        "decisions": copy.deepcopy(state["decisions"]),
+    }</code></pre>
+
+        <p>Замените <code>broken_export</code> на <code>correct_export</code> в вызове и снова запустите файл. Успешное завершение процесса без исключения означает только то, что два снимка совпали по текущему контракту. Оно не доказывает правильность цели или качество работы агентов.</p>
+
+        <p>Для ручной проверки снимков используйте безопасные команды чтения:</p>
+        <pre><code>python3 -m json.tool handoff-snapshots/h-0042.before.json
+python3 -m json.tool handoff-snapshots/h-0042.after.json
+sha256sum handoff-snapshots/h-0042.before.json \
+  handoff-snapshots/h-0042.after.json</code></pre>
+
+        <p>После исправления ожидаются два одинаковых SHA-256 для канонических файлов. В рабочей системе дополнительно проверьте:</p>
+        <ul>
+          <li>при расхождении принимающий агент не делает ни одного вызова инструмента;</li>
+          <li>в ошибке присутствуют <code>handoff_id</code>, стадия и путь изменённого поля;</li>
+          <li>снимки связываются с одним запуском, но не содержат секретов;</li>
+          <li>повтор одной передачи создаёт предсказуемый результат или отдельную попытку с явным номером;</li>
+          <li>изменение версии схемы обрабатывается миграцией, а не молчаливым заполнением полей.</li>
+        </ul>
+      </section>
+
+      <section id="production">
+        <h2>Перенос в рабочий контур</h2>
+        <p>В реальном оркестраторе оформите границу как отдельную операцию со стадиями <code>capture_before</code>, <code>serialize</code>, <code>deserialize</code>, <code>validate</code> и только затем <code>start_receiver</code>. Каждая стадия должна использовать один <code>handoff_id</code>.</p>
+
+        <pre><code>handoff:
+  snapshot:
+    enabled: true
+    directory: "./handoff-snapshots"
+    redact:
+      - "credentials"
+      - "headers.authorization"
+      - "tool_inputs.raw_private_data"
+  validation:
+    fail_closed: true
+    schema_version: 1
+    exact_paths:
+      - "handoff_id"
+      - "task.id"
+      - "task.goal"
+      - "task.constraints"
+      - "artifacts"
+      - "decisions"
+    ignore_paths:
+      - "created_at"
+      - "runtime_metrics"
+      - "local_cache"</code></pre>
+
+        <p>Это пример конфигурации, а не синтаксис конкретного фреймворка. Значение <code>fail_closed: true</code> выражает правило: при невозможности проверить состояние передача блокируется. Для некритичных процессов допустим карантин с ручным разбором, но продолжение работы с непроверенным состоянием должно быть осознанной политикой, а не обработчиком исключения по умолчанию.</p>
+
+        <p>Снимки лучше хранить отдельно от обычных текстовых логов. Ограничьте права каталога, задайте срок хранения и фиксируйте факт редактирования чувствительных полей. Хеширование не делает секрет безопасным: небольшой или предсказуемый секрет иногда можно подобрать. Если поле не требуется для диагностики, не включайте его вовсе.</p>
+      </section>
+
+      <section id="mistakes">
+        <h2>Типовые ошибки</h2>
+
+        <h3>Снимок создаётся слишком рано</h3>
+        <p>Если между снимком и сериализацией состояние ещё изменяется, проверка сравнивает не настоящую границу. Снимайте <code>before</code> после завершения всех действий отправителя и непосредственно перед экспортом.</p>
+
+        <h3>Снимок после импорта создаётся слишком поздно</h3>
+        <p>Первый шаг принимающего агента может дополнить историю или нормализовать задачу. Тогда невозможно отличить дефект передачи от допустимого изменения. Снимок <code>after</code> нужен до планирования и вызовов инструментов.</p>
+
+        <h3>Сравниваются только хеши</h3>
+        <p>Хеш быстро подтверждает различие, но не показывает его причину. Храните структурный diff или хотя бы путь первого несовпавшего обязательного поля.</p>
+
+        <h3>Списки бездумно сортируются</h3>
+        <p>Для множества разрешений порядок может быть неважен, а для истории сообщений — критичен. Нормализация должна учитывать семантику конкретного поля.</p>
+
+        <h3>Отсутствующее значение приравнивается к пустому</h3>
+        <p><code>constraints: []</code> и отсутствие <code>constraints</code> могут означать разные вещи: «ограничений нет» и «ограничения потеряны». Не применяйте <code>setdefault</code> до проверки обязательности поля.</p>
+
+        <h3>Ошибка только записывается в лог</h3>
+        <p>Если после сообщения об ошибке оркестратор всё равно запускает следующего агента, граница остаётся незащищённой. Проверка должна управлять переходом состояния, а не быть декоративной телеметрией.</p>
+      </section>
+
+      <section id="limits">
+        <h2>Ограничения метода</h2>
+        <p>Проверка расхождений обнаруживает изменение относительно выбранного контракта. Она не заметит ошибку, которая уже присутствовала до первого снимка, и не определит, соответствует ли цель реальному намерению пользователя.</p>
+        <p>Полное побайтовое равенство невозможно, если принимающий агент использует другую схему. В таком случае нужен версионированный адаптер: сначала проверить исходный снимок, затем выполнить явную миграцию и проверить её отдельные постусловия.</p>
+        <p>Для больших артефактов снимок должен содержать идентификатор версии, размер и криптографический отпечаток, а не копию содержимого. Это уменьшает объём журнала, но требует гарантировать неизменяемость хранилища артефактов.</p>
+        <p>Наконец, снимки повышают наблюдаемость ценой дискового пространства и риска накопления чувствительных данных. Редактирование, контроль доступа и срок хранения являются частью реализации, а не последующей оптимизацией.</p>
+      </section>
+
+      <section id="checklist">
+        <h2>Критерий готовности</h2>
+        <p>Инструментированную границу можно считать рабочей, когда намеренная потеря каждого обязательного поля воспроизводимо останавливает передачу до первого действия следующего агента, а диагностическое событие однозначно указывает запуск, handoff и изменённый путь.</p>
+        <p>Дальше имеет смысл распространить тот же контракт на остальные переходы оркестратора и свериться с материалами в разделе <a href="guides.html">практических руководств</a>. Термины, используемые при описании агентов, состояния и инструментов, собраны в <a href="glossary.html">глоссарии Agent Lab Journal</a>.</p>
+      </section>
+    </article>
+  </main>
+
+  <footer class="site-footer">
+    <div class="container">
+      <p>Agent Lab Journal — практические материалы об агентных системах.</p>
+      <nav aria-label="Навигация в подвале">
+        <a href="guides.html">Гайды</a>
+        <a href="glossary.html">Глоссарий</a>
+      </nav>
+    </div>
+  </footer>
+</body>
+</html>

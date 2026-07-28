@@ -1,0 +1,387 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Трёхдневная задержка Dependabot: проверяем защиту от опасных релизов — Agent Lab Journal</title>
+  <meta name="description" content="Практический эксперимент с Dependabot: настраиваем трёхдневный cooldown, сравниваем обновления с задержкой и без неё и проверяем результат без установки подозрительных пакетов.">
+  <link rel="canonical" href="https://agentlabjournal.online/dependabot-cooldown-supply-chain-test.html">
+  <link rel="stylesheet" href="style.css">
+  <link rel="stylesheet" href="reading.css">
+
+  <meta property="og:type" content="article">
+  <meta property="og:locale" content="ru_RU">
+  <meta property="og:site_name" content="Agent Lab Journal">
+  <meta property="og:title" content="Трёхдневная задержка Dependabot: проверяем защиту от опасных релизов">
+  <meta property="og:description" content="Рабочая конфигурация dependabot.yml и воспроизводимое сравнение обновлений с cooldown и без него.">
+  <meta property="og:url" content="https://agentlabjournal.online/dependabot-cooldown-supply-chain-test.html">
+  <meta property="article:published_time" content="2026-07-28">
+  <meta property="article:modified_time" content="2026-07-28">
+  <meta property="article:section" content="Безопасность цепочки поставок">
+  <meta property="article:tag" content="Dependabot">
+  <meta property="article:tag" content="GitHub">
+  <meta property="article:tag" content="Supply Chain Security">
+
+  <meta name="twitter:card" content="summary">
+  <meta name="twitter:title" content="Трёхдневная задержка Dependabot">
+  <meta name="twitter:description" content="Проверяем, как трёхдневный cooldown задерживает свежие версии зависимостей и где заканчивается его защита.">
+
+  <meta name="reading-meta" content="Средний уровень · до 12 минут · практическое руководство">
+
+  <script type="application/ld+json">
+  {
+    "@context": "https://schema.org",
+    "@type": "TechArticle",
+    "headline": "Трёхдневная задержка Dependabot: проверяем защиту от опасных релизов",
+    "description": "Практический эксперимент с Dependabot: настройка трёхдневного cooldown и сравнение обновлений с задержкой и без неё.",
+    "url": "https://agentlabjournal.online/dependabot-cooldown-supply-chain-test.html",
+    "mainEntityOfPage": {
+      "@type": "WebPage",
+      "@id": "https://agentlabjournal.online/dependabot-cooldown-supply-chain-test.html"
+    },
+    "inLanguage": "ru-RU",
+    "datePublished": "2026-07-28",
+    "dateModified": "2026-07-28",
+    "author": {
+      "@type": "Organization",
+      "name": "Agent Lab Journal",
+      "url": "https://agentlabjournal.online/"
+    },
+    "publisher": {
+      "@type": "Organization",
+      "name": "Agent Lab Journal",
+      "url": "https://agentlabjournal.online/"
+    },
+    "proficiencyLevel": "Intermediate",
+    "timeRequired": "PT12M",
+    "articleSection": "Безопасность цепочки поставок",
+    "keywords": [
+      "Dependabot",
+      "dependabot.yml",
+      "cooldown",
+      "безопасность цепочки поставок",
+      "обновление зависимостей",
+      "GitHub"
+    ],
+    "dependencies": "Репозиторий GitHub с npm-проектом и включёнными Dependabot version updates"
+  }
+  </script>
+</head>
+<body>
+  <header class="site-header">
+    <div class="container">
+      <a class="site-name" href="index.html">Agent Lab Journal</a>
+      <nav aria-label="Основная навигация">
+        <a href="guides.html">Практические руководства</a>
+        <a href="glossary.html">Глоссарий</a>
+      </nav>
+    </div>
+  </header>
+
+  <main>
+    <article class="reading">
+      <header class="article-header">
+        <p class="eyebrow">Безопасность зависимостей</p>
+        <h1>Трёхдневная задержка Dependabot: проверяем защиту от опасных релизов</h1>
+        <p class="lead">Свежая версия пакета может попасть в автоматический pull request раньше, чем сообщество обнаружит вредоносный код, ошибку публикации или отзыв релиза. Проверим, как трёхдневный cooldown меняет поведение Dependabot, не устанавливая потенциально опасные пакеты.</p>
+        <div class="reading-meta" aria-label="Параметры статьи">
+          <span>Уровень: средний</span>
+          <span>Чтение: до 12 минут</span>
+          <time datetime="2026-07-28">28 июля 2026</time>
+        </div>
+      </header>
+
+      <section>
+        <h2>Что мы получим</h2>
+        <p>В конце эксперимента у нас будут две рабочие конфигурации <code>.github/dependabot.yml</code> для npm-проекта:</p>
+        <ul>
+          <li>вариант без задержки, явно исключающий все пакеты из cooldown;</li>
+          <li>вариант с минимальным возрастом релиза в три дня;</li>
+          <li>таблица наблюдений, показывающая, когда свежая версия становится кандидатом на pull request.</li>
+        </ul>
+        <p>Первый важный термин — <a href="glossary.html#supply-chain">цепочка поставок ПО</a>: это путь исходного кода, зависимостей, инструментов сборки и артефактов до работающего приложения. Cooldown защищает только один участок этого пути — момент принятия новой версии зависимости.</p>
+      </section>
+
+      <aside class="note">
+        <h2>Актуальное поведение GitHub</h2>
+        <p>На GitHub.com трёхдневный cooldown для обычных version updates теперь действует по умолчанию, даже если блок <code>cooldown</code> отсутствует. Он не применяется к security updates. Поэтому в современном тесте «без cooldown» недостаточно просто удалить настройку: нужно явно исключить зависимости из задержки.</p>
+      </aside>
+
+      <section>
+        <h2>Как работает задержка</h2>
+        <p>Во время запланированной проверки Dependabot получает доступные версии из реестра и сопоставляет возраст релиза с правилами <code>cooldown</code>. Если версия моложе заданного окна, Dependabot пропускает её в текущем запуске. После окончания окна версия снова рассматривается по обычным правилам обновления.</p>
+
+        <table>
+          <thead>
+            <tr>
+              <th>Сценарий</th>
+              <th>Релизу менее трёх дней</th>
+              <th>Релизу не менее трёх дней</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td>Cooldown отключён через <code>exclude: ["*"]</code></td>
+              <td>Версия может участвовать в version update сразу</td>
+              <td>Версия может участвовать в version update</td>
+            </tr>
+            <tr>
+              <td><code>default-days: 3</code></td>
+              <td>Версия пропускается</td>
+              <td>Версия снова рассматривается</td>
+            </tr>
+            <tr>
+              <td>Security update</td>
+              <td>Cooldown не задерживает обновление</td>
+              <td>Cooldown не задерживает обновление</td>
+            </tr>
+          </tbody>
+        </table>
+
+        <p>Формулировка «может участвовать» существенна: наличие подходящей версии не гарантирует pull request. На результат также влияют диапазон версий в манифесте, lock-файл, правила <code>ignore</code> и <code>allow</code>, лимит открытых PR и совместимость разрешения зависимостей.</p>
+      </section>
+
+      <section>
+        <h2>Подготовка безопасного стенда</h2>
+        <p>Используйте отдельный тестовый репозиторий или временную ветку проекта. Эксперимент не требует публикации собственного пакета, токенов реестра или запуска кода из новой зависимости.</p>
+
+        <h3>1. Проверьте структуру npm-проекта</h3>
+        <pre><code>git status --short
+test -f package.json &amp;&amp; echo "package.json найден"
+test -f package-lock.json &amp;&amp; echo "package-lock.json найден"</code></pre>
+
+        <p>Команды только читают состояние рабочей копии. Если lock-файла нет, создавайте его обычным для проекта способом только после проверки скриптов в <code>package.json</code>. Не запускайте <code>npm install</code> для неизвестной свежей версии ради эксперимента.</p>
+
+        <h3>2. Выберите наблюдаемую зависимость</h3>
+        <p>Подойдёт уже используемая прямая npm-зависимость, у которой существует более новая совместимая версия. Не фиксируйте в статье или автоматизации конкретный пакет: доступность свежего релиза меняется со временем.</p>
+
+        <p>Версии прямых зависимостей можно посмотреть без установки:</p>
+        <pre><code>npm outdated --depth=0</code></pre>
+
+        <p><code>npm outdated</code> обращается к настроенному реестру, но не устанавливает найденные версии. Для выбранного пакета проверьте время публикации:</p>
+        <pre><code>npm view &lt;имя-пакета&gt; time --json</code></pre>
+
+        <p>Замените <code>&lt;имя-пакета&gt;</code> именем существующей зависимости. Сопоставьте номер доступной версии с её временной меткой. Для чистого сравнения нужен релиз моложе трёх суток. Если такого релиза нет, сохраните конфигурацию и дождитесь следующей публикации; искусственно устанавливать подозрительную версию не нужно.</p>
+
+        <h3>3. Зафиксируйте исходные условия</h3>
+        <p>Запишите время публикации версии, время проверки Dependabot, текущую и целевую версии, ветку и наличие других открытых Dependabot PR. Возраст следует считать по временной метке реестра, а не по дате коммита или GitHub Release.</p>
+
+        <pre><code>Пакет:
+Текущая версия:
+Целевая версия:
+Опубликована в реестре:
+Запуск Dependabot:
+Возраст релиза на момент запуска:
+Открыт version update PR: да / нет</code></pre>
+      </section>
+
+      <section>
+        <h2>Эксперимент A: поведение без cooldown</h2>
+        <p>Поскольку отсутствие блока теперь означает стандартную задержку в три дня на GitHub.com, для контрольного варианта явно исключим все зависимости из cooldown.</p>
+
+        <pre><code>version: 2
+updates:
+  - package-ecosystem: "npm"
+    directory: "/"
+    schedule:
+      interval: "daily"
+      time: "09:00"
+      timezone: "Europe/Moscow"
+    cooldown:
+      default-days: 3
+      exclude:
+        - "*"
+    open-pull-requests-limit: 10</code></pre>
+
+        <p>Список <code>exclude</code> имеет приоритет над <code>include</code> и общими сроками. Шаблон <code>"*"</code> исключает из задержки все зависимости этого блока, поэтому свежие версии могут рассматриваться немедленно.</p>
+
+        <p>Сохраните файл по обязательному пути и проверьте его:</p>
+        <pre><code>mkdir -p .github
+git diff --check
+git status --short
+git diff -- .github/dependabot.yml</code></pre>
+
+        <p>Создать каталог безопасно, но сам файл следует добавить редактором. Не помещайте в конфигурацию токены. Для публичного npm-реестра в этом примере раздел <code>registries</code> не нужен.</p>
+
+        <p>После отправки изменения в ветку по умолчанию откройте в репозитории страницу <span lang="en">Insights → Dependency graph → Dependabot</span> или соответствующий раздел настроек безопасности. Запустите проверку вручную, если интерфейс репозитория предлагает <span lang="en">Check for updates</span>; иначе дождитесь расписания.</p>
+
+        <p>Ожидаемое наблюдение для версии моложе трёх дней: она не блокируется правилом минимального возраста. Если все остальные условия выполнены, Dependabot может создать version update PR.</p>
+      </section>
+
+      <section>
+        <h2>Эксперимент B: явная задержка на три дня</h2>
+        <p>Замените контрольную конфигурацию следующей. Явная настройка полезна как документация политики проекта и не зависит от того, знает ли читатель о текущем значении по умолчанию.</p>
+
+        <pre><code>version: 2
+updates:
+  - package-ecosystem: "npm"
+    directory: "/"
+    schedule:
+      interval: "daily"
+      time: "09:00"
+      timezone: "Europe/Moscow"
+    cooldown:
+      default-days: 3
+      include:
+        - "*"
+    open-pull-requests-limit: 10</code></pre>
+
+        <p>Снова отправьте файл в ветку по умолчанию и выполните проверку обновлений. Не закрывайте контрольный PR до того, как запишете его номер и время создания. Для чистого повторного наблюдения его можно закрыть перед вторым запуском, не объединяя изменения.</p>
+
+        <p>Ожидаемый результат:</p>
+        <ul>
+          <li>версия младше трёх суток пропускается как version update;</li>
+          <li>после достижения возраста в три дня она снова становится кандидатом;</li>
+          <li>security update не ждёт окончания cooldown.</li>
+        </ul>
+
+        <p>Если нужен разный срок для типов SemVer-обновлений, конфигурацию можно уточнить:</p>
+        <pre><code>version: 2
+updates:
+  - package-ecosystem: "npm"
+    directory: "/"
+    schedule:
+      interval: "daily"
+      time: "09:00"
+      timezone: "Europe/Moscow"
+    cooldown:
+      default-days: 3
+      semver-major-days: 14
+      semver-minor-days: 7
+      semver-patch-days: 3
+      include:
+        - "*"</code></pre>
+
+        <p>Это пример более консервативной политики, а не универсальная рекомендация: подходящие интервалы зависят от частоты релизов, риска и скорости реакции команды.</p>
+      </section>
+
+      <section>
+        <h2>Проверка результата</h2>
+        <p>Сравнивайте запуски только для одной и той же целевой версии и с одинаковыми настройками, кроме блока <code>cooldown</code>.</p>
+
+        <table>
+          <thead>
+            <tr>
+              <th>Проверка</th>
+              <th>Без задержки</th>
+              <th>С задержкой 3 дня</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td>Версия моложе 72 часов</td>
+              <td>Не отфильтрована cooldown</td>
+              <td>Отфильтрована до окончания окна</td>
+            </tr>
+            <tr>
+              <td>Версия старше 72 часов</td>
+              <td>Рассматривается</td>
+              <td>Рассматривается</td>
+            </tr>
+            <tr>
+              <td>Изменён манифест или lock-файл</td>
+              <td>Возможен PR</td>
+              <td>Возможен после окна</td>
+            </tr>
+            <tr>
+              <td>Исполнен код новой версии</td>
+              <td>Нет, пока PR не собирался и не объединялся</td>
+              <td>Нет</td>
+            </tr>
+          </tbody>
+        </table>
+
+        <p>Для каждого запуска откройте журнал Dependabot и найдите выбранную зависимость. Сохраните текст причины пропуска или создания PR. Интерфейс и формулировки журнала могут меняться, поэтому главным доказательством остаётся сочетание временной метки публикации, конфигурации и фактического результата запуска.</p>
+
+        <aside class="warning">
+          <h3>Не объединяйте PR ради проверки</h3>
+          <p>Цель опыта — проверить отбор версии, а не выполнить её код. Открытого pull request и журнала Dependabot достаточно. Если CI автоматически запускает install-скрипты зависимостей в PR, проводите опыт только с доверенным пакетом и с минимальными разрешениями workflow.</p>
+        </aside>
+      </section>
+
+      <section>
+        <h2>Почему результаты иногда не совпадают с ожиданием</h2>
+
+        <h3>Удалили <code>cooldown</code>, но задержка осталась</h3>
+        <p>На GitHub.com это ожидаемо: трёхдневная задержка применяется по умолчанию. Для контрольного режима используйте <code>exclude: ["*"]</code>.</p>
+
+        <h3>Dependabot не открыл PR даже без задержки</h3>
+        <p>Проверьте журнал. Возможные причины: целевая версия запрещена диапазоном, действует <code>ignore</code>, исчерпан <code>open-pull-requests-limit</code>, обновление уже представлено открытым PR, lock-файл не разрешается или конфигурация ещё не попала в ветку по умолчанию.</p>
+
+        <h3>Тестируют security update</h3>
+        <p>Cooldown предназначен для version updates и не задерживает security updates. Это специально сделано, чтобы известное исправление уязвимости не ожидало минимального возраста.</p>
+
+        <h3>Считают три календарных даты вместо возраста релиза</h3>
+        <p>Ориентируйтесь на точное время публикации в реестре. Релиз, опубликованный вечером в понедельник, утром в четверг может быть всё ещё моложе 72 часов.</p>
+
+        <h3>Используют два перекрывающихся блока npm</h3>
+        <p>Для одного ecosystem, target branch и каталога не создавайте конфликтующие записи. Сравнивайте конфигурации последовательно или в отдельных тестовых репозиториях.</p>
+
+        <h3>Забывают кавычки вокруг звёздочки</h3>
+        <p>В YAML символ <code>*</code> имеет специальное значение. Пишите шаблон как строку: <code>"*"</code>.</p>
+
+        <h3>Путают <code>exclude</code> и исключение обновления</h3>
+        <p><code>cooldown.exclude</code> не запрещает обновление пакета. Он исключает пакет только из задержки, то есть позволяет рассмотреть его раньше.</p>
+      </section>
+
+      <section>
+        <h2>Ограничения защиты</h2>
+        <p>Три дня — окно наблюдения, а не доказательство безопасности. Cooldown помогает против короткоживущих вредоносных или быстро отозванных публикаций, но не обнаруживает код самостоятельно.</p>
+        <ul>
+          <li>Долго скрывающийся бэкдор переживёт трёхдневное ожидание.</li>
+          <li>Скомпрометированная старая версия не становится безопаснее из-за возраста.</li>
+          <li>Ошибки в транзитивных зависимостях и сборочной инфраструктуре требуют отдельных мер.</li>
+          <li>Автоматическое объединение PR после cooldown всё равно нуждается в тестах и правилах защиты ветки.</li>
+          <li>В GitHub Enterprise Server доступность нового значения по умолчанию зависит от версии сервера.</li>
+        </ul>
+
+        <p>Используйте задержку как один слой защиты вместе с lock-файлами, рецензированием изменений, минимальными разрешениями CI, проверкой происхождения артефактов и контролем install-скриптов. Дополнительные практические материалы собраны в разделе <a href="guides.html">руководств</a>, а определения терминов — в <a href="glossary.html">глоссарии</a>.</p>
+      </section>
+
+      <section>
+        <h2>Итоговая конфигурация</h2>
+        <p>Для обычного npm-проекта разумная стартовая политика выглядит так:</p>
+
+        <pre><code>version: 2
+updates:
+  - package-ecosystem: "npm"
+    directory: "/"
+    schedule:
+      interval: "daily"
+      time: "09:00"
+      timezone: "Europe/Moscow"
+    cooldown:
+      default-days: 3
+      include:
+        - "*"
+    open-pull-requests-limit: 10
+    commit-message:
+      prefix: "chore(deps)"</code></pre>
+
+        <p>Она явно требует трёхдневного возраста для обычных обновлений всех npm-зависимостей. Если конкретный внутренний пакет должен обновляться немедленно, добавьте его точное имя в <code>exclude</code>, понимая, что исключение ослабляет именно временной барьер.</p>
+
+        <p>Проверка считается успешной, если один и тот же свежий релиз допускается контрольной конфигурацией с <code>exclude: ["*"]</code>, пропускается конфигурацией с <code>include: ["*"]</code> до истечения трёх суток и снова рассматривается после окончания окна. Сам пакет при этом устанавливать или объединять в основную ветку не требуется.</p>
+      </section>
+
+      <section>
+        <h2>Официальная документация</h2>
+        <ul>
+          <li><a href="https://docs.github.com/en/code-security/reference/supply-chain-security/dependabot-options-reference#cooldown" rel="noopener noreferrer">GitHub Docs: параметры Dependabot и cooldown</a></li>
+          <li><a href="https://docs.github.com/en/code-security/concepts/supply-chain-security/about-the-dependabot-yml-file" rel="noopener noreferrer">GitHub Docs: назначение и расположение dependabot.yml</a></li>
+          <li><a href="https://github.blog/changelog/2026-07-14-dependabot-version-updates-introduce-default-package-cooldown/" rel="noopener noreferrer">GitHub Changelog: трёхдневный cooldown по умолчанию</a></li>
+        </ul>
+      </section>
+    </article>
+  </main>
+
+  <footer class="site-footer">
+    <div class="container">
+      <p>Agent Lab Journal — практические материалы об автоматизации, агентах и инженерной безопасности.</p>
+      <nav aria-label="Навигация в подвале">
+        <a href="guides.html">Все руководства</a>
+        <a href="glossary.html">Глоссарий</a>
+      </nav>
+    </div>
+  </footer>
+</body>
+</html>

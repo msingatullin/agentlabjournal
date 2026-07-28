@@ -1,0 +1,378 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Безопасный Telegram-бот для бизнес-агента — Agent Lab Journal</title>
+  <meta name="description" content="Практическое руководство по защите Telegram-бота бизнес-агента: allowlist пользователей, проверка контекста, подтверждение опасных действий и безопасные ответы.">
+  <link rel="canonical" href="https://agentlabjournal.online/agent-telegram-security.html">
+  <link rel="stylesheet" href="style.css">
+  <link rel="stylesheet" href="reading.css">
+
+  <meta property="og:type" content="article">
+  <meta property="og:locale" content="ru_RU">
+  <meta property="og:site_name" content="Agent Lab Journal">
+  <meta property="og:title" content="Безопасный Telegram-бот для бизнес-агента">
+  <meta property="og:description" content="Как добавить allowlist, проверку контекста, подтверждения опасных действий и безопасные ответы в Telegram-бота бизнес-агента.">
+  <meta property="og:url" content="https://agentlabjournal.online/agent-telegram-security.html">
+
+  <meta name="twitter:card" content="summary">
+  <meta name="twitter:title" content="Безопасный Telegram-бот для бизнес-агента">
+  <meta name="twitter:description" content="Практическая защита Telegram-бота: allowlist, подтверждения и безопасные ответы.">
+
+  <script type="application/ld+json">
+  {
+    "@context": "https://schema.org",
+    "@type": "Article",
+    "headline": "Безопасный Telegram-бот для бизнес-агента",
+    "description": "Практическое руководство по защите Telegram-бота бизнес-агента: allowlist пользователей, проверка контекста, подтверждение опасных действий и безопасные ответы.",
+    "inLanguage": "ru-RU",
+    "mainEntityOfPage": {
+      "@type": "WebPage",
+      "@id": "https://agentlabjournal.online/agent-telegram-security.html"
+    },
+    "author": {
+      "@type": "Organization",
+      "name": "Agent Lab Journal"
+    },
+    "publisher": {
+      "@type": "Organization",
+      "name": "Agent Lab Journal",
+      "url": "https://agentlabjournal.online/"
+    },
+    "isPartOf": {
+      "@type": "WebSite",
+      "name": "Agent Lab Journal",
+      "url": "https://agentlabjournal.online/"
+    },
+    "articleSection": "Практические руководства",
+    "keywords": [
+      "Telegram-бот",
+      "бизнес-агент",
+      "allowlist",
+      "подтверждение действий",
+      "безопасность"
+    ]
+  }
+  </script>
+</head>
+<body>
+  <header class="site-header">
+    <div class="container">
+      <a class="site-name" href="index.html">Agent Lab Journal</a>
+      <nav aria-label="Основная навигация">
+        <a href="guides.html">Руководства</a>
+        <a href="glossary.html">Глоссарий</a>
+      </nav>
+    </div>
+  </header>
+
+  <main>
+    <article class="reading">
+      <header class="article-header">
+        <p class="eyebrow">Практическое руководство · Средний уровень</p>
+        <h1>Безопасный Telegram-бот для бизнес-агента</h1>
+        <p class="lead">Закроем типичную уязвимость: бот принимает команды, не проверяя пользователя, чат и последствия действия. Результатом станет минимальный защитный контур с allowlist, явными подтверждениями и ответами без утечки внутренних данных.</p>
+        <div class="reading-meta" aria-label="Информация о материале">
+          <span>Чтение: до 8 минут</span>
+          <span>Уровень: средний</span>
+          <span>Результат: allowlist, подтверждения, безопасные ответы</span>
+        </div>
+      </header>
+
+      <section>
+        <h2>Почему одной проверки команды недостаточно</h2>
+        <p>Команда <code>/report</code> может выглядеть безобидно, но её смысл зависит от отправителя, чата и подключённых инструментов. Если бот доверяет любому входящему сообщению, посторонний пользователь способен запросить данные или запустить действие от имени компании.</p>
+        <p>Первый рубеж — <a href="glossary.html#allowlist">allowlist</a>: явный список идентификаторов, которым разрешён доступ. Проверять нужно числовой <code>user_id</code>, а не имя пользователя. Telegram-имя можно изменить, оно может отсутствовать и не является надёжным идентификатором.</p>
+        <aside class="callout">
+          <p><strong>Базовое правило:</strong> сначала аутентификация пользователя и проверка контекста, затем разбор команды, оценка риска и только после этого вызов бизнес-инструмента.</p>
+        </aside>
+      </section>
+
+      <section>
+        <h2>Модель доступа</h2>
+        <p>Для компактного примера разделим команды на два класса:</p>
+        <ul>
+          <li><strong>Безопасные для чтения:</strong> <code>/help</code>, <code>/status</code>. Они не меняют внешнее состояние и возвращают ограниченный набор данных.</li>
+          <li><strong>Опасные:</strong> <code>/send_report</code>, <code>/cancel_order</code>. Они отправляют сведения, меняют записи или запускают необратимый процесс, поэтому требуют подтверждения.</li>
+        </ul>
+        <p>Реальная классификация зависит от возможностей вашего агента. Команда чтения тоже становится чувствительной, если раскрывает персональные данные, финансовые показатели или внутренние инструкции.</p>
+      </section>
+
+      <section>
+        <h2>Шаг 1. Храните настройки вне кода</h2>
+        <p>Ниже — пример конфигурации окружения. Значения условны: замените их собственными идентификаторами. Не публикуйте токен бота и не добавляйте файл <code>.env</code> в репозиторий.</p>
+        <pre><code>TELEGRAM_BOT_TOKEN=значение_из_защищённого_хранилища
+TELEGRAM_ALLOWED_USER_IDS=100001,100002
+TELEGRAM_ALLOWED_CHAT_IDS=-100200001
+CONFIRMATION_TTL_SECONDS=120</code></pre>
+        <p>Отдельный список чатов не заменяет список пользователей. В разрешённую группу можно добавить нового участника, поэтому для бизнес-команд должны одновременно пройти обе проверки.</p>
+      </section>
+
+      <section>
+        <h2>Шаг 2. Проверяйте отправителя и чат до обработки текста</h2>
+        <p>Пример ниже использует обычный Python и не привязан к конкретной библиотеке Telegram. Объект <code>update</code> здесь обозначает нормализованное входящее обновление.</p>
+        <pre><code>import os
+
+def parse_id_set(variable_name: str) -&gt; set[int]:
+    raw = os.environ.get(variable_name, "")
+    result = set()
+
+    for item in raw.split(","):
+        item = item.strip()
+        if not item:
+            continue
+        try:
+            result.add(int(item))
+        except ValueError as exc:
+            raise RuntimeError(
+                f"Некорректное значение в {variable_name}"
+            ) from exc
+
+    return result
+
+
+ALLOWED_USERS = parse_id_set("TELEGRAM_ALLOWED_USER_IDS")
+ALLOWED_CHATS = parse_id_set("TELEGRAM_ALLOWED_CHAT_IDS")
+
+
+def is_authorized(update) -&gt; bool:
+    user = getattr(update, "effective_user", None)
+    chat = getattr(update, "effective_chat", None)
+
+    if user is None or chat is None:
+        return False
+
+    return (
+        user.id in ALLOWED_USERS
+        and chat.id in ALLOWED_CHATS
+    )
+
+
+def handle_update(update):
+    if not is_authorized(update):
+        audit_denial(update)
+        return safe_reply(
+            update,
+            "Команда недоступна."
+        )
+
+    text = (update.effective_message.text or "").strip()
+    return route_command(update, text)</code></pre>
+        <p>Отказ должен происходить по умолчанию. Пустой allowlist означает отсутствие доступа, а не разрешение для всех. Также не сообщайте неизвестному пользователю, какой именно идентификатор или список не прошёл проверку.</p>
+      </section>
+
+      <section>
+        <h2>Шаг 3. Добавьте одноразовое подтверждение</h2>
+        <p>Опасную команду нельзя выполнять сразу после получения текста. Сначала создайте короткоживущий запрос, покажите пользователю точное последствие и потребуйте подтверждение через кнопку.</p>
+        <pre><code>from dataclasses import dataclass
+from secrets import token_urlsafe
+from time import time
+
+CONFIRMATION_TTL = int(
+    os.environ.get("CONFIRMATION_TTL_SECONDS", "120")
+)
+
+@dataclass
+class PendingAction:
+    user_id: int
+    chat_id: int
+    action: str
+    resource_id: str
+    expires_at: float
+
+
+pending_actions: dict[str, PendingAction] = {}
+
+
+def request_confirmation(
+    user_id: int,
+    chat_id: int,
+    action: str,
+    resource_id: str,
+) -&gt; str:
+    nonce = token_urlsafe(24)
+    pending_actions[nonce] = PendingAction(
+        user_id=user_id,
+        chat_id=chat_id,
+        action=action,
+        resource_id=resource_id,
+        expires_at=time() + CONFIRMATION_TTL,
+    )
+    return nonce
+
+
+def consume_confirmation(
+    nonce: str,
+    user_id: int,
+    chat_id: int,
+) -&gt; PendingAction | None:
+    item = pending_actions.pop(nonce, None)
+
+    if item is None or item.expires_at &lt; time():
+        return None
+
+    if item.user_id != user_id or item.chat_id != chat_id:
+        return None
+
+    return item</code></pre>
+        <p>При нажатии кнопки обработчик повторно проверяет allowlist, извлекает одноразовую запись и выполняет только сохранённое действие. Нельзя брать название операции или идентификатор ресурса прямо из текста кнопки без серверной проверки.</p>
+        <pre><code>def confirm_callback(update, nonce: str):
+    if not is_authorized(update):
+        return safe_reply(update, "Действие недоступно.")
+
+    item = consume_confirmation(
+        nonce=nonce,
+        user_id=update.effective_user.id,
+        chat_id=update.effective_chat.id,
+    )
+
+    if item is None:
+        return safe_reply(
+            update,
+            "Подтверждение недействительно или устарело."
+        )
+
+    if item.action == "send_report":
+        send_report(report_id=item.resource_id)
+        return safe_reply(update, "Отчёт отправлен.")
+
+    return safe_reply(update, "Неизвестное действие.")</code></pre>
+        <p>Словарь в памяти подходит только для демонстрации механики. В нескольких процессах или при перезапусках храните подтверждения в общем хранилище с TTL и атомарным удалением при чтении.</p>
+      </section>
+
+      <section>
+        <h2>Шаг 4. Ограничьте команды явным маршрутизатором</h2>
+        <p>Не передавайте произвольный пользовательский текст агенту с правом вызывать инструменты. Разрешайте только известные команды и проверяйте аргументы по строгой схеме.</p>
+        <pre><code>SAFE_COMMANDS = {"/help", "/status"}
+DANGEROUS_COMMANDS = {"/send_report"}
+
+
+def route_command(update, text: str):
+    command, *args = text.split(maxsplit=1)
+
+    if command == "/help":
+        return safe_reply(
+            update,
+            "Доступно: /status, /send_report &lt;report_id&gt;"
+        )
+
+    if command == "/status":
+        status = get_public_service_status()
+        return safe_reply(update, f"Состояние сервиса: {status}")
+
+    if command == "/send_report":
+        if len(args) != 1 or not valid_report_id(args[0]):
+            return safe_reply(
+                update,
+                "Формат: /send_report &lt;report_id&gt;"
+            )
+
+        report_id = args[0]
+        nonce = request_confirmation(
+            user_id=update.effective_user.id,
+            chat_id=update.effective_chat.id,
+            action="send_report",
+            resource_id=report_id,
+        )
+
+        return reply_with_confirmation_button(
+            update=update,
+            text=f"Отправить отчёт {report_id}?",
+            callback_data=f"confirm:{nonce}",
+        )
+
+    return safe_reply(update, "Неизвестная команда.")</code></pre>
+        <p>Функция <code>valid_report_id</code> должна принимать только формат, используемый вашей системой. Например, регулярное выражение с ограниченной длиной безопаснее, чем попытка удалить «плохие» символы из произвольной строки.</p>
+      </section>
+
+      <section>
+        <h2>Шаг 5. Возвращайте безопасные ответы</h2>
+        <p>В ответах пользователю не должно быть токенов, трассировок, SQL-запросов, системных промптов и полных ответов внутренних API. Подробности ошибки нужны журналу, а не Telegram-чату.</p>
+        <pre><code>import logging
+
+logger = logging.getLogger(__name__)
+
+
+def execute_safely(update, operation):
+    try:
+        return operation()
+    except Exception:
+        logger.exception(
+            "Ошибка операции Telegram-бота",
+            extra={
+                "user_id": update.effective_user.id,
+                "chat_id": update.effective_chat.id,
+            },
+        )
+        return safe_reply(
+            update,
+            "Операция не выполнена. Обратитесь к администратору."
+        )</code></pre>
+        <p>Не записывайте в журнал токен бота, содержимое секретных полей и полный текст документов. Для аудита обычно достаточно времени, идентификаторов пользователя и чата, типа действия, идентификатора ресурса и результата.</p>
+      </section>
+
+      <section>
+        <h2>Проверка результата</h2>
+        <p>Проведите ручную проверку в отдельном тестовом окружении, не вызывающем реальные бизнес-операции:</p>
+        <ol>
+          <li>Отправьте <code>/status</code> от пользователя вне allowlist. Ожидается нейтральный отказ без раскрытия правил доступа.</li>
+          <li>Повторите команду разрешённым пользователем в запрещённом чате. Ожидается такой же отказ.</li>
+          <li>В разрешённом контексте вызовите <code>/send_report</code> с некорректным идентификатором. Бот должен показать формат и не создавать действие.</li>
+          <li>Вызовите корректную опасную команду. До нажатия кнопки бизнес-операция выполняться не должна.</li>
+          <li>Подтвердите действие другим пользователем или из другого чата. Запрос должен быть отклонён.</li>
+          <li>Нажмите правильную кнопку дважды. Успешным может быть только первое нажатие.</li>
+          <li>Дождитесь истечения TTL. Просроченное подтверждение не должно выполнять операцию.</li>
+          <li>Искусственно вызовите контролируемую ошибку адаптера. В чате должен появиться общий ответ, а подробность — только в защищённом журнале.</li>
+        </ol>
+        <p>Это чек-лист для воспроизведения, а не заявление о выполненных автоматических тестах. Для вашего проекта его стоит оформить как интеграционные тесты с подменёнными бизнес-инструментами.</p>
+      </section>
+
+      <section>
+        <h2>Типовые ошибки</h2>
+        <ul>
+          <li><strong>Проверка по <code>@username</code>.</strong> Используйте числовой <code>user_id</code>; отображаемое имя годится только для интерфейса.</li>
+          <li><strong>Разрешение по одному <code>chat_id</code>.</strong> Проверяйте и чат, и конкретного отправителя.</li>
+          <li><strong>Подтверждение словом «да».</strong> Старое сообщение или параллельный диалог создают неоднозначность. Связывайте кнопку с одноразовым запросом.</li>
+          <li><strong>Данные операции внутри <code>callback_data</code>.</strong> Храните критичные параметры на сервере, а в кнопку помещайте непрозрачный случайный идентификатор.</li>
+          <li><strong>Выполнение до подтверждения.</strong> На первом шаге разрешены только валидация и создание ожидающего запроса.</li>
+          <li><strong>Передача исключения пользователю.</strong> Возвращайте нейтральное сообщение, а технические детали направляйте в защищённый журнал.</li>
+          <li><strong>Безграничные аргументы.</strong> Ограничивайте тип, длину и допустимый формат каждого параметра.</li>
+          <li><strong>Секреты в коде.</strong> Загружайте их из защищённого хранилища и предусмотрите ротацию.</li>
+        </ul>
+      </section>
+
+      <section>
+        <h2>Ограничения решения</h2>
+        <p>Allowlist не защищает от компрометации разрешённого аккаунта. Для особенно чувствительных операций добавьте второй независимый фактор или подтверждение в корпоративной системе.</p>
+        <p>Пример также не заменяет защиту webhook: проверку секретного пути или заголовка, TLS, ограничение размера запросов и контроль частоты. Права самого бизнес-агента должны быть минимальными: Telegram-бот не должен получать административный доступ только потому, что интерфейс ограничен списком пользователей.</p>
+        <p>Если операция затрагивает деньги, персональные данные или юридически значимые действия, одного нажатия кнопки может быть недостаточно. Используйте разделение ролей, правило двух участников, идемпотентные операции и неизменяемый аудит согласно требованиям вашей организации.</p>
+      </section>
+
+      <section>
+        <h2>Итоговая схема</h2>
+        <ol>
+          <li>Получить обновление и извлечь числовые идентификаторы.</li>
+          <li>Проверить пользователя и чат по allowlist.</li>
+          <li>Разобрать только известную команду и строго проверить аргументы.</li>
+          <li>Для опасного действия создать одноразовое подтверждение с TTL.</li>
+          <li>При подтверждении повторить авторизацию и атомарно погасить запрос.</li>
+          <li>Выполнить разрешённую операцию с минимальными правами.</li>
+          <li>Вернуть безопасный ответ, а технический результат записать в защищённый аудит.</li>
+        </ol>
+        <p>Другие практические материалы собраны в разделе <a href="guides.html">«Руководства»</a>, а определения терминов — в <a href="glossary.html">глоссарии Agent Lab Journal</a>.</p>
+      </section>
+    </article>
+  </main>
+
+  <footer class="site-footer">
+    <div class="container">
+      <p>Agent Lab Journal — практические материалы о проектировании и эксплуатации агентных систем.</p>
+      <nav aria-label="Навигация в подвале">
+        <a href="guides.html">Руководства</a>
+        <a href="glossary.html">Глоссарий</a>
+      </nav>
+    </div>
+  </footer>
+</body>
+</html>
