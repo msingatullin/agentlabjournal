@@ -13,7 +13,7 @@ EXISTING = json.loads((ROOT / "article-topics.json").read_text())
 known = {item["slug"] for item in EXISTING}
 known.update(p.stem for p in ROOT.glob("*.html"))
 
-prompt = """Составь ровно 100 новых тем для качественных русскоязычных статей Agent Lab Journal.
+prompt = """Составь ровно 20 новых тем для качественных русскоязычных статей Agent Lab Journal.
 Тематика: AI-агенты, LLM, автоматизация, безопасность, MCP, RAG, наблюдаемость,
 тестирование, стоимость, локальные модели, интеграции и практический бизнес в РФ.
 Каждая тема должна быть проверяемой, практической и пригодной для отдельной статьи,
@@ -22,10 +22,10 @@ prompt = """Составь ровно 100 новых тем для качест�
 slug (ASCII kebab-case), title (русский), problem (русский), level (средний или продвинутый),
 minutes (6-12), result (русский), summary (русский), category (одна из: Новости AI, Практика,
 Компании и продукты, Инструменты, Эксперименты, Разборы ошибок, Безопасность, AI и деньги, Мнения).
-Не добавляй Markdown и пояснения."""
+Не добавляй Markdown и пояснения. Это отдельный набор; не повторяй предыдущие темы."""
 
 items: list[dict] = []
-for batch in range(5):
+for batch in range(25):
     result = subprocess.run(
         ["codex", "exec", "-c", "model_reasoning_effort=low", "--ephemeral", "--sandbox", "read-only",
          "--skip-git-repo-check", "-C", str(ROOT), prompt],
@@ -34,8 +34,8 @@ for batch in range(5):
     text = result.stdout.strip()
     text = re.sub(r"^```(?:json)?\s*|\s*```$", "", text, flags=re.I | re.S).strip()
     chunk = json.loads(text)
-    if not isinstance(chunk, list) or len(chunk) != 100:
-        raise ValueError(f"batch {batch + 1}: expected 100 objects")
+    if not isinstance(chunk, list) or len(chunk) < 10:
+        raise ValueError(f"batch {batch + 1}: expected at least 10 objects")
     items.extend(chunk)
 
 unique: list[dict] = []

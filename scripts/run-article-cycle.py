@@ -108,6 +108,10 @@ result = subprocess.run(command, cwd=ROOT)
 if result.returncode:
     notify_error("генерация или publication gate", f"exit code {result.returncode}")
     raise SystemExit(result.returncode)
+cta = subprocess.run([sys.executable, str(ROOT / "scripts" / "normalize-article-ctas.py"), f"{topic['slug']}.html"], cwd=ROOT)
+if cta.returncode:
+    notify_error("CTA order gate", f"exit code {cta.returncode}")
+    raise SystemExit(cta.returncode)
 
 english_command = command + ["--language", "en"]
 english_result = subprocess.run(english_command, cwd=ROOT)
