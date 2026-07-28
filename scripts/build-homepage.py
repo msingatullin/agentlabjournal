@@ -17,11 +17,12 @@ for path in ROOT.glob('*.html'):
         continue
     title = re.sub(r'<[^>]+>', '', h1.group(1)).strip()
     summary = re.sub(r'<[^>]+>', '', lead.group(1)).strip() if lead else 'Практический материал Agent Lab Journal.'
-    paths.append((path.stat().st_mtime, path, title, summary))
+    is_batch_article = path.stem not in topic_slugs and not path.name.startswith(('guide-', 'article-'))
+    paths.append((is_batch_article, path.stat().st_mtime, path, title, summary))
 
-paths.sort(reverse=True, key=lambda item: item[0])
+paths.sort(reverse=True, key=lambda item: (item[0], item[1]))
 cards = []
-for index, (_, path, title, summary) in enumerate(paths[:4]):
+for index, (_, _, path, title, summary) in enumerate(paths[:4]):
     label = 'VOICE → TASK' if index == 0 else 'RULE → GATE'
     cards.append(f'''      <article class="feature"{' style="margin-top:24px"' if index else ''}>
         <div class="feature-art"><div class="signal"></div><div class="task-card"><b>{label.split(' → ')[0]}</b><span>→</span><b>{label.split(' → ')[1]}</b></div></div>
