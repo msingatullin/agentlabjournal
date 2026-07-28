@@ -16,6 +16,11 @@ for page in ROOT.glob("*.html"):
     text = page.read_text(errors="ignore")
     if "reading-meta" not in text:
         continue
+    promo_start = text.find('      <a href="https://t.me/pelmenews')
+    if promo_start >= 0:
+        promo_end = text.find("      </a>", promo_start)
+        if promo_end >= 0:
+            text = text[:promo_start] + text[promo_end + len("      </a>"):]
     if 'class="telegram-article-cta"' in text:
         old_start = text.find('      <aside class="telegram-article-cta"')
         old_end = text.find("      </aside>", old_start)
@@ -23,7 +28,11 @@ for page in ROOT.glob("*.html"):
             text = text[:old_start] + text[old_end + len("      </aside>"):]
     if "</article>" not in text:
         continue
-    if "<nav class=\"table-of-contents\"" in text:
+    article_header = text.find('<header class="article-header"')
+    if article_header >= 0 and text.find("</header>", article_header) >= 0:
+        header_end = text.find("</header>", article_header) + len("</header>")
+        text = text[:header_end] + CTA + text[header_end:]
+    elif "<nav class=\"table-of-contents\"" in text:
         text = text.replace('<nav class="table-of-contents"', CTA + '      <nav class="table-of-contents"', 1)
     elif "</header>" in text:
         text = text.replace("</header>", "</header>" + CTA, 1)
