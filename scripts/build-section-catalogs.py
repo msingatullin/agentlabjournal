@@ -23,7 +23,7 @@ topics = json.loads((ROOT / "article-topics.json").read_text())
 by_slug = {item["slug"]: item for item in topics}
 articles = []
 for path in sorted(ROOT.glob("*.html")):
-    if not (path.name.startswith("guide-") or path.name.startswith("article-") or path.name.endswith("-case.html")):
+    if "reading-meta" not in path.read_text(errors="ignore"):
         continue
     slug = path.stem
     item = by_slug.get(slug, {})
