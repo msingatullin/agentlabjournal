@@ -1,0 +1,832 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+
+  <title>Как координировать двух coding-агентов через Git refs и CRDT — Agent Lab Journal</title>
+  <meta name="description" content="Воспроизводимый продвинутый тест координации двух coding-агентов: изолированные Git refs, CRDT-журнал операций, детерминированная материализация состояния и проверка сохранности обоих изменений.">
+  <link rel="canonical" href="https://agentlabjournal.online/git-refs-crdt-coordination-for-coding-agents.html">
+
+  <link rel="stylesheet" href="style.css">
+  <link rel="stylesheet" href="reading.css">
+
+  <meta property="og:type" content="article">
+  <meta property="og:locale" content="ru_RU">
+  <meta property="og:site_name" content="Agent Lab Journal">
+  <meta property="og:title" content="Как координировать двух coding-агентов через Git refs и CRDT">
+  <meta property="og:description" content="Два агента независимо изменяют одну задачу, синхронизируются через Git и сохраняют оба изменения без конфликта рабочей ветки.">
+  <meta property="og:url" content="https://agentlabjournal.online/git-refs-crdt-coordination-for-coding-agents.html">
+  <meta property="og:image" content="https://agentlabjournal.online/podcast-cover.png">
+  <meta property="og:image:alt" content="Agent Lab Journal">
+
+  <meta name="twitter:card" content="summary_large_image">
+  <meta name="twitter:title" content="Как координировать двух coding-агентов через Git refs и CRDT">
+  <meta name="twitter:description" content="Воспроизводимый протокол параллельной работы агентов без общей изменяемой ветки.">
+  <meta name="twitter:image" content="https://agentlabjournal.online/podcast-cover.png">
+
+  <meta name="reading-meta" content="Продвинутый уровень · 60 минут · воспроизводимый тест двух coding-агентов">
+
+  <script type="application/ld+json">
+  {
+    "@context": "https://schema.org",
+    "@type": "Article",
+    "headline": "Как координировать двух coding-агентов через Git refs и CRDT",
+    "description": "Воспроизводимый продвинутый тест координации двух coding-агентов: изолированные Git refs, CRDT-журнал операций, детерминированная материализация состояния и проверка сохранности обоих изменений.",
+    "image": [
+      "https://agentlabjournal.online/podcast-cover.png"
+    ],
+    "dateModified": "2026-07-29",
+    "inLanguage": "ru-RU",
+    "author": {
+      "@type": "Organization",
+      "name": "Agent Lab Journal",
+      "url": "https://agentlabjournal.online/"
+    },
+    "publisher": {
+      "@type": "Organization",
+      "name": "Agent Lab Journal",
+      "url": "https://agentlabjournal.online/",
+      "logo": {
+        "@type": "ImageObject",
+        "url": "https://agentlabjournal.online/podcast-cover.png"
+      }
+    },
+    "mainEntityOfPage": {
+      "@type": "WebPage",
+      "@id": "https://agentlabjournal.online/git-refs-crdt-coordination-for-coding-agents.html"
+    },
+    "articleSection": "Multi-agent systems",
+    "proficiencyLevel": "Advanced",
+    "timeRequired": "PT60M",
+    "keywords": [
+      "coding-агенты",
+      "Git refs",
+      "CRDT",
+      "мультиагентная координация",
+      "журнал операций",
+      "детерминированная материализация"
+    ]
+  }
+  </script>
+</head>
+<body>
+  <header class="site-header">
+    <div class="container">
+      <a class="site-name" href="index.html">Agent Lab Journal</a>
+      <nav aria-label="Основная навигация">
+        <a href="guides.html">Гайды</a>
+        <a href="glossary.html">Глоссарий</a>
+      </nav>
+    </div>
+  </header>
+
+  <main>
+    <article class="reading">
+      <header class="article-header">
+        <p class="eyebrow">Практика · Multi-agent systems</p>
+        <h1>Как координировать двух coding-агентов через Git refs и CRDT</h1>
+        <p class="lead"><strong>Параллельным агентам нельзя поручать совместное редактирование одного файла и надеяться, что обычный merge восстановит намерения.</strong> Надёжнее разделить транспорт и модель состояния: каждый агент публикует неизменяемую операцию в собственный Git ref, а координатор объединяет операции как CRDT-журнал и детерминированно строит итоговую задачу. Ниже — полностью локальный тест, в котором два агента стартуют от одного состояния, не видят работу друг друга, добавляют разные данные и сохраняют оба изменения без записи в общую рабочую ветку.</p>
+        <div class="reading-meta" aria-label="Параметры статьи">
+          <span>Продвинутый уровень</span>
+          <span>60 минут</span>
+          <span>Результат: воспроизводимый тест двух агентов</span>
+        </div>
+      </header>
+
+      <section id="result">
+        <h2>Что именно мы построим</h2>
+        <p><a href="glossary.html#coding-agent">Coding-агент</a> в этой схеме — отдельный исполнитель с собственным каталогом, процессом и историей. Он получает идентификатор задачи и известную версию базы, но не получает право переключать или изменять общую ветку.</p>
+        <p>Состояние передаётся через <a href="glossary.html#git-ref">Git ref</a>: именованный указатель на объект Git. Для каждого исполнителя создаётся собственное пространство имён:</p>
+        <pre><code>refs/agents/alice/head
+refs/agents/bob/head</code></pre>
+        <p>Содержимое задачи представим как небольшой <a href="glossary.html#crdt">CRDT</a> — структуру данных, допускающую независимое применение совместимых операций с последующим слиянием. Здесь не понадобится полноценная библиотека распределённых структур. Для теста достаточно grow-only-наборов: агенты только добавляют заметки и метки, а результат определяется объединением уникальных операций.</p>
+        <p>К концу эксперимента должны выполняться пять условий:</p>
+        <ol>
+          <li>оба агента начали с одного базового commit;</li>
+          <li>каждый агент создал отдельную неизменяемую операцию;</li>
+          <li>агенты опубликовали результаты в разных refs;</li>
+          <li>координатор включил оба commit в интеграционную историю;</li>
+          <li>материализованная задача содержит изменения Alice и Bob, а общая ветка не использовалась для их промежуточной работы.</li>
+        </ol>
+      </section>
+
+      <section id="problem">
+        <h2>Почему обычная параллельная работа ломается</h2>
+        <p>Пусть два агента читают один файл:</p>
+        <pre><code>{
+  "id": "TASK-42",
+  "status": "open",
+  "notes": [],
+  "labels": []
+}</code></pre>
+        <p>Alice добавляет заметку, Bob — метку. Если каждый переписывает документ целиком, оба формируют новую версию от одного родителя. Последний записавший файл способен стереть изменение первого. Git может показать текстовый конфликт, но может и выполнить формально успешное слияние, не сохранив семантическое намерение.</p>
+        <p>Проблема особенно неприятна для агентов по четырём причинам:</p>
+        <ul>
+          <li><strong>Снимок быстро устаревает.</strong> Модель рассуждает на основании состояния, прочитанного в начале сессии.</li>
+          <li><strong>Полный файл выглядит авторитетно.</strong> Агент склонен заменить объект своей версией, хотя изменил только одно поле.</li>
+          <li><strong>Повторный запуск создаёт дубли.</strong> После тайм-аута исполнитель может не знать, была ли его запись принята.</li>
+          <li><strong>Контекст живёт меньше задачи.</strong> Новая сессия не помнит локальные договорённости, если они остались только в диалоге.</li>
+        </ul>
+        <p>Общая <a href="glossary.html#working-branch">рабочая ветка</a> усугубляет ситуацию. Одновременные команды <code>switch</code>, <code>add</code>, <code>commit</code> и <code>reset</code> воздействуют на один индекс и один <code>HEAD</code>. Даже если Git блокирует отдельные служебные файлы, он не превращает набор агентских намерений в транзакцию.</p>
+        <blockquote>Git должен переносить и удостоверять агентские операции, но не обязан угадывать, как объединять предметное состояние.</blockquote>
+      </section>
+
+      <section id="architecture">
+        <h2>Разделяем транспорт, операции и представление</h2>
+        <p>В предлагаемой схеме три слоя:</p>
+        <ol>
+          <li><strong>Git хранит происхождение.</strong> Кто создал изменение, от какой базы оно произошло и какой объект опубликован.</li>
+          <li><strong>CRDT-правила определяют объединение.</strong> Уникальные операции можно применять в любом порядке без потери добавлений.</li>
+          <li><strong>Материализатор строит читаемый файл.</strong> Он проверяет операции и создаёт актуальный снимок задачи.</li>
+        </ol>
+        <p><a href="glossary.html#commit">Commit</a> агента содержит не переписанный <code>task.json</code>, а новый файл операции. Поэтому Alice и Bob добавляют разные пути:</p>
+        <pre><code>ops/TASK-42/alice-add-note-001.json
+ops/TASK-42/bob-add-label-001.json</code></pre>
+        <p>Имена являются частью протокола, но истинный идентификатор хранится и внутри документа. Пример операции:</p>
+        <pre><code>{
+  "schema": 1,
+  "op_id": "alice-add-note-001",
+  "task_id": "TASK-42",
+  "actor": "alice",
+  "basis": "BASE_COMMIT",
+  "kind": "add_note",
+  "value": "Добавить проверку пустого токена"
+}</code></pre>
+        <p>Это <a href="glossary.html#operation-log">журнал операций</a>, а не журнал снимков. Добавление нового файла не изменяет старые операции и минимизирует текстовые конфликты. Поле <code>op_id</code> обеспечивает <a href="glossary.html#idempotency">идемпотентность</a>: повторное применение той же логической операции не должно создавать вторую заметку.</p>
+      </section>
+
+      <section id="scope">
+        <h2>Границы тестовой CRDT-модели</h2>
+        <p>Мы используем две монотонные структуры:</p>
+        <ul>
+          <li><code>notes</code> — отображение <code>op_id → текст заметки</code>;</li>
+          <li><code>labels</code> — отображение <code>op_id → значение метки</code>.</li>
+        </ul>
+        <p>Состояние только растёт. Одинаковый <code>op_id</code> с одинаковым содержимым безопасно схлопывается. Одинаковый <code>op_id</code> с разным содержимым считается повреждением протокола и останавливает материализацию.</p>
+        <p>Для таких операций выполняются основные свойства сходимости:</p>
+        <ul>
+          <li><strong>Коммутативность:</strong> применение A, затем B даёт тот же результат, что B, затем A.</li>
+          <li><strong>Ассоциативность:</strong> группировка партий операций не меняет итог.</li>
+          <li><strong>Идемпотентность:</strong> повторное применение A не меняет результат после первого применения.</li>
+        </ul>
+        <p>Git merge сам по себе этих свойств не гарантирует. Они возникают потому, что предметная операция определена как добавление уникального элемента, а материализатор реализует проверенные правила объединения.</p>
+      </section>
+
+      <section id="requirements">
+        <h2>Предварительные требования</h2>
+        <p>Тест рассчитан на Unix-подобную оболочку и использует:</p>
+        <ul>
+          <li>Git версии, поддерживающей <code>git worktree</code>;</li>
+          <li>Python 3;</li>
+          <li>стандартные команды <code>mktemp</code>, <code>find</code> и <code>sed</code>;</li>
+          <li>локальную файловую систему.</li>
+        </ul>
+        <p>Проверьте инструменты:</p>
+        <pre><code>git --version
+python3 --version
+git worktree --help &gt;/dev/null</code></pre>
+        <p>Эксперимент не требует сети, удалённого репозитория, токенов или доступа к GitHub. Запускайте его в новом временном каталоге, а не внутри рабочего проекта.</p>
+      </section>
+
+      <section id="setup">
+        <h2>Шаг 1. Создаём репозиторий и исходную задачу</h2>
+        <p>Выполните команды последовательно:</p>
+        <pre><code>LAB_DIR="$(mktemp -d)"
+REPO_DIR="$LAB_DIR/repo"
+
+git init "$REPO_DIR"
+cd "$REPO_DIR"
+
+git config user.name "Agent Lab Test"
+git config user.email "agent-lab-test@example.invalid"
+
+mkdir -p state ops scripts
+
+cat &gt; state/TASK-42.json &lt;&lt;'JSON'
+{
+  "id": "TASK-42",
+  "status": "open",
+  "notes": [],
+  "labels": [],
+  "applied_ops": []
+}
+JSON
+
+git add state/TASK-42.json
+git commit -m "seed TASK-42"
+
+BASE_COMMIT="$(git rev-parse HEAD)"
+git update-ref refs/tasks/TASK-42/base "$BASE_COMMIT"</code></pre>
+        <p><code>refs/tasks/TASK-42/base</code> закрепляет точную базу. Это важнее имени ветки: ветка способна переместиться между планированием и запуском агента, а идентификатор commit остаётся неизменным.</p>
+        <p>Проверьте указатель:</p>
+        <pre><code>test "$(git rev-parse refs/tasks/TASK-42/base)" = "$BASE_COMMIT"
+git show-ref refs/tasks/TASK-42/base</code></pre>
+      </section>
+
+      <section id="worktrees">
+        <h2>Шаг 2. Изолируем рабочие каталоги агентов</h2>
+        <p><a href="glossary.html#git-worktree">Git worktree</a> позволяет нескольким рабочим каталогам использовать одну объектную базу Git, сохраняя отдельные <code>HEAD</code> и индексы. Создадим два отсоединённых каталога от одной базы:</p>
+        <pre><code>git worktree add --detach "$LAB_DIR/alice" "$BASE_COMMIT"
+git worktree add --detach "$LAB_DIR/bob" "$BASE_COMMIT"
+
+test "$(git -C "$LAB_DIR/alice" rev-parse HEAD)" = "$BASE_COMMIT"
+test "$(git -C "$LAB_DIR/bob" rev-parse HEAD)" = "$BASE_COMMIT"</code></pre>
+        <p>Режим <code>--detach</code> намеренный. Агенту не нужна общая ветка: он создаёт commit в собственном рабочем каталоге, после чего атомарно публикует его в свой ref.</p>
+        <p>В реальном оркестраторе агенту следует передавать явный контракт:</p>
+        <pre><code>task_id=TASK-42
+actor=alice
+basis=&lt;40-символьный commit&gt;
+publish_ref=refs/agents/alice/head
+allowed_paths=ops/TASK-42/
+forbidden_paths=state/, .git/, scripts/
+operation_kinds=add_note</code></pre>
+        <p>Ограничение путей должно проверяться координатором, а не только промптом. Модель может ошибиться, тогда как проверка diff даёт детерминированный ответ.</p>
+      </section>
+
+      <section id="alice">
+        <h2>Шаг 3. Alice независимо добавляет заметку</h2>
+        <p>В каталоге Alice создайте одну операцию. Подстановка базы выполняется оболочкой, поэтому маркер документа не заключён в кавычки:</p>
+        <pre><code>cd "$LAB_DIR/alice"
+mkdir -p ops/TASK-42
+
+cat &gt; ops/TASK-42/alice-add-note-001.json &lt;&lt;JSON
+{
+  "schema": 1,
+  "op_id": "alice-add-note-001",
+  "task_id": "TASK-42",
+  "actor": "alice",
+  "basis": "$BASE_COMMIT",
+  "kind": "add_note",
+  "value": "Добавить проверку пустого токена"
+}
+JSON
+
+git add ops/TASK-42/alice-add-note-001.json
+git commit -m "agent alice: add TASK-42 note"
+
+ALICE_COMMIT="$(git rev-parse HEAD)"
+git update-ref refs/agents/alice/head "$ALICE_COMMIT"</code></pre>
+        <p><code>git update-ref</code> обновляет указатель без переключения общей ветки. В сетевой системе аналогом может быть push конкретного refspec:</p>
+        <pre><code>git push origin \
+  "$ALICE_COMMIT:refs/agents/alice/head"</code></pre>
+        <p>Если один агент способен публиковать несколько поколений, используйте compare-and-swap:</p>
+        <pre><code>git update-ref \
+  refs/agents/alice/head \
+  "$NEW_COMMIT" \
+  "$EXPECTED_OLD_COMMIT"</code></pre>
+        <p>Третий аргумент запрещает незаметно затереть указатель, если другая сессия Alice успела опубликовать новый результат.</p>
+      </section>
+
+      <section id="bob">
+        <h2>Шаг 4. Bob независимо добавляет метку</h2>
+        <p>Bob всё ещё находится на исходной базе и не читает ref Alice:</p>
+        <pre><code>cd "$LAB_DIR/bob"
+mkdir -p ops/TASK-42
+
+cat &gt; ops/TASK-42/bob-add-label-001.json &lt;&lt;JSON
+{
+  "schema": 1,
+  "op_id": "bob-add-label-001",
+  "task_id": "TASK-42",
+  "actor": "bob",
+  "basis": "$BASE_COMMIT",
+  "kind": "add_label",
+  "value": "security"
+}
+JSON
+
+git add ops/TASK-42/bob-add-label-001.json
+git commit -m "agent bob: label TASK-42"
+
+BOB_COMMIT="$(git rev-parse HEAD)"
+git update-ref refs/agents/bob/head "$BOB_COMMIT"</code></pre>
+        <p>Теперь история разошлась, что является нормальным состоянием:</p>
+        <pre><code>git -C "$REPO_DIR" log \
+  --graph \
+  --oneline \
+  --decorate \
+  --all</code></pre>
+        <p>Оба агентских commit имеют одного родителя. Ни Alice, ни Bob не переписывали <code>state/TASK-42.json</code>, поэтому они не конкурировали за общий снимок.</p>
+      </section>
+
+      <section id="policy">
+        <h2>Шаг 5. Проверяем публикации до интеграции</h2>
+        <p>Координатор не должен автоматически доверять содержимому agent ref. Сначала он проверяет происхождение и область изменений.</p>
+        <p>Проверка базы:</p>
+        <pre><code>git -C "$REPO_DIR" merge-base --is-ancestor \
+  "$BASE_COMMIT" \
+  refs/agents/alice/head
+
+git -C "$REPO_DIR" merge-base --is-ancestor \
+  "$BASE_COMMIT" \
+  refs/agents/bob/head</code></pre>
+        <p>Проверка изменённых путей:</p>
+        <pre><code>git -C "$REPO_DIR" diff \
+  --name-only \
+  "$BASE_COMMIT..refs/agents/alice/head"
+
+git -C "$REPO_DIR" diff \
+  --name-only \
+  "$BASE_COMMIT..refs/agents/bob/head"</code></pre>
+        <p>Для автоматического отказа при выходе Alice за разрешённую директорию:</p>
+        <pre><code>if git -C "$REPO_DIR" diff --name-only \
+  "$BASE_COMMIT..refs/agents/alice/head" |
+  sed '/^ops\/TASK-42\//d' |
+  grep -q .; then
+  echo "Alice изменила запрещённый путь" &gt;&amp;2
+  exit 1
+fi</code></pre>
+        <p>Повторите проверку для Bob. Дополнительно следует ограничить число commit, размер файлов, допустимые типы операций, кодировку и отсутствие символических ссылок.</p>
+      </section>
+
+      <section id="materializer">
+        <h2>Шаг 6. Пишем детерминированный материализатор</h2>
+        <p><a href="glossary.html#materialized-view">Материализованное представление</a> — производный снимок, который всегда можно заново построить из исходных операций. Создайте в основном репозитории <code>scripts/materialize.py</code>:</p>
+        <pre><code>cd "$REPO_DIR"
+
+cat &gt; scripts/materialize.py &lt;&lt;'PY'
+#!/usr/bin/env python3
+import hashlib
+import json
+import pathlib
+import sys
+
+ROOT = pathlib.Path(__file__).resolve().parents[1]
+TASK_ID = sys.argv[1] if len(sys.argv) &gt; 1 else "TASK-42"
+OPS_DIR = ROOT / "ops" / TASK_ID
+STATE_FILE = ROOT / "state" / f"{TASK_ID}.json"
+
+allowed_kinds = {"add_note", "add_label"}
+seen = {}
+notes = {}
+labels = {}
+
+paths = sorted(OPS_DIR.glob("*.json")) if OPS_DIR.exists() else []
+
+for path in paths:
+    raw = path.read_bytes()
+    try:
+        op = json.loads(raw)
+    except json.JSONDecodeError as exc:
+        raise SystemExit(f"{path}: invalid JSON: {exc}")
+
+    required = {
+        "schema", "op_id", "task_id",
+        "actor", "basis", "kind", "value"
+    }
+    missing = required - op.keys()
+    if missing:
+        raise SystemExit(
+            f"{path}: missing fields: {sorted(missing)}"
+        )
+
+    if op["schema"] != 1:
+        raise SystemExit(f"{path}: unsupported schema")
+    if op["task_id"] != TASK_ID:
+        raise SystemExit(f"{path}: wrong task_id")
+    if op["kind"] not in allowed_kinds:
+        raise SystemExit(f"{path}: unsupported kind")
+    if not isinstance(op["value"], str) or not op["value"].strip():
+        raise SystemExit(f"{path}: value must be non-empty")
+    if not isinstance(op["op_id"], str) or not op["op_id"]:
+        raise SystemExit(f"{path}: invalid op_id")
+
+    canonical = json.dumps(
+        op,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":")
+    ).encode("utf-8")
+    digest = hashlib.sha256(canonical).hexdigest()
+
+    previous = seen.get(op["op_id"])
+    if previous is not None and previous != digest:
+        raise SystemExit(
+            f"conflicting payloads for op_id={op['op_id']}"
+        )
+    seen[op["op_id"]] = digest
+
+    if op["kind"] == "add_note":
+        notes[op["op_id"]] = op["value"]
+    elif op["kind"] == "add_label":
+        labels[op["op_id"]] = op["value"]
+
+state = {
+    "id": TASK_ID,
+    "status": "open",
+    "notes": [
+        notes[key] for key in sorted(notes)
+    ],
+    "labels": sorted(set(labels.values())),
+    "applied_ops": sorted(seen)
+}
+
+STATE_FILE.parent.mkdir(parents=True, exist_ok=True)
+STATE_FILE.write_text(
+    json.dumps(state, ensure_ascii=False, indent=2) + "\n",
+    encoding="utf-8"
+)
+PY
+
+chmod +x scripts/materialize.py
+git add scripts/materialize.py
+git commit -m "add deterministic task materializer"
+
+MATERIALIZER_COMMIT="$(git rev-parse HEAD)"</code></pre>
+        <p>Сортировка путей, идентификаторов и меток устраняет зависимость от порядка обхода файловой системы. Каноническое представление JSON используется только для обнаружения двух разных payload с одним <code>op_id</code>.</p>
+        <p>Материализатор намеренно не доверяет имени файла. Он проверяет обязательные поля внутри операции и останавливается на неизвестной схеме или типе команды.</p>
+      </section>
+
+      <section id="integration">
+        <h2>Шаг 7. Интегрируем refs без общей рабочей ветки агентов</h2>
+        <p>Основной репозиторий сейчас содержит materializer commit поверх базы. Создадим отдельный ref координатора и включим обе агентские истории:</p>
+        <pre><code>cd "$REPO_DIR"
+
+git update-ref \
+  refs/coordinator/TASK-42/head \
+  "$MATERIALIZER_COMMIT"
+
+git switch --detach refs/coordinator/TASK-42/head
+
+git merge --no-ff --no-edit refs/agents/alice/head
+git merge --no-ff --no-edit refs/agents/bob/head</code></pre>
+        <p><a href="glossary.html#git-merge">Merge</a> здесь решает только задачу переноса файлов операций и происхождения commit. Семантическое объединение будет выполнено следующим шагом:</p>
+        <pre><code>python3 scripts/materialize.py TASK-42
+
+git add state/TASK-42.json
+git commit -m "materialize TASK-42 from agent operations"
+
+INTEGRATED_COMMIT="$(git rev-parse HEAD)"
+git update-ref \
+  refs/tasks/TASK-42/integrated \
+  "$INTEGRATED_COMMIT"
+
+git update-ref \
+  refs/coordinator/TASK-42/head \
+  "$INTEGRATED_COMMIT" \
+  "$MATERIALIZER_COMMIT"</code></pre>
+        <p>Последняя команда использует ожидаемое старое значение. Если параллельный координатор уже передвинул ref, операция завершится ошибкой вместо потери его результата.</p>
+      </section>
+
+      <section id="verification">
+        <h2>Шаг 8. Проверяем результат автоматическими утверждениями</h2>
+        <p>Не оценивайте эксперимент по красивому графу Git. Проверяйте инварианты предметного состояния:</p>
+        <pre><code>cd "$REPO_DIR"
+
+python3 - &lt;&lt;'PY'
+import json
+from pathlib import Path
+
+state = json.loads(
+    Path("state/TASK-42.json").read_text(encoding="utf-8")
+)
+
+assert state["id"] == "TASK-42"
+assert state["status"] == "open"
+
+assert state["notes"] == [
+    "Добавить проверку пустого токена"
+]
+
+assert state["labels"] == [
+    "security"
+]
+
+assert state["applied_ops"] == [
+    "alice-add-note-001",
+    "bob-add-label-001"
+]
+
+print("OK: оба независимых изменения сохранены")
+PY</code></pre>
+        <p>Затем докажите присутствие обоих агентских commit в интеграционной истории:</p>
+        <pre><code>git merge-base --is-ancestor \
+  refs/agents/alice/head \
+  refs/tasks/TASK-42/integrated
+
+git merge-base --is-ancestor \
+  refs/agents/bob/head \
+  refs/tasks/TASK-42/integrated</code></pre>
+        <p>Обе команды должны завершиться с кодом <code>0</code>. Проверка отсутствия изменений исходного файла в агентских commit:</p>
+        <pre><code>test -z "$(git diff --name-only \
+  "$BASE_COMMIT..refs/agents/alice/head" \
+  -- state/TASK-42.json)"
+
+test -z "$(git diff --name-only \
+  "$BASE_COMMIT..refs/agents/bob/head" \
+  -- state/TASK-42.json)"</code></pre>
+        <p>И, наконец, проверьте refs и граф:</p>
+        <pre><code>git show-ref |
+  grep -E 'refs/(agents|tasks|coordinator)/'
+
+git log \
+  --graph \
+  --oneline \
+  --decorate \
+  --all</code></pre>
+        <p>Тест считается пройденным только при успехе всех утверждений. Сам текст <code>OK</code> не является опубликованным измерением: он появляется локально лишь после выполнения проверок.</p>
+      </section>
+
+      <section id="convergence">
+        <h2>Шаг 9. Доказываем независимость от порядка применения</h2>
+        <p>Для CRDT недостаточно одного успешного порядка. Скопируйте операции во временные каталоги в обратном порядке либо протестируйте функцию применения отдельно. В текущей реализации материализатор сортирует операции, поэтому одинаковый набор файлов обязан давать одинаковые байты.</p>
+        <p>Зафиксируйте контрольную сумму:</p>
+        <pre><code>python3 scripts/materialize.py TASK-42
+FIRST_HASH="$(git hash-object state/TASK-42.json)"
+
+touch ops/TASK-42/bob-add-label-001.json
+touch ops/TASK-42/alice-add-note-001.json
+
+python3 scripts/materialize.py TASK-42
+SECOND_HASH="$(git hash-object state/TASK-42.json)"
+
+test "$FIRST_HASH" = "$SECOND_HASH"
+echo "OK: материализация детерминирована"</code></pre>
+        <p><code>touch</code> меняет только файловое время и не изменяет содержимое commit. Если итоговый hash различается, materializer зависит от недекларированного порядка или нестабильных данных.</p>
+      </section>
+
+      <section id="retry">
+        <h2>Шаг 10. Проверяем повторную доставку</h2>
+        <p>Скопируем операцию Alice под другим именем. Поскольку внутренний <code>op_id</code> и payload совпадают, результат не должен получить вторую заметку:</p>
+        <pre><code>cp \
+  ops/TASK-42/alice-add-note-001.json \
+  ops/TASK-42/retry-of-alice-add-note-001.json
+
+python3 scripts/materialize.py TASK-42
+
+python3 - &lt;&lt;'PY'
+import json
+from pathlib import Path
+
+state = json.loads(
+    Path("state/TASK-42.json").read_text(encoding="utf-8")
+)
+assert len(state["notes"]) == 1
+assert state["applied_ops"].count(
+    "alice-add-note-001"
+) == 1
+print("OK: повторная доставка не создала дубль")
+PY
+
+rm ops/TASK-42/retry-of-alice-add-note-001.json
+python3 scripts/materialize.py TASK-42</code></pre>
+        <p>В производственной схеме повторная доставка чаще возникает не как второй файл, а как повторное чтение одной операции из нескольких refs или очередей. Правило остаётся тем же: логическая идентичность определяется <code>op_id</code>, а не транспортным адресом.</p>
+      </section>
+
+      <section id="collision">
+        <h2>Шаг 11. Проверяем конфликт идентификатора</h2>
+        <p>Теперь создадим другую операцию с уже занятым идентификатором:</p>
+        <pre><code>cat &gt; ops/TASK-42/conflicting-alice-op.json &lt;&lt;JSON
+{
+  "schema": 1,
+  "op_id": "alice-add-note-001",
+  "task_id": "TASK-42",
+  "actor": "mallory",
+  "basis": "$BASE_COMMIT",
+  "kind": "add_note",
+  "value": "Другое содержимое под тем же ID"
+}
+JSON
+
+if python3 scripts/materialize.py TASK-42; then
+  echo "ОШИБКА: конфликтующий op_id был принят" &gt;&amp;2
+  exit 1
+else
+  echo "OK: конфликтующий op_id отклонён"
+fi
+
+rm ops/TASK-42/conflicting-alice-op.json
+python3 scripts/materialize.py TASK-42</code></pre>
+        <p>Такой случай нельзя разрешать правилом «последняя запись побеждает». Порядок доставки между узлами может различаться, поэтому разные координаторы выберут разные payload. Безопасный результат — остановка и расследование нарушения уникальности.</p>
+      </section>
+
+      <section id="session-handoff">
+        <h2>Как сохранять контекст между сессиями</h2>
+        <p>Git refs решают перенос объектов, но не заменяют контракт продолжения работы. Новая сессия должна получать маленький машинно-проверяемый конверт:</p>
+        <pre><code>{
+  "task_id": "TASK-42",
+  "actor": "alice",
+  "basis_ref": "refs/tasks/TASK-42/base",
+  "basis_oid": "0123456789abcdef...",
+  "input_refs": [
+    "refs/agents/alice/head"
+  ],
+  "publish_ref": "refs/agents/alice/head",
+  "allowed_operation_kinds": [
+    "add_note"
+  ],
+  "allowed_path_prefix": "ops/TASK-42/",
+  "last_op_id": "alice-add-note-001",
+  "protocol_version": 1
+}</code></pre>
+        <p>Не подставляйте вымышленный hash из примера. Оркестратор должен получить реальный OID командой <code>git rev-parse</code> и передать одновременно ref и разрешённое значение. Ref показывает канал, OID фиксирует прочитанную версию.</p>
+        <p>В журнале сессии полезно хранить:</p>
+        <ul>
+          <li>идентификатор задачи и исполнителя;</li>
+          <li>входные и выходные OID;</li>
+          <li>созданные <code>op_id</code>;</li>
+          <li>версию схемы операций;</li>
+          <li>результат проверок политики;</li>
+          <li>причину завершения или отказа.</li>
+        </ul>
+        <p>Не следует хранить только свободный пересказ агента. Он полезен человеку, но не позволяет доказать, какие данные были фактически прочитаны и опубликованы.</p>
+      </section>
+
+      <section id="leases">
+        <h2>Когда нужны leases, а когда достаточно CRDT</h2>
+        <p><a href="glossary.html#lease">Lease</a> — ограниченное по времени право выполнять несовместимую операцию. Для добавления независимых заметок блокировка не нужна. Но не все изменения монотонны.</p>
+        <p>Разделите команды на три класса:</p>
+        <ol>
+          <li><strong>Коммутативные.</strong> Добавление заметки, наблюдения, ссылки или тега. Их можно принимать параллельно.</li>
+          <li><strong>Разрешимые политикой.</strong> Одновременное назначение приоритета можно объединить правилом максимума или отдельным регистром, если это соответствует предметной области.</li>
+          <li><strong>Требующие сериализации.</strong> Закрытие задачи, удаление артефакта, публикация релиза или расходование единственного ресурса. Для них нужен lease, compare-and-swap или подтверждение координатора.</li>
+        </ol>
+        <p>Не превращайте любое поле в CRDT только ради отсутствия конфликтов. Автоматическая сходимость бессмысленна, если итог нарушает бизнес-инвариант.</p>
+      </section>
+
+      <section id="deletion">
+        <h2>Удаление и изменение существующих значений</h2>
+        <p>Grow-only-набор прост, потому что ничего не удаляет. Для удаления заметки недостаточно стереть её из снимка: другой узел способен снова доставить исходную операцию добавления.</p>
+        <p>Практические варианты:</p>
+        <ul>
+          <li><strong>Tombstone.</strong> Новая операция <code>remove_note</code> ссылается на идентификатор добавления. Материализатор скрывает элемент, но сохраняет сведения об удалении.</li>
+          <li><strong>Observed-remove set.</strong> Удаление перечисляет известные добавления конкретного значения. Параллельное новое добавление остаётся.</li>
+          <li><strong>LWW-регистр.</strong> Побеждает значение с максимальной логической меткой, но часы и tie-breaker должны быть частью протокола.</li>
+          <li><strong>Сериализованная команда.</strong> Для критического перехода координатор проверяет ожидаемую версию и принимает ровно одну операцию.</li>
+        </ul>
+        <p><a href="glossary.html#lamport-clock">Часы Лэмпорта</a> задают причинно согласованный логический порядок событий, но не доказывают, что более позднее значение семантически правильнее. Не используйте локальное время агента как единственный арбитр: часы машин могут расходиться, а повторная доставка меняет время наблюдения.</p>
+      </section>
+
+      <section id="failure-cases">
+        <h2>Что обычно ломается</h2>
+
+        <h3>Оба агента переписывают материализованный файл</h3>
+        <p>Это возвращает систему к конфликту снимков. Запретите агентам изменять <code>state/</code>; право на запись туда должно быть только у materializer.</p>
+
+        <h3>Ref используется как очередь</h3>
+        <p>Один ref хранит только один текущий указатель. Если два процесса без compare-and-swap двигают <code>refs/agents/alice/head</code>, один результат может стать недостижимым через этот ref. Используйте отдельные refs с идентификатором запуска либо проверку ожидаемого старого OID.</p>
+        <pre><code>refs/runs/run-001/agents/alice/result
+refs/runs/run-001/agents/bob/result</code></pre>
+
+        <h3>Идентификатор операции генерируется заново при retry</h3>
+        <p>Повтор превращается в новое добавление. <code>op_id</code> должен назначаться логической команде до первой попытки публикации и сохраняться между сессиями.</p>
+
+        <h3>Материализатор молча принимает неизвестные поля</h3>
+        <p>При эволюции протокола один агент способен считать поле значимым, а старый координатор — проигнорировать его. Версионируйте схему и отклоняйте неподдерживаемые операции.</p>
+
+        <h3>Merge прошёл, значит состояние корректно</h3>
+        <p>Успешный merge означает лишь отсутствие неразрешённого файлового конфликта. После него всё равно нужны валидация операций, материализация и проверка инвариантов.</p>
+
+        <h3>Агент публикует commit от неверной базы</h3>
+        <p>Проверяйте, что разрешённая база является предком результата. Если требуется строго один родитель, сравните первый parent agent commit с переданным OID.</p>
+
+        <h3>Неизменяемые операции редактируются задним числом</h3>
+        <p>Запрещайте изменение и удаление уже принятых путей. Исправление должно быть новой компенсирующей операцией. Иначе аудит и повторная материализация перестают быть надёжными.</p>
+
+        <h3>Операции имеют уникальные имена, но одинаковый смысл</h3>
+        <p>CRDT устранит технический конфликт, однако два агента могут независимо создать одинаковые заметки с разными <code>op_id</code>. Семантическая дедупликация — отдельная политика. Она может сравнивать нормализованные значения, но не должна незаметно удалять различия без заданного правила.</p>
+
+        <h3>Сборщик читает refs во время их изменения</h3>
+        <p>Сначала снимите набор входных OID, затем работайте только с ним. Повторное разрешение движущихся refs в середине запуска создаёт состояние, которое трудно воспроизвести.</p>
+      </section>
+
+      <section id="production">
+        <h2>Как перенести протокол в рабочую систему</h2>
+        <p>Локальный тест доказывает базовую механику, но производственному координатору нужен явный жизненный цикл:</p>
+        <ol>
+          <li>закрепить base OID задачи;</li>
+          <li>создать идентификатор запуска;</li>
+          <li>назначить каждому агенту отдельный publish ref;</li>
+          <li>создать изолированные worktrees или клоны;</li>
+          <li>передать разрешённые типы операций и пути;</li>
+          <li>дождаться публикаций или зафиксировать тайм-аут;</li>
+          <li>снять неизменяемый список входных OID;</li>
+          <li>проверить происхождение, подпись и diff;</li>
+          <li>объединить commit в карантинном ref;</li>
+          <li>валидировать и материализовать состояние;</li>
+          <li>проверить предметные инварианты;</li>
+          <li>атомарно передвинуть интеграционный ref;</li>
+          <li>сохранить отчёт запуска.</li>
+        </ol>
+        <p>Ожидание обоих агентов не всегда обязательно. Монотонные операции можно материализовать инкрементально. Но публикация внешнего результата — например, закрытие задачи или выпуск релиза — должна учитывать полноту набора участников и правила дедлайна.</p>
+      </section>
+
+      <section id="security">
+        <h2>Безопасность и доверие</h2>
+        <p>Собственный namespace ref не является полноценной границей доступа, если все процессы имеют одинаковые права на каталог <code>.git</code>. Локальный агент технически способен передвинуть чужой ref.</p>
+        <p>Для более строгого контура:</p>
+        <ul>
+          <li>запускайте агентов в отдельных клонах или контейнерах;</li>
+          <li>разрешайте push только в namespace конкретного исполнителя;</li>
+          <li>проверяйте server-side hook или политикой принимающего сервиса;</li>
+          <li>не передавайте агенту credentials с правом записи в интеграционные refs;</li>
+          <li>подписывайте результаты, если необходимо удостоверять автора;</li>
+          <li>рассматривайте содержимое операции как недоверенный ввод;</li>
+          <li>не выполняйте команды, найденные в заметках или generated files.</li>
+        </ul>
+        <p>Git обеспечивает хешированную адресацию объектов, но не утверждает, что содержимое безопасно, правдиво или авторизовано.</p>
+      </section>
+
+      <section id="observability">
+        <h2>Что измерять</h2>
+        <p>Минимальный журнал координатора должен позволять ответить, где потерялось изменение:</p>
+        <pre><code>{
+  "run_id": "run-001",
+  "task_id": "TASK-42",
+  "base_oid": "...",
+  "inputs": {
+    "alice": "...",
+    "bob": "..."
+  },
+  "accepted_ops": [
+    "alice-add-note-001",
+    "bob-add-label-001"
+  ],
+  "rejected_ops": [],
+  "materialized_oid": "...",
+  "integrated_ref": "refs/tasks/TASK-42/integrated",
+  "protocol_version": 1
+}</code></pre>
+        <p>Полезные показатели:</p>
+        <ul>
+          <li>число принятых и отклонённых операций;</li>
+          <li>повторы <code>op_id</code>;</li>
+          <li>коллизии одного <code>op_id</code> с разными payload;</li>
+          <li>публикации от устаревшей или запрещённой базы;</li>
+          <li>выходы за разрешённые пути;</li>
+          <li>время ожидания каждого агента;</li>
+          <li>расхождения hash при повторной материализации;</li>
+          <li>неуспешные compare-and-swap обновления refs.</li>
+        </ul>
+        <p>Не называйте отсутствие текстового merge-конфликта показателем успешной координации. Главная метрика — сохранность допустимых намерений при выполнении инвариантов.</p>
+      </section>
+
+      <section id="limitations">
+        <h2>Ограничения подхода</h2>
+        <ul>
+          <li><strong>Подходит не для всех изменений кода.</strong> Два независимых патча одной функции могут требовать содержательного решения, которое невозможно выразить объединением множеств.</li>
+          <li><strong>Журнал растёт.</strong> Нужны snapshots, compaction и политика хранения tombstones, не разрушающая возможность синхронизации отставших участников.</li>
+          <li><strong>CRDT сохраняет операции, а не качество.</strong> Две неверные заметки также успешно сойдутся.</li>
+          <li><strong>Схема усложняет миграции.</strong> Materializer должен понимать старые версии либо выполнять проверяемое преобразование.</li>
+          <li><strong>Git не является низколатентной шиной сообщений.</strong> Для большого потока мелких событий может понадобиться база или брокер, а Git останется слоем контрольных точек и аудита.</li>
+          <li><strong>Ref легко удалить.</strong> Настройте защиту, reflog и резервное хранение в соответствии с требованиями восстановления.</li>
+          <li><strong>Семантические конфликты остаются.</strong> Параллельные команды «закрыть» и «переоткрыть» требуют модели причинности и предметной политики.</li>
+          <li><strong>Локальный тест не моделирует сеть.</strong> Он не проверяет частичные push, потерю соединения, репликацию, задержки и серверную авторизацию.</li>
+        </ul>
+      </section>
+
+      <section id="checklist">
+        <h2>Контрольный список перед внедрением</h2>
+        <ul>
+          <li>У каждой логической операции есть стабильный <code>op_id</code>.</li>
+          <li>Агенты публикуют результаты в разные refs.</li>
+          <li>Входной base OID закреплён и записан.</li>
+          <li>Agent commit меняет только разрешённые пути.</li>
+          <li>Материализованный снимок недоступен агентам для записи.</li>
+          <li>Неизвестные схемы и типы операций отклоняются.</li>
+          <li>Коллизия <code>op_id</code> останавливает интеграцию.</li>
+          <li>Повторная доставка не создаёт дубль.</li>
+          <li>Порядок применения не меняет итоговые байты.</li>
+          <li>Интеграционный ref обновляется compare-and-swap операцией.</li>
+          <li>Критические некоммутативные команды сериализуются.</li>
+          <li>Отчёт запуска содержит реальные OID и результаты проверок.</li>
+        </ul>
+      </section>
+
+      <section id="cleanup">
+        <h2>Очистка лабораторного окружения</h2>
+        <p>После завершения сначала вернитесь из временных worktrees, затем удалите их штатными командами Git. Убедитесь, что переменная указывает именно на созданный тестовый каталог:</p>
+        <pre><code>cd "$REPO_DIR"
+
+git worktree remove "$LAB_DIR/alice"
+git worktree remove "$LAB_DIR/bob"
+git worktree prune
+
+printf '%s\n' "$LAB_DIR"</code></pre>
+        <p>Последняя команда только показывает путь. Удаляйте временный каталог отдельно и только после визуальной проверки значения. Если хотите сохранить доказательства эксперимента, оставьте репозиторий или создайте bundle:</p>
+        <pre><code>git bundle create \
+  "$LAB_DIR/agent-coordination.bundle" \
+  --all</code></pre>
+      </section>
+
+      <section id="conclusion">
+        <h2>Итог</h2>
+        <p>Надёжная координация начинается не с более подробного промпта, а с разделения ответственности. Агент создаёт минимальную неизменяемую операцию. Git фиксирует её происхождение и переносит через отдельный ref. CRDT-правила объединяют совместимые намерения. Координатор проверяет политику, материализует снимок и единолично двигает интеграционный указатель.</p>
+        <p>В результате Alice и Bob могут работать от одной базы, не синхронизировать внутренний контекст и не касаться общей ветки. Их добавления сохраняются не благодаря удачному порядку выполнения, а благодаря проверяемому протоколу.</p>
+      </section>
+
+      <p class="back">
+        <a class="text-link" href="guides.html">← Все практические гайды</a>
+        ·
+        <a class="text-link" href="glossary.html">Лабораторный словарь →</a>
+      </p>
+    </article>
+  </main>
+
+  <footer>
+    <span>Agent Lab Journal</span>
+    <span><a href="privacy-ru.html">Конфиденциальность</a></span>
+  </footer>
+</body>
+</html>
