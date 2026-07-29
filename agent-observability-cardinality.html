@@ -1,0 +1,391 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Как не обрушить наблюдаемость агента высокой кардинальностью метрик — Agent Lab Journal</title>
+  <meta name="description" content="Практическое руководство по разделению метрик, трассировок и логов AI-агента: как сохранить диагностическую ценность промптов и идентификаторов без взрыва числа временных рядов.">
+  <link rel="canonical" href="https://agentlabjournal.online/agent-observability-cardinality.html">
+  <link rel="stylesheet" href="style.css">
+  <link rel="stylesheet" href="reading.css">
+
+  <meta property="og:type" content="article">
+  <meta property="og:locale" content="ru_RU">
+  <meta property="og:site_name" content="Agent Lab Journal">
+  <meta property="og:title" content="Как не обрушить наблюдаемость агента высокой кардинальностью метрик">
+  <meta property="og:description" content="Как разделить метрики, трассировки и логи AI-агента, сохранив диагностику без лишней кардинальности.">
+  <meta property="og:url" content="https://agentlabjournal.online/agent-observability-cardinality.html">
+
+  <meta name="twitter:card" content="summary">
+  <meta name="twitter:title" content="Как не обрушить наблюдаемость агента высокой кардинальностью метрик">
+  <meta name="twitter:description" content="Практическая схема наблюдаемости AI-агента без взрыва числа временных рядов.">
+
+  <meta name="reading-time" content="8 минут">
+  <meta name="article:section" content="Наблюдаемость агентов">
+
+  <script type="application/ld+json">
+  {
+    "@context": "https://schema.org",
+    "@type": "Article",
+    "headline": "Как не обрушить наблюдаемость агента высокой кардинальностью метрик",
+    "description": "Практическое руководство по разделению метрик, трассировок и логов AI-агента без взрыва числа временных рядов.",
+    "inLanguage": "ru-RU",
+    "mainEntityOfPage": {
+      "@type": "WebPage",
+      "@id": "https://agentlabjournal.online/agent-observability-cardinality.html"
+    },
+    "url": "https://agentlabjournal.online/agent-observability-cardinality.html",
+    "publisher": {
+      "@type": "Organization",
+      "name": "Agent Lab Journal",
+      "url": "https://agentlabjournal.online/"
+    },
+    "articleSection": "Наблюдаемость агентов",
+    "keywords": [
+      "AI-агенты",
+      "наблюдаемость",
+      "кардинальность метрик",
+      "трассировки",
+      "логи",
+      "OpenTelemetry",
+      "Prometheus"
+    ],
+    "timeRequired": "PT8M"
+  }
+  </script>
+</head>
+<body>
+  <header class="site-header">
+    <a href="index.html" class="site-name">Agent Lab Journal</a>
+    <nav aria-label="Основная навигация">
+      <a href="guides.html">Руководства</a>
+      <a href="glossary.html">Глоссарий</a>
+    </nav>
+  </header>
+
+  <main>
+    <article>
+      <header class="article-header">
+        <p class="eyebrow">Наблюдаемость агентов</p>
+        <h1>Как не обрушить наблюдаемость агента высокой кардинальностью метрик</h1>
+        <div class="reading-meta" aria-label="Сведения о статье">
+          <span>Продвинутый уровень</span>
+          <span>До 8 минут</span>
+          <span>Практическое руководство</span>
+        </div>
+        <p class="lead">Промпт, идентификатор сессии или документа кажется полезной меткой — пока каждый запрос не начинает создавать новый временной ряд. Разберём, какие данные оставить в метриках, какие перенести в трассировки и логи и как проверить, что диагностика не пострадала.</p>
+      </header>
+
+      <section>
+        <h2>Почему кардинальность растёт взрывным образом</h2>
+        <p><a href="glossary.html#cardinality">Кардинальность</a> — число уникальных комбинаций значений меток. Система метрик хранит отдельный временной ряд для каждой комбинации имени метрики и её labels.</p>
+
+        <p>Предположим, агент публикует счётчик с такими измерениями:</p>
+
+        <pre><code>agent_requests_total{
+  environment,
+  model,
+  status,
+  session_id,
+  document_id
+}</code></pre>
+
+        <p>Даже при 2 окружениях, 4 моделях, 5 статусах, 100&nbsp;000 сессиях и 20 документах на сессию теоретическое пространство достигает 80 миллионов комбинаций. На практике заполнится лишь часть, но идентификаторы без ограниченного набора значений будут непрерывно создавать новые ряды. Промпт как label ещё опаснее: небольшое изменение текста означает новое значение.</p>
+
+        <aside class="callout warning">
+          <h3>Главное правило</h3>
+          <p>Если значение отвечает на вопрос «какой именно запрос, пользователь, документ или вызов?», ему почти наверняка не место в метке метрики.</p>
+        </aside>
+      </section>
+
+      <section>
+        <h2>Разделите сигналы по назначению</h2>
+
+        <table>
+          <thead>
+            <tr>
+              <th>Сигнал</th>
+              <th>Для чего</th>
+              <th>Допустимые поля</th>
+              <th>Что исключить</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td>Метрики</td>
+              <td>Алерты, SLO, тренды и агрегаты</td>
+              <td>Окружение, стабильное имя модели, операция, класс ошибки, диапазон результата</td>
+              <td>Промпты, UUID, URL с параметрами, точный текст ошибки</td>
+            </tr>
+            <tr>
+              <td>Трассировки</td>
+              <td>Путь одного выполнения и задержки этапов</td>
+              <td>Идентификаторы, размеры, результат, имя инструмента, ссылки между spans</td>
+              <td>Секреты и необработанные персональные данные</td>
+            </tr>
+            <tr>
+              <td>Логи</td>
+              <td>События, аудит и подробности отказов</td>
+              <td>Структурированные поля, trace ID, нормализованный код ошибки</td>
+              <td>Полные промпты по умолчанию, токены доступа, содержимое документов</td>
+            </tr>
+          </tbody>
+        </table>
+
+        <p>Метрика сообщает, что проблема существует. Трассировка показывает, где она возникла. Лог объясняет детали события. Эти сигналы дополняют друг друга, но не должны дублировать весь контекст.</p>
+      </section>
+
+      <section>
+        <h2>Шаг 1. Составьте бюджет меток</h2>
+        <p>Для каждой метрики выпишите labels и оцените количество значений за срок хранения. Не ограничивайтесь текущим снимком: особенно важна скорость появления новых значений.</p>
+
+        <pre><code>metric: agent_request_duration_seconds
+labels:
+  environment: 2
+  operation: 6
+  model_family: 4
+  outcome: 5
+estimated_series_per_bucket: 2 × 6 × 4 × 5 = 240</code></pre>
+
+        <p>Для гистограммы умножьте результат на количество bucket-рядов, а также учтите ряды <code>_sum</code> и <code>_count</code>. Это пример расчёта, а не универсальный лимит: бюджет зависит от вашей системы хранения, срока retention и числа реплик.</p>
+
+        <p>Удалите или замените поля с неограниченным множеством значений:</p>
+
+        <ul>
+          <li><code>session_id</code>, <code>request_id</code>, <code>call_id</code> и <code>document_id</code> переносите в span или структурированный лог;</li>
+          <li><code>prompt</code> замените на контролируемые <code>prompt_template</code> и <code>prompt_version</code>;</li>
+          <li>точный текст ошибки замените на стабильный <code>error_class</code>;</li>
+          <li>URL нормализуйте до имени маршрута, например <code>POST /agents/{agent_id}/runs</code>;</li>
+          <li>числовые величины измеряйте histogram, а не превращайте в строковые labels.</li>
+        </ul>
+      </section>
+
+      <section>
+        <h2>Шаг 2. Оставьте в метриках только ограниченные измерения</h2>
+        <p>Ниже — пример инструментирования на Python. Названия библиотечных методов приведены как конфигурационный шаблон: адаптируйте импорты и инициализацию к используемой версии SDK.</p>
+
+        <pre><code>request_counter.add(
+    1,
+    {
+        "environment": "production",
+        "operation": "agent.run",
+        "model_family": "reasoning",
+        "outcome": "success",
+        "prompt_template": "document_summary",
+        "prompt_version": "v3"
+    }
+)
+
+request_duration.record(
+    elapsed_seconds,
+    {
+        "environment": "production",
+        "operation": "agent.run",
+        "model_family": "reasoning",
+        "outcome": "success"
+    }
+)</code></pre>
+
+        <p><code>prompt_template</code> безопасен для кардинальности только тогда, когда его значения берутся из заранее определённого реестра. Если приложение подставляет туда пользовательское имя или хеш полного промпта, проблема лишь меняет форму.</p>
+
+        <p>Не добавляйте label ради возможного будущего запроса. Сначала сформулируйте агрегат, дашборд или алерт, которому это измерение действительно нужно.</p>
+      </section>
+
+      <section>
+        <h2>Шаг 3. Перенесите контекст в трассировку</h2>
+        <p>Идентификаторы полезны внутри конкретного выполнения. Записывайте их как атрибуты span, не превращая в измерения метрик:</p>
+
+        <pre><code>with tracer.start_as_current_span("agent.run") as span:
+    span.set_attribute("agent.operation", "agent.run")
+    span.set_attribute("agent.session.id", session_id)
+    span.set_attribute("agent.document.id", document_id)
+    span.set_attribute("agent.prompt.template", "document_summary")
+    span.set_attribute("agent.prompt.version", "v3")
+    span.set_attribute("gen_ai.input.tokens", input_tokens)
+
+    result = run_agent()
+
+    span.set_attribute("agent.outcome", "success")</code></pre>
+
+        <p>Не считайте трассировку автоматически безопасным хранилищем. Атрибуты могут индексироваться, а значит влиять на стоимость. UUID обычно допустим для точечного поиска, но полный промпт требует отдельной политики доступа, редактирования и срока хранения.</p>
+
+        <p>Если текст промпта нужен для расследований, предпочтительнее хранить:</p>
+
+        <ul>
+          <li>имя и версию шаблона;</li>
+          <li>размер входа и число токенов;</li>
+          <li>признак применения редактирования;</li>
+          <li>ссылку на защищённое хранилище с коротким retention — только при обоснованной необходимости.</li>
+        </ul>
+      </section>
+
+      <section>
+        <h2>Шаг 4. Свяжите логи с трассировкой</h2>
+        <p>Структурированный лог должен содержать <code>trace_id</code> и <code>span_id</code>. Тогда из агрегированного алерта можно открыть пример трассировки, а оттуда перейти к связанным событиям.</p>
+
+        <pre><code>{
+  "level": "error",
+  "event": "agent_tool_call_failed",
+  "trace_id": "контекст_текущей_трассировки",
+  "span_id": "контекст_текущего_span",
+  "tool": "document_search",
+  "error_class": "timeout",
+  "retryable": true,
+  "duration_ms": 2150
+}</code></pre>
+
+        <p>Значения идентификаторов в примере намеренно условные. Не копируйте в лог тело документа, API-ключ, заголовок авторизации или полный ввод пользователя.</p>
+      </section>
+
+      <section>
+        <h2>Шаг 5. Поставьте предохранитель на экспорт</h2>
+        <p>Даже после ревизии разработчик может случайно добавить опасный label. На уровне OpenTelemetry Collector можно удалить атрибуты из метрик до отправки в backend:</p>
+
+        <pre><code>processors:
+  transform/drop_high_cardinality_metric_attributes:
+    metric_statements:
+      - context: datapoint
+        statements:
+          - delete_key(attributes, "session_id")
+          - delete_key(attributes, "request_id")
+          - delete_key(attributes, "call_id")
+          - delete_key(attributes, "document_id")
+          - delete_key(attributes, "prompt")
+          - delete_key(attributes, "error_message")
+
+service:
+  pipelines:
+    metrics:
+      processors:
+        - transform/drop_high_cardinality_metric_attributes
+        - batch</code></pre>
+
+        <p>Это пример защитной конфигурации. Перед применением проверьте синтаксис для установленной версии Collector и объедините процессоры с существующим pipeline. Удаление label меняет агрегирование: два ранее разных ряда будут объединены экспортёром или backend-системой в зависимости от реализации.</p>
+
+        <p>Если метрики экспортируются в Prometheus, второй рубеж можно поставить через relabeling:</p>
+
+        <pre><code>metric_relabel_configs:
+  - action: labeldrop
+    regex: 'session_id|request_id|call_id|document_id|prompt|error_message'</code></pre>
+
+        <p><code>labeldrop</code> безопаснее применять по явному списку. Широкое регулярное выражение может удалить label, необходимый для корректного алерта или разделения окружений.</p>
+      </section>
+
+      <section>
+        <h2>Проверка результата</h2>
+
+        <h3>1. Найдите метрики с наибольшим числом рядов</h3>
+        <p>Для Prometheus-совместимого backend используйте диагностический запрос:</p>
+
+        <pre><code>topk(
+  20,
+  count by (__name__) ({__name__=~".+"})
+)</code></pre>
+
+        <p>Запустите его до и после изменения на одинаковом временном диапазоне. Сравнивайте также число активных рядов на стороне хранилища: запрос показывает распределение по именам, но не всю стоимость ingestion и retention.</p>
+
+        <h3>2. Проверьте уникальные значения подозрительных labels</h3>
+
+        <pre><code>count(count by (session_id) (agent_requests_total))
+count(count by (document_id) (agent_requests_total))
+count(count by (prompt) (agent_requests_total))</code></pre>
+
+        <p>После удаления соответствующего label запрос может вернуть пустой результат — это ожидаемо. Одновременно убедитесь, что разрешённые разрезы остались доступны:</p>
+
+        <pre><code>sum by (environment, operation, model_family, outcome) (
+  rate(agent_requests_total[5m])
+)</code></pre>
+
+        <h3>3. Проведите контролируемый прогон</h3>
+        <ol>
+          <li>В тестовом окружении выполните несколько запросов с разными session ID и document ID.</li>
+          <li>Убедитесь, что число рядов метрики не растёт пропорционально числу идентификаторов.</li>
+          <li>Откройте одну трассировку и найдите в ней нужные идентификаторы.</li>
+          <li>По <code>trace_id</code> найдите связанный структурированный лог.</li>
+          <li>Проверьте, что алерт можно расследовать по цепочке «метрика → трассировка → лог».</li>
+        </ol>
+
+        <aside class="callout">
+          <h3>Критерий готовности</h3>
+          <p>Новые сессии и документы не создают новые комбинации labels, но конкретный сбой по-прежнему находится через trace ID, span и структурированные события.</p>
+        </aside>
+      </section>
+
+      <section>
+        <h2>Типовые ошибки</h2>
+
+        <h3>Хешировать промпт и оставить хеш label</h3>
+        <p>Хеш скрывает содержимое, но не уменьшает кардинальность: уникальный промпт всё равно создаёт уникальное значение.</p>
+
+        <h3>Перенести все поля в логи</h3>
+        <p>Это устраняет взрыв временных рядов, но может создать дорогой полнотекстовый индекс и риск утечки данных. Разделяйте хранение, индексирование и доступ; не каждое записанное поле должно индексироваться.</p>
+
+        <h3>Использовать точный текст исключения как error label</h3>
+        <p>Сообщения часто содержат URL, позиции, идентификаторы или пользовательский ввод. Нормализуйте их в небольшой набор: <code>timeout</code>, <code>rate_limited</code>, <code>invalid_input</code>, <code>dependency_error</code>, <code>internal</code>.</p>
+
+        <h3>Считать model ID всегда ограниченным</h3>
+        <p>Прокси, экспериментальные суффиксы и динамические deployment ID могут создавать новые значения. В метрике используйте контролируемое семейство модели, а точный идентификатор оставляйте в span.</p>
+
+        <h3>Удалить labels без проверки запросов</h3>
+        <p>Дашборды и алерты могут незаметно объединить разные потоки. До изменения найдите обращения к удаляемым labels в правилах, панелях и recording rules.</p>
+
+        <h3>Полагаться только на sampling</h3>
+        <p>Сэмплирование трассировок сокращает объём traces, но не исправляет кардинальность метрик. Эти механизмы решают разные задачи.</p>
+      </section>
+
+      <section>
+        <h2>Ограничения подхода</h2>
+        <p>Низкая кардинальность метрик означает отказ от мгновенной агрегации по конкретной сессии или документу. Для точечного расследования придётся переходить в трассировки или логи.</p>
+
+        <p>Трассировки могут быть неполными из-за sampling. Для ошибок и редких аномалий полезен tail-based sampling, но он требует буферизации и дополнительных ресурсов. При жёстких требованиях аудита отдельный журнал событий может быть уместнее телеметрии.</p>
+
+        <p>Фиксированного безопасного числа рядов не существует. Предел зависит от backend, частоты scrape, retention, репликации, histogram buckets и договорённостей о стоимости. Поэтому полезны не только разовые лимиты, но и наблюдение за скоростью появления новых рядов.</p>
+      </section>
+
+      <section>
+        <h2>Практическая политика для команды</h2>
+        <pre><code>Метрики:
+  разрешено:
+    - environment
+    - operation
+    - model_family
+    - outcome
+    - error_class
+    - prompt_template
+    - prompt_version
+  запрещено:
+    - prompt
+    - session_id
+    - request_id
+    - call_id
+    - document_id
+    - user_id
+    - error_message
+
+Трассировки:
+  идентификаторы разрешены при наличии цели поиска
+  содержимое пользователя запрещено по умолчанию
+  точные версии модели разрешены
+
+Логи:
+  обязательны trace_id, event и error_class
+  секреты и авторизационные данные запрещены
+  чувствительное содержимое требует отдельной политики</code></pre>
+
+        <p>Закрепите этот список проверкой конфигурации или код-ревью и заведите алерт на аномальный рост активных рядов. Так защита становится частью эксплуатации, а не разовой уборкой.</p>
+      </section>
+
+      <section>
+        <h2>Итог</h2>
+        <p>Надёжная схема проста: ограниченные категории идут в метрики, контекст одного выполнения — в трассировки, подробные события — в структурированные логи. Связующим ключом служит trace ID, а не копирование промптов и UUID во все три сигнала.</p>
+
+        <p>Продолжить настройку можно по материалам раздела <a href="guides.html">«Руководства»</a>. Определения терминов собраны в <a href="glossary.html">глоссарии</a>.</p>
+      </section>
+    </article>
+  </main>
+
+  <footer class="site-footer">
+    <p>Agent Lab Journal — практические материалы о проектировании и эксплуатации AI-агентов.</p>
+  </footer>
+</body>
+</html>

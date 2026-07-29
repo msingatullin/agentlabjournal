@@ -1,0 +1,440 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Автоматическая проверка цитат в ответах RAG — Agent Lab Journal</title>
+  <meta name="description" content="Практический конвейер проверки существования, точности и достаточности ссылок на документы в ответах RAG: формат данных, валидаторы, метрики и воспроизводимый пример на Python.">
+  <link rel="canonical" href="https://agentlabjournal.online/rag-citation-verification-pipeline.html">
+  <link rel="stylesheet" href="style.css">
+  <link rel="stylesheet" href="reading.css">
+
+  <meta property="og:type" content="article">
+  <meta property="og:locale" content="ru_RU">
+  <meta property="og:site_name" content="Agent Lab Journal">
+  <meta property="og:title" content="Автоматическая проверка цитат в ответах RAG">
+  <meta property="og:description" content="Как проверить существование, точность и достаточность ссылок на документы в ответах RAG.">
+  <meta property="og:url" content="https://agentlabjournal.online/rag-citation-verification-pipeline.html">
+
+  <meta name="twitter:card" content="summary">
+  <meta name="twitter:title" content="Автоматическая проверка цитат в ответах RAG">
+  <meta name="twitter:description" content="Практический конвейер верификации ссылок на документы: три уровня проверки и воспроизводимый код.">
+
+  <script type="application/ld+json">
+  {
+    "@context": "https://schema.org",
+    "@type": "Article",
+    "headline": "Автоматическая проверка цитат в ответах RAG",
+    "description": "Практический конвейер проверки существования, точности и достаточности ссылок на документы в ответах RAG.",
+    "inLanguage": "ru-RU",
+    "mainEntityOfPage": {
+      "@type": "WebPage",
+      "@id": "https://agentlabjournal.online/rag-citation-verification-pipeline.html"
+    },
+    "url": "https://agentlabjournal.online/rag-citation-verification-pipeline.html",
+    "publisher": {
+      "@type": "Organization",
+      "name": "Agent Lab Journal",
+      "url": "https://agentlabjournal.online/"
+    },
+    "isPartOf": {
+      "@type": "WebSite",
+      "name": "Agent Lab Journal",
+      "url": "https://agentlabjournal.online/"
+    },
+    "about": [
+      "Retrieval-Augmented Generation",
+      "проверка цитат",
+      "контроль качества ответов"
+    ],
+    "proficiencyLevel": "Advanced",
+    "timeRequired": "PT10M"
+  }
+  </script>
+</head>
+<body>
+  <header class="site-header">
+    <nav aria-label="Основная навигация">
+      <a href="index.html">Agent Lab Journal</a>
+      <a href="guides.html">Руководства</a>
+      <a href="glossary.html">Глоссарий</a>
+    </nav>
+  </header>
+
+  <main>
+    <article>
+      <header class="article-header">
+        <p class="eyebrow">Продвинутый уровень</p>
+        <h1>Автоматическая проверка цитат в ответах RAG</h1>
+        <p class="lead">Ссылка на документ подтверждает только то, что модель умеет печатать идентификаторы. Чтобы доверять ответу, нужно отдельно проверить существование источника, точность привязки фрагмента и достаточность доказательства.</p>
+        <div class="reading-meta" aria-label="Информация о материале">
+          <span>Чтение: до 10 минут</span>
+          <span>Результат: рабочий трёхступенчатый валидатор цитат</span>
+        </div>
+      </header>
+
+      <section id="introduction">
+        <h2>Почему одной ссылки недостаточно</h2>
+        <p><a href="glossary.html#rag">RAG</a> дополняет генерацию найденными документами, но сам по себе не гарантирует верность атрибуции. Модель может сослаться на существующий документ, выбрать в нём нерелевантный фрагмент или сделать более сильный вывод, чем позволяет источник.</p>
+        <p>Поэтому проверку полезно разделить на три независимых вопроса:</p>
+        <ol>
+          <li><strong>Существование:</strong> документ и указанный фрагмент доступны в той версии корпуса, на которой строился ответ?</li>
+          <li><strong>Точность:</strong> приведённая цитата совпадает с текстом источника и относится к заявленному диапазону?</li>
+          <li><strong>Достаточность:</strong> содержимое фрагмента действительно поддерживает конкретное утверждение, а не просто говорит на похожую тему?</li>
+        </ol>
+        <p>Первые два вопроса проверяются детерминированно. Третий требует семантического решения: правил, отдельной модели-классификатора или их комбинации. В производственном контуре эти уровни не следует объединять в один непрозрачный балл.</p>
+      </section>
+
+      <section id="contract">
+        <h2>Шаг 1. Зафиксируйте контракт ответа</h2>
+        <p>Свободный текст неудобен для аудита. Попросите генератор возвращать атомарные утверждения и отдельный список ссылок. Каждая ссылка должна содержать стабильный идентификатор документа, версию, символьный диапазон и точный текст фрагмента.</p>
+
+        <pre><code>{
+  "answer": "Сервис хранит журнал операций 30 дней.",
+  "claims": [
+    {
+      "id": "c1",
+      "text": "Сервис хранит журнал операций 30 дней.",
+      "citation_ids": ["q1"]
+    }
+  ],
+  "citations": [
+    {
+      "id": "q1",
+      "document_id": "retention-policy",
+      "document_version": "2026-01",
+      "start": 24,
+      "end": 79,
+      "quote": "Журнал операций хранится в течение 30 календарных дней."
+    }
+  ]
+}</code></pre>
+
+        <p>Это демонстрационный формат, а не описание внешней системы. Смещения считаются по строке Unicode в Python и образуют полуинтервал <code>[start, end)</code>. Если хранилище считает байты, токены или строки, укажите это явно и не смешивайте системы координат.</p>
+
+        <aside class="callout">
+          <h3>Правило проектирования</h3>
+          <p>Ссылка должна принадлежать утверждению, а не всему абзацу. Разбейте фразу «платёж необратим и обрабатывается за час» на два утверждения, если эти свойства подтверждаются разными местами.</p>
+        </aside>
+      </section>
+
+      <section id="fixture">
+        <h2>Шаг 2. Создайте минимальный воспроизводимый набор</h2>
+        <p>Для локальной проверки достаточно Python 3 без сторонних пакетов. Создайте отдельный каталог и убедитесь, что не работаете в каталоге с важными файлами:</p>
+
+        <pre><code>mkdir -p citation-check-demo
+cd citation-check-demo
+pwd</code></pre>
+
+        <p>Сохраните следующий корпус как <code>documents.json</code>:</p>
+
+        <pre><code>{
+  "retention-policy": {
+    "version": "2026-01",
+    "text": "Правила хранения данных. Журнал операций хранится в течение 30 календарных дней. Резервные копии удаляются отдельно."
+  }
+}</code></pre>
+
+        <p>Сохраните пример ответа как <code>response.json</code>:</p>
+
+        <pre><code>{
+  "answer": "Сервис хранит журнал операций 30 дней.",
+  "claims": [
+    {
+      "id": "c1",
+      "text": "Сервис хранит журнал операций 30 дней.",
+      "citation_ids": ["q1"]
+    }
+  ],
+  "citations": [
+    {
+      "id": "q1",
+      "document_id": "retention-policy",
+      "document_version": "2026-01",
+      "start": 24,
+      "end": 79,
+      "quote": "Журнал операций хранится в течение 30 календарных дней."
+    }
+  ]
+}</code></pre>
+
+        <p>Значения в этих файлах являются учебным примером. Они не описывают реального клиента, продукт или политику хранения.</p>
+      </section>
+
+      <section id="deterministic-validator">
+        <h2>Шаг 3. Проверьте существование и точность</h2>
+        <p>Сохраните код как <code>verify.py</code>. Валидатор отклоняет дубли идентификаторов, отсутствующие документы, несовпадающие версии, некорректные диапазоны и неточные цитаты.</p>
+
+        <pre><code>import json
+import sys
+from pathlib import Path
+
+def load_json(path):
+    with Path(path).open(encoding="utf-8") as handle:
+        return json.load(handle)
+
+def normalized(text):
+    return " ".join(text.split()).casefold()
+
+def verify(payload, documents):
+    errors = []
+    citations = payload.get("citations", [])
+    claims = payload.get("claims", [])
+
+    citation_by_id = {}
+    for citation in citations:
+        citation_id = citation.get("id")
+        if not citation_id:
+            errors.append({
+                "code": "citation_id_missing",
+                "citation_id": None
+            })
+            continue
+        if citation_id in citation_by_id:
+            errors.append({
+                "code": "citation_id_duplicate",
+                "citation_id": citation_id
+            })
+            continue
+        citation_by_id[citation_id] = citation
+
+    valid_citations = set()
+
+    for citation_id, citation in citation_by_id.items():
+        document_id = citation.get("document_id")
+        document = documents.get(document_id)
+
+        if document is None:
+            errors.append({
+                "code": "document_missing",
+                "citation_id": citation_id
+            })
+            continue
+
+        if citation.get("document_version") != document.get("version"):
+            errors.append({
+                "code": "document_version_mismatch",
+                "citation_id": citation_id
+            })
+            continue
+
+        start = citation.get("start")
+        end = citation.get("end")
+        text = document.get("text", "")
+
+        if (
+            not isinstance(start, int)
+            or isinstance(start, bool)
+            or not isinstance(end, int)
+            or isinstance(end, bool)
+            or start &lt; 0
+            or end &lt;= start
+            or end &gt; len(text)
+        ):
+            errors.append({
+                "code": "range_invalid",
+                "citation_id": citation_id
+            })
+            continue
+
+        source_fragment = text[start:end]
+        if source_fragment != citation.get("quote"):
+            errors.append({
+                "code": "quote_mismatch",
+                "citation_id": citation_id,
+                "expected": source_fragment,
+                "received": citation.get("quote")
+            })
+            continue
+
+        valid_citations.add(citation_id)
+
+    claim_results = []
+    for claim in claims:
+        claim_id = claim.get("id")
+        references = claim.get("citation_ids", [])
+        missing = [
+            item for item in references
+            if item not in citation_by_id
+        ]
+        invalid = [
+            item for item in references
+            if item in citation_by_id and item not in valid_citations
+        ]
+
+        if not references:
+            status = "unsupported"
+        elif missing or invalid:
+            status = "invalid_reference"
+        else:
+            status = "requires_entailment_check"
+
+        claim_results.append({
+            "claim_id": claim_id,
+            "status": status,
+            "missing_citations": missing,
+            "invalid_citations": invalid
+        })
+
+    return {
+        "ok": not errors and all(
+            item["status"] == "requires_entailment_check"
+            for item in claim_results
+        ),
+        "errors": errors,
+        "claims": claim_results
+    }
+
+if __name__ == "__main__":
+    if len(sys.argv) != 3:
+        raise SystemExit(
+            "usage: python3 verify.py RESPONSE DOCUMENTS"
+        )
+
+    result = verify(
+        load_json(sys.argv[1]),
+        load_json(sys.argv[2])
+    )
+    print(json.dumps(result, ensure_ascii=False, indent=2))
+    raise SystemExit(0 if result["ok"] else 1)</code></pre>
+
+        <p>Запуск безопасен: команда только читает два явно указанных файла и выводит результат в терминал.</p>
+
+        <pre><code>python3 verify.py response.json documents.json</code></pre>
+
+        <p>Для корректного примера ожидается <code>"ok": true</code>, а утверждение получит статус <code>requires_entailment_check</code>. Это принципиально: точное совпадение цитаты ещё не доказывает достаточность.</p>
+      </section>
+
+      <section id="sufficiency">
+        <h2>Шаг 4. Добавьте проверку достаточности</h2>
+        <p>Проверяющий получает только одно атомарное утверждение и связанные с ним фрагменты. Его задача — выбрать один из классов:</p>
+        <ul>
+          <li><code>entailed</code> — источники непосредственно подтверждают всё утверждение;</li>
+          <li><code>contradicted</code> — хотя бы один источник явно противоречит утверждению;</li>
+          <li><code>insufficient</code> — тема совпадает, но доказательства неполны;</li>
+          <li><code>unknown</code> — вход повреждён, неоднозначен или не поддаётся уверенной оценке.</li>
+        </ul>
+
+        <p>Контракт семантического проверяющего можно выразить так:</p>
+
+        <pre><code>{
+  "claim_id": "c1",
+  "verdict": "entailed",
+  "evidence_citation_ids": ["q1"],
+  "unsupported_parts": [],
+  "confidence": 0.98
+}</code></pre>
+
+        <p>Значение уверенности здесь иллюстративное. Его нельзя переносить в рабочий порог без калибровки на размеченной выборке вашего домена.</p>
+
+        <p>Инструкция для отдельной модели-проверяющего должна запрещать использовать внешние знания:</p>
+
+        <pre><code>Оцени только логическую поддержку утверждения приведёнными
+фрагментами. Не дополняй доказательство знаниями вне фрагментов.
+Верни один класс: entailed, contradicted, insufficient или unknown.
+Для entailed должны быть подтверждены все существенные части,
+включая числа, единицы, отрицания, условия и область действия.</code></pre>
+
+        <p>Перед семантической проверкой полезно применять дешёвые сигналы риска. Они не выносят окончательный вердикт, но помогают направлять сложные случаи на более строгую проверку:</p>
+        <ul>
+          <li>числа и единицы в утверждении отсутствуют в цитатах;</li>
+          <li>отрицание есть только с одной стороны;</li>
+          <li>утверждение содержит «всегда», «только», «обязательно», а источник — нет;</li>
+          <li>цитата описывает возможность, а ответ превращает её в гарантию;</li>
+          <li>несколько цитат по отдельности релевантны, но между ними нет связи, необходимой для вывода.</li>
+        </ul>
+      </section>
+
+      <section id="policy">
+        <h2>Шаг 5. Соберите итоговую политику</h2>
+        <p>Не усредняйте ошибки. Несуществующий документ нельзя компенсировать высокой семантической оценкой другой ссылки. Пример строгой политики:</p>
+
+        <pre><code>if deterministic_errors:
+    final_status = "reject"
+elif any(claim.verdict in {"contradicted", "unknown"} for claim in claims):
+    final_status = "manual_review"
+elif any(claim.verdict == "insufficient" for claim in claims):
+    final_status = "regenerate_or_abstain"
+elif all(claim.verdict == "entailed" for claim in claims):
+    final_status = "accept"
+else:
+    final_status = "reject"</code></pre>
+
+        <p>Для пользовательского интерфейса сохраняйте связь <code>утверждение → цитата → версия документа → диапазон</code>. Это позволяет подсветить доказательство, повторить проверку и расследовать расхождения после обновления корпуса.</p>
+      </section>
+
+      <section id="verification">
+        <h2>Проверка результата</h2>
+        <p>Сначала убедитесь, что успешный пример проходит:</p>
+
+        <pre><code>python3 verify.py response.json documents.json
+echo $?</code></pre>
+
+        <p>Ожидаемый код завершения — <code>0</code>. Затем временно измените <code>document_version</code> в копии <code>response.json</code> на другое значение и повторите запуск. Валидатор должен вернуть ошибку <code>document_version_mismatch</code> и ненулевой код завершения.</p>
+
+        <p>Минимальный набор проверок перед интеграцией:</p>
+        <ol>
+          <li>несуществующий <code>document_id</code> отклоняется;</li>
+          <li>устаревшая версия документа отклоняется;</li>
+          <li>отрицательный, пустой или выходящий за границы диапазон отклоняется;</li>
+          <li>изменение одного символа в цитате обнаруживается;</li>
+          <li>неизвестный <code>citation_id</code> в утверждении обнаруживается;</li>
+          <li>утверждение без ссылок получает <code>unsupported</code>;</li>
+          <li>точная, но нерелевантная цитата не принимается без семантической проверки;</li>
+          <li>составное утверждение не получает <code>entailed</code>, если подтверждена только его часть.</li>
+        </ol>
+
+        <p>Для наблюдаемости считайте долю утверждений без ссылок, долю детерминированно невалидных цитат, распределение семантических вердиктов и частоту ручной проверки. Метрики следует хранить отдельно по версии корпуса, генератора, поискового конвейера и проверяющего.</p>
+      </section>
+
+      <section id="errors">
+        <h2>Типовые ошибки</h2>
+
+        <h3>Поиск цитаты по подстроке без версии</h3>
+        <p>Одинаковая фраза может встречаться несколько раз, а документ — измениться. Храните версию и точный диапазон; для неизменяемых объектов можно дополнительно сохранять криптографический хеш содержимого.</p>
+
+        <h3>Нормализация до проверки точности</h3>
+        <p>Сведение регистра и пробелов удобно для диагностики, но скрывает изменение исходного текста. Сначала проверяйте точное совпадение, а нормализованное используйте только как объясняющий сигнал.</p>
+
+        <h3>Одна ссылка на длинный абзац</h3>
+        <p>Проверяющий не понимает, какую часть подтверждает источник. Выделяйте атомарные утверждения и разрешайте несколько ссылок на одно утверждение.</p>
+
+        <h3>Проверяющий видит исходный ответ целиком</h3>
+        <p>Лишний контекст повышает риск, что модель «достроит» доказательство. Передавайте утверждение и минимально необходимые фрагменты, а решение требуйте в структурированном формате.</p>
+
+        <h3>Повторное использование того же генератора без независимой инструкции</h3>
+        <p>Модель может повторить собственную ошибку. Разделяйте роли, промпты и журналы; для критичных решений добавляйте детерминированные правила и ручную эскалацию.</p>
+
+        <h3>Средний балл вместо покрытия</h3>
+        <p>Высокое качество большинства ссылок не оправдывает одно неподтверждённое критичное утверждение. Решение принимайте на уровне каждого утверждения, а затем применяйте явную политику агрегации.</p>
+      </section>
+
+      <section id="limitations">
+        <h2>Ограничения</h2>
+        <p>Даже строгий конвейер не устанавливает истинность документа. Он проверяет, следует ли ответ из зафиксированного источника. Устаревший, противоречивый или ошибочный документ останется плохим основанием.</p>
+        <p>Семантическая достаточность сложна для таблиц, изображений, формул, длинных цепочек вывода и ссылок между документами. В таких случаях сохраняйте структуру исходника и применяйте специализированный разбор вместо преобразования всего содержимого в плоский текст.</p>
+        <p>Автоматический вердикт также зависит от домена. Юридические исключения, медицинские оговорки и правила доступа требуют более консервативной политики. Порог уверенности должен калиброваться на репрезентативной размеченной выборке, а неопределённые случаи — направляться человеку.</p>
+      </section>
+
+      <section id="production-checklist">
+        <h2>Что перенести в production</h2>
+        <ul>
+          <li>неизменяемые версии документов и стабильные идентификаторы;</li>
+          <li>структурированный ответ с атомарными утверждениями;</li>
+          <li>точные диапазоны и исходный текст каждой цитаты;</li>
+          <li>детерминированную проверку до вызова семантической модели;</li>
+          <li>четырёхклассовый вердикт вместо бинарного «верно/неверно»;</li>
+          <li>отказ от ответа или ручную проверку при недостаточных доказательствах;</li>
+          <li>журнал версий, входов, вердиктов и причин отклонения;</li>
+          <li>набор негативных примеров для регрессионной проверки.</li>
+        </ul>
+        <p>Дополнительные схемы проектирования агентных систем собраны в <a href="guides.html">руководствах</a>, а определения терминов — в <a href="glossary.html">глоссарии</a>.</p>
+      </section>
+    </article>
+  </main>
+
+  <footer class="site-footer">
+    <p><a href="index.html">Agent Lab Journal</a> — практические материалы об агентных системах и прикладном ИИ.</p>
+  </footer>
+</body>
+</html>

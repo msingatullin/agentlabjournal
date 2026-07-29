@@ -1,0 +1,537 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Идемпотентность действий агента: защита от повторных платежей, писем и заявок — Agent Lab Journal</title>
+  <meta name="description" content="Практическое руководство по ключам идемпотентности, журналу операций и проверке фактического результата внешних действий AI-агента после тайм-аутов и повторных вызовов.">
+  <link rel="canonical" href="https://agentlabjournal.online/tool-call-idempotency.html">
+  <link rel="stylesheet" href="style.css">
+  <link rel="stylesheet" href="reading.css">
+
+  <meta property="og:type" content="article">
+  <meta property="og:locale" content="ru_RU">
+  <meta property="og:site_name" content="Agent Lab Journal">
+  <meta property="og:title" content="Идемпотентность действий агента: защита от повторных платежей, писем и заявок">
+  <meta property="og:description" content="Как безопасно повторять вызовы после тайм-аутов: ключи идемпотентности, журнал операций, сверка результата и восстановление зависших операций.">
+  <meta property="og:url" content="https://agentlabjournal.online/tool-call-idempotency.html">
+
+  <meta name="twitter:card" content="summary">
+  <meta name="twitter:title" content="Идемпотентность действий агента">
+  <meta name="twitter:description" content="Защита агентных систем от повторных платежей, писем и заявок после тайм-аутов.">
+
+  <meta name="reading-meta" content="Продвинутый уровень · 9 минут чтения">
+  <meta property="article:section" content="Надёжность агентных систем">
+  <meta property="article:tag" content="идемпотентность">
+  <meta property="article:tag" content="AI-агенты">
+  <meta property="article:tag" content="tool calling">
+
+  <script type="application/ld+json">
+  {
+    "@context": "https://schema.org",
+    "@type": "Article",
+    "headline": "Идемпотентность действий агента: защита от повторных платежей, писем и заявок",
+    "description": "Практическое руководство по ключам идемпотентности, журналу операций и проверке фактического результата внешних действий AI-агента после тайм-аутов и повторных вызовов.",
+    "inLanguage": "ru",
+    "mainEntityOfPage": {
+      "@type": "WebPage",
+      "@id": "https://agentlabjournal.online/tool-call-idempotency.html"
+    },
+    "url": "https://agentlabjournal.online/tool-call-idempotency.html",
+    "isPartOf": {
+      "@type": "WebSite",
+      "name": "Agent Lab Journal",
+      "url": "https://agentlabjournal.online/"
+    },
+    "publisher": {
+      "@type": "Organization",
+      "name": "Agent Lab Journal",
+      "url": "https://agentlabjournal.online/"
+    },
+    "articleSection": "Надёжность агентных систем",
+    "keywords": [
+      "идемпотентность",
+      "AI-агенты",
+      "повторные платежи",
+      "tool calling",
+      "журнал операций"
+    ],
+    "timeRequired": "PT9M",
+    "proficiencyLevel": "Advanced"
+  }
+  </script>
+</head>
+<body>
+  <header class="site-header">
+    <div class="container">
+      <a class="site-name" href="index.html">Agent Lab Journal</a>
+      <nav aria-label="Основная навигация">
+        <a href="guides.html">Гайды</a>
+        <a href="glossary.html">Глоссарий</a>
+      </nav>
+    </div>
+  </header>
+
+  <main>
+    <article class="reading">
+      <header class="article-header">
+        <p class="eyebrow">Надёжность агентных систем</p>
+        <h1>Идемпотентность действий агента: защита от повторных платежей, писем и заявок</h1>
+        <p class="lead">Тайм-аут не означает, что внешний вызов завершился ошибкой. Платёж мог пройти, письмо — уйти, а заявка — появиться уже после разрыва соединения. Если агент просто повторит действие, пользователь получит два реальных результата.</p>
+        <div class="reading-meta" aria-label="Параметры статьи">
+          <span>Продвинутый уровень</span>
+          <span>До 9 минут</span>
+          <span>Практическое руководство</span>
+        </div>
+      </header>
+
+      <section>
+        <h2>Почему обычного retry недостаточно</h2>
+        <p><a href="glossary.html#idempotency">Идемпотентность</a> — свойство операции, при котором повтор одного и того же логического запроса не создаёт дополнительного эффекта. Для чтения баланса это почти естественно. Для списания денег, отправки письма или создания заявки его нужно проектировать отдельно.</p>
+
+        <p>Опасный сценарий выглядит так:</p>
+        <ol>
+          <li>Агент вызывает инструмент <code>create_payment</code>.</li>
+          <li>Провайдер создаёт платёж, но ответ теряется или приходит позже тайм-аута.</li>
+          <li>Агент видит неопределённость и повторяет вызов.</li>
+          <li>Провайдер создаёт второй платёж.</li>
+        </ol>
+
+        <p>Ключевой вывод: после тайм-аута состояние операции не равно <em>failed</em>. Оно равно <em>unknown</em>. Повтор допустим только с тем же ключом идемпотентности либо после проверки фактического результата.</p>
+      </section>
+
+      <section>
+        <h2>Архитектура безопасного действия</h2>
+        <p>Надёжный контур состоит из трёх частей:</p>
+        <ul>
+          <li><strong>стабильный ключ</strong>, идентифицирующий логическое намерение пользователя;</li>
+          <li><strong>журнал операций</strong>, фиксирующий состояние до внешнего вызова;</li>
+          <li><strong>сверка</strong>, определяющая реальный результат после тайм-аута или сбоя процесса.</li>
+        </ul>
+
+        <pre><code>намерение пользователя
+        │
+        ▼
+вычислить operation_key
+        │
+        ▼
+атомарно зарегистрировать pending
+        │
+        ├── запись уже succeeded ──► вернуть сохранённый результат
+        │
+        ├── параметры отличаются ──► отклонить конфликт
+        │
+        └── новая операция
+                  │
+                  ▼
+        вызвать внешний сервис
+        с тем же operation_key
+                  │
+        ┌─────────┴─────────┐
+        ▼                   ▼
+   точный ответ          тайм-аут
+        │                   │
+        ▼                   ▼
+ сохранить итог       состояние unknown
+                            │
+                            ▼
+                  проверить по ключу
+                  или внешнему ID</code></pre>
+      </section>
+
+      <section>
+        <h2>Шаг 1. Определите границу логической операции</h2>
+        <p>Ключ должен обозначать не сетевую попытку, а бизнес-намерение. «Оплатить заказ 817 на 4900 рублей» — одна операция, даже если агент сделал три HTTP-вызова.</p>
+
+        <p>Практическое правило:</p>
+        <ul>
+          <li>повтор того же намерения использует прежний ключ;</li>
+          <li>новое осознанное действие пользователя получает новый ключ;</li>
+          <li>внутренний retry никогда не генерирует новый ключ.</li>
+        </ul>
+
+        <p>Пример формата ключа:</p>
+        <pre><code>payment:order-817:intent-01
+email:case-442:confirmation-v1
+application:user-93:program-2026</code></pre>
+
+        <p>Это примеры, а не обязательный стандарт. В production ключ удобно хранить как случайный непрозрачный идентификатор, а бизнес-связи — в отдельных полях. Не включайте в него адреса, токены, содержимое писем и другие чувствительные данные.</p>
+      </section>
+
+      <section>
+        <h2>Шаг 2. Свяжите ключ с неизменяемыми параметрами</h2>
+        <p>Одинаковый ключ с разными параметрами опаснее явного дубля. Поэтому вместе с ключом сохраняют отпечаток нормализованного запроса.</p>
+
+        <pre><code>canonical_payload = canonical_json({
+  "action": "create_payment",
+  "order_id": "817",
+  "amount_minor": 490000,
+  "currency": "RUB"
+})
+
+request_hash = sha256(canonical_payload)</code></pre>
+
+        <p>Нормализация должна быть детерминированной: фиксированный порядок полей, единое представление денежных сумм, валюты, дат и пустых значений. Для денег используйте целое число в минимальных единицах, а не число с плавающей точкой.</p>
+
+        <p>При повторе:</p>
+        <ul>
+          <li>ключ и хеш совпали — это повтор той же операции;</li>
+          <li>ключ совпал, хеш отличается — верните конфликт и не вызывайте внешний сервис;</li>
+          <li>ключ новый — зарегистрируйте новую операцию.</li>
+        </ul>
+      </section>
+
+      <section>
+        <h2>Шаг 3. Создайте журнал операций</h2>
+        <p>Минимальная схема должна поддерживать атомарную вставку и уникальность ключа. Ниже — пример SQL, который следует адаптировать к используемой СУБД:</p>
+
+        <pre><code>CREATE TABLE agent_operations (
+    operation_key      VARCHAR(200) PRIMARY KEY,
+    action_type        VARCHAR(80)  NOT NULL,
+    request_hash       CHAR(64)     NOT NULL,
+    status             VARCHAR(20)  NOT NULL,
+    attempt_count      INTEGER      NOT NULL DEFAULT 0,
+    external_id        VARCHAR(200),
+    result_json        TEXT,
+    error_code         VARCHAR(100),
+    lease_until        TIMESTAMP,
+    created_at         TIMESTAMP    NOT NULL,
+    updated_at         TIMESTAMP    NOT NULL,
+    CHECK (status IN (
+        'pending',
+        'in_progress',
+        'unknown',
+        'succeeded',
+        'failed_final'
+    ))
+);</code></pre>
+
+        <p>Поле <code>external_id</code> хранит идентификатор платежа, сообщения или заявки во внешней системе. <code>result_json</code> — очищенный результат, который можно безопасно вернуть при повторе. Секреты, полные платёжные реквизиты и лишние персональные данные в журнал помещать не следует.</p>
+
+        <p>Рекомендуемые значения состояний:</p>
+        <dl>
+          <dt><code>pending</code></dt>
+          <dd>Операция зарегистрирована, внешний вызов ещё не начат.</dd>
+          <dt><code>in_progress</code></dt>
+          <dd>Исполнитель получил временную аренду и выполняет вызов.</dd>
+          <dt><code>unknown</code></dt>
+          <dd>Ответ не получен; внешний эффект мог произойти.</dd>
+          <dt><code>succeeded</code></dt>
+          <dd>Фактический результат подтверждён и сохранён.</dd>
+          <dt><code>failed_final</code></dt>
+          <dd>Подтверждено, что операция окончательно не выполнена и автоматический повтор запрещён.</dd>
+        </dl>
+      </section>
+
+      <section>
+        <h2>Шаг 4. Регистрируйте намерение до вызова</h2>
+        <p>Сначала журнал, затем сеть. Атомарная вставка с уникальным ограничением не даст двум воркерам одновременно считать одну операцию новой.</p>
+
+        <pre><code>BEGIN;
+
+INSERT INTO agent_operations (
+    operation_key,
+    action_type,
+    request_hash,
+    status,
+    created_at,
+    updated_at
+)
+VALUES (
+    :operation_key,
+    :action_type,
+    :request_hash,
+    'pending',
+    CURRENT_TIMESTAMP,
+    CURRENT_TIMESTAMP
+)
+ON CONFLICT (operation_key) DO NOTHING;
+
+SELECT operation_key, request_hash, status, result_json, external_id
+FROM agent_operations
+WHERE operation_key = :operation_key
+FOR UPDATE;
+
+COMMIT;</code></pre>
+
+        <p>После чтения запись обрабатывается по её состоянию. Если операция уже завершена, верните сохранённый результат. Если хеш не совпал, остановитесь с ошибкой конфликта. Если другой исполнитель держит действующую аренду, не запускайте второй вызов.</p>
+
+        <p>Не удерживайте транзакцию базы данных открытой во время сетевого запроса. Вместо этого атомарно выдайте короткую аренду:</p>
+
+        <pre><code>UPDATE agent_operations
+SET status = 'in_progress',
+    lease_until = :lease_until,
+    attempt_count = attempt_count + 1,
+    updated_at = CURRENT_TIMESTAMP
+WHERE operation_key = :operation_key
+  AND (
+      status = 'pending'
+      OR status = 'unknown'
+      OR (
+          status = 'in_progress'
+          AND lease_until &lt; CURRENT_TIMESTAMP
+      )
+  );</code></pre>
+
+        <p>Выполнять внешний вызов можно только если обновлена ровно одна строка.</p>
+      </section>
+
+      <section>
+        <h2>Шаг 5. Передавайте ключ внешнему сервису</h2>
+        <p>Если API поддерживает собственный ключ идемпотентности, передавайте ваш стабильный ключ при каждой попытке. Название заголовка или поля зависит от конкретного API и должно быть взято из его документации.</p>
+
+        <pre><code>POST /payments
+Content-Type: application/json
+Idempotency-Key: payment:order-817:intent-01
+
+{
+  "order_id": "817",
+  "amount_minor": 490000,
+  "currency": "RUB"
+}</code></pre>
+
+        <p>Это демонстрационный запрос. Адрес, формат тела и заголовок не описывают конкретного провайдера.</p>
+
+        <p>Для писем и заявок, где сервер не поддерживает идемпотентность, используйте один из вариантов:</p>
+        <ul>
+          <li>передавайте ключ в доступное поле внешней ссылки и ищите по нему;</li>
+          <li>создайте собственный шлюз с уникальным индексом по ключу;</li>
+          <li>примените transactional outbox: транзакция создаёт локальное намерение, а отдельный доставщик выполняет отправку;</li>
+          <li>если результат нельзя найти или доказать, переводите операцию на ручную сверку, а не повторяйте вслепую.</li>
+        </ul>
+      </section>
+
+      <section>
+        <h2>Шаг 6. Разделяйте точные ошибки и неопределённость</h2>
+        <p>Обработчик должен классифицировать исход, а не сводить всё к <code>success/error</code>.</p>
+
+        <pre><code>async function executeOperation(op) {
+  const claimed = await journal.claim(op.key);
+  if (!claimed) return journal.readCurrentResult(op.key);
+
+  try {
+    const response = await externalService.call({
+      idempotencyKey: op.key,
+      payload: op.payload
+    });
+
+    await journal.markSucceeded(
+      op.key,
+      response.externalId,
+      sanitize(response.result)
+    );
+
+    return response.result;
+  } catch (error) {
+    if (isConfirmedRejection(error)) {
+      await journal.markFailedFinal(op.key, safeErrorCode(error));
+      throw error;
+    }
+
+    await journal.markUnknown(op.key, safeErrorCode(error));
+    return { status: "verification_required", operationKey: op.key };
+  }
+}</code></pre>
+
+        <p><code>isConfirmedRejection</code> должен признавать окончательной только ошибку, однозначно подтверждающую отсутствие эффекта. Тайм-аут, разрыв соединения, перезапуск процесса и неизвестный ответ прокси к этой категории не относятся.</p>
+      </section>
+
+      <section>
+        <h2>Шаг 7. Проверяйте фактический результат</h2>
+        <p>Для записей <code>unknown</code> запускайте отдельный процесс сверки. Он не повторяет действие немедленно, а сначала спрашивает внешний сервис о результате по ключу или сохранённому <code>external_id</code>.</p>
+
+        <pre><code>async function reconcile(operation) {
+  const observed = await externalService.findByIdempotencyKey(
+    operation.operationKey
+  );
+
+  if (observed.found &amp;&amp; observed.completed) {
+    await journal.markSucceeded(
+      operation.operationKey,
+      observed.externalId,
+      sanitize(observed.result)
+    );
+    return;
+  }
+
+  if (observed.definitivelyAbsent) {
+    await journal.releaseForRetry(operation.operationKey);
+    return;
+  }
+
+  await journal.keepUnknown(operation.operationKey);
+}</code></pre>
+
+        <p>Состояние <code>definitivelyAbsent</code> допустимо только тогда, когда API действительно гарантирует полноту и актуальность поиска. «Пока не найдено» может означать задержку индексации, поэтому для каждой интеграции задайте окно ожидания, интервалы сверки и момент передачи оператору.</p>
+      </section>
+
+      <section>
+        <h2>Политика агента</h2>
+        <p>Модель не должна самостоятельно решать, что новый ключ «поможет». Правила исполнения должны находиться в детерминированном слое инструментов.</p>
+
+        <pre><code>tool_policy:
+  create_payment:
+    operation_key: required
+    retry:
+      reuse_operation_key: true
+      on_timeout: reconcile_before_retry
+    terminal_states:
+      - succeeded
+      - failed_final
+    unknown_after_seconds: 900
+    on_unresolved: require_human_review
+
+  send_email:
+    operation_key: required
+    retry:
+      reuse_operation_key: true
+      on_timeout: reconcile_before_retry</code></pre>
+
+        <p>Конфигурация приведена как пример структуры. Значения тайм-аутов и правила ручной проверки выбираются по гарантиям конкретной системы и цене дубля.</p>
+      </section>
+
+      <section>
+        <h2>Воспроизводимая проверка</h2>
+        <p>Проверять следует не текст ответа агента, а количество внешних эффектов. Для локального стенда используйте тестовый адаптер, который записывает действия в изолированное хранилище и умеет имитировать потерю ответа после фиксации результата.</p>
+
+        <ol>
+          <li>Создайте операцию с ключом <code>payment:order-817:intent-01</code>.</li>
+          <li>Настройте адаптер: сохранить результат, затем вернуть тайм-аут.</li>
+          <li>Выполните вызов. В журнале должно появиться состояние <code>unknown</code>.</li>
+          <li>Повторите запрос с тем же ключом и теми же параметрами.</li>
+          <li>Запустите сверку и убедитесь, что запись стала <code>succeeded</code>.</li>
+          <li>Проверьте, что во внешнем тестовом хранилище существует ровно один эффект.</li>
+          <li>Повторите запрос с тем же ключом, но другой суммой. Ожидаемый результат — конфликт без внешнего вызова.</li>
+        </ol>
+
+        <p>Безопасные запросы для просмотра результата:</p>
+
+        <pre><code>SELECT operation_key, status, attempt_count, external_id
+FROM agent_operations
+WHERE operation_key = 'payment:order-817:intent-01';
+
+SELECT operation_key, COUNT(*) AS rows_per_key
+FROM agent_operations
+GROUP BY operation_key
+HAVING COUNT(*) &gt; 1;</code></pre>
+
+        <p>Вторая выборка должна вернуть пустой результат при корректно работающем первичном ключе. Она проверяет журнал, но не доказывает отсутствие дублей во внешней системе. Для полного доказательства отдельно посчитайте эффекты по внешней ссылке или ключу в тестовом адаптере.</p>
+
+        <h3>Минимальная матрица сценариев</h3>
+        <table>
+          <thead>
+            <tr>
+              <th>Сценарий</th>
+              <th>Ожидаемое состояние</th>
+              <th>Внешних эффектов</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td>Первый вызов успешен</td>
+              <td><code>succeeded</code></td>
+              <td>1</td>
+            </tr>
+            <tr>
+              <td>Повтор после успеха</td>
+              <td><code>succeeded</code>, сохранённый ответ</td>
+              <td>1</td>
+            </tr>
+            <tr>
+              <td>Эффект создан, ответ потерян</td>
+              <td><code>unknown</code>, затем <code>succeeded</code></td>
+              <td>1</td>
+            </tr>
+            <tr>
+              <td>Два конкурентных воркера</td>
+              <td>Один получает аренду</td>
+              <td>1</td>
+            </tr>
+            <tr>
+              <td>Тот же ключ, другие параметры</td>
+              <td>Конфликт</td>
+              <td>0 новых</td>
+            </tr>
+            <tr>
+              <td>Перезапуск после регистрации</td>
+              <td>Операция восстановлена из журнала</td>
+              <td>Не более 1</td>
+            </tr>
+          </tbody>
+        </table>
+      </section>
+
+      <section>
+        <h2>Типовые ошибки</h2>
+
+        <h3>Новый ключ при каждом retry</h3>
+        <p>Провайдер видит разные операции и закономерно выполняет каждую. Ключ создаётся один раз при фиксации намерения и живёт дольше отдельного запуска агента.</p>
+
+        <h3>Ключ генерирует модель</h3>
+        <p>Модель может изменить формат, забыть значение или создать новый идентификатор. Генерация, сохранение и повторное использование ключа должны выполняться кодом оркестратора.</p>
+
+        <h3>Запись в журнал после внешнего вызова</h3>
+        <p>Сбой между вызовом и записью уничтожает сведения об операции. Сначала фиксируйте намерение, затем обращайтесь к сети.</p>
+
+        <h3>Тайм-аут помечается как окончательная ошибка</h3>
+        <p>Это разрешает опасный новый вызов. Используйте отдельное состояние <code>unknown</code> и сверку.</p>
+
+        <h3>Проверка только по тексту ответа</h3>
+        <p>Ответ «не удалось отправить» описывает наблюдение агента, а не состояние внешней системы. Источником истины служит API проверки, внешний идентификатор или журнал принимающей стороны.</p>
+
+        <h3>Нет проверки хеша параметров</h3>
+        <p>Повторно использованный ключ может скрыть изменение суммы, адресата или содержимого заявки. Одинаковый ключ с другим хешем должен приводить к конфликту.</p>
+
+        <h3>Срок хранения слишком короткий</h3>
+        <p>Если запись удалена раньше возможного повтора, старый запрос снова станет новым. Срок хранения выбирают с запасом относительно очередей, ручных повторов, офлайн-клиентов и политики внешнего API.</p>
+
+        <h3>Кэш вместо долговечного журнала</h3>
+        <p>Вытеснение, сброс или потеря кэша возвращают риск дубля. Кэш можно использовать для ускорения, но не как единственный источник истины для дорогих необратимых действий.</p>
+      </section>
+
+      <section>
+        <h2>Ограничения</h2>
+        <ul>
+          <li><strong>Идемпотентность не равна атомарности.</strong> Если одна бизнес-операция вызывает несколько независимых систем, единый ключ сам по себе не откатит частично выполненный процесс.</li>
+          <li><strong>Exactly once обычно недоказуемо на всём пути.</strong> Практическая цель — at-least-once доставка с дедупликацией и подтверждаемым итогом.</li>
+          <li><strong>Внешний API может забывать ключи.</strong> Учитывайте его срок дедупликации и храните собственный журнал дольше допустимого окна повторов.</li>
+          <li><strong>Отправленное письмо нельзя «разотправить».</strong> Если провайдер не предоставляет поиск по пользовательскому ключу, после неопределённого исхода может потребоваться ручная проверка.</li>
+          <li><strong>Сверка бывает запаздывающей.</strong> Поиск может не видеть только что созданный объект. Нужны повторная проверка с ограниченной задержкой и конечная эскалация.</li>
+          <li><strong>Побочные эффекты внутри обработчика тоже считаются.</strong> Уведомление, аналитическое событие и webhook требуют собственных ключей либо outbox-механизма.</li>
+        </ul>
+      </section>
+
+      <section>
+        <h2>Контрольный список внедрения</h2>
+        <ul class="checklist">
+          <li>Ключ создаётся на бизнес-намерение, а не на сетевую попытку.</li>
+          <li>Повторы используют тот же ключ.</li>
+          <li>Ключ связан с хешем нормализованных параметров.</li>
+          <li>Журнал фиксируется до внешнего вызова.</li>
+          <li>Уникальное ограничение защищает от конкурентных исполнителей.</li>
+          <li>Тайм-аут переводит операцию в <code>unknown</code>.</li>
+          <li>Сверка проверяет фактический результат до повтора.</li>
+          <li>Подтверждённый результат и внешний ID сохраняются.</li>
+          <li>Зависшие операции имеют аренду, срок ожидания и путь эскалации.</li>
+          <li>Тест имитирует потерю ответа после создания эффекта.</li>
+        </ul>
+      </section>
+
+      <section>
+        <h2>Итог</h2>
+        <p>Безопасный агент не интерпретирует отсутствие ответа как отсутствие действия. Он присваивает намерению стабильный ключ, атомарно записывает его до вызова, повторяет только с тем же ключом и после неопределённого исхода проверяет внешний факт. Такая схема не устраняет сбои сети, но не позволяет им незаметно превратиться в повторный платёж, письмо или заявку.</p>
+      </section>
+
+      <footer class="article-footer">
+        <p>Продолжить изучение: <a href="guides.html">практические гайды Agent Lab Journal</a> и <a href="glossary.html">глоссарий терминов</a>.</p>
+      </footer>
+    </article>
+  </main>
+
+  <footer class="site-footer">
+    <div class="container">
+      <p>Agent Lab Journal — практические материалы о проектировании и эксплуатации AI-агентов.</p>
+    </div>
+  </footer>
+</body>
+</html>

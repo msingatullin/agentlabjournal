@@ -1,0 +1,384 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Контроль доступа в RAG до поиска, а не после генерации — Agent Lab Journal</title>
+  <meta name="description" content="Практическое руководство по ACL-фильтрации на этапе извлечения в RAG: схема индекса, безопасный запрос, негативные тесты и проверка межпользовательских утечек.">
+  <link rel="canonical" href="https://agentlabjournal.online/rag-access-control-before-retrieval.html">
+  <link rel="stylesheet" href="style.css">
+  <link rel="stylesheet" href="reading.css">
+
+  <meta property="og:type" content="article">
+  <meta property="og:locale" content="ru_RU">
+  <meta property="og:site_name" content="Agent Lab Journal">
+  <meta property="og:title" content="Контроль доступа в RAG до поиска, а не после генерации">
+  <meta property="og:description" content="Как встроить ACL-фильтрацию в этап извлечения и проверить отсутствие межпользовательских утечек.">
+  <meta property="og:url" content="https://agentlabjournal.online/rag-access-control-before-retrieval.html">
+
+  <meta name="twitter:card" content="summary">
+  <meta name="twitter:title" content="Контроль доступа в RAG до поиска, а не после генерации">
+  <meta name="twitter:description" content="ACL на этапе извлечения, безопасная схема индекса и воспроизводимые негативные тесты для RAG.">
+
+  <meta name="reading-meta" content="Продвинутый · 9 минут · Практическое руководство">
+
+  <script type="application/ld+json">
+  {
+    "@context": "https://schema.org",
+    "@type": "Article",
+    "headline": "Контроль доступа в RAG до поиска, а не после генерации",
+    "description": "Практическое руководство по ACL-фильтрации на этапе извлечения в RAG: схема индекса, безопасный запрос, негативные тесты и проверка межпользовательских утечек.",
+    "inLanguage": "ru",
+    "mainEntityOfPage": {
+      "@type": "WebPage",
+      "@id": "https://agentlabjournal.online/rag-access-control-before-retrieval.html"
+    },
+    "url": "https://agentlabjournal.online/rag-access-control-before-retrieval.html",
+    "isPartOf": {
+      "@type": "Periodical",
+      "name": "Agent Lab Journal",
+      "url": "https://agentlabjournal.online/"
+    },
+    "publisher": {
+      "@type": "Organization",
+      "name": "Agent Lab Journal",
+      "url": "https://agentlabjournal.online/"
+    },
+    "articleSection": "RAG и безопасность",
+    "proficiencyLevel": "Продвинутый",
+    "timeRequired": "PT9M",
+    "keywords": [
+      "RAG",
+      "ACL",
+      "контроль доступа",
+      "векторный поиск",
+      "изоляция данных",
+      "безопасность LLM"
+    ]
+  }
+  </script>
+</head>
+<body>
+  <header class="site-header">
+    <nav aria-label="Основная навигация">
+      <a href="index.html">Agent Lab Journal</a>
+      <a href="guides.html">Руководства</a>
+      <a href="glossary.html">Глоссарий</a>
+    </nav>
+  </header>
+
+  <main>
+    <article>
+      <header class="article-header">
+        <p class="eyebrow">RAG и безопасность</p>
+        <h1>Контроль доступа в RAG до поиска, а не после генерации</h1>
+        <p class="lead">Фильтрация готового ответа скрывает лишь часть проблемы. Если закрытый фрагмент уже найден, он может попасть в промпт, трассировку, кэш или журнал вызовов модели. Граница доступа должна проходить перед извлечением данных.</p>
+        <div class="reading-meta" aria-label="Параметры статьи">
+          <span>Продвинутый уровень</span>
+          <span>До 9 минут</span>
+          <span>Результат: ACL-фильтрация retrieval и проверка изоляции</span>
+        </div>
+      </header>
+
+      <section id="introduction">
+        <h2>Почему постфильтрация не является контролем доступа</h2>
+        <p><a href="glossary.html#rag">RAG</a> дополняет запрос модели фрагментами, найденными во внешнем хранилище. Поэтому извлечённый текст становится обработанными данными ещё до появления ответа.</p>
+        <p>Представим общий индекс для документов двух подразделений. Пользователь из группы <code>team-red</code> задаёт вопрос, семантически близкий к документу <code>team-blue</code>. Если поиск выполняется без ACL, закрытый фрагмент может оказаться среди кандидатов. Удаление секретной строки из финального ответа не отменяет того, что она уже могла попасть:</p>
+        <ul>
+          <li>в контекст языковой модели;</li>
+          <li>в трассировку оркестратора или прокси;</li>
+          <li>в кэш промптов и результатов поиска;</li>
+          <li>в журналы отладки, оценки качества и повторного воспроизведения;</li>
+          <li>в промежуточный ответ агента или вызов инструмента.</li>
+        </ul>
+        <p>Безопасное правило формулируется так: система должна искать только в множестве фрагментов, доступных текущему субъекту. Фильтрация ответа остаётся дополнительной защитой, но не заменяет авторизацию.</p>
+      </section>
+
+      <section id="model">
+        <h2>Модель доступа</h2>
+        <p>Ниже используется пример, а не описание конкретного продукта. У каждого фрагмента есть владелец области, список разрешённых групп и признак публичности:</p>
+        <pre><code>{
+  "chunk_id": "doc-blue-17#3",
+  "text": "Пример закрытого фрагмента BLUE_MARKER_7F3A",
+  "tenant_id": "tenant-demo",
+  "owner_id": "user-blue",
+  "allowed_groups": ["team-blue"],
+  "is_public": false,
+  "document_version": 4
+}</code></pre>
+        <p>Пользователь может читать фрагмент, только если совпадает арендатор и выполняется хотя бы одно условие: документ публичный, пользователь является владельцем или состоит в разрешённой группе.</p>
+        <pre><code>can_read =
+  chunk.tenant_id == principal.tenant_id
+  AND (
+    chunk.is_public
+    OR chunk.owner_id == principal.user_id
+    OR intersects(chunk.allowed_groups, principal.group_ids)
+  )</code></pre>
+        <p><code>principal</code> должен поступать из проверенной сервером сессии или токена. Нельзя принимать <code>tenant_id</code>, <code>user_id</code> и группы из тела запроса как утверждения самого клиента.</p>
+      </section>
+
+      <section id="steps">
+        <h2>Воспроизводимая реализация</h2>
+
+        <h3>1. Перенесите ACL в метаданные каждого фрагмента</h3>
+        <p>Контроль доступа должен работать на той же гранулярности, что и поиск. Если один документ нарезан на фрагменты, ACL требуется записать в каждый индексируемый фрагмент. Ссылка только на ACL исходного документа создаёт риск рассинхронизации и вынуждает выполнять небезопасный поиск перед дополнительным запросом.</p>
+        <p>При индексировании валидируйте обязательные поля и применяйте закрытое значение по умолчанию:</p>
+        <pre><code>def build_chunk(source, text, ordinal):
+    if not source.tenant_id:
+        raise ValueError("tenant_id is required")
+
+    return {
+        "chunk_id": f"{source.document_id}#{ordinal}",
+        "text": text,
+        "tenant_id": source.tenant_id,
+        "owner_id": source.owner_id,
+        "allowed_groups": sorted(set(source.allowed_groups or [])),
+        "is_public": source.is_public is True,
+        "document_version": source.version,
+    }</code></pre>
+        <p>Отсутствующее поле <code>is_public</code> здесь означает <code>false</code>. Не используйте отсутствие ACL как признак публичного документа.</p>
+
+        <h3>2. Соберите предикат только из доверенного principal</h3>
+        <pre><code>from dataclasses import dataclass
+
+@dataclass(frozen=True)
+class Principal:
+    tenant_id: str
+    user_id: str
+    group_ids: tuple[str, ...]
+
+def retrieval_filter(principal: Principal) -&gt; dict:
+    if not principal.tenant_id or not principal.user_id:
+        raise PermissionError("incomplete principal")
+
+    return {
+        "and": [
+            {"tenant_id": {"eq": principal.tenant_id}},
+            {
+                "or": [
+                    {"is_public": {"eq": True}},
+                    {"owner_id": {"eq": principal.user_id}},
+                    {"allowed_groups": {"any_of": list(principal.group_ids)}}
+                ]
+            }
+        ]
+    }</code></pre>
+        <p>Синтаксис фильтра в разных хранилищах отличается. Важна семантика: ограничение арендатора и ACL должны применяться самим поисковым запросом, а не циклом после получения глобального <code>top_k</code>.</p>
+
+        <h3>3. Сделайте безопасный путь единственным</h3>
+        <pre><code>def retrieve_for_principal(*, principal, query, limit=6):
+    if limit &lt; 1 or limit &gt; 20:
+        raise ValueError("limit must be between 1 and 20")
+
+    acl = retrieval_filter(principal)
+
+    return vector_store.search(
+        query=query,
+        filter=acl,
+        limit=limit,
+        fields=["chunk_id", "text", "document_version"]
+    )
+
+def answer(*, session, question):
+    principal = principal_from_verified_session(session)
+    chunks = retrieve_for_principal(
+        principal=principal,
+        query=question,
+        limit=6
+    )
+    return model.generate(
+        system=SAFE_SYSTEM_PROMPT,
+        user=question,
+        context=[chunk["text"] for chunk in chunks]
+    )</code></pre>
+        <p>Прямой доступ приложения к <code>vector_store.search()</code> желательно ограничить одним модулем. Остальной код получает только функцию, которая требует <code>Principal</code>. Это снижает вероятность появления нового маршрута без ACL.</p>
+
+        <h3>4. Синхронизируйте изменения прав</h3>
+        <p>Отзыв доступа должен менять поисковую область без длительного окна рассинхронизации. Практичная последовательность:</p>
+        <ol>
+          <li>записать новую версию ACL в основной источник;</li>
+          <li>обновить или переиндексировать все фрагменты документа;</li>
+          <li>сделать новую версию видимой для поиска;</li>
+          <li>инвалидировать кэши, ключ которых зависит от прежнего ACL;</li>
+          <li>пометить старую версию недоступной или удалить её по правилам хранилища.</li>
+        </ol>
+        <p>Если атомарное обновление невозможно, закрывайте доступ до переиндексации. Временный отказ безопаснее временного раскрытия.</p>
+
+        <h3>5. Разделите журналы доступа и содержимого</h3>
+        <p>Для аудита обычно достаточно идентификаторов и решения авторизации:</p>
+        <pre><code>{
+  "event": "rag_retrieval",
+  "request_id": "generated-request-id",
+  "principal_id": "user-red",
+  "tenant_id": "tenant-demo",
+  "filter_policy_version": "acl-v3",
+  "returned_chunk_ids": ["public-2#1"],
+  "returned_count": 1
+}</code></pre>
+        <p>Не записывайте текст найденных фрагментов, полный промпт или эмбеддинги в обычный технический журнал. Если содержательные трассировки необходимы для отдельного режима диагностики, им требуются собственные ACL, короткий срок хранения, редактирование чувствительных полей и явное включение.</p>
+      </section>
+
+      <section id="verification">
+        <h2>Проверка отсутствия межпользовательской утечки</h2>
+        <p>Проверка должна наблюдать не только финальный ответ, но и кандидатов retrieval, контекст модели, кэш и журналы. Следующий сценарий использует искусственные маркеры; это пример тестового стенда, а не реальные секреты.</p>
+
+        <h3>Подготовьте минимальный набор</h3>
+        <table>
+          <thead>
+            <tr>
+              <th>Фрагмент</th>
+              <th>ACL</th>
+              <th>Тестовый маркер</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td><code>red#1</code></td>
+              <td><code>team-red</code></td>
+              <td><code>RED_MARKER_91C2</code></td>
+            </tr>
+            <tr>
+              <td><code>blue#1</code></td>
+              <td><code>team-blue</code></td>
+              <td><code>BLUE_MARKER_7F3A</code></td>
+            </tr>
+            <tr>
+              <td><code>public#1</code></td>
+              <td>публичный</td>
+              <td><code>PUBLIC_MARKER_42D0</code></td>
+            </tr>
+          </tbody>
+        </table>
+
+        <h3>Проверьте матрицу доступа</h3>
+        <pre><code>def chunk_ids(principal, query):
+    return {
+        row["chunk_id"]
+        for row in retrieve_for_principal(
+            principal=principal,
+            query=query,
+            limit=20
+        )
+    }
+
+query = "Верни все тестовые маркеры из документов"
+
+red_ids = chunk_ids(red_principal, query)
+blue_ids = chunk_ids(blue_principal, query)
+
+assert "blue#1" not in red_ids
+assert "red#1" not in blue_ids
+assert "red#1" in red_ids
+assert "blue#1" in blue_ids
+assert "public#1" in red_ids
+assert "public#1" in blue_ids</code></pre>
+        <p>Затем перехватите фактический объект, передаваемый адаптеру модели, и проверьте его до сетевого вызова:</p>
+        <pre><code>red_context = capture_model_context(
+    principal=red_principal,
+    question="Какие тестовые маркеры доступны?"
+)
+
+assert "BLUE_MARKER_7F3A" not in red_context
+assert "RED_MARKER_91C2" in red_context</code></pre>
+
+        <h3>Проверьте отзыв прав и кэш</h3>
+        <pre><code># Пример: red_principal сначала состоит в team-red.
+warm_cache(red_principal, "Какие тестовые маркеры доступны?")
+
+revoke_group_membership("user-red", "team-red")
+wait_until_acl_version_is_searchable("acl-version-after-revoke")
+
+restricted_principal = reload_verified_principal("user-red")
+result = answer(
+    session=session_for(restricted_principal),
+    question="Какие тестовые маркеры доступны?"
+)
+
+assert "RED_MARKER_91C2" not in result
+assert cache_key_contains_acl_version(restricted_principal)</code></pre>
+        <p><code>wait_until_acl_version_is_searchable</code> и соседние функции обозначают операции вашего тестового стенда. Их нельзя считать готовым API. Критерий успеха — закрытый маркер отсутствует на всех этапах после отзыва прав, включая попадание в кэш.</p>
+
+        <h3>Просканируйте тестовые артефакты</h3>
+        <p>Если стенд сохраняет обезличенные тестовые журналы в отдельный каталог, безопасно искать только искусственный маркер:</p>
+        <pre><code>rg --fixed-strings --line-number \
+  'BLUE_MARKER_7F3A' \
+  ./test-artifacts/red-user/</code></pre>
+        <p>Команда только читает указанный каталог. Ожидаемый результат — отсутствие совпадений. Не запускайте массовый поиск по производственным журналам без разрешения и соответствующего уровня доступа.</p>
+
+        <h3>Критерии приёмки</h3>
+        <ul>
+          <li>недоступный <code>chunk_id</code> отсутствует в результатах самого retrieval;</li>
+          <li>закрытый маркер отсутствует в контексте модели и промежуточных событиях;</li>
+          <li>смена пользователя при одинаковом вопросе не переиспользует чужой кэш;</li>
+          <li>отзыв группы исключает фрагмент после согласованного SLA обновления;</li>
+          <li>неполный или некорректный principal приводит к отказу, а не к поиску без фильтра;</li>
+          <li>технические журналы не содержат текста фрагментов.</li>
+        </ul>
+      </section>
+
+      <section id="mistakes">
+        <h2>Типовые ошибки</h2>
+
+        <h3>Глобальный top-k с последующим удалением запрещённых результатов</h3>
+        <p>Такой подход уже раскрывает закрытые кандидаты поисковому слою приложения. Кроме того, после фильтрации может остаться слишком мало результатов. Увеличение <code>top_k</code> лишь расширяет объём потенциально раскрытых данных.</p>
+
+        <h3>Фильтр только по tenant_id</h3>
+        <p>Изоляция арендаторов не заменяет права внутри арендатора. Для общих корпоративных индексов обычно нужны группы, владелец, уровень конфиденциальности или отдельная политика доступа.</p>
+
+        <h3>Группы из клиентского JSON</h3>
+        <p>Поля запроса не являются доказательством полномочий. Группы должны вычисляться сервером из проверенной идентичности и актуального источника прав.</p>
+
+        <h3>ACL только у документа</h3>
+        <p>Поисковая система ранжирует фрагменты. Если фильтруемые поля не доступны на уровне фрагмента или надёжной серверной связи, предикат нельзя гарантированно применить до поиска.</p>
+
+        <h3>Кэш без области безопасности</h3>
+        <p>Ключ вида <code>hash(question)</code> опасен: одинаковый вопрос разных пользователей может вернуть общий результат. Минимально учитывайте арендатора, субъект или нормализованный набор полномочий, версию ACL, модель и версию корпуса.</p>
+
+        <h3>Мягкий отказ фильтра</h3>
+        <p>Если хранилище не распознало оператор или метаданные недоступны, запрос должен завершиться ошибкой. Резервный поиск без фильтра недопустим.</p>
+
+        <h3>Проверка только текста ответа</h3>
+        <p>Модель может не процитировать закрытый фрагмент, хотя получила его. Негативный тест обязан проверять retrieval и фактический контекст до вызова модели.</p>
+      </section>
+
+      <section id="limits">
+        <h2>Ограничения подхода</h2>
+        <p>ACL-фильтрация retrieval закрывает важную границу, но не решает всю задачу безопасности:</p>
+        <ul>
+          <li>векторное хранилище и его резервные копии всё равно должны иметь инфраструктурную защиту;</li>
+          <li>эмбеддинги и метаданные следует считать чувствительными данными;</li>
+          <li>ошибочная разметка ACL при загрузке не исправляется корректным поисковым фильтром;</li>
+          <li>гибридный поиск обязан применять одинаковую политику к векторной и полнотекстовой ветвям;</li>
+          <li>агрегации, рекомендации, reranker и графовые обходы также должны видеть только разрешённых кандидатов;</li>
+          <li>сложные политики с условиями по времени, атрибутам и отношениям могут потребовать отдельного policy engine;</li>
+          <li>защита от prompt injection и вредоносных документов остаётся отдельной задачей.</li>
+        </ul>
+        <p>При очень сложных ACL физическое разделение индексов по арендаторам или классам доступа иногда проще проверять, чем один общий индекс. Цена — больше операций, сложнее балансировка и возможное дублирование публичных данных.</p>
+      </section>
+
+      <section id="checklist">
+        <h2>Короткий чек-лист внедрения</h2>
+        <ol>
+          <li>Определить доверенный <code>Principal</code> и формальное правило <code>can_read</code>.</li>
+          <li>Продублировать необходимые ACL-поля в каждом поисковом фрагменте.</li>
+          <li>Применять tenant- и ACL-предикаты внутри запроса к хранилищу.</li>
+          <li>Запретить обход безопасного retrieval-адаптера.</li>
+          <li>Включить полномочия и версию ACL в область кэша.</li>
+          <li>Обеспечить закрытое поведение при ошибке или неполных метаданных.</li>
+          <li>Проверить искусственными маркерами retrieval, контекст, кэш и журналы.</li>
+          <li>Повторить проверку после отзыва прав и обновления индекса.</li>
+        </ol>
+        <p>Главный инвариант прост: если субъект не имеет права читать фрагмент, этот фрагмент не должен становиться кандидатом поиска. Остальные меры безопасности строятся поверх этой границы.</p>
+      </section>
+
+      <footer class="article-footer">
+        <p>Продолжить изучение: <a href="guides.html">практические руководства</a> и <a href="glossary.html">глоссарий Agent Lab Journal</a>.</p>
+      </footer>
+    </article>
+  </main>
+
+  <footer class="site-footer">
+    <p><a href="index.html">Agent Lab Journal</a></p>
+  </footer>
+</body>
+</html>

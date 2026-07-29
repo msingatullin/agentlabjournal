@@ -1,0 +1,911 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+
+  <title>Run Hermes Fully Locally with QVAC | Agent Lab Journal</title>
+  <meta name="description" content="Deploy Hermes Agent with a local model, persistent memory, and restricted tools through QVAC's OpenAI-compatible server, then verify the complete setup offline.">
+  <meta name="reading-meta" content="Advanced · 45 minutes · working local Hermes Agent with QVAC and offline verification">
+  <link rel="canonical" href="https://agentlabjournal.online/en/lokalnyy-hermes-agent-qvac.html">
+
+  <link rel="stylesheet" href="style.css">
+  <link rel="stylesheet" href="reading.css">
+
+  <meta property="og:type" content="article">
+  <meta property="og:locale" content="en_US">
+  <meta property="og:site_name" content="Agent Lab Journal">
+  <meta property="og:title" content="Run Hermes Fully Locally with QVAC">
+  <meta property="og:description" content="Build a personal AI agent with a local model, persistent memory, restricted tools, and no required cloud API.">
+  <meta property="og:url" content="https://agentlabjournal.online/en/lokalnyy-hermes-agent-qvac.html">
+  <meta property="og:image" content="https://agentlabjournal.online/podcast-cover.png">
+  <meta property="og:image:width" content="1200">
+  <meta property="og:image:height" content="630">
+  <meta property="article:modified_time" content="2026-07-29">
+  <meta property="article:section" content="Local AI Agents">
+
+  <meta name="twitter:card" content="summary_large_image">
+  <meta name="twitter:title" content="Run Hermes Fully Locally with QVAC">
+  <meta name="twitter:description" content="A practical deployment of Hermes with a local OpenAI-compatible QVAC server, memory, tools, and an offline acceptance test.">
+  <meta name="twitter:image" content="https://agentlabjournal.online/podcast-cover.png">
+
+  <script type="application/ld+json">
+  {
+    "@context": "https://schema.org",
+    "@type": "Article",
+    "headline": "Run Hermes Fully Locally with QVAC",
+    "description": "Deploy Hermes Agent with a local model, persistent memory, and restricted tools through QVAC's OpenAI-compatible server, then verify the complete setup offline.",
+    "image": [
+      "https://agentlabjournal.online/podcast-cover.png"
+    ],
+    "dateModified": "2026-07-29",
+    "inLanguage": "en",
+    "author": {
+      "@type": "Organization",
+      "name": "Agent Lab Journal",
+      "url": "https://agentlabjournal.online/"
+    },
+    "publisher": {
+      "@type": "Organization",
+      "name": "Agent Lab Journal",
+      "url": "https://agentlabjournal.online/",
+      "logo": {
+        "@type": "ImageObject",
+        "url": "https://agentlabjournal.online/podcast-cover.png"
+      }
+    },
+    "mainEntityOfPage": {
+      "@type": "WebPage",
+      "@id": "https://agentlabjournal.online/en/lokalnyy-hermes-agent-qvac.html"
+    }
+  }
+  </script>
+</head>
+<body>
+  <header class="site-header">
+    <a class="brand" href="./">
+      <span class="brand-mark">AL</span>
+      <span>Agent Lab Journal</span>
+    </a>
+    <nav aria-label="Primary navigation">
+      <a href="guides.html">Guides</a>
+      <a href="glossary.html">Glossary</a>
+    </nav>
+  </header>
+
+  <main class="article">
+    <article>
+      <header class="article-header">
+        <p class="eyebrow">LOCAL AI AGENTS · PRACTICAL DEPLOYMENT</p>
+        <h1>Run Hermes Fully Locally with QVAC</h1>
+
+        <div class="reading-meta" aria-label="Article information">
+          <span>Level: advanced</span>
+          <span>Reading time: 45 minutes</span>
+          <span>Result: local Hermes + QVAC + offline verification</span>
+        </div>
+
+        <p class="lead"><strong>By the end of this guide, you will have a personal Hermes Agent that sends inference requests only to a model running on your machine, preserves memory between sessions, invokes a restricted set of local tools, and completes a repeatable task after the internet connection is disabled.</strong> No cloud API key is required during operation, although you must download the software and model files beforehand.</p>
+      </header>
+
+      <section>
+        <h2>The system we are building</h2>
+
+        <p><a class="term-link" href="glossary.html#ai-agent">Hermes Agent</a> is the agent layer around a language model. It manages conversations, state, memory, skills, tool descriptions, and the loop that connects a model request to an actual action. <a class="term-link" href="glossary.html#qvac">QVAC</a> is responsible for running the model locally and exposing it through an OpenAI-compatible HTTP interface.</p>
+
+        <pre><code>User
+  │
+  ▼
+Hermes Agent
+  ├── local sessions
+  ├── persistent memory
+  ├── skills and policies
+  └── restricted tools
+          │
+          │ HTTP over 127.0.0.1
+          ▼
+    QVAC OpenAI server
+          │
+          ▼
+      local model
+          │
+          ▼
+      CPU / GPU / RAM</code></pre>
+
+        <p>The roles must remain separate. The <a class="term-link" href="glossary.html#llm">large language model</a> produces a response or requests a function. Hermes controls the agent loop, memory, permissions, and function execution. QVAC loads the model weights, applies the model's chat template, and performs local <a class="term-link" href="glossary.html#inference">inference</a>.</p>
+
+        <p>In this guide, “fully local” has a precise and limited meaning:</p>
+
+        <ul>
+          <li>Hermes and QVAC run on one computer, or inside an isolated local environment;</li>
+          <li>model requests are sent only to <code>127.0.0.1</code>;</li>
+          <li>sessions, memory, skills, configuration, and logs remain on local storage;</li>
+          <li>the tools used by the acceptance test require no external services;</li>
+          <li>after dependencies and weights have been downloaded, the scenario passes without internet access.</li>
+        </ul>
+
+        <aside class="note">
+          <p><strong>A local model does not automatically create a secure system.</strong> A tool can still execute a command, read an unrelated file, or contact an external address. Offline operation reduces one part of the attack surface; it does not replace operating-system permissions, path validation, or approval controls.</p>
+        </aside>
+      </section>
+
+      <section>
+        <h2>Concrete case: a private decision journal</h2>
+
+        <p>A greeting is too weak to prove that an agent works. Our acceptance case therefore uses a small project directory and tests four independent layers: generation, <a class="term-link" href="glossary.html#tool-calling">tool calling</a>, durable memory, and the absence of a required cloud route.</p>
+
+        <p>Hermes must:</p>
+
+        <ol>
+          <li>read a local meeting note;</li>
+          <li>extract the project, decision, and next action;</li>
+          <li>write a Markdown summary inside an allowed output directory;</li>
+          <li>remember a harmless formatting preference;</li>
+          <li>recover that preference in a new session;</li>
+          <li>repeat a new file task after external networking is disabled.</li>
+        </ol>
+
+        <p>Create a dedicated laboratory directory. Do not begin with your home directory, a repository containing credentials, or a cloud-synchronized folder.</p>
+
+        <pre><code>mkdir -p "$PWD/hermes-local-lab/inbox"
+mkdir -p "$PWD/hermes-local-lab/outbox"
+
+printf '%s\n' \
+  'Project: local assistant.' \
+  'Decision: store final notes as Markdown.' \
+  'Next action: verify operation without a network.' \
+  &gt; "$PWD/hermes-local-lab/inbox/meeting.txt"
+
+export LAB_DIR="$PWD/hermes-local-lab"
+
+find "$LAB_DIR" -maxdepth 2 -type f -print
+printf 'Laboratory directory: %s\n' "$LAB_DIR"</code></pre>
+
+        <p>Keep this terminal open or record the absolute value of <code>LAB_DIR</code>. Agent prompts should use an absolute path rather than relying on an uncertain working directory.</p>
+      </section>
+
+      <section>
+        <h2>Prerequisites and version discipline</h2>
+
+        <p>You need a Unix-like environment, Node.js and npm for QVAC, a Python environment supported by the Hermes release you install, Git, curl, and enough disk space for the selected model. On Windows, use WSL2 unless the current release explicitly documents another supported route.</p>
+
+        <p>Before changing the machine, record the software and available resources:</p>
+
+        <pre><code>uname -a
+node --version
+npm --version
+python3 --version
+git --version
+curl --version | head -n 1
+
+df -h .
+free -h 2&gt;/dev/null || true</code></pre>
+
+        <p>CLI flags, model identifiers, and configuration formats can change between releases. Treat every command below as a configuration for the installed version, not as permission to ignore its built-in help. If a flag is rejected, stop and inspect <code>--help</code> instead of guessing a replacement.</p>
+
+        <p>After installing QVAC, use its diagnostics to identify the available compute backend:</p>
+
+        <pre><code>qvac doctor</code></pre>
+
+        <p>A supported GPU backend can reduce latency, while CPU execution may still be adequate for a small model. The actual result depends on the machine, model build, context length, and runtime version; this article does not claim universal speed or memory measurements.</p>
+      </section>
+
+      <section>
+        <h2>Choose a model that fits before optimizing quality</h2>
+
+        <p>Begin with a model variant using <a class="term-link" href="glossary.html#quantization">4-bit quantization</a>. Quantization reduces the storage and memory cost of weights, but it does not eliminate runtime buffers or the memory consumed by the context cache.</p>
+
+        <p>The QVAC model registry available in your installed release is the source of truth. List or inspect that registry before copying a model identifier into the configuration. If the following identifiers are not present in your release, select the corresponding supported instruct model and use its exact identifier.</p>
+
+        <table>
+          <thead>
+            <tr>
+              <th>Deployment profile</th>
+              <th>Example model class</th>
+              <th>Use</th>
+              <th>QVAC identifier used below</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td>Installation check</td>
+              <td>Qwen 4B, Q4</td>
+              <td>HTTP route and simple functions</td>
+              <td><code>QWEN3_5_4B_MULTIMODAL_Q4_K_M</code></td>
+            </tr>
+            <tr>
+              <td>Balanced laboratory</td>
+              <td>Qwen 9B, Q4</td>
+              <td>More reliable argument generation</td>
+              <td><code>QWEN3_5_9B_MULTIMODAL_Q4_K_M</code></td>
+            </tr>
+            <tr>
+              <td>Larger agent workload</td>
+              <td>Qwen 35B-A3B MoE, Q4</td>
+              <td>Longer multi-step work on capable hardware</td>
+              <td><code>QWEN3_6_35B_A3B_MULTIMODAL_Q4_K_M</code></td>
+            </tr>
+          </tbody>
+        </table>
+
+        <p>A <a class="term-link" href="glossary.html#moe">mixture-of-experts model</a> activates only part of its expert network for each token, but its weights and working data still have to fit the runtime's memory strategy. Leave capacity for the operating system, Hermes, the <a class="term-link" href="glossary.html#context">context</a>, and the KV cache.</p>
+
+        <p>The smallest model is useful for validating the route, but it may emit invalid function arguments or skip steps. A larger model can improve agent behavior, yet no model size guarantees correct tool use. First complete the whole test with a model that fits comfortably; compare alternatives only after the infrastructure is stable.</p>
+      </section>
+
+      <section>
+        <h2>Step 1: install the QVAC CLI</h2>
+
+        <p>Internet access is required at this stage to retrieve the package and, later, the model weights.</p>
+
+        <pre><code>npm install -g @qvac/cli
+
+command -v qvac
+qvac --help
+qvac doctor</code></pre>
+
+        <p>If global npm installation asks for administrator privileges, do not solve it by piping an unreviewed process into <code>sudo</code>. Configure a user-owned npm prefix or use a managed Node.js installation. Confirm that the discovered <code>qvac</code> binary belongs to the installation you intended.</p>
+
+        <p>Create a separate QVAC project directory:</p>
+
+        <pre><code>mkdir -p "$PWD/qvac-hermes"
+cd "$PWD/qvac-hermes"
+pwd</code></pre>
+      </section>
+
+      <section>
+        <h2>Step 2: declare the model and enable functions</h2>
+
+        <p>The HTTP server loads models declared under <code>serve.models</code>. The object key becomes the model name visible to clients. Using a stable alias keeps Hermes independent of the underlying registry identifier.</p>
+
+        <p>Create <code>qvac.config.json</code> in the current directory:</p>
+
+        <pre><code>{
+  "serve": {
+    "models": {
+      "hermes-local": {
+        "model": "QWEN3_6_35B_A3B_MULTIMODAL_Q4_K_M",
+        "default": true,
+        "preload": true,
+        "config": {
+          "ctx_size": 65536,
+          "tools": true
+        }
+      }
+    }
+  }
+}</code></pre>
+
+        <p>For a smaller model, change only the <code>model</code> value to an identifier verified in your installed QVAC registry, for example:</p>
+
+        <pre><code>"QWEN3_5_4B_MULTIMODAL_Q4_K_M"</code></pre>
+
+        <p>or:</p>
+
+        <pre><code>"QWEN3_5_9B_MULTIMODAL_Q4_K_M"</code></pre>
+
+        <p><code>ctx_size</code> is the maximum context the runtime attempts to hold. Hermes may send a large system instruction plus multiple tool schemas before the user's task begins. A small context can overflow early, while a large <a class="term-link" href="glossary.html#token">token limit</a> increases KV-cache memory.</p>
+
+        <p>If 65,536 tokens do not fit, lower the value, expose fewer tools, and configure Hermes with the same effective limit. Do not advertise a larger context to Hermes than QVAC can actually serve.</p>
+
+        <p>The <code>tools</code> option enables function handling for the selected model. Without it, ordinary chat can succeed while the agent returns prose instead of a structured call.</p>
+      </section>
+
+      <section>
+        <h2>Step 3: start the OpenAI-compatible server</h2>
+
+        <p>Bind QVAC to the loopback interface so that other devices cannot reach the port through the LAN.</p>
+
+        <pre><code>cd /absolute/path/to/qvac-hermes
+
+qvac serve openai \
+  --config "$PWD/qvac.config.json" \
+  --host 127.0.0.1 \
+  --port 11434 \
+  --verbose</code></pre>
+
+        <p>Keep this process in a dedicated terminal. The first start may download weights before loading them into memory. Wait until server initialization has completed.</p>
+
+        <p>From another terminal, inspect the model endpoint:</p>
+
+        <pre><code>curl --fail --silent --show-error \
+  http://127.0.0.1:11434/v1/models</code></pre>
+
+        <p>The returned JSON should contain the client-facing identifier <code>hermes-local</code>. An empty list usually means the model is not ready. A 404 indicates a route, configuration, or CLI-version mismatch.</p>
+
+        <p>Now send a minimal completion:</p>
+
+        <pre><code>curl --fail --silent --show-error \
+  http://127.0.0.1:11434/v1/chat/completions \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "model": "hermes-local",
+    "messages": [
+      {
+        "role": "user",
+        "content": "Reply with exactly one word: ready"
+      }
+    ],
+    "temperature": 0,
+    "max_tokens": 16
+  }'</code></pre>
+
+        <p>Validate the response structure rather than punctuation or capitalization. It must contain a <code>choices</code> array with an assistant message. If HTTP succeeds but content is empty, inspect the verbose QVAC log and verify that the chosen registry entry is a chat-capable instruct model.</p>
+      </section>
+
+      <section>
+        <h2>Step 4: test function output before installing Hermes</h2>
+
+        <p>This test separates QVAC and model behavior from the agent runtime. The described function performs no action; the request only asks the model to return a structured intention.</p>
+
+        <pre><code>curl --fail --silent --show-error \
+  http://127.0.0.1:11434/v1/chat/completions \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "model": "hermes-local",
+    "messages": [
+      {
+        "role": "user",
+        "content": "Find the size of /lab/inbox/meeting.txt. Do not guess; use the function."
+      }
+    ],
+    "tools": [
+      {
+        "type": "function",
+        "function": {
+          "name": "get_file_size",
+          "description": "Return the size of an allowed local file",
+          "parameters": {
+            "type": "object",
+            "properties": {
+              "path": {
+                "type": "string",
+                "description": "Absolute path to the file"
+              }
+            },
+            "required": ["path"],
+            "additionalProperties": false
+          }
+        }
+      }
+    ],
+    "tool_choice": "auto",
+    "temperature": 0,
+    "max_tokens": 256
+  }'</code></pre>
+
+        <p>A successful result is not an alleged byte count. It is an item in <code>message.tool_calls</code> whose function name is <code>get_file_size</code> and whose <code>arguments</code> value contains valid JSON with the requested path.</p>
+
+        <p>Fail the test if:</p>
+
+        <ul>
+          <li>the model says that it will call a function but returns no <code>tool_calls</code>;</li>
+          <li>the function name is changed;</li>
+          <li><code>arguments</code> cannot be parsed as JSON;</li>
+          <li>the model invents a file size;</li>
+          <li>the requested path is replaced with another path.</li>
+        </ul>
+
+        <p>Do not install or debug Hermes until this boundary works. Confirm that <code>"tools": true</code> is active, restart QVAC after configuration changes, and test a more capable model if necessary. Successful chat completion is not evidence of successful function calling.</p>
+      </section>
+
+      <section>
+        <h2>Step 5: install Hermes Agent</h2>
+
+        <p>Review remote installation scripts before executing them. One cautious sequence is:</p>
+
+        <pre><code>curl --fail --silent --show-error \
+  https://raw.githubusercontent.com/NousResearch/hermes-agent/main/scripts/install.sh \
+  -o /tmp/hermes-install.sh
+
+less /tmp/hermes-install.sh
+bash /tmp/hermes-install.sh</code></pre>
+
+        <p>If your environment prohibits remote installation scripts, follow the manual installation procedure for the release you selected. Avoid mixing system Python packages with unrelated virtual environments.</p>
+
+        <p>Open a new terminal if the installer changed <code>PATH</code>, then verify the command:</p>
+
+        <pre><code>command -v hermes
+hermes --help</code></pre>
+
+        <p>Hermes commonly stores user state under <code>~/.hermes/</code>. That directory can contain sessions, memory, skills, logs, and provider configuration. Do not publish it or commit it to Git.</p>
+
+        <pre><code>find "$HOME/.hermes" -maxdepth 2 -type d -print 2&gt;/dev/null</code></pre>
+      </section>
+
+      <section>
+        <h2>Step 6: connect Hermes to QVAC</h2>
+
+        <p>Use Hermes' interactive model configuration so that the installed release writes its own supported configuration structure:</p>
+
+        <pre><code>hermes model</code></pre>
+
+        <p>Select a custom OpenAI-compatible endpoint and enter:</p>
+
+        <pre><code>API base URL: http://127.0.0.1:11434/v1
+API key: local-qvac
+Model name: hermes-local
+Context length: 65536</code></pre>
+
+        <p>If QVAC was started without an API-key requirement, <code>local-qvac</code> is merely a non-empty local placeholder for clients that require a value. It is not a cloud credential and must not be copied from a real account.</p>
+
+        <p>The corresponding configuration is conceptually equivalent to:</p>
+
+        <pre><code>model:
+  default: hermes-local
+  provider: custom
+  base_url: http://127.0.0.1:11434/v1</code></pre>
+
+        <p>The exact YAML structure can change. Do not replace the entire Hermes configuration with this short example: the existing file may also contain memory, channel, and skill settings.</p>
+
+        <p>Confirm the saved route without printing credential fields:</p>
+
+        <pre><code>grep -nE 'provider:|base_url:|default:' \
+  "$HOME/.hermes/config.yaml"</code></pre>
+
+        <p>The base URL should begin with <code>http://127.0.0.1:11434/v1</code>, and no cloud provider domain should appear in the active model configuration.</p>
+      </section>
+
+      <section>
+        <h2>Step 7: perform the first launch without dangerous tools</h2>
+
+        <pre><code>hermes</code></pre>
+
+        <p>Begin with a generation-only request:</p>
+
+        <pre><code>State the configured model name and base URL.
+Do not use tools and do not access the network.</code></pre>
+
+        <p>The model's answer is not authoritative. It can repeat prompt text or hallucinate configuration. The sources of truth are the Hermes configuration, QVAC request logs, and network observation.</p>
+
+        <p>Next, establish an explicit working boundary:</p>
+
+        <pre><code>Working directory: /absolute/path/hermes-local-lab
+You may read only from inbox.
+You may write only to outbox.
+Do not modify source files.
+Do not make network requests.
+First present a plan, then wait for my next instruction.</code></pre>
+
+        <p>If the agent immediately changes files, stop it. A <a class="term-link" href="glossary.html#prompt">prompt</a> influences model behavior but does not create an isolation boundary. File permissions and tool-level validation must enforce the same policy.</p>
+      </section>
+
+      <section>
+        <h2>Step 8: restrict file tools</h2>
+
+        <p>The precise skill and permission controls depend on the installed Hermes version, but the security rule does not: expose the smallest directory and the smallest set of operations required by the task.</p>
+
+        <p>The laboratory needs only these capabilities:</p>
+
+        <ul>
+          <li>read a file from the approved input directory;</li>
+          <li>list files inside the laboratory;</li>
+          <li>create a new file in <code>outbox</code>;</li>
+          <li>read and write Hermes' local memory through its dedicated interface;</li>
+          <li>request approval for anything outside those boundaries.</li>
+        </ul>
+
+        <p>Do not enable a browser, email, messaging, unrestricted shell access, or external <a class="term-link" href="glossary.html#mcp">MCP servers</a> for this test. If Hermes runs in a container, expose individual directories rather than the entire home directory:</p>
+
+        <pre><code>/host/hermes-local-lab/inbox  -&gt; /lab/inbox:ro
+/host/hermes-local-lab/outbox -&gt; /lab/outbox:rw
+/host/hermes-state            -&gt; /home/hermes/.hermes:rw</code></pre>
+
+        <p>For a native process, use a dedicated operating-system account or another isolation mechanism. Natural-language instructions remain useful, but the operating system must reject access that the agent should not have.</p>
+
+        <p>An <a class="term-link" href="glossary.html#allowlist">allowlist</a> must compare normalized absolute paths. A raw string-prefix check can be bypassed with <code>..</code>, alternate separators, or symbolic links.</p>
+
+        <pre><code>requested path
+      │
+      ▼
+resolve with realpath
+      │
+      ├── inside inbox  → read
+      ├── inside outbox → read and create
+      └── elsewhere     → deny</code></pre>
+      </section>
+
+      <section>
+        <h2>Step 9: verify the complete agent loop</h2>
+
+        <p>Give Hermes this task after replacing <code>&lt;LAB_DIR&gt;</code> with the absolute laboratory path:</p>
+
+        <pre><code>Read:
+&lt;LAB_DIR&gt;/inbox/meeting.txt
+
+Create:
+&lt;LAB_DIR&gt;/outbox/meeting-summary.md
+
+The new file must contain exactly these three sections:
+# Project
+# Decision
+# Next action
+
+Do not modify the source file. After writing the result,
+read the new file again and report its path and section names.</code></pre>
+
+        <p>Do not accept the final chat message as evidence. Inspect the filesystem independently:</p>
+
+        <pre><code>test -f "$LAB_DIR/outbox/meeting-summary.md"
+test -f "$LAB_DIR/inbox/meeting.txt"
+
+sed -n '1,80p' "$LAB_DIR/outbox/meeting-summary.md"
+
+find "$LAB_DIR" -maxdepth 2 -type f \
+  -printf '%p\n' 2&gt;/dev/null || \
+find "$LAB_DIR" -maxdepth 2 -type f -print</code></pre>
+
+        <p>The loop passes only if:</p>
+
+        <ul>
+          <li>the agent reads the source instead of inventing its contents;</li>
+          <li>the write call targets a path inside <code>outbox</code>;</li>
+          <li>exactly the expected output file is created;</li>
+          <li>the input file remains unchanged;</li>
+          <li>the agent rereads the output before completing;</li>
+          <li>QVAC logs show local model requests only.</li>
+        </ul>
+
+        <p>Record the source hash before and after a repeated run:</p>
+
+        <pre><code>sha256sum "$LAB_DIR/inbox/meeting.txt"</code></pre>
+
+        <p>A matching hash proves that this particular source file did not change. It does not prove that no file outside the laboratory was touched, which is why operating-system isolation remains important.</p>
+      </section>
+
+      <section>
+        <h2>Step 10: test persistent memory</h2>
+
+        <p><a class="term-link" href="glossary.html#memory">Agent memory</a> must be tested across independent sessions. A correct answer inside the original conversation may come from the active context rather than durable storage.</p>
+
+        <p>In the first session, store a harmless synthetic preference:</p>
+
+        <pre><code>Remember this durable preference for the test project:
+final notes must contain no more than three sections.
+Do not store file paths, personal data, or secrets.
+Confirm exactly what you sent to persistent memory.</code></pre>
+
+        <p>Exit Hermes through its normal exit command. Start a new session and ask:</p>
+
+        <pre><code>What formatting limit did I set for final notes?
+If persistent memory does not contain the answer, say so plainly.</code></pre>
+
+        <p>The test passes when the new session recovers the three-section rule from persistent storage. Do not include the answer in the retrieval question.</p>
+
+        <p>You can inspect modification times without printing all memory contents:</p>
+
+        <pre><code>find "$HOME/.hermes" -type f \
+  -printf '%TY-%Tm-%Td %TH:%TM %p\n' 2&gt;/dev/null \
+  | sort \
+  | tail -n 30</code></pre>
+
+        <p>On macOS, use its supported <code>find</code> options or file metadata tools. Do not infer the memory format from a directory name; internal storage can change between Hermes versions.</p>
+      </section>
+
+      <section>
+        <h2>Step 11: prove offline operation</h2>
+
+        <p>Run the offline test only after the complete model has been downloaded. Otherwise, a startup failure merely proves that required files were never cached.</p>
+
+        <p>Before disconnecting, confirm that:</p>
+
+        <ol>
+          <li>QVAC starts without another download;</li>
+          <li><code>/v1/models</code> returns <code>hermes-local</code>;</li>
+          <li>Hermes sends completions through QVAC;</li>
+          <li>the restricted tools can read and write laboratory files;</li>
+          <li>memory survives a Hermes restart.</li>
+        </ol>
+
+        <p>Stop Hermes and QVAC. Disable Wi-Fi and wired networking, or use a temporary network namespace or firewall policy that denies external connections while preserving loopback. Do not block <code>127.0.0.1</code>, because Hermes needs it to reach QVAC.</p>
+
+        <p>Cold-start QVAC again:</p>
+
+        <pre><code>cd /absolute/path/to/qvac-hermes
+
+qvac serve openai \
+  --config "$PWD/qvac.config.json" \
+  --host 127.0.0.1 \
+  --port 11434 \
+  --verbose</code></pre>
+
+        <p>In a second terminal:</p>
+
+        <pre><code>curl --fail http://127.0.0.1:11434/v1/models
+hermes</code></pre>
+
+        <p>Give Hermes a new task that was not completed in the earlier session:</p>
+
+        <pre><code>Create offline-check.md in the allowed outbox.
+Write this exact line: OFFLINE_ROUTE_OK
+Add a short summary of inbox/meeting.txt.
+Do not use a browser, search, URL, or external source.
+After writing the file, read it again.</code></pre>
+
+        <p>Verify the artifact independently:</p>
+
+        <pre><code>test -f "$LAB_DIR/outbox/offline-check.md"
+
+grep -F 'OFFLINE_ROUTE_OK' \
+  "$LAB_DIR/outbox/offline-check.md"
+
+sed -n '1,80p' \
+  "$LAB_DIR/outbox/offline-check.md"</code></pre>
+
+        <p>Confirm that QVAC listens only on loopback:</p>
+
+        <pre><code>ss -ltnp 2&gt;/dev/null | grep ':11434' || \
+lsof -nP -iTCP:11434 -sTCP:LISTEN</code></pre>
+
+        <p>The listening address should be <code>127.0.0.1:11434</code>, not <code>0.0.0.0:11434</code>. Disabling Wi-Fi alone may leave VPN, virtual-machine, container, or wired interfaces active. For a strict test, observe outbound connections or isolate the processes so that only loopback traffic is permitted.</p>
+
+        <aside class="note">
+          <p><strong>Acceptance criterion:</strong> after a cold restart with no external network, QVAC loads already downloaded weights, Hermes connects to <code>127.0.0.1</code>, creates and rereads the requested file through a restricted tool, and recovers the synthetic preference from local memory.</p>
+        </aside>
+      </section>
+
+      <section>
+        <h2>Automated QVAC smoke test</h2>
+
+        <p>A small script can verify the HTTP boundary before every Hermes session. It checks model discovery and an ordinary completion; the earlier raw function test is still required.</p>
+
+        <pre><code>#!/usr/bin/env bash
+set -euo pipefail
+
+base_url="${QVAC_BASE_URL:-http://127.0.0.1:11434/v1}"
+model="${QVAC_MODEL:-hermes-local}"
+
+models_json="$(curl --fail --silent --show-error \
+  "$base_url/models")"
+
+printf '%s' "$models_json" |
+  grep -F "\"id\":\"$model\"" &gt;/dev/null ||
+printf '%s' "$models_json" |
+  grep -F "\"id\": \"$model\"" &gt;/dev/null
+
+response_json="$(curl --fail --silent --show-error \
+  "$base_url/chat/completions" \
+  -H 'Content-Type: application/json' \
+  -d "{
+    \"model\": \"$model\",
+    \"messages\": [
+      {\"role\": \"user\", \"content\": \"Reply: LOCAL_OK\"}
+    ],
+    \"temperature\": 0,
+    \"max_tokens\": 32
+  }")"
+
+printf '%s' "$response_json" |
+  grep -F 'choices' &gt;/dev/null
+
+printf '%s\n' 'QVAC_HTTP_OK'</code></pre>
+
+        <p>For a maintained test, parse JSON with <code>jq</code> and validate exact fields. The two <code>grep</code> patterns are only a minimal portable check and do not validate the complete response.</p>
+      </section>
+
+      <section>
+        <h2>Troubleshooting by layer</h2>
+
+        <table>
+          <thead>
+            <tr>
+              <th>Symptom</th>
+              <th>Likely layer</th>
+              <th>First check</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td><code>qvac: command not found</code></td>
+              <td>CLI installation</td>
+              <td><code>npm prefix -g</code> and <code>PATH</code></td>
+            </tr>
+            <tr>
+              <td>Server exits while loading</td>
+              <td>Model or memory</td>
+              <td><code>qvac doctor</code>, free RAM, model identifier</td>
+            </tr>
+            <tr>
+              <td><code>/v1/models</code> returns 404</td>
+              <td>HTTP configuration</td>
+              <td>CLI help, config path, and server mode</td>
+            </tr>
+            <tr>
+              <td>Model not found</td>
+              <td>Client alias</td>
+              <td><code>hermes-local</code> must match in QVAC and Hermes</td>
+            </tr>
+            <tr>
+              <td>Chat works but tools do not</td>
+              <td>Function calling</td>
+              <td><code>"tools": true</code> and the raw curl function test</td>
+            </tr>
+            <tr>
+              <td>Hermes contacts a cloud host</td>
+              <td>Provider routing</td>
+              <td><code>provider: custom</code> and local <code>base_url</code></td>
+            </tr>
+            <tr>
+              <td>A new session forgets the rule</td>
+              <td>Persistent memory</td>
+              <td>State path, write permissions, and memory-save operation</td>
+            </tr>
+            <tr>
+              <td>Offline startup attempts a download</td>
+              <td>Model cache</td>
+              <td>Whether every model file completed downloading</td>
+            </tr>
+            <tr>
+              <td>Responses are truncated</td>
+              <td>Context or output limit</td>
+              <td><code>ctx_size</code>, active tool count, Hermes limit</td>
+            </tr>
+            <tr>
+              <td>The machine swaps heavily</td>
+              <td>Insufficient RAM</td>
+              <td>Smaller model, smaller context, fewer preloaded models</td>
+            </tr>
+          </tbody>
+        </table>
+      </section>
+
+      <section>
+        <h2>Common failure cases</h2>
+
+        <h3>The base URL is wrong</h3>
+
+        <p>The expected value in this setup includes <code>/v1</code>:</p>
+
+        <pre><code>http://127.0.0.1:11434/v1</code></pre>
+
+        <p>Some clients append <code>/v1</code> themselves. A duplicated path will appear in QVAC's HTTP log. Change one parameter at a time so that an address problem is not confused with a model or provider problem.</p>
+
+        <h3>The model alias does not match</h3>
+
+        <p>Hermes sends the key declared under <code>serve.models</code>: <code>hermes-local</code>. The longer QVAC registry identifier tells the server which weights to resolve; it is not necessarily the name that the client should send.</p>
+
+        <h3>The context is too large</h3>
+
+        <p>A configured value of 65,536 does not guarantee that the machine can allocate it efficiently. Reduce the context, expose only necessary tools, restart QVAC, and repeat the raw HTTP tests. Keep the effective limit consistent between server and client.</p>
+
+        <h3>The model prints JSON as ordinary text</h3>
+
+        <p>Text that resembles JSON is not a valid function call. Inspect the raw response. If <code>message.tool_calls</code> is absent, Hermes should not execute the text. Repairing this output with regular expressions can transform malformed model prose into unintended actions.</p>
+
+        <h3>The tool loops indefinitely</h3>
+
+        <p>Set a maximum number of agent steps and preserve the full message sequence. Verify that Hermes returns each tool result to the model with the expected role and call identifier. Give the task an explicit stopping condition: after one successful write and one verification read, finish.</p>
+
+        <h3>The first generation appears frozen</h3>
+
+        <p>A long system prompt and multiple schemas require prompt processing before output begins. Watch QVAC logs and resource use. If generation never starts, reduce the model, context, or active tool set. Do not assign a universal timeout based on one machine.</p>
+
+        <h3>Memory stores information but retrieves the wrong item</h3>
+
+        <p>Store short, atomic, unambiguous preferences rather than full conversational transcripts. Test retrieval in a fresh session without embedding the answer in the question. Never place passwords, API tokens, or confidential document content in persistent memory.</p>
+
+        <h3>The offline test passes while another route remains open</h3>
+
+        <p>A disabled browser or Wi-Fi icon does not prove network isolation. Check listening sockets and outbound connections. VPNs, container bridges, virtual interfaces, and wired adapters can remain available. Use a firewall or network namespace when the proof matters.</p>
+      </section>
+
+      <section>
+        <h2>A safer daily operating profile</h2>
+
+        <p>A local agent inherits the filesystem permissions of the account that runs it. The production boundary must therefore limit the consequences of an incorrect tool call, not merely its internet access.</p>
+
+        <ul>
+          <li>Bind QVAC to <code>127.0.0.1</code> unless remote access is explicitly required.</li>
+          <li>Do not expose the complete home directory to Hermes.</li>
+          <li>Mount or permission input data as read-only.</li>
+          <li>Use a separate directory for generated artifacts.</li>
+          <li>Prefer narrow file functions over a general-purpose shell.</li>
+          <li>Require an <a class="term-link" href="glossary.html#approval-gate">approval gate</a> for deletion, sending, publication, or access outside the working directory.</li>
+          <li>Resolve symbolic links before applying path policy.</li>
+          <li>Keep real credentials out of laboratory configuration and memory.</li>
+          <li>Record the model identifier, package versions, and configuration hash.</li>
+          <li>Back up <code>~/.hermes</code> before upgrading or changing memory storage.</li>
+        </ul>
+
+        <pre><code>sha256sum qvac.config.json
+npm list -g @qvac/cli --depth=0
+hermes --help | head -n 5</code></pre>
+
+        <p>Hermes releases may expose version information through different commands. Record only information returned by the installed build; do not invent a version string when no version flag is available.</p>
+      </section>
+
+      <section>
+        <h2>Compare local models without inventing a benchmark</h2>
+
+        <p>A valid <a class="term-link" href="glossary.html#benchmark">benchmark</a> gives every model the same prompts, function schemas, permissions, context budget, and acceptance checks. Do not compare a 4B model with one small function against a 35B model loaded with every Hermes skill.</p>
+
+        <p>Use five local tasks:</p>
+
+        <ol>
+          <li>read one file and return an exact fact;</li>
+          <li>create a file that follows a three-section schema;</li>
+          <li>select the correct function from two similar functions;</li>
+          <li>repair an argument after the path allowlist rejects it;</li>
+          <li>stop after receiving the successful result instead of calling the function again.</li>
+        </ol>
+
+        <p>For each run, record:</p>
+
+        <ul>
+          <li>the model registry identifier and context size;</li>
+          <li>the complete sanitized input;</li>
+          <li>the ordered sequence of tool calls;</li>
+          <li>whether names and JSON arguments are valid;</li>
+          <li>the number of unnecessary calls;</li>
+          <li>whether every path remained inside the boundary;</li>
+          <li>whether the filesystem result passed deterministic checks;</li>
+          <li>cold-start and warmed-run times measured on your own machine.</li>
+        </ul>
+
+        <p>A fast, persuasive answer that does not create the required file is a failed run. A model that reaches the result but repeats a dangerous call also fails. Determine the number of repetitions and pass criteria before reviewing results, and preserve raw logs. This guide intentionally reports no success percentages or latency figures because none can be honestly transferred to the reader without the original hardware, tasks, versions, and logs.</p>
+      </section>
+
+      <section>
+        <h2>Limitations of the local architecture</h2>
+
+        <ul>
+          <li><strong>Model quality.</strong> A compact local model may select tools, plan long chains, and recover from errors less reliably than a larger model.</li>
+          <li><strong>Hardware memory.</strong> Weight files are only part of consumption. The runtime needs working buffers, KV cache, Hermes memory, and operating-system capacity.</li>
+          <li><strong>Latency.</strong> Large system prompts and many function schemas make the first agent step expensive.</li>
+          <li><strong>Context.</strong> A model's advertised maximum does not prove that the selected runtime and device can use it efficiently.</li>
+          <li><strong>External tools.</strong> A local model does not make email, web search, SaaS APIs, or remote MCP servers local.</li>
+          <li><strong>Updates.</strong> CLI flags, registries, model templates, and configuration formats change. Pinning a working setup creates an upgrade responsibility.</li>
+          <li><strong>Security.</strong> A malicious local document can contain a <a class="term-link" href="glossary.html#prompt-injection">prompt injection</a>. Removing cloud access does not prevent the model from requesting a dangerous local action.</li>
+          <li><strong>Observability.</strong> Without logs, model, template, server, agent, and tool failures are difficult to distinguish.</li>
+          <li><strong>Backups.</strong> Local memory can disappear with disk failure unless it is backed up separately.</li>
+        </ul>
+
+        <p>Offline autonomy is not the same as universal usefulness. Without a network, the agent cannot retrieve current news, use remote business systems, or synchronize data. This architecture is best suited to local documents, private knowledge collections, drafting, classification, and workflows where data locality matters more than live external information.</p>
+      </section>
+
+      <section>
+        <h2>Final acceptance checklist</h2>
+
+        <ul>
+          <li><code>qvac doctor</code> recognizes an available backend.</li>
+          <li>The selected model exists in the installed QVAC registry.</li>
+          <li>The model is declared in <code>qvac.config.json</code>.</li>
+          <li><code>"tools": true</code> is enabled for that model.</li>
+          <li>QVAC listens only on <code>127.0.0.1:11434</code>.</li>
+          <li><code>/v1/models</code> returns <code>hermes-local</code>.</li>
+          <li>A direct curl request returns a structured chat completion.</li>
+          <li>The direct function test returns structured <code>tool_calls</code>.</li>
+          <li>Hermes uses the custom provider and local <code>/v1</code> URL.</li>
+          <li>Hermes can access only the laboratory directories.</li>
+          <li>The input directory is read-only at the system or container level.</li>
+          <li>Filesystem results are checked independently of the agent's claims.</li>
+          <li>Persistent memory is verified in a new session.</li>
+          <li>Both processes cold-start after external networking is disabled.</li>
+          <li>The offline task creates and rereads a new file.</li>
+          <li>No real credentials are present in configuration, prompts, logs, or memory.</li>
+        </ul>
+
+        <p>If every item passes, you have more than a local chat interface. You have a minimal reproducible personal-agent environment: QVAC serves the model, Hermes manages memory and function execution, operating-system controls restrict access, and the offline test demonstrates that the working path does not require a cloud API.</p>
+      </section>
+
+      <section>
+        <h2>Where to go next</h2>
+
+        <p>Add one specialized skill and one narrowly defined tool, then repeat the complete test suite. Avoid enabling a browser, unrestricted shell, email, and messaging at the same time: when a failure occurs, you need to know which layer violated its contract.</p>
+
+        <p>Continue with the practical material in <a href="guides.html">Agent Lab Journal guides</a>, and use the <a href="glossary.html">glossary</a> for definitions of agents, language models, context, tool calling, memory, MCP, and related engineering terms.</p>
+      </section>
+
+      <p class="back"><a class="text-link" href="guides.html">← All guides</a> · <a class="text-link" href="glossary.html">Open the glossary →</a></p>
+    </article>
+  </main>
+
+  <footer>
+    <span>Agent Lab Journal</span>
+    <span>Real experiments. Verifiable conclusions.</span>
+  </footer>
+
+  <script src="metrika.js"></script>
+  <script src="content-bridge.js?v=20260728"></script>
+</body>
+</html>

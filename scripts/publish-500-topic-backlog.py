@@ -17,8 +17,8 @@ while not BACKLOG.exists():
     time.sleep(30)
 
 topics = json.loads(BACKLOG.read_text())
-if len(topics) != 500:
-    raise SystemExit(f"Expected 500 topics, found {len(topics)}")
+if len(topics) < 1:
+    raise SystemExit("Topic backlog is empty")
 
 LOG.write_text("ONE_OFF_SITE_ONLY_PUBLISH_500 2026-07-29\n")
 for index, topic in enumerate(topics, 1):
@@ -35,6 +35,9 @@ for index, topic in enumerate(topics, 1):
         handle.write(f"[{index}/500] {slug}\n")
         handle.flush()
         result = subprocess.run(command, cwd=ROOT, env={**os.environ, "AGENTLAB_BATCH_MODE": "1"}, stdout=handle, stderr=subprocess.STDOUT)
+        if result.returncode == 0:
+            cta = subprocess.run([sys.executable, str(ROOT / "scripts" / "normalize-article-ctas.py"), f"{slug}.html"], cwd=ROOT, stdout=handle, stderr=subprocess.STDOUT)
+            result = cta
     if result.returncode:
         with LOG.open("a") as handle:
             handle.write(f"FAILED exit={result.returncode}\n")

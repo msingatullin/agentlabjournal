@@ -1,0 +1,454 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Миграция состояния AI-агента без потери незавершённых задач — Agent Lab Journal</title>
+  <meta name="description" content="Практическое руководство по версионированию состояния AI-агента, преобразованию старых данных, проверке незавершённых задач и безопасному откату.">
+  <link rel="canonical" href="https://agentlabjournal.online/agent-state-migration.html">
+  <link rel="stylesheet" href="style.css">
+  <link rel="stylesheet" href="reading.css">
+
+  <meta property="og:type" content="article">
+  <meta property="og:locale" content="ru_RU">
+  <meta property="og:site_name" content="Agent Lab Journal">
+  <meta property="og:title" content="Миграция состояния AI-агента без потери незавершённых задач">
+  <meta property="og:description" content="Как версионировать состояние агента, преобразовывать старые данные, сохранять незавершённую работу и выполнять безопасный откат.">
+  <meta property="og:url" content="https://agentlabjournal.online/agent-state-migration.html">
+
+  <meta name="twitter:card" content="summary">
+  <meta name="twitter:title" content="Миграция состояния AI-агента без потери незавершённых задач">
+  <meta name="twitter:description" content="Практическая схема миграции памяти, сообщений и инструментальных вызовов с проверкой и откатом.">
+
+  <meta name="reading-meta" content="Продвинутый уровень · до 10 минут">
+  <meta property="article:section" content="Инженерия AI-агентов">
+
+  <script type="application/ld+json">
+  {
+    "@context": "https://schema.org",
+    "@type": "TechArticle",
+    "headline": "Миграция состояния AI-агента без потери незавершённых задач",
+    "description": "Практическое руководство по версионированию состояния AI-агента, преобразованию старых данных, проверке незавершённых задач и безопасному откату.",
+    "inLanguage": "ru-RU",
+    "proficiencyLevel": "Advanced",
+    "timeRequired": "PT10M",
+    "mainEntityOfPage": {
+      "@type": "WebPage",
+      "@id": "https://agentlabjournal.online/agent-state-migration.html"
+    },
+    "publisher": {
+      "@type": "Organization",
+      "name": "Agent Lab Journal",
+      "url": "https://agentlabjournal.online/"
+    }
+  }
+  </script>
+</head>
+<body>
+  <header class="site-header">
+    <nav aria-label="Основная навигация">
+      <a href="index.html">Agent Lab Journal</a>
+      <a href="guides.html">Руководства</a>
+      <a href="glossary.html">Глоссарий</a>
+    </nav>
+  </header>
+
+  <main>
+    <article>
+      <header class="article-header">
+        <p class="reading-meta">Продвинутый уровень · до 10 минут · практическое руководство</p>
+        <h1>Миграция состояния AI-агента без потери незавершённых задач</h1>
+        <p class="lead">Сохранённое состояние агента — это не просто история сообщений. В нём могут находиться планы, ожидающие подтверждения действия, результаты инструментов, идентификаторы повторных попыток и незавершённые задачи. При изменении схемы памяти или набора инструментов такое состояние необходимо преобразовать так, чтобы агент не повторил уже выполненное действие и не потерял ещё не выполненное.</p>
+      </header>
+
+      <section id="problem">
+        <h2>Почему обычного обновления схемы недостаточно</h2>
+        <p>Рассмотрим <a href="glossary.html">чекпоинт</a> — сохранённый снимок состояния, из которого агент продолжает выполнение. Новая версия приложения может прочитать его JSON, но всё равно неправильно интерпретировать данные.</p>
+        <p>Например, старая версия хранила вызов инструмента как <code>{"tool":"send","args":{...}}</code>, а новая ожидает <code>tool_call.name</code>, <code>tool_call.input</code> и статус выполнения. Если просто переименовать поля, останется неизвестным главное: был ли вызов уже отправлен во внешнюю систему. Повторный запуск способен продублировать необратимое действие.</p>
+        <p>Поэтому миграция должна сохранять три разных аспекта:</p>
+        <ul>
+          <li><strong>структуру</strong> — новая версия может декодировать состояние;</li>
+          <li><strong>смысл</strong> — планы, сообщения и результаты не меняют значения;</li>
+          <li><strong>прогресс</strong> — выполненные шаги не запускаются повторно, а ожидающие не исчезают.</li>
+        </ul>
+      </section>
+
+      <section id="target-model">
+        <h2>1. Определите контракт состояния</h2>
+        <p>Версия состояния должна быть отдельна от версии приложения. Один релиз может не менять хранилище, а другой — выполнить несколько последовательных преобразований.</p>
+        <p>Ниже приведён пример целевой оболочки состояния. Это иллюстрация контракта, а не готовый формат конкретного фреймворка.</p>
+        <pre><code>{
+  "schema_version": 3,
+  "agent_version": "2.4.0",
+  "checkpoint_id": "cp_example_001",
+  "revision": 17,
+  "status": "suspended",
+  "messages": [],
+  "memory": {},
+  "tasks": [],
+  "tool_calls": [],
+  "resume": {
+    "next_step_id": "step_8",
+    "reason": "awaiting_approval"
+  },
+  "migration": {
+    "source_version": 2,
+    "applied": ["v2_to_v3"],
+    "migrated_at": "2026-01-01T00:00:00Z"
+  }
+}</code></pre>
+        <p>Поле <code>schema_version</code> управляет миграциями. <code>revision</code> используется для оптимистической блокировки. <code>checkpoint_id</code> остаётся стабильным идентификатором логического состояния, а каждая физическая копия получает собственный идентификатор записи.</p>
+        <p>Не смешивайте статус задачи и статус агента. Агент может быть остановлен, пока одна задача завершена, другая ожидает подтверждения, а третья заблокирована результатом инструмента.</p>
+      </section>
+
+      <section id="invariants">
+        <h2>2. Зафиксируйте инварианты до написания преобразователя</h2>
+        <p>Инварианты описывают не форму JSON, а свойства, которые нельзя потерять. Для незавершённых задач полезен следующий минимальный набор:</p>
+        <ol>
+          <li>Каждая задача имеет стабильный <code>task_id</code>.</li>
+          <li>Каждый шаг имеет стабильный <code>step_id</code> и явный статус.</li>
+          <li>Статусы принадлежат закрытому набору: <code>pending</code>, <code>running</code>, <code>waiting</code>, <code>succeeded</code>, <code>failed</code>, <code>cancelled</code>, <code>unknown</code>.</li>
+          <li>Для внешнего действия хранится ключ идемпотентности.</li>
+          <li>Результат инструмента связан с конкретным вызовом через <code>call_id</code>.</li>
+          <li>Неоднозначное состояние никогда автоматически не считается невыполненным.</li>
+          <li>После миграции сохраняется исходная копия, пригодная для отката.</li>
+        </ol>
+        <p>Особенно важен статус <code>unknown</code>. Если процесс остановился после отправки запроса, но до записи ответа, нельзя безопасно выбирать между <code>pending</code> и <code>succeeded</code>. Такое действие следует отправить на сверку или ручное разрешение.</p>
+      </section>
+
+      <section id="migration-chain">
+        <h2>3. Используйте цепочку малых миграций</h2>
+        <p>Преобразователь должен поддерживать переход только между соседними версиями: <code>v1 → v2 → v3</code>. Это упрощает проверку, повторное использование и расследование ошибок.</p>
+        <pre><code>from copy import deepcopy
+
+CURRENT_SCHEMA = 3
+
+def migrate(state: dict) -&gt; dict:
+    result = deepcopy(state)
+    version = result.get("schema_version", 1)
+
+    while version &lt; CURRENT_SCHEMA:
+        fn = MIGRATIONS.get(version)
+        if fn is None:
+            raise ValueError(f"Нет миграции из версии {version}")
+        result = fn(result)
+        next_version = result.get("schema_version")
+        if next_version != version + 1:
+            raise ValueError("Миграция нарушила последовательность версий")
+        version = next_version
+
+    if version != CURRENT_SCHEMA:
+        raise ValueError(f"Неподдерживаемая версия {version}")
+
+    validate_state(result)
+    return result
+
+MIGRATIONS = {
+    1: migrate_v1_to_v2,
+    2: migrate_v2_to_v3,
+}</code></pre>
+        <p>Функция получает копию объекта и не изменяет исходную запись. Запись результата в хранилище выполняется отдельно — только после полной проверки.</p>
+      </section>
+
+      <section id="task-conversion">
+        <h2>4. Преобразуйте незавершённую работу явно</h2>
+        <p>Предположим, версия 2 хранила плоский план и индекс следующего шага:</p>
+        <pre><code>{
+  "schema_version": 2,
+  "plan": ["получить данные", "подготовить ответ", "отправить ответ"],
+  "next_step": 1
+}</code></pre>
+        <p>Пример преобразования в явные задачи:</p>
+        <pre><code>import hashlib
+
+def stable_step_id(checkpoint_id: str, index: int, text: str) -&gt; str:
+    raw = f"{checkpoint_id}:{index}:{text}".encode("utf-8")
+    return "step_" + hashlib.sha256(raw).hexdigest()[:16]
+
+def migrate_v2_to_v3(state: dict) -&gt; dict:
+    checkpoint_id = state["checkpoint_id"]
+    plan = state.pop("plan", [])
+    next_step = state.pop("next_step", 0)
+
+    steps = []
+    for index, text in enumerate(plan):
+        if index &lt; next_step:
+            status = "succeeded"
+        elif index == next_step:
+            status = "pending"
+        else:
+            status = "waiting"
+
+        steps.append({
+            "step_id": stable_step_id(checkpoint_id, index, text),
+            "position": index,
+            "instruction": text,
+            "status": status
+        })
+
+    state["tasks"] = [{
+        "task_id": f"task_{checkpoint_id}",
+        "status": "pending" if steps else "succeeded",
+        "steps": steps
+    }]
+    state["resume"] = {
+        "next_step_id": steps[next_step]["step_id"]
+        if next_step &lt; len(steps) else None,
+        "reason": "migrated_checkpoint"
+    }
+    state["schema_version"] = 3
+    state.setdefault("migration", {}).setdefault("applied", []).append(
+        "v2_to_v3"
+    )
+    return state</code></pre>
+        <p>Такое правило допустимо только при известной семантике старого <code>next_step</code>. Если индекс означал «последний запущенный шаг», а не «следующий шаг», алгоритм должен быть другим. Не угадывайте смысл по названию поля: зафиксируйте его по коду старой версии и имеющимся внутренним спецификациям.</p>
+      </section>
+
+      <section id="tools">
+        <h2>5. Отделите миграцию данных от совместимости инструментов</h2>
+        <p>Старое имя инструмента нельзя безусловно заменить новым. Сначала классифицируйте изменение:</p>
+        <ul>
+          <li><strong>переименование без изменения семантики</strong> — допустима таблица соответствий;</li>
+          <li><strong>изменение аргументов</strong> — нужен адаптер и повторная валидация;</li>
+          <li><strong>изменение побочных эффектов</strong> — требуется ручное решение или специальный совместимый обработчик;</li>
+          <li><strong>удаление инструмента</strong> — задача переводится в заблокированное состояние, а не удаляется.</li>
+        </ul>
+        <pre><code>TOOL_ALIASES = {
+    "knowledge.lookup": {
+        "new_name": "search_internal",
+        "safe_to_resume": True
+    },
+    "message.send": {
+        "new_name": "deliver_message",
+        "safe_to_resume": False
+    }
+}
+
+def migrate_tool_call(call: dict) -&gt; dict:
+    mapping = TOOL_ALIASES.get(call["name"])
+    if mapping is None:
+        return {**call, "status": "blocked",
+                "block_reason": "tool_not_available"}
+
+    migrated = {**call, "name": mapping["new_name"]}
+
+    if not mapping["safe_to_resume"] and call["status"] == "running":
+        migrated["status"] = "unknown"
+        migrated["requires_reconciliation"] = True
+
+    return migrated</code></pre>
+        <p>Для операции с внешним эффектом сохраняйте исходный <code>call_id</code> и ключ идемпотентности. Новый рантайм не должен генерировать их заново при возобновлении.</p>
+      </section>
+
+      <section id="messages">
+        <h2>6. Не переписывайте историю сообщений без необходимости</h2>
+        <p>Сообщения часто участвуют в аудите и воспроизведении решений. Безопаснее сохранить исходное содержимое и добавить нормализованное представление рядом:</p>
+        <pre><code>{
+  "message_id": "msg_example_14",
+  "original": {
+    "role": "function",
+    "name": "knowledge.lookup",
+    "content": "{\"items\":[]}"
+  },
+  "normalized": {
+    "role": "tool",
+    "tool_call_id": "call_example_7",
+    "content": {"items": []}
+  }
+}</code></pre>
+        <p>Если новый формат не способен представить старое сообщение без потерь, пометьте его как архивное и исключите из автоматической подачи модели. Не удаляйте его из аудиторского следа.</p>
+      </section>
+
+      <section id="safe-rollout">
+        <h2>7. Выполните миграцию через теневую запись</h2>
+        <p>Не обновляйте активный чекпоинт на месте. Создайте новую запись, свяжите её с исходной и переключите указатель только после проверок.</p>
+        <pre><code>BEGIN;
+
+SELECT checkpoint_id, revision, payload
+FROM agent_checkpoints
+WHERE checkpoint_id = :checkpoint_id
+FOR UPDATE;
+
+INSERT INTO agent_checkpoint_versions (
+    checkpoint_id,
+    source_revision,
+    schema_version,
+    payload,
+    migration_status
+) VALUES (
+    :checkpoint_id,
+    :expected_revision,
+    :target_schema,
+    :migrated_payload,
+    'validated'
+);
+
+UPDATE agent_checkpoints
+SET active_revision = :new_revision,
+    revision = revision + 1
+WHERE checkpoint_id = :checkpoint_id
+  AND revision = :expected_revision;
+
+-- Приложение обязано проверить, что UPDATE изменил ровно одну строку.
+COMMIT;</code></pre>
+        <p>Это пример транзакционной последовательности. Названия таблиц и синтаксис блокировки необходимо адаптировать к используемой СУБД.</p>
+        <p>Безопасный порядок развёртывания:</p>
+        <ol>
+          <li>Развернуть код, который читает старую и новую схемы, но пишет старую.</li>
+          <li>Запустить пробное преобразование без переключения активных записей.</li>
+          <li>Проверить отчёт и изолировать неоднозначные состояния.</li>
+          <li>Включить запись новой схемы для ограниченной доли новых чекпоинтов.</li>
+          <li>Мигрировать сохранённые состояния пакетами с ограничением нагрузки.</li>
+          <li>Переключить чтение на новую схему.</li>
+          <li>Удалять поддержку старого формата только после завершения окна отката.</li>
+        </ol>
+      </section>
+
+      <section id="commands">
+        <h2>8. Запускайте преобразователь в безопасном режиме</h2>
+        <p>Команды ниже показывают рекомендуемый интерфейс условной утилиты <code>agent-state-migrate</code>. Это пример, а не указание на существующий пакет.</p>
+        <pre><code># Только анализ: без записи и возобновления задач
+agent-state-migrate plan \
+  --from-schema 2 \
+  --to-schema 3 \
+  --read-only \
+  --report ./migration-report.json
+
+# Ограниченный пакет с сохранением исходных версий
+agent-state-migrate apply \
+  --from-schema 2 \
+  --to-schema 3 \
+  --batch-size 100 \
+  --preserve-source \
+  --no-resume \
+  --report ./migration-applied.json</code></pre>
+        <p>Утилита не должна принимать секреты в аргументах командной строки. Подключение к хранилищу следует получать из штатной конфигурации окружения или менеджера секретов проекта. Отчёт не должен содержать тексты сообщений, аргументы инструментов и другие чувствительные поля — достаточно идентификаторов, версий, статусов и кодов ошибок.</p>
+      </section>
+
+      <section id="verification">
+        <h2>Проверка результата</h2>
+        <p>Проверяйте миграцию до того, как разрешить агентам продолжить работу.</p>
+
+        <h3>Структурная проверка</h3>
+        <ul>
+          <li>У каждого состояния задана ожидаемая версия схемы.</li>
+          <li>Обязательные поля присутствуют и имеют корректные типы.</li>
+          <li>Все ссылки <code>task_id</code>, <code>step_id</code> и <code>call_id</code> разрешаются.</li>
+          <li>Нет неизвестных статусов и инструментов без явной блокировки.</li>
+        </ul>
+
+        <h3>Проверка инвариантов</h3>
+        <pre><code>def validate_progress(before: dict, after: dict) -&gt; None:
+    old_completed = count_completed_steps(before)
+    new_completed = count_completed_steps(after)
+
+    if new_completed &lt; old_completed:
+        raise ValueError("Потеряна информация о завершённых шагах")
+
+    if duplicate_ids(after["tasks"]):
+        raise ValueError("Обнаружены повторяющиеся идентификаторы")
+
+    for call in after.get("tool_calls", []):
+        if call["status"] == "running" and not call.get("idempotency_key"):
+            raise ValueError("Нельзя возобновить вызов без ключа идемпотентности")</code></pre>
+
+        <h3>Сверка количеств</h3>
+        <p>Отчёт должен сопоставлять количество входных и выходных объектов:</p>
+        <pre><code>прочитано состояний:      N
+создано новых версий:     N
+переключено указателей:   N - blocked
+заблокировано:            blocked
+потеряно задач:           0
+потеряно сообщений:       0
+неоднозначных вызовов:    unknown</code></pre>
+        <p>Здесь буквы обозначают вычисляемые значения, а не фактические результаты запуска. Успех определяется не заранее заданным числом, а равенствами и нулевыми потерями.</p>
+
+        <h3>Проверка возобновления</h3>
+        <p>На копии состояния запустите рантайм в режиме без внешних эффектов. Он должен выбрать ровно тот <code>next_step_id</code>, который записан в секции <code>resume</code>. Любая попытка выполнить шаг со статусом <code>succeeded</code> считается ошибкой миграции или планировщика.</p>
+      </section>
+
+      <section id="rollback">
+        <h2>Безопасный откат</h2>
+        <p>Откат схемы и откат выполнения — разные операции. Если агент уже продолжил работу на новой версии, простое переключение на старый снимок способно повторить завершённые действия.</p>
+        <p>До возобновления задач откат выполняется переключением активного указателя на сохранённую исходную версию:</p>
+        <pre><code>BEGIN;
+
+UPDATE agent_checkpoints
+SET active_revision = :source_revision,
+    revision = revision + 1
+WHERE checkpoint_id = :checkpoint_id
+  AND active_revision = :migrated_revision
+  AND revision = :expected_revision;
+
+-- Продолжить только при изменении ровно одной строки.
+COMMIT;</code></pre>
+        <p>После возобновления сначала остановите диспетчер задач и запретите новые инструментальные вызовы. Затем сопоставьте журнал выполнения с исходным состоянием. Уже выполненные шаги необходимо перенести вперёд компенсирующей миграцией; откатывать указатель назад без этой сверки нельзя.</p>
+        <p>Практическое правило: миграция может быть обратимой на уровне данных, но внешний побочный эффект обычно не обратим автоматически.</p>
+      </section>
+
+      <section id="errors">
+        <h2>Типовые ошибки</h2>
+        <dl>
+          <dt>Версия определяется по наличию поля</dt>
+          <dd>Эвристика ломается на частично записанных и промежуточных объектах. Храните явный номер схемы и отклоняйте неподдерживаемые значения.</dd>
+
+          <dt>Все состояния <code>running</code> превращаются в <code>pending</code></dt>
+          <dd>Это провоцирует повтор инструментального вызова. Используйте <code>unknown</code> и процедуру сверки.</dd>
+
+          <dt>Идентификаторы генерируются случайно при каждой попытке</dt>
+          <dd>Повторный запуск создаёт другую структуру. Преобразователь должен быть детерминированным или сохранять однажды созданное соответствие.</dd>
+
+          <dt>Миграция одновременно преобразует и возобновляет задачу</dt>
+          <dd>Ошибка становится трудно локализуемой. Сначала записывайте и проверяйте новое состояние, затем отдельно разрешайте выполнение.</dd>
+
+          <dt>Обновление выполняется на месте</dt>
+          <dd>Частичный сбой оставляет единственную копию непригодной. Используйте теневую версию и атомарное переключение указателя.</dd>
+
+          <dt>Старые сообщения безусловно отправляются новой модели</dt>
+          <dd>Архивные роли и инструментальные ответы могут не соответствовать новому протоколу. Нормализуйте их либо исключайте из рабочего контекста, сохраняя для аудита.</dd>
+
+          <dt>Откат проверяется только на схеме</dt>
+          <dd>После продолжения выполнения старый чекпоинт уже не отражает реальный мир. Нужна сверка внешних действий и журнала вызовов.</dd>
+        </dl>
+      </section>
+
+      <section id="limitations">
+        <h2>Ограничения</h2>
+        <ul>
+          <li>Нельзя автоматически восстановить смысл поля, если старая версия не документировала его семантику.</li>
+          <li>Нельзя гарантировать отсутствие повторного внешнего действия без идемпотентности, журнала вызовов или API сверки на стороне инструмента.</li>
+          <li>Изменение модели может повлиять на дальнейший план даже при идеально перенесённой истории.</li>
+          <li>Миграция не исправляет уже повреждённые или противоречивые чекпоинты; их следует помещать в карантин.</li>
+          <li>Длительное хранение исходных снимков увеличивает объём данных и должно соответствовать правилам доступа и удаления проекта.</li>
+          <li>Между разными движками оркестрации может не существовать полного соответствия статусов, событий и правил возобновления.</li>
+        </ul>
+      </section>
+
+      <section id="checklist">
+        <h2>Итоговый контрольный список</h2>
+        <ol>
+          <li>Версия схемы хранится явно и отдельно от версии приложения.</li>
+          <li>Для задач, шагов и вызовов заданы стабильные идентификаторы.</li>
+          <li>Инварианты прогресса проверяются программно.</li>
+          <li>Миграции последовательны, детерминированы и не изменяют исходную запись.</li>
+          <li>Неоднозначные внешние вызовы получают статус <code>unknown</code>.</li>
+          <li>Преобразование, переключение состояния и возобновление разделены.</li>
+          <li>Запись защищена транзакцией и проверкой ревизии.</li>
+          <li>Исходный чекпоинт сохраняется на всё окно отката.</li>
+          <li>Отчёты не раскрывают содержимое памяти и аргументы инструментов.</li>
+          <li>Откат после возобновления включает сверку уже выполненных действий.</li>
+        </ol>
+        <p>Главный критерий успешной миграции — не то, что новая версия смогла прочитать JSON. Успех означает, что агент продолжает ровно с безопасной точки, сохраняя завершённую работу, блокируя неоднозначные действия и оставляя проверяемый путь назад.</p>
+      </section>
+
+      <footer class="article-footer">
+        <p>Другие практические материалы собраны в разделе <a href="guides.html">руководств</a>. Определения терминов доступны в <a href="glossary.html">глоссарии</a>.</p>
+      </footer>
+    </article>
+  </main>
+
+  <footer class="site-footer">
+    <p>Agent Lab Journal</p>
+  </footer>
+</body>
+</html>

@@ -1,0 +1,413 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Как тестировать согласование возможностей между MCP-клиентом и сервером — Agent Lab Journal</title>
+  <meta name="description" content="Практическое руководство по контрактным тестам MCP: инициализация, выбор версии протокола, согласование возможностей, несовместимые конфигурации и проверки для stdio и Streamable HTTP.">
+  <link rel="canonical" href="https://agentlabjournal.online/mcp-capability-negotiation-tests.html">
+  <link rel="stylesheet" href="style.css">
+  <link rel="stylesheet" href="reading.css">
+
+  <meta property="og:type" content="article">
+  <meta property="og:locale" content="ru_RU">
+  <meta property="og:site_name" content="Agent Lab Journal">
+  <meta property="og:title" content="Как тестировать согласование возможностей между MCP-клиентом и сервером">
+  <meta property="og:description" content="Набор контрактных тестов для инициализации MCP, выбора версии протокола и безопасной обработки несовместимых возможностей.">
+  <meta property="og:url" content="https://agentlabjournal.online/mcp-capability-negotiation-tests.html">
+
+  <meta name="twitter:card" content="summary">
+  <meta name="twitter:title" content="Как тестировать согласование возможностей между MCP-клиентом и сервером">
+  <meta name="twitter:description" content="Практические контрактные тесты MCP для версий протокола, capabilities и несовместимых конфигураций.">
+
+  <script type="application/ld+json">
+  {
+    "@context": "https://schema.org",
+    "@type": "Article",
+    "headline": "Как тестировать согласование возможностей между MCP-клиентом и сервером",
+    "description": "Практическое руководство по контрактным тестам MCP: инициализация, выбор версии протокола, согласование возможностей и обработка несовместимых конфигураций.",
+    "inLanguage": "ru",
+    "mainEntityOfPage": {
+      "@type": "WebPage",
+      "@id": "https://agentlabjournal.online/mcp-capability-negotiation-tests.html"
+    },
+    "url": "https://agentlabjournal.online/mcp-capability-negotiation-tests.html",
+    "publisher": {
+      "@type": "Organization",
+      "name": "Agent Lab Journal",
+      "url": "https://agentlabjournal.online/"
+    },
+    "articleSection": "Инженерия AI-агентов",
+    "timeRequired": "PT10M",
+    "proficiencyLevel": "Advanced"
+  }
+  </script>
+</head>
+<body>
+  <header class="site-header">
+    <nav aria-label="Основная навигация">
+      <a href="index.html">Agent Lab Journal</a>
+      <a href="guides.html">Гайды</a>
+      <a href="glossary.html">Глоссарий</a>
+    </nav>
+  </header>
+
+  <main>
+    <article>
+      <header class="article-header">
+        <p class="eyebrow">Продвинутый практикум</p>
+        <h1>Как тестировать согласование возможностей между MCP-клиентом и сервером</h1>
+        <div class="reading-meta" aria-label="Информация о материале">
+          <span>До 10 минут</span>
+          <span>Продвинутый уровень</span>
+          <span>Результат: матрица контрактных тестов</span>
+        </div>
+        <p class="lead">Успешное соединение еще не означает совместимость. Клиент может принять версию протокола, но затем вызвать не объявленный сервером метод; сервер — отправить запрос, для которого клиент не заявил поддержку; HTTP-прокси — удалить заголовок с согласованной версией. Контрактные тесты должны обнаруживать такие расхождения до развертывания.</p>
+      </header>
+
+      <section>
+        <h2>Что именно требуется согласовать</h2>
+        <p><a href="glossary.html#mcp">Model Context Protocol (MCP)</a> разделяет обязательный базовый протокол и необязательные возможности. Инициализация устанавливает три части контракта:</p>
+        <ol>
+          <li>версию протокола, используемую в соединении;</li>
+          <li>возможности клиента, например <code>roots</code>, <code>sampling</code> или <code>elicitation</code>;</li>
+          <li>возможности сервера, например <code>tools</code>, <code>resources</code>, <code>prompts</code>, <code>logging</code> и <code>completions</code>.</li>
+        </ol>
+        <p>Наличие верхнеуровневой возможности и ее подфункции — разные утверждения. Например, <code>"resources": {}</code> разрешает операции с ресурсами, но не подтверждает подписки. Для них требуется <code>"resources": {"subscribe": true}</code>. Аналогично, <code>tools.listChanged</code> сообщает о поддержке уведомлений об изменении списка, а не просто о наличии инструментов.</p>
+        <aside class="callout">
+          <p><strong>Правило контракта:</strong> метод разрешен не потому, что он известен SDK, а потому, что соответствующая возможность объявлена другой стороной и поддерживается выбранной версией протокола.</p>
+        </aside>
+      </section>
+
+      <section>
+        <h2>Шаг 1. Зафиксируйте политику совместимости</h2>
+        <p>Не начинайте с сетевого теста. Сначала представьте политику клиента как данные. Ниже — пример, а не требование спецификации:</p>
+        <pre><code>{
+  "supportedProtocolVersions": [
+    "2025-11-25",
+    "2025-06-18"
+  ],
+  "requiredServerCapabilities": [
+    "tools"
+  ],
+  "optionalServerCapabilities": [
+    "resources",
+    "resources.subscribe",
+    "tools.listChanged"
+  ]
+}</code></pre>
+        <p>Разделение обязательных и необязательных возможностей предотвращает две крайности: запуск заведомо неработоспособной сессии и отказ из-за функции, без которой приложение умеет работать.</p>
+
+        <table>
+          <thead>
+            <tr>
+              <th>Условие</th>
+              <th>Ожидаемое решение клиента</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td>Версия ответа входит в поддерживаемый список</td>
+              <td>Принять ее как версию сессии</td>
+            </tr>
+            <tr>
+              <td>Версия ответа не поддерживается</td>
+              <td>Не отправлять <code>notifications/initialized</code>, закрыть соединение</td>
+            </tr>
+            <tr>
+              <td>Нет обязательной возможности</td>
+              <td>Завершить запуск с диагностикой</td>
+            </tr>
+            <tr>
+              <td>Нет необязательной возможности</td>
+              <td>Отключить зависимую функцию</td>
+            </tr>
+            <tr>
+              <td>Подфункция явно равна <code>false</code> или отсутствует</td>
+              <td>Не использовать подфункцию</td>
+            </tr>
+            <tr>
+              <td>Присутствует неизвестное поле</td>
+              <td>Не падать; сохранить совместимость с расширяемой схемой</td>
+            </tr>
+          </tbody>
+        </table>
+      </section>
+
+      <section>
+        <h2>Шаг 2. Проверьте форму и порядок инициализации</h2>
+        <p>Первым обычным взаимодействием должен быть запрос <code>initialize</code>. Клиент передает поддерживаемую версию, свои capabilities и <code>clientInfo</code>. После успешного ответа он отправляет уведомление <code>notifications/initialized</code>.</p>
+        <pre><code>{
+  "jsonrpc": "2.0",
+  "id": 1,
+  "method": "initialize",
+  "params": {
+    "protocolVersion": "2025-11-25",
+    "capabilities": {
+      "roots": {
+        "listChanged": true
+      }
+    },
+    "clientInfo": {
+      "name": "contract-test-client",
+      "version": "0.0.0"
+    }
+  }
+}</code></pre>
+        <p>Имена и версии в этом фрагменте — тестовые значения. Они не обозначают существующий продукт.</p>
+
+        <p>Зафиксируйте в тестовом транспорте все исходящие сообщения и проверьте:</p>
+        <ol>
+          <li><code>initialize</code> отправлен раньше прикладных запросов;</li>
+          <li>идентификатор ответа совпадает с идентификатором запроса;</li>
+          <li>ответ содержит строковый <code>protocolVersion</code>, объект <code>capabilities</code> и корректный <code>serverInfo</code>;</li>
+          <li><code>notifications/initialized</code> появляется только после полной валидации ответа;</li>
+          <li>при ошибке, тайм-ауте или несовместимой версии уведомление не отправляется.</li>
+        </ol>
+      </section>
+
+      <section>
+        <h2>Шаг 3. Вынесите решение в чистую функцию</h2>
+        <p>Сетевой код трудно покрыть всей матрицей. Практичнее отдельно тестировать функцию, которая превращает ответ сервера в решение: принять соединение, включить ограниченный режим или отказать.</p>
+        <pre><code>// negotiation.mjs — пример
+function hasCapability(capabilities, path) {
+  let value = capabilities;
+
+  for (const part of path.split(".")) {
+    if (value === null || typeof value !== "object" ||
+        !Object.prototype.hasOwnProperty.call(value, part)) {
+      return false;
+    }
+    value = value[part];
+  }
+
+  return value !== false && value !== undefined;
+}
+
+export function negotiate(policy, initializeResult) {
+  if (!policy.supportedProtocolVersions.includes(
+    initializeResult.protocolVersion
+  )) {
+    return {
+      ok: false,
+      reason: "unsupported_protocol_version"
+    };
+  }
+
+  const capabilities = initializeResult.capabilities ?? {};
+  const missing = policy.requiredServerCapabilities.filter(
+    capability =&gt; !hasCapability(capabilities, capability)
+  );
+
+  if (missing.length &gt; 0) {
+    return {
+      ok: false,
+      reason: "missing_required_capabilities",
+      missing
+    };
+  }
+
+  return {
+    ok: true,
+    protocolVersion: initializeResult.protocolVersion,
+    enabledOptionalCapabilities:
+      policy.optionalServerCapabilities.filter(
+        capability =&gt; hasCapability(capabilities, capability)
+      )
+  };
+}</code></pre>
+        <p>Эта функция демонстрирует архитектуру теста, но не заменяет официальную схему MCP. В рабочем коде сначала валидируйте типы ответа, а уже затем применяйте продуктовую политику.</p>
+      </section>
+
+      <section>
+        <h2>Шаг 4. Составьте минимальную матрицу контрактных тестов</h2>
+        <p>Для воспроизводимости можно использовать встроенный в Node.js модуль <code>node:test</code>. Команда не устанавливает пакеты и не обращается к сети:</p>
+        <pre><code>node --test negotiation.test.mjs</code></pre>
+
+        <pre><code>// negotiation.test.mjs — пример
+import test from "node:test";
+import assert from "node:assert/strict";
+import { negotiate } from "./negotiation.mjs";
+
+const policy = {
+  supportedProtocolVersions: ["2025-11-25", "2025-06-18"],
+  requiredServerCapabilities: ["tools"],
+  optionalServerCapabilities: [
+    "resources",
+    "resources.subscribe",
+    "tools.listChanged"
+  ]
+};
+
+test("принимает поддерживаемую версию и обязательную capability", () =&gt; {
+  const result = negotiate(policy, {
+    protocolVersion: "2025-11-25",
+    capabilities: { tools: {} },
+    serverInfo: { name: "fixture", version: "0.0.0" }
+  });
+
+  assert.equal(result.ok, true);
+  assert.equal(result.protocolVersion, "2025-11-25");
+});
+
+test("отклоняет неизвестную клиенту версию", () =&gt; {
+  const result = negotiate(policy, {
+    protocolVersion: "2099-01-01",
+    capabilities: { tools: {} },
+    serverInfo: { name: "fixture", version: "0.0.0" }
+  });
+
+  assert.deepEqual(result, {
+    ok: false,
+    reason: "unsupported_protocol_version"
+  });
+});
+
+test("отклоняет ответ без обязательной capability", () =&gt; {
+  const result = negotiate(policy, {
+    protocolVersion: "2025-11-25",
+    capabilities: { resources: {} },
+    serverInfo: { name: "fixture", version: "0.0.0" }
+  });
+
+  assert.deepEqual(result, {
+    ok: false,
+    reason: "missing_required_capabilities",
+    missing: ["tools"]
+  });
+});
+
+test("не включает subscribe по одному наличию resources", () =&gt; {
+  const result = negotiate(policy, {
+    protocolVersion: "2025-11-25",
+    capabilities: {
+      tools: {},
+      resources: {}
+    },
+    serverInfo: { name: "fixture", version: "0.0.0" }
+  });
+
+  assert.equal(result.ok, true);
+  assert.deepEqual(result.enabledOptionalCapabilities, ["resources"]);
+});
+
+test("переносит неизвестные поля без ошибки", () =&gt; {
+  const result = negotiate(policy, {
+    protocolVersion: "2025-11-25",
+    capabilities: {
+      tools: {},
+      "com.example/future": { mode: "fixture" }
+    },
+    serverInfo: {
+      name: "fixture",
+      version: "0.0.0",
+      extraField: true
+    }
+  });
+
+  assert.equal(result.ok, true);
+});</code></pre>
+
+        <p>Добавьте еще четыре интеграционных сценария на уровне транспорта:</p>
+        <ul>
+          <li>тайм-аут ответа на <code>initialize</code> приводит к отмене ожидания и закрытию транспорта;</li>
+          <li>JSON-RPC error не интерпретируется как успешный результат;</li>
+          <li>серверный запрос, зависящий от не объявленной клиентом capability, отклоняется предсказуемо;</li>
+          <li>прикладной метод не отправляется до завершения рукопожатия.</li>
+        </ul>
+      </section>
+
+      <section>
+        <h2>Шаг 5. Отдельно протестируйте Streamable HTTP</h2>
+        <p>Тесты JSON-RPC не обнаружат ошибку reverse proxy или HTTP-адаптера. Для HTTP-транспорта проверьте как минимум заголовки, тип ответа и идентификатор сессии, если сервер его выдает.</p>
+        <p>После инициализации запросы должны использовать согласованную версию в заголовке <code>MCP-Protocol-Version</code>. Не подставляйте автоматически последнюю известную клиенту версию: сервер мог выбрать другую поддерживаемую редакцию.</p>
+        <pre><code>POST /mcp HTTP/1.1
+Content-Type: application/json
+Accept: application/json, text/event-stream
+MCP-Protocol-Version: 2025-11-25
+
+{"jsonrpc":"2.0","id":2,"method":"tools/list","params":{}}</code></pre>
+        <p>Это образец формы запроса, а не команда к реальному адресу. В тесте направляйте его только на локальный стенд или контролируемый тестовый endpoint. Не помещайте токены, cookie и рабочие URL в фикстуры.</p>
+
+        <p>Контракт HTTP-адаптера должен проверять:</p>
+        <ul>
+          <li>заголовок версии отсутствует в первоначальном <code>initialize</code>, но присутствует в последующих запросах;</li>
+          <li>его значение совпадает с версией из принятого ответа сервера;</li>
+          <li><code>Accept</code> допускает <code>application/json</code> и <code>text/event-stream</code>;</li>
+          <li>клиент корректно обрабатывает оба разрешенных типа ответа;</li>
+          <li>заголовки сессии, если они применяются в выбранной редакции и возвращены сервером, не смешиваются между параллельными соединениями.</li>
+        </ul>
+      </section>
+
+      <section>
+        <h2>Проверка результата</h2>
+        <p>Набор готов, если каждый переход состояния наблюдаем и имеет отрицательный сценарий. Полезная итоговая проверка выглядит так:</p>
+        <pre><code>NEW
+  → initialize sent
+  → response validated
+  → version accepted
+  → required capabilities present
+  → notifications/initialized sent
+  → READY</code></pre>
+        <p>Любой отказ до состояния <code>READY</code> должен исключать прикладные вызовы. В журнале диагностики достаточно записывать выбранную версию, названия отсутствующих capabilities и категорию ошибки. Полные тела сообщений могут содержать чувствительные данные, поэтому не включайте их в логи по умолчанию.</p>
+        <p>Запустите одну и ту же матрицу минимум против локального транспорта-двойника, HTTP-адаптера и сборки, максимально близкой к production. Именно повторное использование одинаковых контрактов выявляет различия окружений.</p>
+      </section>
+
+      <section>
+        <h2>Типовые ошибки</h2>
+        <dl>
+          <dt>Сравнение версий как дат или чисел</dt>
+          <dd>Версия MCP — строковый идентификатор редакции. Поддерживайте явное множество допустимых значений, а не условие вида «не старше».</dd>
+
+          <dt>Проверка только верхнего уровня</dt>
+          <dd>Наличие <code>resources</code> не доказывает поддержку <code>resources.subscribe</code>; наличие <code>tools</code> не доказывает <code>tools.listChanged</code>.</dd>
+
+          <dt>Capabilities трактуются как список методов</dt>
+          <dd>Методы и capabilities связаны правилами конкретной редакции спецификации. Храните такую связь в одном слое, а не размазывайте по обработчикам.</dd>
+
+          <dt>Неизвестное поле считается ошибкой</dt>
+          <dd>Объекты возможностей расширяемы. Валидатор должен строго проверять обязательные поля, но не ломаться только из-за дополнительного корректно сформированного поля.</dd>
+
+          <dt>Уведомление initialized отправляется слишком рано</dt>
+          <dd>Сначала проверьте схему, версию и обязательные возможности. Иначе сервер считает сессию готовой, хотя клиент уже решил завершить ее.</dd>
+
+          <dt>Моки повторяют реализацию клиента</dt>
+          <dd>Фикстуры должны описывать сообщения на границе протокола. Если мок вызывает те же внутренние функции, что и production-код, тест не обнаружит ошибку сериализации или транспорта.</dd>
+        </dl>
+      </section>
+
+      <section>
+        <h2>Ограничения подхода</h2>
+        <p>Capabilities подтверждают заявленную поддержку, но не корректность реализации. Сервер может объявить <code>tools</code> и ошибаться на <code>tools/list</code>; это проверяется отдельными поведенческими тестами. Контрактные тесты также не заменяют проверки авторизации, повторного подключения, отмены, ограничений размера сообщений и безопасности данных.</p>
+        <p>Редакции MCP различаются. Поля, обязательность заголовков и экспериментальные функции следует привязывать к конкретной версии схемы. Не смешивайте правила текущей, старой и draft-редакций в одном безусловном валидаторе.</p>
+      </section>
+
+      <section>
+        <h2>Контрольный список</h2>
+        <ul>
+          <li>поддерживаемые версии заданы явным списком;</li>
+          <li>обязательные и необязательные capabilities разделены;</li>
+          <li>проверены порядок <code>initialize</code> и <code>notifications/initialized</code>;</li>
+          <li>есть отрицательные тесты версии, схемы, тайм-аута и capabilities;</li>
+          <li>подвозможности проверяются отдельно;</li>
+          <li>неизвестные расширения не вызывают аварийного отказа;</li>
+          <li>HTTP-заголовок содержит именно согласованную версию;</li>
+          <li>до состояния <code>READY</code> прикладные методы заблокированы;</li>
+          <li>фикстуры не содержат секретов и production-адресов;</li>
+          <li>одна матрица выполняется во всех целевых окружениях.</li>
+        </ul>
+      </section>
+
+      <section>
+        <h2>Материалы</h2>
+        <p>Продолжить настройку интеграции можно в разделе <a href="guides.html">практических гайдов</a>, а определения протокольных терминов собраны в <a href="glossary.html">глоссарии Agent Lab Journal</a>.</p>
+        <p>Для сверки контрактов используйте первичные источники: <a href="https://modelcontextprotocol.io/specification/2025-11-25/schema" rel="external">схему MCP 2025-11-25</a>, <a href="https://modelcontextprotocol.io/specification/2025-06-18/basic/lifecycle" rel="external">описание жизненного цикла и согласования</a> и <a href="https://modelcontextprotocol.io/specification/2025-11-25/basic/transports" rel="external">требования к транспортам</a>.</p>
+      </section>
+    </article>
+  </main>
+
+  <footer class="site-footer">
+    <p>Agent Lab Journal — практическая инженерия AI-агентов.</p>
+  </footer>
+</body>
+</html>

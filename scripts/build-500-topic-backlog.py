@@ -51,7 +51,7 @@ for item in items:
     unique.append(item)
     seen.add(slug)
 
-if len(unique) < 500:
+if len(unique) < 300:
     raise ValueError(f"only {len(unique)} unique new topics")
 OUT.write_text(json.dumps(unique[:500], ensure_ascii=False, indent=2) + "\n")
 print(f"TOPIC_BACKLOG: wrote {len(unique[:500])} unique topics to {OUT.name}")

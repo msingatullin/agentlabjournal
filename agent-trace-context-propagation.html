@@ -1,0 +1,383 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Сквозной trace ID для AI-агента, MCP и внутренних API — Agent Lab Journal</title>
+  <meta name="description" content="Практическое руководство по сквозной трассировке запросов между AI-агентом, MCP-сервером и внутренними API: контекст, журналы, проверка и локализация сбоев.">
+  <link rel="canonical" href="https://agentlabjournal.online/agent-trace-context-propagation.html">
+  <link rel="stylesheet" href="style.css">
+  <link rel="stylesheet" href="reading.css">
+
+  <meta property="og:type" content="article">
+  <meta property="og:locale" content="ru_RU">
+  <meta property="og:site_name" content="Agent Lab Journal">
+  <meta property="og:title" content="Сквозной trace ID для AI-агента, MCP и внутренних API">
+  <meta property="og:description" content="Как связать решение модели, вызов MCP-инструмента и изменение в бизнес-системе одним идентификатором.">
+  <meta property="og:url" content="https://agentlabjournal.online/agent-trace-context-propagation.html">
+
+  <meta name="twitter:card" content="summary">
+  <meta name="twitter:title" content="Сквозной trace ID для AI-агента, MCP и внутренних API">
+  <meta name="twitter:description" content="Воспроизводимая схема трассировки агентного запроса и локализации сбоев по журналам.">
+
+  <script type="application/ld+json">
+  {
+    "@context": "https://schema.org",
+    "@type": "Article",
+    "inLanguage": "ru-RU",
+    "headline": "Сквозной trace ID для AI-агента, MCP и внутренних API",
+    "description": "Практическое руководство по сквозной трассировке запросов между AI-агентом, MCP-сервером и внутренними API.",
+    "mainEntityOfPage": {
+      "@type": "WebPage",
+      "@id": "https://agentlabjournal.online/agent-trace-context-propagation.html"
+    },
+    "publisher": {
+      "@type": "Organization",
+      "name": "Agent Lab Journal",
+      "url": "https://agentlabjournal.online/"
+    },
+    "author": {
+      "@type": "Organization",
+      "name": "Agent Lab Journal"
+    }
+  }
+  </script>
+</head>
+<body>
+  <header class="site-header">
+    <nav aria-label="Основная навигация">
+      <a href="index.html">Agent Lab Journal</a>
+      <a href="guides.html">Руководства</a>
+      <a href="glossary.html">Глоссарий</a>
+    </nav>
+  </header>
+
+  <main>
+    <article>
+      <header class="article-header">
+        <p class="eyebrow">Наблюдаемость AI-систем</p>
+        <h1>Сквозной trace ID для AI-агента, MCP и внутренних API</h1>
+        <p class="lead">Один агентный запрос может пройти через модель, несколько инструментов и бизнес-систему. Если каждый компонент пишет собственный несвязанный журнал, ответ на вопрос «почему изменился заказ?» превращается в ручное сопоставление времени, параметров и догадок.</p>
+        <div class="reading-meta" aria-label="Параметры статьи">
+          <span>Уровень: продвинутый</span>
+          <span>Чтение: 8 минут</span>
+          <span>Результат: сквозная трассировка агентного запроса</span>
+        </div>
+      </header>
+
+      <section>
+        <h2>Что именно нужно связать</h2>
+        <p><a href="glossary.html#trace-id">Trace ID</a> — идентификатор всей операции от входного запроса до последнего внутреннего вызова. Он должен сопровождать:</p>
+        <ol>
+          <li>получение задачи агентом;</li>
+          <li>решение вызвать инструмент;</li>
+          <li>MCP-запрос и выполнение обработчика;</li>
+          <li>HTTP-вызов внутреннего API;</li>
+          <li>изменение состояния бизнес-системы;</li>
+          <li>итоговый ответ агента или ошибку.</li>
+        </ol>
+        <p>Одного trace ID недостаточно для описания ветвления. Поэтому у каждого отдельного шага есть span ID, а у дочернего шага — parent span ID. Trace ID отвечает на вопрос «какая это операция?», span ID — «какой именно шаг?».</p>
+
+        <aside class="note">
+          <strong>Правило владения:</strong> trace ID создаётся на первой доверенной границе системы. Внешний идентификатор можно принять только после проверки формата и политики доверия; иначе его следует заменить.
+        </aside>
+      </section>
+
+      <section>
+        <h2>Целевая схема</h2>
+        <pre><code>Клиент
+  └─ Агент: trace=T, span=A
+       ├─ Решение модели: trace=T, span=M, parent=A
+       └─ MCP-вызов: trace=T, span=P, parent=A
+            └─ Внутренний API: trace=T, span=I, parent=P
+                 └─ Изменение заказа: trace=T, span=B, parent=I</code></pre>
+        <p>Во всех журналах сохраняется один <code>trace_id</code>, но каждый компонент создаёт собственный <code>span_id</code>. Это позволяет найти операцию простым поиском и восстановить дерево исполнения по полям <code>span_id</code> и <code>parent_span_id</code>.</p>
+      </section>
+
+      <section>
+        <h2>Шаг 1. Зафиксируйте формат контекста</h2>
+        <p>Для HTTP удобно передавать стандартный заголовок <code>traceparent</code>:</p>
+        <pre><code>traceparent: 00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01</code></pre>
+        <p>Это пример, а не значение для копирования в продакшен. Поля разделены дефисами:</p>
+        <pre><code>версия-trace_id-parent_span_id-флаги</code></pre>
+        <p>Trace ID содержит 32 шестнадцатеричных символа, span ID — 16. Нулевые значения недопустимы. Флаг <code>01</code> в примере означает, что трасса выбрана для записи.</p>
+
+        <p>В MCP-контекст можно положить те же значения в метаданные запроса. Конкретный способ зависит от используемого SDK, поэтому полезно определить внутренний нейтральный объект:</p>
+        <pre><code>{
+  "trace_id": "4bf92f3577b34da6a3ce929d0e0e4736",
+  "span_id": "00f067aa0ba902b7",
+  "trace_flags": "01"
+}</code></pre>
+        <p>Не добавляйте в контекст промпт, токен авторизации, персональные данные или аргументы инструмента. Контекст трассировки должен содержать технические идентификаторы, а не бизнес-содержимое.</p>
+      </section>
+
+      <section>
+        <h2>Шаг 2. Создайте и проверьте идентификаторы на входе</h2>
+        <p>Ниже — минимальный пример на Python без внешних зависимостей. Он генерирует криптографически случайные идентификаторы и проверяет входной <code>traceparent</code>.</p>
+        <pre><code>import re
+import secrets
+from dataclasses import dataclass
+
+TRACEPARENT_RE = re.compile(
+    r"^00-([0-9a-f]{32})-([0-9a-f]{16})-([0-9a-f]{2})$"
+)
+
+@dataclass(frozen=True)
+class TraceContext:
+    trace_id: str
+    span_id: str
+    trace_flags: str = "01"
+
+def new_trace_id() -&gt; str:
+    value = secrets.token_hex(16)
+    return value if value != "0" * 32 else new_trace_id()
+
+def new_span_id() -&gt; str:
+    value = secrets.token_hex(8)
+    return value if value != "0" * 16 else new_span_id()
+
+def parse_traceparent(value: str | None) -&gt; TraceContext | None:
+    if not value or len(value) &gt; 128:
+        return None
+
+    match = TRACEPARENT_RE.fullmatch(value.strip())
+    if not match:
+        return None
+
+    trace_id, parent_span_id, flags = match.groups()
+    if trace_id == "0" * 32 or parent_span_id == "0" * 16:
+        return None
+
+    return TraceContext(trace_id, parent_span_id, flags)
+
+def start_request(incoming: str | None, trust_incoming: bool) -&gt; TraceContext:
+    parent = parse_traceparent(incoming) if trust_incoming else None
+    return TraceContext(
+        trace_id=parent.trace_id if parent else new_trace_id(),
+        span_id=new_span_id(),
+        trace_flags=parent.trace_flags if parent else "01",
+    )</code></pre>
+        <p><code>trust_incoming</code> должен определяться конфигурацией шлюза, а не параметром, которым управляет клиент. Ограничение длины применяется до регулярного выражения, чтобы отсечь чрезмерный ввод.</p>
+      </section>
+
+      <section>
+        <h2>Шаг 3. Передайте контекст в MCP</h2>
+        <p>Перед вызовом инструмента агент создаёт дочерний span. Названия полей метаданных ниже — внутреннее соглашение примера; адаптируйте их к своему MCP SDK.</p>
+        <pre><code>def child_context(parent: TraceContext) -&gt; TraceContext:
+    return TraceContext(
+        trace_id=parent.trace_id,
+        span_id=new_span_id(),
+        trace_flags=parent.trace_flags,
+    )
+
+tool_ctx = child_context(agent_ctx)
+
+mcp_request = {
+    "name": "update_order",
+    "arguments": {
+        "order_id": order_id,
+        "status": target_status
+    },
+    "_meta": {
+        "trace_id": tool_ctx.trace_id,
+        "span_id": tool_ctx.span_id,
+        "parent_span_id": agent_ctx.span_id,
+        "trace_flags": tool_ctx.trace_flags
+    }
+}</code></pre>
+        <p>MCP-сервер проверяет метаданные так же строго, как HTTP-заголовок. Если контекст отсутствует или повреждён, сервер создаёт новую трассу и пишет событие <code>trace_context_rejected</code>. Молча принимать произвольные строки не следует.</p>
+      </section>
+
+      <section>
+        <h2>Шаг 4. Продолжите трассу во внутреннем API</h2>
+        <p>MCP-обработчик создаёт новый span для исходящего HTTP-запроса, сохраняя trace ID:</p>
+        <pre><code>def format_traceparent(ctx: TraceContext) -&gt; str:
+    return f"00-{ctx.trace_id}-{ctx.span_id}-{ctx.trace_flags}"
+
+api_ctx = child_context(tool_ctx)
+
+headers = {
+    "traceparent": format_traceparent(api_ctx),
+    "content-type": "application/json"
+}</code></pre>
+        <p>Здесь span ID в заголовке становится родительским для принимающего API. Само API создаёт новый локальный span, а полученное значение сохраняет как <code>parent_span_id</code>.</p>
+        <p>Trace ID не является механизмом авторизации или идемпотентности. Для повторяемого изменения бизнес-состояния передавайте отдельный ключ идемпотентности и проверяйте обычные права доступа.</p>
+      </section>
+
+      <section>
+        <h2>Шаг 5. Пишите структурированные журналы</h2>
+        <p>Каждая запись должна быть отдельным JSON-объектом. Минимальный набор полей:</p>
+        <pre><code>{
+  "timestamp": "2026-01-15T10:24:31.482Z",
+  "level": "INFO",
+  "service": "order-mcp",
+  "event": "tool.completed",
+  "trace_id": "4bf92f3577b34da6a3ce929d0e0e4736",
+  "span_id": "7a31c94d8e1a22f0",
+  "parent_span_id": "00f067aa0ba902b7",
+  "tool_name": "update_order",
+  "duration_ms": 84,
+  "outcome": "success"
+}</code></pre>
+        <p>Запись целиком является примером. Не копируйте дату и идентификаторы как постоянные значения.</p>
+
+        <p>Для решения модели регистрируйте не скрытые рассуждения, а наблюдаемый результат управления:</p>
+        <pre><code>{
+  "service": "agent-runtime",
+  "event": "model.tool_selected",
+  "trace_id": "...",
+  "span_id": "...",
+  "parent_span_id": "...",
+  "tool_name": "update_order",
+  "model_request_id": "...",
+  "outcome": "success"
+}</code></pre>
+        <p><code>model_request_id</code> добавляйте только если провайдер действительно возвращает его. Не генерируйте фиктивное значение под видом идентификатора провайдера.</p>
+
+        <p>На границе бизнес-системы полезно записать тип операции и идентификатор сущности, если политика журналирования это разрешает:</p>
+        <pre><code>{
+  "service": "orders-api",
+  "event": "order.status_changed",
+  "trace_id": "...",
+  "span_id": "...",
+  "parent_span_id": "...",
+  "entity_type": "order",
+  "entity_id": "example-order-id",
+  "outcome": "success"
+}</code></pre>
+        <p>Не журналируйте полный промпт, тело ответа модели, токены, платёжные данные и другие чувствительные поля по умолчанию.</p>
+      </section>
+
+      <section>
+        <h2>Проверка результата</h2>
+        <p>Выполните один запрос в тестовой среде и сохраните выданный системой trace ID. Затем найдите все записи локального JSONL-журнала безопасной командой только для чтения:</p>
+        <pre><code>TRACE_ID='4bf92f3577b34da6a3ce929d0e0e4736'
+rg --fixed-strings -- "$TRACE_ID" ./logs/*.jsonl</code></pre>
+        <p>Значение переменной здесь демонстрационное. Подставьте trace ID фактического тестового запроса. Не используйте пользовательский ввод как имя файла или фрагмент команды.</p>
+
+        <p>Успешная проверка должна показать:</p>
+        <ol>
+          <li>одинаковый <code>trace_id</code> во всех задействованных сервисах;</li>
+          <li>уникальный ненулевой <code>span_id</code> у каждого шага;</li>
+          <li>корректную цепочку <code>parent_span_id</code>;</li>
+          <li>событие выбора инструмента до события начала MCP-вызова;</li>
+          <li>завершение внутреннего API до успешного завершения инструмента;</li>
+          <li>явный <code>outcome</code> и длительность для каждого завершённого шага.</li>
+        </ol>
+
+        <p>Для автоматической проверки структуры можно сохранить найденные записи в <code>trace.jsonl</code> и выполнить:</p>
+        <pre><code>python3 - &lt; trace.jsonl &lt;&lt;'PY'
+import json
+import sys
+
+rows = [json.loads(line) for line in sys.stdin if line.strip()]
+assert rows, "трасса пуста"
+
+trace_ids = {row.get("trace_id") for row in rows}
+assert len(trace_ids) == 1, f"найдено trace_id: {trace_ids}"
+
+span_ids = [row.get("span_id") for row in rows if row.get("span_id")]
+assert len(span_ids) == len(set(span_ids)), "span_id повторяется"
+
+known = set(span_ids)
+missing = {
+    row["parent_span_id"]
+    for row in rows
+    if row.get("parent_span_id")
+    and row["parent_span_id"] not in known
+}
+print({
+    "records": len(rows),
+    "trace_id": next(iter(trace_ids)),
+    "external_or_missing_parents": sorted(missing),
+})
+PY</code></pre>
+        <p>Проверка является примером для набора, где каждый span представлен одной записью. Если сервис пишет события начала и завершения с одним span ID, проверяйте уникальность списка span-описаний, а не всех строк. Родитель входного корневого span также может отсутствовать в локальной выборке.</p>
+      </section>
+
+      <section>
+        <h2>Как локализовать сбой</h2>
+        <table>
+          <thead>
+            <tr>
+              <th>Последнее наблюдаемое событие</th>
+              <th>Вероятная зона поиска</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td><code>model.tool_selected</code>, но нет <code>tool.started</code></td>
+              <td>Планировщик агента, очередь или MCP-клиент</td>
+            </tr>
+            <tr>
+              <td><code>tool.started</code>, но внутреннее API не видит trace ID</td>
+              <td>Формирование или передача <code>traceparent</code></td>
+            </tr>
+            <tr>
+              <td>API завершилось успешно, инструмент сообщил ошибку</td>
+              <td>Разбор ответа API или постобработка MCP</td>
+            </tr>
+            <tr>
+              <td>Инструмент успешен, но агент отвечает иначе</td>
+              <td>Передача результата инструмента модели или финальная генерация</td>
+            </tr>
+            <tr>
+              <td>Есть изменение сущности, но нет родительского span</td>
+              <td>Потеря контекста перед бизнес-операцией или фоновая задача</td>
+            </tr>
+          </tbody>
+        </table>
+        <p>Это диагностические ориентиры, а не доказательство причины. Сверяйте временные метки, исход операции, повторные попытки и журналы очередей.</p>
+      </section>
+
+      <section>
+        <h2>Типовые ошибки</h2>
+        <dl>
+          <dt>Один span ID на весь запрос</dt>
+          <dd>Так невозможно отделить задержку модели от MCP и внутреннего API. Trace ID общий, span ID создаётся заново для каждого шага.</dd>
+
+          <dt>Новый trace ID внутри MCP</dt>
+          <dd>Связь с агентом теряется. Новый trace ID допустим только при отсутствии, недоверии или повреждении входного контекста; отказ нужно журналировать.</dd>
+
+          <dt>Trace ID используется как ключ идемпотентности</dt>
+          <dd>Повторная попытка может оставаться в той же трассе, но быть отдельной попыткой. Для защиты бизнес-операции нужен самостоятельный ключ.</dd>
+
+          <dt>Контекст хранится в глобальной переменной</dt>
+          <dd>Параллельные запросы перемешиваются. Передавайте контекст явно либо используйте безопасный для асинхронного выполнения механизм локального контекста.</dd>
+
+          <dt>В журнал попадают аргументы инструмента целиком</dt>
+          <dd>Это создаёт риск утечки данных. Используйте разрешённый список полей, маскирование и ограничения размера.</dd>
+
+          <dt>Успех записывается до фиксации изменения</dt>
+          <dd>Событие бизнес-успеха следует писать после подтверждённой транзакции. Иначе журнал утверждает то, чего система могла не сохранить.</dd>
+
+          <dt>Повторные попытки неразличимы</dt>
+          <dd>Оставляйте общий trace ID, создавайте новый span для каждой попытки и добавляйте числовое поле <code>attempt</code>.</dd>
+        </dl>
+      </section>
+
+      <section>
+        <h2>Ограничения</h2>
+        <ul>
+          <li>Trace ID показывает связь событий, но сам по себе не гарантирует полноту или порядок доставки журналов.</li>
+          <li>Сэмплирование может удалить часть span-записей. Ошибочные и бизнес-критичные операции обычно требуют отдельной политики хранения.</li>
+          <li>Асинхронная очередь разрывает обычный стек вызовов. Контекст нужно помещать в метаданные сообщения, проверять у потребителя и создавать дочерний span.</li>
+          <li>Для долгоживущих процессов одна трасса может стать чрезмерно большой. В таком случае операции разделяют, а связь сохраняют отдельным correlation ID или ссылкой между трассами.</li>
+          <li>Единый trace ID не заменяет метрики, аудит, журнал транзакций и контроль доступа.</li>
+          <li>Часы сервисов могут расходиться. Дерево parent-child надёжнее простого упорядочивания по временным меткам.</li>
+        </ul>
+      </section>
+
+      <section>
+        <h2>Минимальный критерий готовности</h2>
+        <p>Решение можно считать рабочим, если по trace ID инженер находит решение вызвать инструмент, выполнение MCP, обращение к API и подтверждённое изменение бизнес-сущности; видит родительские связи, длительность, повторные попытки и точку ошибки — без чтения промптов и поиска по приблизительному времени.</p>
+        <p>Дальнейшие материалы собраны в разделе <a href="guides.html">практических руководств</a>, а определения observability, span, correlation ID и других терминов — в <a href="glossary.html">глоссарии</a>.</p>
+      </section>
+    </article>
+  </main>
+
+  <footer class="site-footer">
+    <p>Agent Lab Journal — практические материалы по проектированию и эксплуатации AI-агентов.</p>
+  </footer>
+</body>
+</html>

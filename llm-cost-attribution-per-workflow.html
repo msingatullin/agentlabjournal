@@ -1,0 +1,376 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Как распределять стоимость LLM по бизнес-процессам, а не по API-ключам — Agent Lab Journal</title>
+  <meta name="description" content="Практическая модель атрибуции затрат LLM по бизнес-процессам, моделям, этапам агента, повторным вызовам и причинам расходов.">
+  <link rel="canonical" href="https://agentlabjournal.online/llm-cost-attribution-per-workflow.html">
+  <link rel="stylesheet" href="style.css">
+  <link rel="stylesheet" href="reading.css">
+
+  <meta property="og:type" content="article">
+  <meta property="og:locale" content="ru_RU">
+  <meta property="og:site_name" content="Agent Lab Journal">
+  <meta property="og:title" content="Как распределять стоимость LLM по бизнес-процессам, а не по API-ключам">
+  <meta property="og:description" content="Практическая модель атрибуции затрат LLM по процессам, моделям, этапам агента и повторным вызовам.">
+  <meta property="og:url" content="https://agentlabjournal.online/llm-cost-attribution-per-workflow.html">
+
+  <meta name="twitter:card" content="summary">
+  <meta name="twitter:title" content="Как распределять стоимость LLM по бизнес-процессам">
+  <meta name="twitter:description" content="Как увидеть стоимость каждого сценария, этапа агента и повторного вызова вместо одного счёта по API-ключу.">
+
+  <script type="application/ld+json">
+  {
+    "@context": "https://schema.org",
+    "@type": "Article",
+    "headline": "Как распределять стоимость LLM по бизнес-процессам, а не по API-ключам",
+    "description": "Практическая модель атрибуции затрат LLM по бизнес-процессам, моделям, этапам агента, повторным вызовам и причинам расходов.",
+    "inLanguage": "ru",
+    "mainEntityOfPage": {
+      "@type": "WebPage",
+      "@id": "https://agentlabjournal.online/llm-cost-attribution-per-workflow.html"
+    },
+    "publisher": {
+      "@type": "Organization",
+      "name": "Agent Lab Journal",
+      "url": "https://agentlabjournal.online/"
+    },
+    "author": {
+      "@type": "Organization",
+      "name": "Agent Lab Journal"
+    }
+  }
+  </script>
+</head>
+<body>
+  <header class="site-header">
+    <div class="container">
+      <a class="site-name" href="index.html">Agent Lab Journal</a>
+      <nav aria-label="Основная навигация">
+        <a href="guides.html">Гайды</a>
+        <a href="glossary.html">Глоссарий</a>
+      </nav>
+    </div>
+  </header>
+
+  <main>
+    <article class="reading">
+      <header class="article-header">
+        <p class="eyebrow">Практика эксплуатации LLM</p>
+        <h1>Как распределять стоимость LLM по бизнес-процессам, а не по API-ключам</h1>
+        <p class="lead">Счёт провайдера отвечает на вопрос «сколько потрачено», но обычно не объясняет, какой сценарий, этап агента или повторный вызов создал расходы. Исправим это с помощью событийной модели, в которой каждый вызов LLM связан с бизнес-процессом и его результатом.</p>
+
+        <div class="reading-meta" aria-label="Информация о материале">
+          <span>Уровень: средний</span>
+          <span>Время чтения: до 8 минут</span>
+          <span>Результат: модель атрибуции затрат по процессам, моделям, этапам и повторам</span>
+        </div>
+      </header>
+
+      <section>
+        <h2>Почему API-ключ — плохая единица учёта</h2>
+        <p><a href="glossary.html">Атрибуция затрат</a> — это привязка расходов к объекту, который их вызвал. Для LLM таким объектом полезнее считать не ключ и даже не отдельный сервис, а завершённый или прерванный экземпляр бизнес-процесса: обработку обращения, проверку документа, подготовку ответа или другой измеримый сценарий.</p>
+        <p>Один ключ может обслуживать несколько продуктов. Один процесс может обращаться к нескольким моделям. Один этап может повторяться после ошибки, невалидного ответа или решения агента. Поэтому агрегирование только по ключу скрывает как источник расходов, так и возможную точку оптимизации.</p>
+        <p>Практическая единица наблюдения — один вызов модели. Каждый вызов получает контекст процесса, сведения об использовании модели и причину, по которой он состоялся.</p>
+      </section>
+
+      <section>
+        <h2>Что именно нужно измерять</h2>
+        <p>Минимальная схема события должна позволять ответить на четыре вопроса:</p>
+        <ol>
+          <li>Какой бизнес-процесс и какой его экземпляр инициировали вызов?</li>
+          <li>На каком этапе и какой моделью он был выполнен?</li>
+          <li>Был ли это первый вызов, повтор или запасной маршрут?</li>
+          <li>Сколько входных и выходных единиц тарификации использовано и сколько это стоило?</li>
+        </ol>
+
+        <pre><code>{
+  "event_id": "evt_01",
+  "occurred_at": "2026-07-29T09:15:00Z",
+  "workflow": "support_request",
+  "workflow_version": "3",
+  "workflow_run_id": "run_example_42",
+  "stage": "draft_answer",
+  "attempt": 2,
+  "call_reason": "retry_invalid_schema",
+  "provider": "provider_name",
+  "model": "model_name",
+  "input_units": 1840,
+  "output_units": 310,
+  "cached_input_units": 0,
+  "latency_ms": 920,
+  "status": "success",
+  "estimated_cost": "0.000000",
+  "currency": "USD",
+  "pricing_version": "2026-07-01"
+}</code></pre>
+
+        <p>Это демонстрационная запись, а не результат реального запроса. Названия процесса, модели и числовые значения приведены только для иллюстрации структуры.</p>
+
+        <p>Не помещайте в событие промпт, ответ модели, API-ключ, персональные данные или содержимое документа. Для учёта стоимости достаточно идентификаторов, счётчиков и технических признаков.</p>
+      </section>
+
+      <section>
+        <h2>Шаг 1. Определите стабильную иерархию</h2>
+        <p>Начните с четырёх уровней:</p>
+        <ul>
+          <li><code>workflow</code> — бизнес-процесс, например обработка обращения;</li>
+          <li><code>workflow_run_id</code> — один запуск процесса;</li>
+          <li><code>stage</code> — логический этап: классификация, поиск, черновик, проверка;</li>
+          <li><code>attempt</code> — порядковый номер вызова внутри этапа.</li>
+        </ul>
+        <p>Не используйте URL обработчика или имя функции как название процесса: техническая реализация меняется быстрее бизнес-смысла. Версию процесса храните отдельно, чтобы сравнивать старую и новую схемы без переименования всей истории.</p>
+
+        <pre><code>workflow: support_request
+workflow_version: 3
+
+stages:
+  - classify
+  - retrieve_context
+  - draft_answer
+  - validate_answer</code></pre>
+
+        <p>Этот YAML — пример соглашения об именовании. Его можно хранить рядом с конфигурацией приложения и проверять при сборке.</p>
+      </section>
+
+      <section>
+        <h2>Шаг 2. Передавайте контекст через весь запуск</h2>
+        <p>Контекст стоимости создаётся в точке входа и передаётся каждому этапу. Генерируйте внутренний идентификатор запуска; не подставляйте вместо него номер заявки или адрес пользователя.</p>
+
+        <pre><code>from dataclasses import dataclass
+from uuid import uuid4
+
+@dataclass(frozen=True)
+class CostContext:
+    workflow: str
+    workflow_version: str
+    workflow_run_id: str
+
+def new_cost_context() -&gt; CostContext:
+    return CostContext(
+        workflow="support_request",
+        workflow_version="3",
+        workflow_run_id=f"run_{uuid4().hex}",
+    )</code></pre>
+
+        <p>Если процесс проходит через очередь, передавайте эти три поля в технических метаданных сообщения. Проверьте, что система трассировки или журналирования не записывает полезную нагрузку целиком.</p>
+      </section>
+
+      <section>
+        <h2>Шаг 3. Оберните все вызовы модели одной функцией</h2>
+        <p>Центральная обёртка исключает ситуацию, когда часть команды считает стоимость, а часть вызывает SDK напрямую. Обёртка должна фиксировать событие и при успехе, и при ошибке.</p>
+
+        <pre><code>def call_llm(*, client, context, stage, attempt, reason, request):
+    started = monotonic()
+    status = "error"
+    usage = None
+
+    try:
+        response = client.generate(**request)
+        usage = response.usage
+        status = "success"
+        return response
+    finally:
+        emit_cost_event({
+            "event_id": new_event_id(),
+            "occurred_at": utc_now_iso(),
+            "workflow": context.workflow,
+            "workflow_version": context.workflow_version,
+            "workflow_run_id": context.workflow_run_id,
+            "stage": stage,
+            "attempt": attempt,
+            "call_reason": reason,
+            "provider": request["provider"],
+            "model": request["model"],
+            "input_units": usage.input_units if usage else 0,
+            "output_units": usage.output_units if usage else 0,
+            "cached_input_units": usage.cached_input_units if usage else 0,
+            "latency_ms": elapsed_ms(started),
+            "status": status
+        })</code></pre>
+
+        <p>Названия методов и полей использования зависят от SDK. Сопоставьте их с фактическим ответом вашего провайдера. Если при ошибке счётчики недоступны, не угадывайте их: сохраните нули или <code>null</code> вместе со статусом и учитывайте такие записи отдельно.</p>
+      </section>
+
+      <section>
+        <h2>Шаг 4. Отделите использование от цены</h2>
+        <p>Цена меняется, а исторические события должны оставаться воспроизводимыми. Поэтому сохраняйте исходные единицы использования, а стоимость рассчитывайте по версионируемой таблице тарифов.</p>
+
+        <pre><code>{
+  "pricing_version": "2026-07-01",
+  "currency": "USD",
+  "models": {
+    "model_name": {
+      "input_per_million": "0.00",
+      "cached_input_per_million": "0.00",
+      "output_per_million": "0.00"
+    }
+  }
+}</code></pre>
+
+        <p>Нули здесь намеренные: это безопасный шаблон, а не действующие цены. Заполните его значениями из вашего договора или панели провайдера и зафиксируйте дату начала действия.</p>
+
+        <pre><code>from decimal import Decimal
+
+MILLION = Decimal("1000000")
+
+def calculate_cost(event, price):
+    regular_input = max(
+        event["input_units"] - event["cached_input_units"], 0
+    )
+    return (
+        Decimal(regular_input) * price["input_per_million"]
+        + Decimal(event["cached_input_units"])
+          * price["cached_input_per_million"]
+        + Decimal(event["output_units"]) * price["output_per_million"]
+    ) / MILLION</code></pre>
+
+        <p>Используйте десятичный тип, а не двоичное число с плавающей точкой. Храните сумму с достаточной точностью и округляйте только при выводе отчёта.</p>
+      </section>
+
+      <section>
+        <h2>Шаг 5. Сделайте повторы видимыми</h2>
+        <p>Повтор — не просто ещё один вызов. Его причина подсказывает, где искать оптимизацию. Задайте короткий закрытый справочник:</p>
+
+        <ul>
+          <li><code>initial</code> — штатный первый вызов;</li>
+          <li><code>retry_timeout</code> — повтор после тайм-аута;</li>
+          <li><code>retry_rate_limit</code> — повтор после ограничения частоты;</li>
+          <li><code>retry_invalid_schema</code> — ответ не прошёл проверку структуры;</li>
+          <li><code>retry_quality_gate</code> — ответ не прошёл проверку качества;</li>
+          <li><code>fallback_model</code> — переход на запасную модель;</li>
+          <li><code>agent_loop</code> — очередной шаг цикла агента.</li>
+        </ul>
+
+        <p>Не складывайте все случаи в значение <code>retry</code>. Тайм-аут, ошибка схемы и лишний цикл агента требуют разных решений.</p>
+      </section>
+
+      <section>
+        <h2>Шаг 6. Сформируйте отчёты, которые ведут к действию</h2>
+        <p>Для начала достаточно таблицы событий и трёх представлений. Пример SQL использует условные имена полей и совместимый с PostgreSQL синтаксис.</p>
+
+        <h3>Стоимость процесса и одного запуска</h3>
+        <pre><code>SELECT
+  workflow,
+  COUNT(DISTINCT workflow_run_id) AS runs,
+  SUM(estimated_cost) AS total_cost,
+  SUM(estimated_cost)
+    / NULLIF(COUNT(DISTINCT workflow_run_id), 0) AS cost_per_run
+FROM llm_cost_events
+GROUP BY workflow
+ORDER BY total_cost DESC;</code></pre>
+
+        <h3>Стоимость этапов и моделей</h3>
+        <pre><code>SELECT
+  workflow,
+  stage,
+  model,
+  COUNT(*) AS calls,
+  SUM(input_units) AS input_units,
+  SUM(output_units) AS output_units,
+  SUM(estimated_cost) AS total_cost
+FROM llm_cost_events
+GROUP BY workflow, stage, model
+ORDER BY total_cost DESC;</code></pre>
+
+        <h3>Цена повторных вызовов</h3>
+        <pre><code>SELECT
+  workflow,
+  stage,
+  call_reason,
+  COUNT(*) AS calls,
+  SUM(estimated_cost) AS total_cost
+FROM llm_cost_events
+WHERE attempt &gt; 1 OR call_reason &lt;&gt; 'initial'
+GROUP BY workflow, stage, call_reason
+ORDER BY total_cost DESC;</code></pre>
+
+        <p>Первый отчёт показывает дорогие процессы, второй — конкретный этап и модель, третий — стоимость нештатного поведения. Оптимизировать стоит не самый дорогой вызов сам по себе, а расход, который можно сократить без ухудшения результата процесса.</p>
+      </section>
+
+      <section>
+        <h2>Проверка результата</h2>
+        <p>Проведите контролируемый прогон в тестовой среде. Например: один процесс, три этапа, а на втором этапе — один заранее предусмотренный повтор. Проверка не требует настоящего ключа, если клиент модели заменён локальной заглушкой с фиксированными счётчиками.</p>
+
+        <ol>
+          <li>Убедитесь, что у всех событий одинаковый <code>workflow_run_id</code>.</li>
+          <li>Проверьте, что число событий равно числу фактических обращений к клиенту.</li>
+          <li>У повторного события должны быть <code>attempt = 2</code> и точная причина.</li>
+          <li>Сложите единицы использования вручную и сравните с агрегатом по запуску.</li>
+          <li>Рассчитайте стоимость одного события вручную по зафиксированному тарифу.</li>
+          <li>Сравните сумму событий с отчётом провайдера за тот же период и в той же валюте.</li>
+        </ol>
+
+        <pre><code>SELECT
+  workflow_run_id,
+  COUNT(*) AS calls,
+  SUM(input_units) AS input_units,
+  SUM(output_units) AS output_units,
+  SUM(estimated_cost) AS estimated_cost
+FROM llm_cost_events
+WHERE workflow_run_id = 'run_example_42'
+GROUP BY workflow_run_id;</code></pre>
+
+        <p>Идентификатор в запросе — пример. Подставьте идентификатор собственного тестового запуска. Не публикуйте выгрузки событий, если внутренние идентификаторы считаются чувствительными.</p>
+
+        <p>Полное совпадение с итоговым счётом возможно не всегда: провайдер может применять округление, скидки, пакетные условия или отдельные категории тарификации. Цель проверки — объяснимое расхождение, а не искусственно подогнанная сумма.</p>
+      </section>
+
+      <section>
+        <h2>Типовые ошибки</h2>
+
+        <h3>Считать стоимость только после успешного ответа</h3>
+        <p>Ошибочные и прерванные вызовы тоже могут создавать расходы. Событие нужно формировать в блоке завершения, сохраняя статус и доступные счётчики.</p>
+
+        <h3>Перезаписывать тарифы</h3>
+        <p>Если обновить единственную строку цены, пересчёт прошлого изменит историю. Добавляйте новую версию тарифа с датой действия.</p>
+
+        <h3>Смешивать оценку и выставленную сумму</h3>
+        <p><code>estimated_cost</code> — вычисленная стоимость события. Сумма счёта — отдельный финансовый факт. Храните их раздельно и регулярно выполняйте сверку.</p>
+
+        <h3>Не учитывать кэш и пакетные режимы</h3>
+        <p>Если провайдер различает обычный ввод, кэшированный ввод и другие режимы, не объединяйте их в один счётчик. Иначе модель расходов будет систематически ошибаться.</p>
+
+        <h3>Использовать свободный текст в названиях этапов</h3>
+        <p><code>draft</code>, <code>generate_draft</code> и <code>answer_generation</code> быстро превращаются в три строки одного этапа. Проверяйте значения по реестру процесса.</p>
+
+        <h3>Оптимизировать без метрики результата</h3>
+        <p>Сокращение стоимости может увеличить число ручных проверок или снизить долю успешно завершённых процессов. Сопоставляйте стоимость запуска с бизнес-результатом: завершением, эскалацией, отказом или другим заранее определённым исходом.</p>
+      </section>
+
+      <section>
+        <h2>Ограничения модели</h2>
+        <p>Такая атрибуция хорошо описывает прямые расходы на вызовы LLM, но не заменяет полный расчёт себестоимости. В неё не входят хранение данных, поиск, внешние инструменты, выполнение кода, наблюдаемость, разработка и ручная проверка.</p>
+        <p>Стоимость общего вызова, обслуживающего несколько процессов, нельзя честно распределить без дополнительного правила. Возможные базы распределения — число запросов, объём обработанных данных или фактическое использование результата. Правило следует документировать и применять последовательно.</p>
+        <p>Если провайдер не возвращает точные счётчики, используйте явно помеченную оценку и поле <code>measurement_source</code> со значениями вроде <code>provider</code> или <code>estimated</code>. Не смешивайте эти категории в проверке точности.</p>
+      </section>
+
+      <section>
+        <h2>Минимальный план внедрения</h2>
+        <ol>
+          <li>Выберите один заметный бизнес-процесс и опишите его этапы.</li>
+          <li>Добавьте контекст запуска и единую обёртку клиента LLM.</li>
+          <li>Сохраняйте сырые единицы использования и причины повторов.</li>
+          <li>Версионируйте тарифы и рассчитывайте стоимость отдельно.</li>
+          <li>Постройте отчёты по процессу, этапу, модели и повторным вызовам.</li>
+          <li>Сверьте агрегаты с отчётом провайдера и зафиксируйте причины расхождений.</li>
+          <li>Свяжите стоимость запуска с результатом процесса.</li>
+        </ol>
+        <p>После этого вопрос «какая модель дороже?» можно заменить более полезным: «какой этап какого процесса создаёт устранимые расходы и как изменение повлияет на результат?»</p>
+      </section>
+
+      <footer class="article-footer">
+        <h2>Что читать дальше</h2>
+        <p>Практические материалы по проектированию и эксплуатации агентов собраны в <a href="guides.html">разделе гайдов</a>. Определения терминов — в <a href="glossary.html">глоссарии Agent Lab Journal</a>.</p>
+      </footer>
+    </article>
+  </main>
+
+  <footer class="site-footer">
+    <div class="container">
+      <p>Agent Lab Journal — практические материалы о разработке и эксплуатации AI-агентов.</p>
+    </div>
+  </footer>
+</body>
+</html>

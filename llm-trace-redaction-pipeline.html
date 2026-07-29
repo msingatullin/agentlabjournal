@@ -1,0 +1,423 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Редакция чувствительных данных в LLM-трассировках без потери диагностической ценности — Agent Lab Journal</title>
+  <meta name="description" content="Практическое руководство по многоступенчатой редакции LLM-трассировок: структурные правила, псевдонимизация, поиск секретов, контролируемая проверка и безопасное хранение логов.">
+  <link rel="canonical" href="https://agentlabjournal.online/llm-trace-redaction-pipeline.html">
+  <link rel="stylesheet" href="style.css">
+  <link rel="stylesheet" href="reading.css">
+
+  <meta property="og:type" content="article">
+  <meta property="og:locale" content="ru_RU">
+  <meta property="og:site_name" content="Agent Lab Journal">
+  <meta property="og:title" content="Редакция чувствительных данных в LLM-трассировках без потери диагностической ценности">
+  <meta property="og:description" content="Настраиваем многоступенчатую редакцию промптов и ответов, сохраняем диагностические признаки и проверяем результат на контролируемом наборе данных.">
+  <meta property="og:url" content="https://agentlabjournal.online/llm-trace-redaction-pipeline.html">
+
+  <meta name="twitter:card" content="summary">
+  <meta name="twitter:title" content="Редакция чувствительных данных в LLM-трассировках">
+  <meta name="twitter:description" content="Практический конвейер: структурная фильтрация, псевдонимизация, детектирование секретов и автоматическая проверка.">
+
+  <meta name="reading-meta" content="Продвинутый уровень · до 9 минут · практическое руководство">
+
+  <script type="application/ld+json">
+  {
+    "@context": "https://schema.org",
+    "@type": "Article",
+    "headline": "Редакция чувствительных данных в LLM-трассировках без потери диагностической ценности",
+    "description": "Практическое руководство по многоступенчатой редакции LLM-трассировок с контролируемой проверкой результата.",
+    "inLanguage": "ru",
+    "mainEntityOfPage": {
+      "@type": "WebPage",
+      "@id": "https://agentlabjournal.online/llm-trace-redaction-pipeline.html"
+    },
+    "url": "https://agentlabjournal.online/llm-trace-redaction-pipeline.html",
+    "author": {
+      "@type": "Organization",
+      "name": "Agent Lab Journal"
+    },
+    "publisher": {
+      "@type": "Organization",
+      "name": "Agent Lab Journal",
+      "url": "https://agentlabjournal.online/"
+    },
+    "articleSection": "LLM Observability",
+    "proficiencyLevel": "Advanced",
+    "timeRequired": "PT9M"
+  }
+  </script>
+</head>
+<body>
+  <header class="site-header">
+    <nav aria-label="Основная навигация">
+      <a href="index.html" rel="home">Agent Lab Journal</a>
+      <a href="guides.html">Руководства</a>
+      <a href="glossary.html">Глоссарий</a>
+    </nav>
+  </header>
+
+  <main>
+    <article>
+      <header class="article-header">
+        <p class="eyebrow">Практика · LLM Observability</p>
+        <h1>Редакция чувствительных данных в LLM-трассировках без потери диагностической ценности</h1>
+        <p class="lead">Полный промпт ускоряет расследование сбоев, но одновременно превращает систему наблюдаемости в хранилище персональных данных, секретов и коммерческой информации. Ниже — воспроизводимый конвейер, который уменьшает этот риск и оставляет достаточно сигналов для отладки.</p>
+        <div class="reading-meta" aria-label="Параметры статьи">
+          <span>Продвинутый уровень</span>
+          <span>До 9 минут</span>
+          <span>Результат: проверенный конвейер редакции</span>
+        </div>
+      </header>
+
+      <section aria-labelledby="goal">
+        <h2 id="goal">Что мы построим</h2>
+        <p><a href="glossary.html">LLM-трассировка</a> — это связанная последовательность событий одного обращения к модели: входные сообщения, вызовы инструментов, ответы, ошибки, задержки и служебные атрибуты. Сохранять её целиком удобно, но безопаснее считать содержимое недоверенным уже в момент поступления.</p>
+        <p>Итоговый конвейер будет выполнять пять операций:</p>
+        <ol>
+          <li>оставлять только разрешённые поля события;</li>
+          <li>редактировать известные чувствительные поля независимо от их значения;</li>
+          <li>псевдонимизировать повторяющиеся идентификаторы;</li>
+          <li>искать опасные фрагменты внутри свободного текста;</li>
+          <li>отбрасывать или сокращать данные, не прошедшие проверку.</li>
+        </ol>
+        <p>Главный принцип: диагностическая ценность хранится не только в исходном тексте. Для расследований часто достаточно типа события, модели, длительности, размера входа, кода ошибки, позиции отредактированного фрагмента и стабильной псевдонимной метки.</p>
+      </section>
+
+      <section aria-labelledby="policy">
+        <h2 id="policy">Шаг 1. Зафиксируйте политику до написания регулярных выражений</h2>
+        <p>Разделите данные на четыре класса. Это пример политики, а не универсальная классификация: границы необходимо согласовать с требованиями вашей организации.</p>
+
+        <table>
+          <thead>
+            <tr>
+              <th>Класс</th>
+              <th>Примеры</th>
+              <th>Действие</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td>Разрешённые метаданные</td>
+              <td>Тип события, длительность, имя модели, HTTP-статус</td>
+              <td>Хранить с ограниченным сроком</td>
+            </tr>
+            <tr>
+              <td>Связующие идентификаторы</td>
+              <td>User ID, session ID, tenant ID</td>
+              <td>Псевдонимизировать</td>
+            </tr>
+            <tr>
+              <td>Чувствительное содержимое</td>
+              <td>Email, телефон, внутренний номер договора</td>
+              <td>Заменять типизированным маркером</td>
+            </tr>
+            <tr>
+              <td>Секреты</td>
+              <td>Пароль, токен, приватный ключ</td>
+              <td>Удалять; событие при необходимости помещать в карантин</td>
+            </tr>
+          </tbody>
+        </table>
+
+        <p>Для каждого поля заранее задайте владельца, цель хранения, допустимые потребители и срок удаления. Если назначение поля невозможно объяснить, не включайте его в журнал.</p>
+      </section>
+
+      <section aria-labelledby="fixture">
+        <h2 id="fixture">Шаг 2. Создайте контролируемый набор</h2>
+        <p>Не проверяйте редакцию на реальных пользовательских данных. Следующий файл содержит только явно вымышленные маркеры. Они нужны, чтобы увидеть пропуски и избыточные замены.</p>
+
+        <pre><code>{
+  "trace_id": "trace-demo-001",
+  "event": "model.request",
+  "model": "example-model",
+  "latency_ms": 842,
+  "user_id": "demo-user-42",
+  "session_id": "demo-session-7",
+  "messages": [
+    {
+      "role": "user",
+      "content": "Напишите на test.person@example.invalid. Телефон +7 000 000-00-00. Код проекта ALJ-DEMO-17."
+    },
+    {
+      "role": "system",
+      "content": "api_key=DEMO_SECRET_DO_NOT_USE_123456"
+    }
+  ],
+  "headers": {
+    "authorization": "Bearer DEMO_TOKEN_DO_NOT_USE_123456",
+    "content-type": "application/json"
+  },
+  "error": null
+}</code></pre>
+
+        <p>Домен <code>.invalid</code> зарезервирован для примеров и не должен разрешаться в рабочий адрес. Остальные строки также помечены как демонстрационные и не являются действующими реквизитами.</p>
+      </section>
+
+      <section aria-labelledby="implementation">
+        <h2 id="implementation">Шаг 3. Реализуйте многоступенчатую редакцию</h2>
+        <p>Ниже — автономный пример на Python без сторонних пакетов. Сохраните его как <code>redact_trace.py</code>. Ключ псевдонимизации передаётся только через окружение и не записывается в код или журнал.</p>
+
+        <pre><code>import hashlib
+import hmac
+import json
+import os
+import re
+import sys
+
+ALLOWED_TOP_LEVEL = {
+    "trace_id", "event", "model", "latency_ms",
+    "user_id", "session_id", "messages", "headers", "error"
+}
+
+DROP_FIELDS = {
+    "authorization", "cookie", "set-cookie",
+    "password", "passwd", "secret", "api_key", "access_token"
+}
+
+PSEUDONYM_FIELDS = {"user_id", "session_id", "tenant_id"}
+
+PATTERNS = [
+    (
+        "EMAIL",
+        re.compile(
+            r"\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b",
+            re.IGNORECASE
+        ),
+    ),
+    (
+        "PHONE",
+        re.compile(r"(?&lt;!\w)\+?\d[\d ()-]{7,}\d(?!\w)"),
+    ),
+    (
+        "BEARER",
+        re.compile(r"\bBearer\s+[A-Za-z0-9._~+/=-]{12,}", re.IGNORECASE),
+    ),
+    (
+        "ASSIGNMENT_SECRET",
+        re.compile(
+            r"\b(api[_-]?key|token|password|secret)\s*[:=]\s*[^\s,;]{8,}",
+            re.IGNORECASE
+        ),
+    ),
+]
+
+MAX_TEXT_LENGTH = 4000
+MAX_DEPTH = 12
+
+def pseudonym(value, key):
+    digest = hmac.new(
+        key.encode("utf-8"),
+        str(value).encode("utf-8"),
+        hashlib.sha256,
+    ).hexdigest()[:16]
+    return "pseudonym:" + digest
+
+def redact_text(value):
+    original_length = len(value)
+    text = value[:MAX_TEXT_LENGTH]
+    findings = []
+
+    for label, pattern in PATTERNS:
+        count = 0
+
+        def replace(match):
+            nonlocal count
+            count += 1
+            return f"[REDACTED:{label}]"
+
+        text = pattern.sub(replace, text)
+        if count:
+            findings.append({"type": label, "count": count})
+
+    return {
+        "text": text,
+        "original_length": original_length,
+        "truncated": original_length &gt; MAX_TEXT_LENGTH,
+        "findings": findings,
+    }
+
+def walk(value, key, field=None, depth=0):
+    if depth &gt; MAX_DEPTH:
+        return "[DROPPED:MAX_DEPTH]"
+
+    if field and field.lower() in DROP_FIELDS:
+        return "[REDACTED:FIELD]"
+
+    if field and field.lower() in PSEUDONYM_FIELDS:
+        return pseudonym(value, key)
+
+    if isinstance(value, dict):
+        result = {}
+        for child_key, child_value in value.items():
+            result[child_key] = walk(
+                child_value, key, child_key, depth + 1
+            )
+        return result
+
+    if isinstance(value, list):
+        return [
+            walk(item, key, field, depth + 1)
+            for item in value[:100]
+        ]
+
+    if isinstance(value, str):
+        redacted = redact_text(value)
+        if redacted["findings"] or redacted["truncated"]:
+            return redacted
+        return value
+
+    return value
+
+def redact_event(event, key):
+    filtered = {
+        name: event[name]
+        for name in ALLOWED_TOP_LEVEL
+        if name in event
+    }
+    return walk(filtered, key)
+
+def main():
+    key = os.environ.get("TRACE_PSEUDONYM_KEY")
+    if not key or len(key) &lt; 32:
+        raise SystemExit(
+            "TRACE_PSEUDONYM_KEY должен содержать не менее 32 символов"
+        )
+
+    event = json.load(sys.stdin)
+    result = redact_event(event, key)
+    json.dump(result, sys.stdout, ensure_ascii=False, indent=2)
+    sys.stdout.write("\n")
+
+if __name__ == "__main__":
+    main()</code></pre>
+
+        <p>Очередность имеет значение. Сначала действует список разрешённых верхнеуровневых полей, затем правила по имени поля, после них — обработка свободного текста. Благодаря этому секрет в <code>authorization</code> удаляется даже тогда, когда его формат неизвестен регулярным выражениям.</p>
+      </section>
+
+      <section aria-labelledby="run">
+        <h2 id="run">Шаг 4. Запустите безопасно</h2>
+        <p>Сохраните демонстрационное событие в <code>fixture.json</code>, а программу — в <code>redact_trace.py</code>. Для локальной проверки задайте временный демонстрационный ключ. Не используйте этот ключ в рабочей среде.</p>
+
+        <pre><code>export TRACE_PSEUDONYM_KEY='demo-only-key-32-characters-minimum'
+python3 redact_trace.py &lt; fixture.json &gt; redacted.json
+python3 -m json.tool redacted.json</code></pre>
+
+        <p>В производственной системе ключ следует получать из штатного хранилища секретов непосредственно при запуске процесса. Разделяйте ключи по средам, ограничивайте доступ к ним и планируйте ротацию: смена ключа изменит псевдонимы и разорвёт сопоставление между периодами.</p>
+      </section>
+
+      <section aria-labelledby="verify">
+        <h2 id="verify">Шаг 5. Проверьте результат автоматически</h2>
+        <p>В корректно обработанном файле должны сохраниться <code>event</code>, <code>model</code>, <code>latency_ms</code>, роли сообщений и код проекта. Email, телефон, демонстрационный секрет и bearer-токен не должны остаться в открытом виде. Идентификаторы пользователя и сессии должны превратиться в стабильные HMAC-псевдонимы.</p>
+
+        <p>Создайте <code>verify_redaction.py</code>:</p>
+
+        <pre><code>import json
+import sys
+
+with open("redacted.json", encoding="utf-8") as source:
+    result = json.load(source)
+
+serialized = json.dumps(result, ensure_ascii=False)
+
+for forbidden in [
+    "test.person@example.invalid",
+    "+7 000 000-00-00",
+    "DEMO_SECRET_DO_NOT_USE_123456",
+    "DEMO_TOKEN_DO_NOT_USE_123456",
+    "demo-user-42",
+    "demo-session-7",
+]:
+    if forbidden in serialized:
+        raise SystemExit(f"Утечка контролируемого маркера: {forbidden}")
+
+assert result["event"] == "model.request"
+assert result["model"] == "example-model"
+assert result["latency_ms"] == 842
+assert "ALJ-DEMO-17" in serialized
+assert result["user_id"].startswith("pseudonym:")
+assert result["session_id"].startswith("pseudonym:")
+
+print("Проверка пройдена: маркеры удалены, диагностические поля сохранены")</code></pre>
+
+        <p>Запуск:</p>
+
+        <pre><code>python3 verify_redaction.py</code></pre>
+
+        <p>Это проверка конкретного контролируемого набора, а не доказательство отсутствия утечек во всех входах. Расширяйте набор случаями с Unicode, вложенными объектами, длинными строками, необычными разделителями и секретами, характерными для вашей инфраструктуры.</p>
+      </section>
+
+      <section aria-labelledby="production">
+        <h2 id="production">Как встроить конвейер в рабочую трассировку</h2>
+        <p>Редактор должен работать до экспорта события в коллектор, очередь или SaaS-систему наблюдаемости. Редакция только на стороне интерфейса скрывает данные от оператора, но не удаляет их из хранилища.</p>
+
+        <ol>
+          <li>Сформируйте событие в памяти приложения.</li>
+          <li>Примените структурный список разрешённых полей.</li>
+          <li>Удалите секреты и псевдонимизируйте идентификаторы.</li>
+          <li>Просканируйте свободный текст и ограничьте объём.</li>
+          <li>Проверьте итоговую схему и только затем экспортируйте.</li>
+        </ol>
+
+        <p>Полезно вести отдельные счётчики без исходных значений: число замен по типам, число отброшенных событий, долю усечённых сообщений, версию политики и задержку редактора. Резкий рост <code>REDACTED:FIELD</code> может указывать на изменение входной схемы, а рост карантина — на новую форму секрета или ошибку интеграции.</p>
+
+        <p>Если организации действительно нужен доступ к исходному событию для редкого расследования, храните его в отдельном зашифрованном контуре с коротким сроком жизни, строгим аудитом доступа и процедурой одобрения. Такой контур не должен быть обычным источником для поиска и аналитики.</p>
+      </section>
+
+      <section aria-labelledby="mistakes">
+        <h2 id="mistakes">Типовые ошибки</h2>
+
+        <h3>Полагаться только на регулярные выражения</h3>
+        <p>Они пропускают нестандартные форматы и могут ошибочно скрывать безопасный текст. Структурное правило для поля <code>password</code> надёжнее попытки распознать значение пароля.</p>
+
+        <h3>Редактировать после записи</h3>
+        <p>За время между записью и очисткой данные уже могут попасть в резервную копию, поисковый индекс, выгрузку или уведомление. Обрабатывайте событие до первой внешней границы.</p>
+
+        <h3>Использовать обычный хеш для идентификаторов</h3>
+        <p>Предсказуемые значения можно перебрать. HMAC с отдельным секретным ключом снижает этот риск и сохраняет возможность сопоставлять события одного субъекта внутри выбранного периода.</p>
+
+        <h3>Заменять всё одним маркером</h3>
+        <p><code>[REDACTED]</code> не сообщает, что именно было найдено. Типизированные маркеры и счётчики сохраняют диагностическую ценность без сохранения исходного значения.</p>
+
+        <h3>Записывать ошибку редактора вместе с исходным событием</h3>
+        <p>Обработчик исключений нередко возвращает опасный вход в журнал. При сбое сохраняйте только код ошибки редакции, идентификатор трассы, версию политики и безопасные метаданные.</p>
+
+        <h3>Не версионировать правила</h3>
+        <p>Без версии политики трудно понять, почему два похожих события обработаны по-разному. Добавляйте к результату идентификатор набора правил, но не помещайте туда ключ или чувствительную конфигурацию.</p>
+      </section>
+
+      <section aria-labelledby="limits">
+        <h2 id="limits">Ограничения</h2>
+        <p>Такой конвейер уменьшает поверхность утечки, но не гарантирует абсолютную анонимность. Чувствительный смысл может сохраняться в редких формулировках, комбинациях метаданных, изображениях, вложениях, tool-вызовах или необычной кодировке. Регулярные выражения не понимают контекст, а статистические детекторы дают ложные срабатывания и пропуски.</p>
+        <p>Псевдонимизация также не равна анонимизации: стабильные метки позволяют связывать события. Поэтому к отредактированным трассам всё равно нужны контроль доступа, ограниченный срок хранения, аудит выгрузок и минимизация числа копий.</p>
+        <p>Не отправляйте сырой текст во внешнюю модель «для проверки на PII»: это создаёт ещё одну передачу чувствительных данных. Если семантический детектор необходим, оцените его локальное развёртывание, модель угроз и поведение при отказе. Безопасный режим отказа — не экспортировать сомнительное событие.</p>
+      </section>
+
+      <section aria-labelledby="checklist">
+        <h2 id="checklist">Контрольный список перед включением</h2>
+        <ul>
+          <li>События проходят редакцию до очереди, коллектора и диска.</li>
+          <li>Верхнеуровневые поля разрешены явно, а не принимаются по умолчанию.</li>
+          <li>Известные секретные поля удаляются независимо от формата значения.</li>
+          <li>Связующие идентификаторы защищены HMAC, а ключ не попадает в логи.</li>
+          <li>Длина строк, размер списков и глубина вложенности ограничены.</li>
+          <li>Контролируемые маркеры проверяются автоматически при изменении правил.</li>
+          <li>Ошибка редактора не приводит к экспорту исходного события.</li>
+          <li>У политики есть версия, владелец и процедура пересмотра.</li>
+          <li>Для отредактированных логов заданы доступ и срок удаления.</li>
+        </ul>
+      </section>
+
+      <section aria-labelledby="next">
+        <h2 id="next">Что дальше</h2>
+        <p>Встройте проверку контролируемых маркеров в CI, а затем добавьте случаи из собственных схем — только синтетические или специально обезличенные. Для проектирования остальных частей наблюдаемости используйте <a href="guides.html">практические руководства</a>, а определения терминов сверяйте с <a href="glossary.html">глоссарием Agent Lab Journal</a>.</p>
+      </section>
+    </article>
+  </main>
+
+  <footer class="site-footer">
+    <p><a href="index.html">Agent Lab Journal</a> — практические материалы о разработке и эксплуатации AI-систем.</p>
+  </footer>
+</body>
+</html>
