@@ -1,0 +1,1073 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+
+  <title>Тестируем Browser Harness: может ли агент сам дописывать автоматизацию браузера — Agent Lab Journal</title>
+  <meta name="description" content="Практический тест Browser Harness: подключаем Chrome через CDP, даём агенту нестандартный Shadow DOM-компонент, проверяем создание недостающего helper и его повторное использование.">
+  <link rel="canonical" href="https://agentlabjournal.online/browser-harness-protiv-tradicionnoy-avtomatizacii.html">
+
+  <link rel="stylesheet" href="style.css">
+  <link rel="stylesheet" href="reading.css">
+
+  <meta property="og:type" content="article">
+  <meta property="og:locale" content="ru_RU">
+  <meta property="og:site_name" content="Agent Lab Journal">
+  <meta property="og:title" content="Тестируем Browser Harness: может ли агент сам дописывать автоматизацию браузера">
+  <meta property="og:description" content="Воспроизводимая лаборатория: подключённый через CDP браузер, нестандартный веб-компонент, созданный агентом helper и независимая проверка повторного запуска.">
+  <meta property="og:url" content="https://agentlabjournal.online/browser-harness-protiv-tradicionnoy-avtomatizacii.html">
+  <meta property="og:image" content="https://agentlabjournal.online/podcast-cover.png">
+  <meta property="og:image:width" content="1200">
+  <meta property="og:image:height" content="630">
+  <meta property="article:modified_time" content="2026-07-29">
+
+  <meta name="twitter:card" content="summary_large_image">
+  <meta name="twitter:title" content="Тестируем Browser Harness: агент дописывает автоматизацию браузера">
+  <meta name="twitter:description" content="Подключаем Chrome через CDP и проверяем, способен ли агент создать недостающий helper, применить его и повторить сценарий без ручной доработки.">
+  <meta name="twitter:image" content="https://agentlabjournal.online/podcast-cover.png">
+
+  <script type="application/ld+json">
+  {
+    "@context": "https://schema.org",
+    "@type": "Article",
+    "headline": "Тестируем Browser Harness: может ли агент сам дописывать автоматизацию браузера",
+    "description": "Практический тест Browser Harness: подключаем Chrome через CDP, даём агенту нестандартный Shadow DOM-компонент, проверяем создание недостающего helper и его повторное использование.",
+    "image": [
+      "https://agentlabjournal.online/podcast-cover.png"
+    ],
+    "dateModified": "2026-07-29",
+    "author": {
+      "@type": "Organization",
+      "name": "Agent Lab Journal",
+      "url": "https://agentlabjournal.online/"
+    },
+    "publisher": {
+      "@type": "Organization",
+      "name": "Agent Lab Journal",
+      "url": "https://agentlabjournal.online/",
+      "logo": {
+        "@type": "ImageObject",
+        "url": "https://agentlabjournal.online/podcast-cover.png"
+      }
+    },
+    "mainEntityOfPage": {
+      "@type": "WebPage",
+      "@id": "https://agentlabjournal.online/browser-harness-protiv-tradicionnoy-avtomatizacii.html"
+    },
+    "inLanguage": "ru-RU"
+  }
+  </script>
+</head>
+<body>
+  <header class="site-header">
+    <div class="container">
+      <a class="site-name" href="index.html">Agent Lab Journal</a>
+      <nav aria-label="Основная навигация">
+        <a href="guides.html">Руководства</a>
+        <a href="glossary.html">Глоссарий</a>
+      </nav>
+    </div>
+  </header>
+
+  <main>
+    <article class="reading">
+      <header class="article-header">
+        <p class="eyebrow">Инструменты · Браузерная автоматизация · Лаборатория</p>
+
+        <h1>Тестируем <a class="term-link" href="glossary.html#tool-calling">Browser Harness</a>: может ли агент сам дописывать автоматизацию браузера</h1>
+
+        <div class="reading-meta" aria-label="Информация о материале">
+          <span>Уровень: продвинутый</span>
+          <span>Время чтения и практики: 35 минут</span>
+          <span>Результат: подключённый через CDP браузер и воспроизводимый тест с повторно используемым helper</span>
+        </div>
+
+        <p class="lead">
+          <strong>Главная проверка Browser Harness начинается там, где заканчивается заранее подготовленный набор кнопок.</strong>
+          Обычная интеграция умеет открыть страницу, нажать элемент и ввести текст, но нестандартный web component, закрытый Shadow DOM или особая последовательность событий снова превращают автоматизацию в отдельный проект. В этой лаборатории <a class="term-link" href="glossary.html#ai-агент">AI-агент</a> подключится к настоящему Chrome через Chrome DevTools Protocol, столкнётся с отсутствующей операцией, добавит узкий helper в редактируемый слой и применит его ещё раз после сброса страницы. Успех определим не по сообщению «готово», а по diff, состоянию браузера и независимому повторному запуску.
+        </p>
+      </header>
+
+      <nav class="table-of-contents" aria-label="Содержание">
+        <h2>Содержание</h2>
+        <ol>
+          <li><a href="#question">Что проверяет лаборатория</a></li>
+          <li><a href="#architecture">Чем harness отличается от обычного инструмента</a></li>
+          <li><a href="#criteria">Критерии успеха</a></li>
+          <li><a href="#requirements">Окружение и границы безопасности</a></li>
+          <li><a href="#install">Установка и подключение Chrome</a></li>
+          <li><a href="#fixture">Создание локальной страницы</a></li>
+          <li><a href="#baseline">Контрольный запуск до helper</a></li>
+          <li><a href="#agent-task">Задача для агента</a></li>
+          <li><a href="#helper-contract">Контракт недостающего helper</a></li>
+          <li><a href="#first-run">Первый запуск и наблюдения</a></li>
+          <li><a href="#reuse">Проверка повторного использования</a></li>
+          <li><a href="#verification">Независимая верификация</a></li>
+          <li><a href="#comparison">Сравнение с традиционной автоматизацией</a></li>
+          <li><a href="#failures">Типовые сбои</a></li>
+          <li><a href="#limitations">Ограничения подхода</a></li>
+          <li><a href="#decision">Итоговый критерий решения</a></li>
+        </ol>
+      </nav>
+
+      <section id="question">
+        <h2>1. Что проверяет лаборатория</h2>
+
+        <p>
+          Browser Harness — тонкая управляющая оболочка, которая даёт агенту доступ к уже запущенному Chrome. Браузер остаётся отдельным процессом, а команды передаются через <a class="term-link" href="glossary.html#mcp">CDP</a> — Chrome DevTools Protocol. В отличие от фиксированного сервера с десятком неизменяемых операций, harness предоставляет базовые примитивы и редактируемый файл <code>agent_helpers.py</code>.
+        </p>
+
+        <p>
+          Проверяемая гипотеза звучит так: если базовых примитивов недостаточно, агент способен изучить страницу, написать минимальную операцию для конкретной механики интерфейса, сохранить её в разрешённом слое и повторно применить без нового исследования.
+        </p>
+
+        <p>В тесте нужно разделить три разных результата:</p>
+
+        <ol>
+          <li><strong>Разовое выполнение.</strong> Агент каким-либо способом изменил страницу.</li>
+          <li><strong>Расширение harness.</strong> Агент добавил именованный helper с понятными аргументами и проверкой ошибок.</li>
+          <li><strong>Повторное использование.</strong> После сброса страницы тот же helper выполнил операцию ещё раз без изменения исходного кода.</li>
+        </ol>
+
+        <aside class="note">
+          <h3>Почему одного успешного клика недостаточно</h3>
+          <p>
+            Агент может случайно попасть по координатам, напрямую переписать состояние страницы или объявить успех после визуально похожего результата. Такой запуск ничего не говорит о накоплении автоматизации. Ценность появляется, когда найденная механика превращается в узкий проверяемый интерфейс.
+          </p>
+        </aside>
+      </section>
+
+      <section id="architecture">
+        <h2>2. Чем harness отличается от обычного инструмента</h2>
+
+        <p>
+          В традиционной схеме разработчик заранее создаёт функции <code>click</code>, <code>fill</code>, <code>upload</code>, <code>select</code> и регистрирует их для <a class="term-link" href="glossary.html#tool-calling">вызова инструментов</a>. Если продукт использует необычный редактор, canvas, закрытое дерево компонентов или собственный протокол событий, требуется новая функция, новая схема аргументов, новая версия сервера и повторное развёртывание.
+        </p>
+
+        <p>Browser Harness разделяет систему на два слоя:</p>
+
+        <ul>
+          <li><strong>Защищённое ядро.</strong> Соединение с Chrome, выполнение CDP-команд, базовые действия, управление вкладками и загрузкой страницы.</li>
+          <li><strong>Редактируемая рабочая область.</strong> Файл <code>agent_helpers.py</code> и при необходимости доменные инструкции, которые агент может дополнять в рамках задачи.</li>
+        </ul>
+
+        <p>
+          Такой дизайн не отменяет разработку автоматизации. Он меняет момент и автора разработки: helper возникает при встрече с реальным препятствием, а не в результате попытки заранее предсказать все операции сайта.
+        </p>
+
+        <p>
+          У подхода есть цена. Код, написанный агентом, нельзя автоматически считать надёжным или безопасным. Редактируемый helper должен проходить те же проверки, что и обычный код: ограниченный diff, валидацию аргументов, обработку отсутствующих элементов, тайм-аут и повторный тест.
+        </p>
+      </section>
+
+      <section id="criteria">
+        <h2>3. Критерии успеха</h2>
+
+        <p>
+          До запуска зафиксируйте критерии, чтобы не подгонять вывод под поведение агента.
+        </p>
+
+        <table>
+          <thead>
+            <tr>
+              <th>Проверка</th>
+              <th>PASS</th>
+              <th>FAIL</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td>Соединение</td>
+              <td><code>page_info()</code> возвращает сведения о реальной вкладке</td>
+              <td>Агент работает с другим браузером или не видит страницу</td>
+            </tr>
+            <tr>
+              <td>Исходное состояние</td>
+              <td>До операции видны <code>status=empty</code> и нулевой счётчик</td>
+              <td>Тест начинается с уже изменённой страницы</td>
+            </tr>
+            <tr>
+              <td>Изменение helper</td>
+              <td>Изменён только разрешённый файл рабочей области</td>
+              <td>Агент переписал ядро, страницу или тестовые ожидания</td>
+            </tr>
+            <tr>
+              <td>Функциональный результат</td>
+              <td>Компонент сообщает ожидаемое значение и увеличивает счётчик событий</td>
+              <td>Изменился только внешний текст или агент не проверил событие</td>
+            </tr>
+            <tr>
+              <td>Повторное использование</td>
+              <td>После сброса helper вызывается повторно без правок</td>
+              <td>Агент снова исследует DOM или меняет helper между запусками</td>
+            </tr>
+            <tr>
+              <td>Негативная проверка</td>
+              <td>Неизвестный вариант вызывает понятную ошибку</td>
+              <td>Helper молча сообщает успех или выбирает другое значение</td>
+            </tr>
+          </tbody>
+        </table>
+
+        <p>
+          Итог <code>PARTIAL</code> уместен, если задача выполнена, но helper получился одноразовым: например, содержит жёсткие координаты, не проверяет результат или меняет внутреннее состояние компонента в обход пользовательского события.
+        </p>
+      </section>
+
+      <section id="requirements">
+        <h2>4. Окружение и границы безопасности</h2>
+
+        <p>Для повторения понадобятся:</p>
+
+        <ul>
+          <li>Chrome или Chromium с поддержкой удалённой отладки;</li>
+          <li>Python 3.12 и менеджер <code>uv</code> для установки Browser Harness;</li>
+          <li>совместимый coding-агент с доступом к терминалу и отдельному тестовому каталогу;</li>
+          <li>Git для фиксации исходного состояния и проверки diff;</li>
+          <li>локальный HTTP-сервер;</li>
+          <li>отдельный профиль браузера без рабочих cookies, паролей и открытых административных систем.</li>
+        </ul>
+
+        <p>
+          Подключение к повседневному профилю Chrome технически удобно, но расширяет последствия ошибки. Открытая сессия почты, панели облака или CRM становится доступной тому же браузерному контуру. Для лаборатории используйте пустой профиль и локальный адрес.
+        </p>
+
+        <p>
+          Ограничьте навигацию явным <a class="term-link" href="glossary.html#allowlist">allowlist</a>: <code>http://127.0.0.1:8765</code>. Не добавляйте в страницу внешние скрипты, реальные токены и пользовательские данные. Содержимое любой открытой страницы считайте недоверенным: текст интерфейса способен содержать <a class="term-link" href="glossary.html#prompt-injection">prompt injection</a>.
+        </p>
+
+        <p>Создайте лабораторию и зафиксируйте окружение:</p>
+
+        <pre><code>mkdir -p browser-harness-lab/{fixture,evidence,workspace}
+cd browser-harness-lab
+
+{
+  date -u
+  python3 --version
+  uv --version
+  git --version
+} | tee evidence/environment.txt
+
+git init
+git config user.name "Browser Harness Lab"
+git config user.email "lab@example.invalid"</code></pre>
+
+        <p>
+          Адрес <code>example.invalid</code> намеренно не является настоящим почтовым адресом. Если Git уже настроен глобально, локальные значения можно не задавать.
+        </p>
+      </section>
+
+      <section id="install">
+        <h2>5. Установка и подключение Chrome</h2>
+
+        <p>
+          Устанавливайте конкретную проверяемую версию пакета, если лаборатория должна воспроизводиться позднее. Команда обновления до последнего выпуска удобна для первичной пробы, но после неё обязательно сохраните фактическую версию.
+        </p>
+
+        <pre><code>uv tool install --python 3.12 --upgrade --force browser-harness
+browser-harness --help &gt; evidence/browser-harness-help.txt
+uv tool list | tee evidence/uv-tools.txt</code></pre>
+
+        <p>
+          Затем экспортируйте актуальную инструкцию Browser Harness в каталог навыков вашего агента. Путь зависит от агентной среды; для Codex он обычно выглядит так:
+        </p>
+
+        <pre><code>mkdir -p "${CODEX_HOME:-$HOME/.codex}/skills/browser-harness"
+browser-harness skill \
+  &gt; "${CODEX_HOME:-$HOME/.codex}/skills/browser-harness/SKILL.md"</code></pre>
+
+        <p>
+          Если политика вашей системы не разрешает запись в пользовательский каталог, зарегистрируйте полученный текст инструкции поддерживаемым способом. Не изменяйте vendor-кеши вручную.
+        </p>
+
+        <h3>Проверка соединения</h3>
+
+        <pre><code>browser-harness --doctor | tee evidence/doctor.txt
+
+browser-harness &lt;&lt;'PY'
+print(page_info())
+PY</code></pre>
+
+        <p>
+          Если Chrome запущен, но удалённая отладка не разрешена, откройте в нём:
+        </p>
+
+        <pre><code>chrome://inspect/#remote-debugging</code></pre>
+
+        <p>
+          Включите разрешение удалённой отладки и подтвердите системное окно Chrome. Это ручной <a class="term-link" href="glossary.html#approval-gate">контур подтверждения</a>: агент не должен обходить его или бесконечно создавать новые попытки подключения.
+        </p>
+
+        <p>
+          Повторите <code>page_info()</code>. Успешное выполнение означает только наличие канала к браузеру. Оно ещё не доказывает, что открыта правильная вкладка или что helper загружается из нужной рабочей области.
+        </p>
+
+        <h3>Запись действий</h3>
+
+        <p>
+          Записи могут содержать текст страниц и изображения. Для пустого лабораторного профиля их можно включить явно:
+        </p>
+
+        <pre><code>browser-harness recordings enable
+browser-harness recordings</code></pre>
+
+        <p>
+          В рабочем профиле сначала оцените политику хранения. Отсутствие записи не мешает тесту: обязательными доказательствами остаются diff, вывод команд и состояние локальной страницы.
+        </p>
+      </section>
+
+      <section id="fixture">
+        <h2>6. Создание локальной страницы с нестандартным компонентом</h2>
+
+        <p>
+          Нужна контролируемая <a class="term-link" href="glossary.html#benchmark">фикстура</a>, которую можно сбрасывать без внешней системы. Компонент ниже помещает кнопки в закрытый Shadow DOM. Обычный поиск по DOM не увидит внутренние элементы, но настоящий клик по координатам вызовет штатное событие.
+        </p>
+
+        <p>Создайте файл <code>fixture/index.html</code>:</p>
+
+        <pre><code>&lt;!doctype html&gt;
+&lt;html lang="ru"&gt;
+&lt;head&gt;
+  &lt;meta charset="utf-8"&gt;
+  &lt;meta name="viewport" content="width=device-width,initial-scale=1"&gt;
+  &lt;title&gt;Browser Harness Fixture&lt;/title&gt;
+  &lt;style&gt;
+    body {
+      max-width: 720px;
+      margin: 48px auto;
+      padding: 0 20px;
+      font: 18px/1.5 system-ui, sans-serif;
+    }
+    shipping-picker { display: block; margin: 24px 0; }
+    output { display: block; padding: 12px; background: #eef4f1; }
+  &lt;/style&gt;
+&lt;/head&gt;
+&lt;body&gt;
+  &lt;h1&gt;Настройка доставки&lt;/h1&gt;
+  &lt;p&gt;Выберите способ доставки внутри компонента.&lt;/p&gt;
+
+  &lt;shipping-picker&gt;&lt;/shipping-picker&gt;
+
+  &lt;output id="result"
+          data-status="empty"
+          data-events="0"&gt;Ничего не выбрано&lt;/output&gt;
+
+  &lt;button id="reset" type="button"&gt;Сбросить&lt;/button&gt;
+
+  &lt;script&gt;
+    class ShippingPicker extends HTMLElement {
+      #root;
+
+      constructor() {
+        super();
+        this.#root = this.attachShadow({mode: "closed"});
+        this.#root.innerHTML = `
+          &lt;style&gt;
+            div { display: flex; gap: 12px; }
+            button {
+              min-width: 150px;
+              padding: 14px;
+              border: 2px solid #315c54;
+              background: white;
+              cursor: pointer;
+            }
+            button[aria-pressed="true"] {
+              color: white;
+              background: #315c54;
+            }
+          &lt;/style&gt;
+          &lt;div role="group" aria-label="Способ доставки"&gt;
+            &lt;button type="button" data-value="courier"
+                    aria-pressed="false"&gt;Курьер&lt;/button&gt;
+            &lt;button type="button" data-value="pickup"
+                    aria-pressed="false"&gt;Самовывоз&lt;/button&gt;
+          &lt;/div&gt;`;
+
+        this.#root.addEventListener("click", event =&gt; {
+          const button = event.target.closest("button");
+          if (!button) return;
+
+          this.#root.querySelectorAll("button").forEach(item =&gt; {
+            item.setAttribute(
+              "aria-pressed",
+              String(item === button)
+            );
+          });
+
+          this.dispatchEvent(new CustomEvent("shipping-change", {
+            bubbles: true,
+            detail: {value: button.dataset.value}
+          }));
+        });
+      }
+
+      reset() {
+        this.#root.querySelectorAll("button").forEach(item =&gt; {
+          item.setAttribute("aria-pressed", "false");
+        });
+      }
+    }
+
+    customElements.define("shipping-picker", ShippingPicker);
+
+    const picker = document.querySelector("shipping-picker");
+    const result = document.querySelector("#result");
+
+    picker.addEventListener("shipping-change", event =&gt; {
+      result.dataset.status = event.detail.value;
+      result.dataset.events =
+        String(Number(result.dataset.events) + 1);
+      result.textContent = `Выбрано: ${event.detail.value}`;
+    });
+
+    document.querySelector("#reset").addEventListener("click", () =&gt; {
+      picker.reset();
+      result.dataset.status = "empty";
+      result.dataset.events = "0";
+      result.textContent = "Ничего не выбрано";
+    });
+  &lt;/script&gt;
+&lt;/body&gt;
+&lt;/html&gt;</code></pre>
+
+        <p>
+          Здесь специально нет API для выбора варианта снаружи. Правильная автоматизация должна выполнить пользовательское действие, после которого компонент отправит <code>shipping-change</code>. Прямая запись <code>result.dataset.status = "pickup"</code> подделает результат и должна считаться провалом.
+        </p>
+
+        <p>Запустите сервер из корня лаборатории:</p>
+
+        <pre><code>python3 -m http.server 8765 \
+  --bind 127.0.0.1 \
+  --directory fixture</code></pre>
+
+        <p>
+          Оставьте процесс запущенным в отдельном терминале. Проверка доступности:
+        </p>
+
+        <pre><code>curl --fail --silent http://127.0.0.1:8765/ \
+  | head -n 5</code></pre>
+
+        <p>Добавьте файлы и создайте исходный commit:</p>
+
+        <pre><code>git add fixture/index.html evidence/
+git commit -m "Create browser harness fixture"
+git status --short</code></pre>
+      </section>
+
+      <section id="baseline">
+        <h2>7. Контрольный запуск до создания helper</h2>
+
+        <p>
+          Сначала откройте фикстуру новым табом. Первый переход следует делать через <code>new_tab()</code>, чтобы не затереть страницу пользователя в уже активной вкладке.
+        </p>
+
+        <pre><code>browser-harness &lt;&lt;'PY'
+new_tab("http://127.0.0.1:8765/")
+wait_for_load()
+print(page_info())
+print(js("""
+() =&gt; {
+  const out = document.querySelector('#result');
+  return {
+    title: document.title,
+    status: out.dataset.status,
+    events: Number(out.dataset.events)
+  };
+}
+"""))
+PY</code></pre>
+
+        <p>Контрольное состояние должно соответствовать структуре:</p>
+
+        <pre><code>{
+  "title": "Browser Harness Fixture",
+  "status": "empty",
+  "events": 0
+}</code></pre>
+
+        <p>
+          Это ожидаемая форма проверки, а не заявленный результат конкретного запуска. Если фактические значения отличаются, сначала сбросьте страницу и только затем продолжайте.
+        </p>
+
+        <p>
+          Проверьте, что обычный запрос из внешнего DOM не раскрывает кнопку:
+        </p>
+
+        <pre><code>browser-harness &lt;&lt;'PY'
+print(js("""
+() =&gt; ({
+  visibleInDocument:
+    Boolean(document.querySelector('[data-value="pickup"]')),
+  shadowRootExposed:
+    document.querySelector('shipping-picker').shadowRoot !== null
+})
+"""))
+PY</code></pre>
+
+        <p>
+          Для данной фикстуры ожидаются <code>false</code> и <code>false</code>. Если кнопка доступна обычным селектором, тест больше не проверяет выбранную нестандартную механику.
+        </p>
+      </section>
+
+      <section id="agent-task">
+        <h2>8. Постановка задачи агенту</h2>
+
+        <p>
+          Не диктуйте реализацию helper заранее: иначе тест проверит копирование готового решения. При этом чётко задайте границы, доказательства и запрещённые обходы.
+        </p>
+
+        <pre><code>Работай только с http://127.0.0.1:8765/ и каталогом
+browser-harness-lab.
+
+Через Browser Harness выбери вариант «Самовывоз» внутри
+компонента shipping-picker.
+
+Если существующих browser-harness helpers недостаточно:
+1. исследуй страницу через accessibility tree и CDP;
+2. добавь минимальный повторно используемый helper только в
+   agent_helpers.py рабочей области Browser Harness;
+3. назови helper select_shipping_method(label);
+4. helper должен кликать реальный элемент, а не переписывать
+   #result, dataset или отправлять shipping-change вручную;
+5. после клика проверь status и число событий;
+6. сбрось страницу;
+7. вызови тот же helper второй раз с «Курьер» без изменения
+   его кода;
+8. покажи путь изменённого файла, diff и результаты обеих
+   проверок.
+
+Не меняй fixture/index.html, ядро browser_harness, настройки
+Chrome и тестовые ожидания. Не открывай внешние адреса.
+Не используй сохранённые логины. Если требуется пароль,
+MFA или расширение разрешений — остановись.</code></pre>
+
+        <p>
+          Эта инструкция — <a class="term-link" href="glossary.html#prompt">промпт</a> теста. Она задаёт критерии, но не гарантирует их соблюдение. Ограничение URL и файлов должно по возможности поддерживаться средой выполнения, а не только текстом.
+        </p>
+      </section>
+
+      <section id="helper-contract">
+        <h2>9. Каким должен быть контракт helper</h2>
+
+        <p>
+          Агент может выбрать разные корректные способы: accessibility tree, CDP DOM snapshot, координаты элемента или комбинацию методов. Не сравнивайте реализацию с единственным эталонным текстом. Проверяйте поведение и свойства интерфейса.
+        </p>
+
+        <p>Минимальный контракт:</p>
+
+        <pre><code>def select_shipping_method(label: str) -&gt; dict:
+    """
+    Выбирает вариант в shipping-picker реальным кликом.
+
+    Возвращает:
+      {
+        "requested": "Самовывоз",
+        "status": "pickup",
+        "events": 1
+      }
+
+    Ошибки:
+      ValueError — неизвестная подпись;
+      RuntimeError — элемент не найден, клик не дал события
+                     или итоговый status не совпал.
+    """</code></pre>
+
+        <p>Хороший helper:</p>
+
+        <ul>
+          <li>принимает осмысленный параметр, а не координаты из одного запуска;</li>
+          <li>ограничивает допустимые варианты;</li>
+          <li>находит компонент по роли, имени или устойчивому признаку;</li>
+          <li>вычисляет актуальные координаты непосредственно перед кликом;</li>
+          <li>проверяет результат после действия;</li>
+          <li>возвращает структурированные данные;</li>
+          <li>завершается ошибкой, если ожидаемое событие не произошло;</li>
+          <li>не содержит токенов, cookies, абсолютных пользовательских путей и копии всей страницы.</li>
+        </ul>
+
+        <p>
+          Пример допустимой формы реализации ниже предназначен для ревью, а не для передачи агенту до опыта:
+        </p>
+
+        <pre><code>def select_shipping_method(label: str) -&gt; dict:
+    expected = {
+        "Курьер": "courier",
+        "Самовывоз": "pickup",
+    }
+
+    if label not in expected:
+        raise ValueError(
+            f"Unknown shipping method: {label!r}"
+        )
+
+    nodes = cdp("Accessibility.getFullAXTree")["nodes"]
+    target = None
+
+    for node in nodes:
+        role = node.get("role", {}).get("value")
+        name = node.get("name", {}).get("value")
+        if role == "button" and name == label:
+            target = node
+            break
+
+    if not target or "backendDOMNodeId" not in target:
+        raise RuntimeError(
+            f"Shipping button not found: {label!r}"
+        )
+
+    model = cdp(
+        "DOM.getBoxModel",
+        backendNodeId=target["backendDOMNodeId"],
+    )["model"]["content"]
+
+    x = sum(model[0::2]) / 4
+    y = sum(model[1::2]) / 4
+    click_at_xy(x, y)
+
+    state = js("""
+    () =&gt; {
+      const out = document.querySelector('#result');
+      return {
+        status: out.dataset.status,
+        events: Number(out.dataset.events)
+      };
+    }
+    """)
+
+    if state["status"] != expected[label]:
+        raise RuntimeError(
+            f"Click did not select {expected[label]!r}: {state!r}"
+        )
+
+    if state["events"] &lt; 1:
+        raise RuntimeError(
+            f"No shipping-change event observed: {state!r}"
+        )
+
+    return {
+        "requested": label,
+        **state,
+    }</code></pre>
+
+        <p>
+          Accessibility tree особенно полезно фильтровать внутри Python. Полная печать дерева создаёт огромный вывод, расходует <a class="term-link" href="glossary.html#token">токены</a> и затрудняет ревью. Helper должен искать только нужные роли и имена.
+        </p>
+      </section>
+
+      <section id="first-run">
+        <h2>10. Первый запуск: что наблюдать</h2>
+
+        <p>
+          Запустите агента с заданием и не вмешивайтесь, пока он остаётся внутри разрешённых границ. Фиксируйте не скрытые рассуждения, а наблюдаемые действия:
+        </p>
+
+        <ol>
+          <li>прочитал ли агент актуальную инструкцию Browser Harness;</li>
+          <li>проверил ли правильную вкладку через <code>page_info()</code>;</li>
+          <li>увидел ли отсутствие обычного DOM-селектора;</li>
+          <li>обратился ли к accessibility tree или сырому CDP;</li>
+          <li>изменил ли только <code>agent_helpers.py</code>;</li>
+          <li>перезапустил ли команду так, чтобы новый helper был импортирован;</li>
+          <li>проверил ли <code>status</code> и <code>events</code> после клика;</li>
+          <li>не выдал ли визуальное изменение за доказательство события.</li>
+        </ol>
+
+        <aside class="note">
+          <h3>Нормальная первая неудача</h3>
+          <p>
+            Если базовый helper не находит кнопку в закрытом Shadow DOM, это не провал эксперимента. Это необходимое условие проверки расширяемости. Провалом будет бесконечное повторение того же действия, изменение фикстуры или сообщение об успехе без созданного helper.
+          </p>
+        </aside>
+
+        <p>
+          После первой операции сохраните наблюдаемое состояние отдельной командой:
+        </p>
+
+        <pre><code>browser-harness &lt;&lt;'PY' \
+  | tee evidence/first-run.txt
+print(js("""
+() =&gt; {
+  const out = document.querySelector('#result');
+  return {
+    status: out.dataset.status,
+    events: Number(out.dataset.events),
+    text: out.textContent
+  };
+}
+"""))
+PY</code></pre>
+
+        <p>
+          Для выбора «Самовывоз» критерий PASS — <code>status="pickup"</code>, <code>events=1</code> и текст, соответствующий этому состоянию. Запишите фактический вывод; не вставляйте ожидаемые значения вместо результата команды.
+        </p>
+      </section>
+
+      <section id="reuse">
+        <h2>11. Проверка повторного использования</h2>
+
+        <p>
+          Повторный запуск должен начинаться с чистого состояния страницы, но с сохранённым helper. Зафиксируйте хеш файла до второго запуска:
+        </p>
+
+        <pre><code>HELPER_PATH="укажите-фактический-путь/agent_helpers.py"
+sha256sum "$HELPER_PATH" \
+  | tee evidence/helper-before-reuse.sha256</code></pre>
+
+        <p>
+          Не оставляйте примерный путь в итоговом отчёте. Возьмите путь из вывода агента или конфигурации Browser Harness.
+        </p>
+
+        <p>Сбросьте компонент через видимую кнопку:</p>
+
+        <pre><code>browser-harness &lt;&lt;'PY'
+nodes = cdp("Accessibility.getFullAXTree")["nodes"]
+reset = next(
+    node for node in nodes
+    if node.get("role", {}).get("value") == "button"
+    and node.get("name", {}).get("value") == "Сбросить"
+)
+q = cdp(
+    "DOM.getBoxModel",
+    backendNodeId=reset["backendDOMNodeId"],
+)["model"]["content"]
+click_at_xy(sum(q[0::2]) / 4, sum(q[1::2]) / 4)
+
+print(js("""
+() =&gt; {
+  const out = document.querySelector('#result');
+  return {
+    status: out.dataset.status,
+    events: Number(out.dataset.events)
+  };
+}
+"""))
+PY</code></pre>
+
+        <p>
+          Убедитесь, что вернулись <code>status="empty"</code> и <code>events=0</code>. Затем вызовите созданный helper напрямую:
+        </p>
+
+        <pre><code>browser-harness &lt;&lt;'PY' \
+  | tee evidence/reuse-run.txt
+print(select_shipping_method("Курьер"))
+PY</code></pre>
+
+        <p>
+          После выполнения снова вычислите хеш:
+        </p>
+
+        <pre><code>sha256sum "$HELPER_PATH" \
+  | tee evidence/helper-after-reuse.sha256
+
+diff -u \
+  evidence/helper-before-reuse.sha256 \
+  evidence/helper-after-reuse.sha256</code></pre>
+
+        <p>
+          Пустой вывод <code>diff</code> доказывает, что helper не менялся между двумя измерениями. Он не доказывает корректность действия — её нужно проверить отдельно по состоянию браузера.
+        </p>
+      </section>
+
+      <section id="verification">
+        <h2>12. Независимая верификация результата</h2>
+
+        <p>
+          Не используйте финальный ответ агента как единственный источник. Проверка состоит из пяти независимых частей.
+        </p>
+
+        <h3>12.1. Состояние страницы</h3>
+
+        <pre><code>browser-harness &lt;&lt;'PY' \
+  | tee evidence/final-state.txt
+print(js("""
+() =&gt; {
+  const out = document.querySelector('#result');
+  return {
+    url: location.href,
+    status: out.dataset.status,
+    events: Number(out.dataset.events),
+    text: out.textContent
+  };
+}
+"""))
+PY</code></pre>
+
+        <p>
+          Для второго запуска ожидаются локальный URL, <code>status="courier"</code> и одно событие после сброса. Любое другое значение требует расследования.
+        </p>
+
+        <h3>12.2. Состав изменений</h3>
+
+        <pre><code>git status --short | tee evidence/git-status.txt
+git diff -- fixture/index.html \
+  | tee evidence/fixture-diff.txt
+git diff --stat | tee evidence/diff-stat.txt</code></pre>
+
+        <p>
+          <code>fixture/index.html</code> должен остаться неизменным. Если рабочая область Browser Harness находится вне репозитория лаборатории, скопируйте только очищенный diff helper в <code>evidence/</code> или создайте отдельный Git-репозиторий непосредственно в рабочей области до запуска.
+        </p>
+
+        <h3>12.3. Негативная проверка</h3>
+
+        <pre><code>browser-harness &lt;&lt;'PY' \
+  | tee evidence/negative-run.txt
+try:
+    select_shipping_method("Доставка дроном")
+except Exception as exc:
+    print(type(exc).__name__)
+    print(str(exc))
+else:
+    raise SystemExit(
+        "FAIL: unknown option was accepted"
+    )
+PY</code></pre>
+
+        <p>
+          PASS означает явную ошибку без клика и без изменения страницы. После команды повторно проверьте <code>status</code> и <code>events</code>.
+        </p>
+
+        <h3>12.4. Повторный запуск в новом процессе</h3>
+
+        <p>
+          Вызов через отдельную команду <code>browser-harness</code> важен: он показывает, что helper сохранён в рабочей области, а не существует только в памяти предыдущего Python-процесса.
+        </p>
+
+        <h3>12.5. Проверка обходов</h3>
+
+        <p>Просмотрите helper и журнал на наличие подозрительных операций:</p>
+
+        <pre><code>rg -n \
+  'dataset|dispatchEvent|shipping-change|fixture/index.html|http[s]?://' \
+  "$HELPER_PATH" \
+  | tee evidence/bypass-review.txt</code></pre>
+
+        <p>
+          Само совпадение ещё не означает ошибку: helper вправе читать <code>dataset</code> для верификации. Но он не должен записывать ожидаемый статус, вручную отправлять событие или обращаться к внешнему адресу.
+        </p>
+
+        <h3>Короткая форма отчёта</h3>
+
+        <pre><code>Дата:
+ОС:
+Chrome/Chromium:
+Browser Harness:
+Агент:
+Путь agent_helpers.py:
+Исходный helper hash:
+Итоговый helper hash:
+Соединение CDP: PASS / FAIL
+Исходное состояние: PASS / FAIL
+Первый выбор «Самовывоз»: PASS / FAIL
+Событие shipping-change: PASS / FAIL
+Сброс состояния: PASS / FAIL
+Повторный выбор «Курьер»: PASS / FAIL
+Helper не изменён перед повтором: PASS / FAIL
+Неизвестный вариант отклонён: PASS / FAIL
+Fixture не изменена: PASS / FAIL
+Изменения ядра: да / нет
+Внешняя навигация: да / нет / не проверено
+Финальный результат: PASS / PARTIAL / FAIL
+Главное ограничение:</code></pre>
+      </section>
+
+      <section id="comparison">
+        <h2>13. Browser Harness против традиционной автоматизации</h2>
+
+        <table>
+          <thead>
+            <tr>
+              <th>Свойство</th>
+              <th>Фиксированный набор инструментов</th>
+              <th>Редактируемый harness</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td>Новая операция</td>
+              <td>Разработчик добавляет инструмент и развёртывает новую версию</td>
+              <td>Агент может создать helper во время задачи</td>
+            </tr>
+            <tr>
+              <td>Контракт</td>
+              <td>Обычно определён заранее и централизован</td>
+              <td>Возникает динамически и требует последующего ревью</td>
+            </tr>
+            <tr>
+              <td>Повторное использование</td>
+              <td>Через версионированную библиотеку или сервис</td>
+              <td>Через сохранённый <code>agent_helpers.py</code> или доменную инструкцию</td>
+            </tr>
+            <tr>
+              <td>Граница изменений</td>
+              <td>Агент обычно не меняет реализацию инструмента</td>
+              <td>Агенту намеренно разрешена запись в один слой</td>
+            </tr>
+            <tr>
+              <td>Нестандартный интерфейс</td>
+              <td>Блокирует задачу до разработки адаптера</td>
+              <td>Может быть исследован через низкоуровневые примитивы</td>
+            </tr>
+            <tr>
+              <td>Предсказуемость</td>
+              <td>Выше при стабильных схемах и тестах</td>
+              <td>Зависит от качества сгенерированного helper</td>
+            </tr>
+            <tr>
+              <td>Аудит</td>
+              <td>Ревью кода инструмента до публикации</td>
+              <td>Нужны diff, журнал действий и тест после генерации</td>
+            </tr>
+          </tbody>
+        </table>
+
+        <p>
+          Эти подходы не исключают друг друга. Практичная схема использует harness как исследовательский и адаптационный слой. Helper, доказавший полезность в нескольких запусках, переносится в обычную тестируемую библиотеку, получает владельца, версию и регрессионные проверки.
+        </p>
+
+        <p>
+          Не каждый helper следует сохранять. Одноразовую операцию можно удалить после отчёта. Повторяющуюся механику стоит нормализовать: убрать привязку к одному тексту, добавить тайм-ауты, описать поддерживаемые состояния и покрыть отдельным тестом.
+        </p>
+      </section>
+
+      <section id="failures">
+        <h2>14. Типовые сбои и диагностика</h2>
+
+        <h3>Chrome не разрешает подключение</h3>
+
+        <p>
+          Запустите <code>browser-harness --doctor</code>. Проверьте, что Chrome открыт, удалённая отладка разрешена на внутренней странице и системное подтверждение принято. Не создавайте цикл переподключений: каждое новое соединение может вызвать новое окно разрешения.
+        </p>
+
+        <h3>Harness подключился не к той вкладке</h3>
+
+        <p>
+          Порядок CDP targets не обязан совпадать с визуальным порядком вкладок. Перед действием проверяйте URL и заголовок через <code>page_info()</code>. Для первого перехода используйте <code>new_tab()</code>.
+        </p>
+
+        <h3>Агент изменил фикстуру</h3>
+
+        <p>
+          Результат считается FAIL, даже если страница показывает правильный текст. Сохраните diff как доказательство, восстановите фикстуру из исходного commit и повторите опыт с более жёсткой файловой политикой.
+        </p>
+
+        <h3>Helper напрямую меняет output</h3>
+
+        <p>
+          Это обход, а не браузерная автоматизация. Проверяйте не только итоговый <code>status</code>, но и число штатных событий. Запретите запись в <code>#result</code>, <code>dataset</code> и ручную отправку <code>shipping-change</code>.
+        </p>
+
+        <h3>Accessibility tree не содержит кнопку</h3>
+
+        <p>
+          Убедитесь, что компонент отрисован и вкладка загрузилась. Попробуйте обновить accessibility tree после <code>wait_for_load()</code>. Если конкретная версия Chrome не раскрывает узлы закрытого дерева, агенту потребуется другой CDP-механизм или координатное исследование. Зафиксируйте это как зависимость от браузера.
+        </p>
+
+        <h3>Координаты отрицательные или находятся за viewport</h3>
+
+        <p>
+          Элемент может быть вне видимой области. Сначала прокрутите его в viewport, затем повторно получите box model. Не сохраняйте координаты между загрузками: положение меняется из-за окна, масштаба, шрифтов и контента.
+        </p>
+
+        <h3>Первый запуск работает, второй — нет</h3>
+
+        <p>
+          Проверьте, что helper записан в фактическую рабочую область, которую импортирует CLI. Отдельный процесс не увидит функцию, созданную только в интерактивной памяти. Также проверьте, не зависит ли код от глобальной переменной предыдущего запуска.
+        </p>
+
+        <h3>Второй запуск снова меняет helper</h3>
+
+        <p>
+          Это не повторное использование. Сравните хеши и diff. Возможны две причины: helper слишком узок для второго значения либо агент предпочёл снова генерировать решение вместо вызова существующей функции.
+        </p>
+
+        <h3>Событие сработало дважды</h3>
+
+        <p>
+          Частые причины — двойной клик, повторная отправка мышиного события или сохранённый обработчик из предыдущей инъекции. Helper должен считать одно изменение одним успешным действием и завершаться ошибкой при неожиданном количестве событий.
+        </p>
+
+        <h3>Неизвестный вариант выбирает первую кнопку</h3>
+
+        <p>
+          Это опасная деградация. Не применяйте fuzzy matching к действиям с последствиями без явного порога и подтверждения. Для лаборатории неизвестная подпись должна приводить к <code>ValueError</code> до клика.
+        </p>
+
+        <h3>Агент сообщает успех без доказательств</h3>
+
+        <p>
+          Выполните команды из раздела верификации независимо. Сообщение модели может быть <a class="term-link" href="glossary.html#hallucination">галлюцинацией</a>, ошибочной интерпретацией или описанием намерения вместо совершённого действия.
+        </p>
+      </section>
+
+      <section id="limitations">
+        <h2>15. Ограничения подхода</h2>
+
+        <ul>
+          <li>Один закрытый Shadow DOM-компонент не представляет всё разнообразие браузерных задач.</li>
+          <li>Успешный helper не доказывает устойчивость к изменению верстки, локали, масштаба и версии Chrome.</li>
+          <li>Локальная фикстура не проверяет CAPTCHA, антибот-защиту, нестабильную сеть и серверные гонки.</li>
+          <li>Тест не измеряет качество конкретной модели и не сравнивает агентов между собой.</li>
+          <li>Прямой CDP-доступ к пользовательскому профилю даёт широкие возможности и требует отдельной модели угроз.</li>
+          <li>Файл helper может накапливать конфликтующие функции, неиспользуемый код и неявные зависимости.</li>
+          <li>Повторное использование два раза подтверждает только базовую воспроизводимость, но не производственную надёжность.</li>
+          <li>Accessibility tree и CDP-структуры могут отличаться между версиями браузера.</li>
+          <li>Координатный клик ближе к реальному пользовательскому действию, но менее стабилен, чем хорошо поддерживаемый продуктовый API.</li>
+          <li>Browser Harness не заменяет управление секретами, системную изоляцию, аудит кода и контроль исходящих соединений.</li>
+        </ul>
+
+        <p>
+          Отдельный профиль и разрешённый каталог ещё не образуют полноценную <a class="term-link" href="glossary.html#sandbox">песочницу</a>. Для производственной работы ограничивайте процесс на уровне ОС или контейнера, запрещайте произвольную внешнюю сеть и отделяйте исследовательский браузер от профилей сотрудников.
+        </p>
+
+        <p>
+          После обновления Browser Harness, Chrome, helper или модели повторяйте минимум три проверки: успешное действие, неизвестный вариант и отсутствие изменений фикстуры. Сохранённый набор таких задач превращается в небольшой <a class="term-link" href="glossary.html#benchmark">бенчмарк</a> управляющего контура.
+        </p>
+      </section>
+
+      <section id="decision">
+        <h2>16. Когда эксперимент можно считать успешным</h2>
+
+        <p>Browser Harness подтверждает заявленную модель расширяемости, если одновременно выполнены условия:</p>
+
+        <ol>
+          <li>агент подключился к отдельному Chrome через CDP и работал только с локальной страницей;</li>
+          <li>исходных helpers действительно не хватило для штатного действия;</li>
+          <li>агент добавил одну ограниченную функцию в <code>agent_helpers.py</code>, не изменяя ядро и фикстуру;</li>
+          <li>helper выполнил реальный клик и проверил вызванное компонентом событие;</li>
+          <li>после сброса тот же helper с неизменным хешем обработал второй допустимый вариант;</li>
+          <li>неизвестный вариант завершился ошибкой до клика;</li>
+          <li>результат подтверждён состоянием страницы, diff и отдельным процессом.</li>
+        </ol>
+
+        <p>
+          Если задача выполнена только после ручной правки helper, результат всё ещё полезен, но отвечает на другой вопрос: harness позволяет разработчику быстро добавлять браузерные примитивы. Он не доказывает, что агент способен сделать это самостоятельно.
+        </p>
+
+        <p>
+          Если агент создал работающий helper, но тот содержит жёсткие координаты или меняет страницу в обход события, ставьте <code>PARTIAL</code>. Такой код может быть прототипом, однако его нельзя считать воспроизводимой автоматизацией.
+        </p>
+
+        <p>
+          Следующий разумный этап — трижды повторить опыт в чистом профиле, затем заменить фикстуру вторым компонентом с той же пользовательской механикой. Если helper переносится без правки, его можно вынести в версионированную библиотеку. Если каждый сайт требует новой реализации, ценность остаётся в ускоренном исследовании, а не в автоматическом накоплении универсальных инструментов.
+        </p>
+
+        <blockquote>
+          Самоизменяемый harness полезен не потому, что агент может написать ещё один скрипт, а потому, что найденное решение становится видимым, проверяемым и повторно вызываемым.
+        </blockquote>
+
+        <p class="back">
+          <a class="text-link" href="guides.html">← Все руководства</a>
+          ·
+          <a class="text-link" href="glossary.html">Лабораторный словарь →</a>
+        </p>
+      </section>
+    </article>
+  </main>
+
+  <footer>
+    <span>Agent Lab Journal</span>
+    <span>Практические эксперименты с проверяемым результатом.</span>
+  </footer>
+</body>
+</html>
