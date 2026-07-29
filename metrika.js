@@ -9,6 +9,10 @@ ym(110942679, 'init', {ssr:true, webvisor:true, clickmap:true, ecommerce:'dataLa
 // Keep acquisition context visible in analytics without storing personal data.
 document.addEventListener('DOMContentLoaded', function () {
     var params = new URLSearchParams(window.location.search);
+    var stored = JSON.parse(sessionStorage.getItem('agentlab_attribution') || '{}');
+    var current = {};
+    ['utm_source', 'utm_medium', 'utm_campaign', 'utm_content'].forEach(function (key) { if (params.get(key)) current[key] = params.get(key); });
+    sessionStorage.setItem('agentlab_attribution', JSON.stringify(Object.assign({}, stored, current)));
     if (params.get('utm_source') === 'telegram') {
         ym(110942679, 'reachGoal', 'telegram_visit', {
             campaign: params.get('utm_campaign') || 'unknown',

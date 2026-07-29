@@ -46,6 +46,9 @@
   }
 
   document.addEventListener('DOMContentLoaded', function () {
+    var currentSlug = window.location.pathname.split('/').pop() || 'index.html';
+    sessionStorage.setItem('agentlab_landing_page', sessionStorage.getItem('agentlab_landing_page') || window.location.href);
+    sessionStorage.setItem('agentlab_article_slug', sessionStorage.getItem('agentlab_article_slug') || currentSlug.replace('.html', ''));
     document.querySelectorAll('a[href]').forEach(function (link) {
       var href = link.getAttribute('href') || '';
       if (!hasTelegramAttribution) return;
@@ -60,7 +63,7 @@
       });
     });
 
-    var current = window.location.pathname.split('/').pop() || 'index.html';
+    var current = currentSlug;
     var related = articleMap[current];
     var article = document.querySelector('main.article');
     if (!article || !related || article.querySelector('[data-content-bridge]')) return;
@@ -81,6 +84,7 @@
       links.appendChild(a);
     });
     var cta = document.createElement('div');
+    sessionStorage.setItem('agentlab_cta_topic', current.replace('.html', '') + '-cta');
     cta.className = 'content-bridge-cta';
     cta.innerHTML = '<strong>Хотите проверить такой процесс у себя?</strong><a class="service-action" href="' + bridgeUrl('lead-intake.html', current.replace('.html', '') + '-cta') + '">Показать мой процесс →</a>';
     section.appendChild(cta);
