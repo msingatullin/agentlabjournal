@@ -24,7 +24,7 @@
       }
     };
     try {
-      var response = await fetch('https://api.grifun.ru/api/leads', {
+      var response = await fetch('https://api.agentlabjournal.online/leads', {
         method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(payload)
       });
       if (!response.ok) throw Error('request failed');
