@@ -18,6 +18,14 @@ document.addEventListener('DOMContentLoaded', function () {
 });
 
 document.addEventListener('DOMContentLoaded', function () {
+    document.querySelectorAll('a.service-action[href*="lead-intake.html"]').forEach(function (link) {
+        link.addEventListener('click', function () {
+            if (typeof window.ym === 'function') window.ym(110942679, 'reachGoal', 'lead_cta_click');
+        });
+    });
+});
+
+document.addEventListener('DOMContentLoaded', function () {
     document.querySelectorAll('audio[data-podcast-id]').forEach(function (audio) {
         var sent = {};
         var params = {
