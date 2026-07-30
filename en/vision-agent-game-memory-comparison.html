@@ -1,0 +1,778 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+
+  <title>How Memory Changes a Visual Agent: A Reproducible Pokémon FireRed Test | Agent Lab Journal</title>
+  <meta name="description" content="A reproducible protocol for comparing two visual-agent models in Pokémon FireRed by progress, total cost, action count, route repetition, and memory errors under an identical game environment.">
+  <link rel="canonical" href="https://agentlabjournal.online/en/vision-agent-game-memory-comparison.html">
+  <link rel="stylesheet" href="style.css">
+  <link rel="stylesheet" href="reading.css">
+
+  <meta property="og:type" content="article">
+  <meta property="og:locale" content="en_US">
+  <meta property="og:site_name" content="Agent Lab Journal">
+  <meta property="og:title" content="How Memory Changes a Visual Agent: A Reproducible Pokémon FireRed Test">
+  <meta property="og:description" content="Compare two visual agents by game progress, total cost, action count, repeated routes, and memory failures—not merely cost per action.">
+  <meta property="og:url" content="https://agentlabjournal.online/en/vision-agent-game-memory-comparison.html">
+  <meta property="og:image" content="https://agentlabjournal.online/podcast-cover.png">
+  <meta property="article:published_time" content="2026-07-30">
+  <meta property="article:modified_time" content="2026-07-30">
+  <meta property="article:section" content="Agent Evaluation">
+
+  <meta name="twitter:card" content="summary_large_image">
+  <meta name="twitter:title" content="How Memory Changes a Visual Agent in Pokémon FireRed">
+  <meta name="twitter:description" content="A repeatable comparison of two models using progress, cost, actions, and memory errors in the same game environment.">
+  <meta name="twitter:image" content="https://agentlabjournal.online/podcast-cover.png">
+
+  <script type="application/ld+json">
+  {
+    "@context": "https://schema.org",
+    "@type": "Article",
+    "headline": "How Memory Changes a Visual Agent: A Reproducible Pokémon FireRed Test",
+    "description": "A reproducible protocol for comparing two visual-agent models in Pokémon FireRed by progress, total cost, action count, route repetition, and memory errors under an identical game environment.",
+    "image": [
+      "https://agentlabjournal.online/podcast-cover.png"
+    ],
+    "datePublished": "2026-07-30",
+    "dateModified": "2026-07-30",
+    "inLanguage": "en",
+    "articleSection": "Agent Evaluation",
+    "proficiencyLevel": "Advanced",
+    "timeRequired": "PT60M",
+    "author": {
+      "@type": "Organization",
+      "name": "Agent Lab Journal",
+      "url": "https://agentlabjournal.online/"
+    },
+    "publisher": {
+      "@type": "Organization",
+      "name": "Agent Lab Journal",
+      "url": "https://agentlabjournal.online/",
+      "logo": {
+        "@type": "ImageObject",
+        "url": "https://agentlabjournal.online/podcast-cover.png"
+      }
+    },
+    "mainEntityOfPage": {
+      "@type": "WebPage",
+      "@id": "https://agentlabjournal.online/en/vision-agent-game-memory-comparison.html"
+    }
+  }
+  </script>
+</head>
+<body>
+  <header class="site-header">
+    <a class="brand" href="./">
+      <span class="brand-mark">AL</span>
+      <span>Agent Lab Journal</span>
+    </a>
+    <nav aria-label="Main navigation">
+      <a href="guides.html">Guides</a>
+      <a href="glossary.html">Glossary</a>
+    </nav>
+  </header>
+
+  <main class="article">
+    <article>
+      <p class="eyebrow">REPRODUCIBLE EVALUATION · VISUAL AGENTS</p>
+      <h1>How Memory Changes a Visual Agent: A Reproducible Pokémon FireRed Test</h1>
+
+      <div class="reading-meta" aria-label="Article information">
+        <span>Level: advanced</span>
+        <span>Reading time: 60 minutes</span>
+        <span>Result: a protocol for comparing two models by progress, total cost, action count, and memory errors in an identical game environment</span>
+      </div>
+
+      <p class="lead">A cheap action is not an efficient action. If a visual agent forgets that it already collected Oak’s Parcel, walks the same corridor five times, reopens menus for information it saw thirty seconds ago, or repeatedly attempts an impossible transition, its low per-call price conceals expensive stagnation. The useful unit of comparison is not cost per action but verified progress per unit of cost under the same controlled episode.</p>
+
+      <aside class="note">
+        <strong>Evidence boundary.</strong> This article provides a complete experimental protocol, not fabricated benchmark numbers. No model is declared the winner. You must populate the result tables from your own emulator recordings, model invoices, action logs, and human annotations.
+      </aside>
+
+      <h2>The question the experiment answers</h2>
+
+      <p>A <a class="term-link" href="glossary.html#visual-agent">visual agent</a> observes screenshots, reasons about the visible state, and chooses controller inputs. In a game, its apparent intelligence depends on more than image recognition. It must preserve relevant facts across many decisions: where it has been, which objective is active, what an NPC said, which menu state is open, and whether the previous action changed the world.</p>
+
+      <p>This protocol compares two model configurations on one bounded Pokémon FireRed mission. It answers:</p>
+
+      <ul>
+        <li>Which model reaches more verified milestones within the same action and cost budgets?</li>
+        <li>How much does each verified milestone cost?</li>
+        <li>How many controller actions and model decisions are required?</li>
+        <li>How often does each agent forget, contradict, duplicate, or corrupt useful state?</li>
+        <li>How much activity is productive, and how much is repeated navigation or recovery?</li>
+      </ul>
+
+      <p>The protocol does not ask which model “plays Pokémon better” in general. That claim would require many tasks, maps, battle conditions, and seeds. The narrower target is a controlled comparison of memory-dependent progress in the opening section of one game.</p>
+
+      <h2>Why cost per action is misleading</h2>
+
+      <p>Suppose Model A costs less per inference than Model B. Model A may still be more expensive per milestone if it needs more observations, produces invalid commands, revisits completed rooms, or loses the current objective. The central quantity is therefore:</p>
+
+      <pre><code>cost_per_verified_milestone =
+    total_episode_cost / verified_milestones_completed
+
+actions_per_verified_milestone =
+    accepted_controller_actions / verified_milestones_completed
+
+productive_action_rate =
+    productive_actions / accepted_controller_actions
+
+progress_efficiency =
+    weighted_progress_points / total_episode_cost</code></pre>
+
+      <p>An <a class="term-link" href="glossary.html#action">action</a> is one accepted emulator input from the allowed action set. A model decision may emit one action or a bounded sequence. Keep those quantities separate. A ten-button macro is one inference but ten actions, and treating it as one action unfairly rewards batching.</p>
+
+      <p>A <a class="term-link" href="glossary.html#state">state</a> is the information needed to distinguish the current situation from materially different situations: map and coordinates when available, screen type, menu depth, inventory flags, objective flags, battle state, and recent transitions. A screenshot is only an <a class="term-link" href="glossary.html#observation">observation</a> of that state. It may be ambiguous, partially occluded, or unchanged even when an internal flag changed.</p>
+
+      <h2>The concrete case: Oak’s Parcel loop</h2>
+
+      <p>Use a legally obtained Pokémon FireRed ROM dumped from media you own, subject to the law where you live. Do not publish the ROM, save files derived from copyrighted game data, or bundled game assets. Record the exact ROM SHA-256 privately so every run uses identical bytes.</p>
+
+      <p>The recommended episode begins from a canonical save state in the player’s bedroom before the first movement input. The target is to complete this ordered sequence:</p>
+
+      <ol>
+        <li>Leave the bedroom and the player’s house.</li>
+        <li>Trigger Professor Oak’s interruption north of Pallet Town.</li>
+        <li>Reach the laboratory and obtain the starter Pokémon.</li>
+        <li>Complete the required rival battle.</li>
+        <li>Reach Viridian City and receive Oak’s Parcel from the Poké Mart clerk.</li>
+        <li>Return to Professor Oak and deliver the parcel.</li>
+        <li>Receive the Pokédex.</li>
+      </ol>
+
+      <p>This case is useful because it combines navigation, dialogue, menu handling, a battle, a distant objective, and a return route through previously visited space. The agent must distinguish “I saw the Mart” from “I received the parcel” and “I possess the parcel” from “I already delivered it.” Those are precisely the distinctions that weak memory tends to collapse.</p>
+
+      <p>Starter choice is a confounder because it changes the rival battle. Fix one starter in the manifest. Do not let one model choose freely while forcing the other. Likewise, fix text speed, battle style, emulator speed, frame skip, audio, language, and any action-repeat behavior.</p>
+
+      <h2>Define the two conditions before running either</h2>
+
+      <p>A fair test changes one primary variable at a time. There are two valid designs:</p>
+
+      <h3>Design A: compare model products</h3>
+
+      <p>Model A and Model B receive the same screenshot, system prompt, memory interface, action schema, budgets, and environment. This measures the complete models under an identical harness. It does not isolate memory architecture, because models may differ in vision, planning, latency, and instruction following.</p>
+
+      <h3>Design B: isolate persistent memory</h3>
+
+      <p>Use the same model twice. In the baseline condition, provide only a fixed recent window. In the memory condition, add a structured persistent store with identical read and write rules. This more directly estimates the effect of <a class="term-link" href="glossary.html#agent-memory">agent memory</a>, although the memory machinery introduces extra tokens and operations.</p>
+
+      <p>Do not describe Design A as proof that one model has “better memory” unless you separately test perception and planning. The safe conclusion is that one complete configuration retained and used task-relevant state more effectively under this protocol.</p>
+
+      <h2>Experimental controls</h2>
+
+      <table>
+        <caption>Variables that must remain identical</caption>
+        <thead>
+          <tr>
+            <th scope="col">Control</th>
+            <th scope="col">Required value</th>
+            <th scope="col">Why it matters</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>ROM</td>
+            <td>Same private SHA-256</td>
+            <td>Different revisions can change behavior or memory addresses.</td>
+          </tr>
+          <tr>
+            <td>Initial save state</td>
+            <td>Same immutable file and SHA-256</td>
+            <td>Prevents different inventory, flags, position, or RNG history.</td>
+          </tr>
+          <tr>
+            <td>Emulator</td>
+            <td>Same binary, version, core, and configuration</td>
+            <td>Controls timing, frame stepping, and save-state behavior.</td>
+          </tr>
+          <tr>
+            <td>Viewport</td>
+            <td>Same native frame, crop, scale, and image encoding</td>
+            <td>Changes in pixels can alter visual recognition.</td>
+          </tr>
+          <tr>
+            <td>Input set</td>
+            <td>UP, DOWN, LEFT, RIGHT, A, B, START, SELECT, NOOP</td>
+            <td>Prevents hidden macros or model-specific tools.</td>
+          </tr>
+          <tr>
+            <td>Frames per action</td>
+            <td>Fixed press and release durations</td>
+            <td>Long holds can move multiple tiles or skip dialogue.</td>
+          </tr>
+          <tr>
+            <td>Prompt</td>
+            <td>Byte-identical except model-required wrappers</td>
+            <td>Prompt differences can act as external memory.</td>
+          </tr>
+          <tr>
+            <td>Budgets</td>
+            <td>Same action, decision, wall-time, and monetary limits</td>
+            <td>Every model must have the same opportunity to progress.</td>
+          </tr>
+          <tr>
+            <td>Retries</td>
+            <td>Same policy and maximum</td>
+            <td>Silent retries hide invalid outputs and additional cost.</td>
+          </tr>
+          <tr>
+            <td>Scoring</td>
+            <td>Frozen before model names are revealed to annotators</td>
+            <td>Reduces outcome-driven interpretation.</td>
+          </tr>
+        </tbody>
+      </table>
+
+      <p>If a provider does not support a deterministic <a class="term-link" href="glossary.html#seed">seed</a>, record that fact. Game episodes can still be compared, but repeated trials become essential. A temperature of zero does not guarantee deterministic output across hosted infrastructure.</p>
+
+      <h2>Build an immutable experiment manifest</h2>
+
+      <p>Create one manifest for the whole comparison. Replace placeholders with real values. Never place API keys in this file.</p>
+
+      <pre><code>experiment_id: firered-memory-v1
+protocol_version: 1
+created_utc: "YYYY-MM-DDTHH:MM:SSZ"
+
+game:
+  title: "Pokemon FireRed"
+  rom_sha256: "REPLACE_WITH_PRIVATE_HASH"
+  initial_state_sha256: "REPLACE_WITH_HASH"
+  language: "English"
+  starter: "Bulbasaur"
+  text_speed: "fast"
+  battle_style: "shift"
+
+emulator:
+  name: "REPLACE_WITH_EMULATOR"
+  version: "REPLACE_WITH_VERSION"
+  config_sha256: "REPLACE_WITH_HASH"
+  frame_width: 240
+  frame_height: 160
+  press_frames: 2
+  settle_frames: 8
+  speed_multiplier: 1
+  frame_skip: 0
+
+agent:
+  allowed_actions:
+    - UP
+    - DOWN
+    - LEFT
+    - RIGHT
+    - A
+    - B
+    - START
+    - SELECT
+    - NOOP
+  max_actions_per_decision: 4
+  screenshot_every_decision: true
+  recent_action_window: 12
+  invalid_output_retries: 1
+
+budgets:
+  accepted_actions: 2500
+  model_decisions: 1200
+  wall_time_minutes: 180
+  total_cost_usd: "SET_BEFORE_RUN"
+
+trials:
+  per_condition: 5
+  order: "counterbalanced"
+  restore_initial_state_before_each_trial: true
+
+conditions:
+  - id: model_a
+    model: "REPLACE_WITH_PINNED_MODEL_ID"
+    memory_policy: "shared-policy-v1"
+  - id: model_b
+    model: "REPLACE_WITH_PINNED_MODEL_ID"
+    memory_policy: "shared-policy-v1"</code></pre>
+
+      <p>Hosted model aliases can change without warning. Record the provider’s exact model identifier and response metadata for every decision. If only a floating alias is available, state that limitation and complete both conditions in the shortest practical time window.</p>
+
+      <h2>Use a constrained action contract</h2>
+
+      <p>Free-form prose makes parsing failures difficult to distinguish from reasoning failures. Require <a class="term-link" href="glossary.html#structured-output">structured output</a> and reject commands outside the schema.</p>
+
+      <pre><code>{
+  "reasoning_summary": "short operational explanation",
+  "observed": {
+    "screen": "overworld|dialogue|menu|battle|transition|unknown",
+    "location_guess": "string or unknown",
+    "objective_guess": "string",
+    "certainty": 0.0
+  },
+  "memory_read": ["fact_id"],
+  "memory_write": [
+    {
+      "kind": "objective|location|event|inventory|warning",
+      "value": "atomic fact",
+      "confidence": 0.0,
+      "evidence": "visible cue or transition"
+    }
+  ],
+  "actions": ["UP", "A"]
+}</code></pre>
+
+      <p>The harness should validate types, enum values, sequence length, and numeric ranges. Log an invalid response before retrying it. A repaired response still consumes latency and money, so include both attempts in total cost.</p>
+
+      <p>Do not expose internal emulator state to the agent if the tested interface is visual-only. Internal state may be used by the evaluator as a hidden oracle, but not placed in the prompt.</p>
+
+      <h2>Memory policy</h2>
+
+      <p>Use two explicit layers. <a class="term-link" href="glossary.html#working-memory">Working memory</a> contains the latest screenshot, recent actions, recent observations, and current objective. <a class="term-link" href="glossary.html#episodic-memory">Episodic memory</a> contains durable events such as “received Oak’s Parcel at the Viridian Mart” with evidence and a decision index.</p>
+
+      <p>A practical record looks like this:</p>
+
+      <pre><code>{
+  "fact_id": "event-0042",
+  "kind": "inventory",
+  "subject": "player",
+  "predicate": "has_item",
+  "object": "Oak's Parcel",
+  "status": "active",
+  "confidence": 0.96,
+  "first_seen_decision": 318,
+  "last_confirmed_decision": 321,
+  "evidence_frame_sha256": "FRAME_HASH",
+  "supersedes": null
+}</code></pre>
+
+      <p>Facts must be atomic and revisable. After delivery, do not merely append “parcel delivered” while leaving “has parcel” active. Mark the possession fact as superseded. Otherwise the memory store itself creates contradictions.</p>
+
+      <p>Apply identical rules to both models:</p>
+
+      <ul>
+        <li>Only facts supported by a visible cue or verified transition may be written as confirmed.</li>
+        <li>Guesses must carry lower confidence and must not silently become facts.</li>
+        <li>Completed objectives must be marked complete, not deleted.</li>
+        <li>Contradictory active facts must be returned together so the agent can resolve them.</li>
+        <li>Memory retrieval must use the same maximum number of records and token budget.</li>
+        <li>Every read, write, update, and eviction must be logged.</li>
+      </ul>
+
+      <h2>Ground truth without leaking it to the agent</h2>
+
+      <p>The evaluator needs stronger evidence than the agent receives. Use three synchronized sources:</p>
+
+      <ol>
+        <li>Lossless screenshots or a video of every decision boundary.</li>
+        <li>The accepted input stream with frame counts.</li>
+        <li>A hidden state probe, when technically and legally appropriate, or manual milestone annotations from the recording.</li>
+      </ol>
+
+      <p>A <a class="term-link" href="glossary.html#checkpoint">checkpoint</a> is a verifiable milestone, not a model’s claim that something happened. Define checkpoints before testing:</p>
+
+      <table>
+        <caption>Suggested milestone rubric</caption>
+        <thead>
+          <tr>
+            <th scope="col">ID</th>
+            <th scope="col">Milestone</th>
+            <th scope="col">Points</th>
+            <th scope="col">Verification</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>M1</td>
+            <td>Exited the player’s house</td>
+            <td>1</td>
+            <td>Recorded overworld frame in Pallet Town</td>
+          </tr>
+          <tr>
+            <td>M2</td>
+            <td>Oak interruption triggered</td>
+            <td>1</td>
+            <td>Dialogue and forced transition visible</td>
+          </tr>
+          <tr>
+            <td>M3</td>
+            <td>Starter obtained</td>
+            <td>2</td>
+            <td>Selection dialogue plus party confirmation</td>
+          </tr>
+          <tr>
+            <td>M4</td>
+            <td>Rival battle completed</td>
+            <td>2</td>
+            <td>Battle exit and post-battle state visible</td>
+          </tr>
+          <tr>
+            <td>M5</td>
+            <td>Viridian City reached</td>
+            <td>2</td>
+            <td>Location transition confirmed</td>
+          </tr>
+          <tr>
+            <td>M6</td>
+            <td>Oak’s Parcel received</td>
+            <td>3</td>
+            <td>Clerk dialogue and inventory or flag confirmation</td>
+          </tr>
+          <tr>
+            <td>M7</td>
+            <td>Parcel delivered</td>
+            <td>4</td>
+            <td>Oak dialogue and parcel no longer active</td>
+          </tr>
+          <tr>
+            <td>M8</td>
+            <td>Pokédex received</td>
+            <td>5</td>
+            <td>Dialogue plus menu or hidden flag confirmation</td>
+          </tr>
+        </tbody>
+      </table>
+
+      <p>A milestone scores once. Re-entering Viridian City does not earn M5 again. Weighted points express task depth, while the ordered milestone count remains the easiest result to interpret. Report both; do not tune weights after seeing results.</p>
+
+      <h2>Define memory errors operationally</h2>
+
+      <p>A memory error is not every bad action. Walking into a wall may be a perception or control error. Count a memory error only when logged evidence shows that retained state was absent, wrong, contradictory, or ignored.</p>
+
+      <dl>
+        <dt>Omission</dt>
+        <dd>A previously verified, still-relevant fact is unavailable when required. Example: the agent asks what the current delivery objective is after receiving the parcel.</dd>
+
+        <dt>False persistence</dt>
+        <dd>An obsolete fact remains active. Example: memory still says the parcel is held after verified delivery.</dd>
+
+        <dt>Fabrication</dt>
+        <dd>The agent stores or asserts an event that never occurred. Example: it records that the Pokédex was received before returning to Oak.</dd>
+
+        <dt>Contradiction</dt>
+        <dd>Two incompatible facts are simultaneously treated as true. Example: “parcel not collected” and “return to Oak with parcel.”</dd>
+
+        <dt>Duplicate objective</dt>
+        <dd>A completed objective is restarted because completion was not retained.</dd>
+
+        <dt>Context substitution</dt>
+        <dd>A fact from another location, menu, or trial is applied to the current state.</dd>
+
+        <dt>Memory-use failure</dt>
+        <dd>The correct fact was retrieved but the selected plan contradicts it.</dd>
+
+        <dt>Unsupported overwrite</dt>
+        <dd>A correct memory is replaced by a lower-confidence guess without new evidence.</dd>
+      </dl>
+
+      <p>Record severity separately:</p>
+
+      <ul>
+        <li><strong>Minor:</strong> wastes at most five accepted actions and causes no milestone regression.</li>
+        <li><strong>Material:</strong> wastes more than five actions, causes a repeated route, or delays a milestone.</li>
+        <li><strong>Critical:</strong> makes the episode unrecoverable within budget or corrupts the experiment state.</li>
+      </ul>
+
+      <p>Keep raw counts and normalized rates:</p>
+
+      <pre><code>memory_error_rate =
+    confirmed_memory_errors / model_decisions * 100
+
+material_memory_error_rate =
+    material_or_critical_errors / model_decisions * 100
+
+memory_recovery_cost =
+    sum(actions_between_error_and_recovery)
+
+repeat_overhead =
+    repeated_navigation_actions / accepted_controller_actions</code></pre>
+
+      <h2>Detect repeated routes</h2>
+
+      <p>Route repetition is the clearest bridge between memory quality and cost. If hidden coordinates are available to the evaluator, construct a transition key:</p>
+
+      <pre><code>transition = (
+  map_id_before,
+  tile_x_before,
+  tile_y_before,
+  action,
+  map_id_after,
+  tile_x_after,
+  tile_y_after
+)</code></pre>
+
+      <p>Count a repeated route segment when the same ordered sequence of at least four transitions occurs again without a new milestone, inventory change, battle result, or justified recovery event between occurrences. Exclude required backtracking: the return from Viridian City to Pallet Town is part of the task. It becomes wasteful repetition only when the agent traverses a segment without advancing the active objective.</p>
+
+      <p>If coordinates are unavailable, annotate rooms and landmarks from frames. This is less precise, so report inter-annotator agreement and preserve disputed cases rather than forcing certainty.</p>
+
+      <h2>Logging schema</h2>
+
+      <p>Write one append-only <a class="term-link" href="glossary.html#trace">trace</a> record per model decision. JSON Lines is convenient because a partial run remains readable.</p>
+
+      <pre><code>{
+  "experiment_id": "firered-memory-v1",
+  "condition_id": "model_a",
+  "trial_id": 1,
+  "decision_id": 318,
+  "timestamp_utc": "YYYY-MM-DDTHH:MM:SS.sssZ",
+  "frame_sha256": "HASH",
+  "prompt_sha256": "HASH",
+  "model_id": "PINNED_ID",
+  "response_id": "PROVIDER_RESPONSE_ID_IF_AVAILABLE",
+  "input_tokens": null,
+  "output_tokens": null,
+  "cached_tokens": null,
+  "provider_cost_usd": null,
+  "latency_ms": null,
+  "raw_response_path": "responses/000318.json",
+  "parsed_actions": ["UP", "UP"],
+  "accepted_actions": 2,
+  "invalid_output": false,
+  "memory_reads": ["event-0042"],
+  "memory_writes": [],
+  "milestones_before": ["M1", "M2", "M3", "M4", "M5", "M6"],
+  "milestones_after": ["M1", "M2", "M3", "M4", "M5", "M6"],
+  "termination_reason": null
+}</code></pre>
+
+      <p>Use <code>null</code> for unavailable measurements; never substitute zero. Zero means measured and absent. Capture provider-reported usage rather than estimating tokens when possible. If the provider does not expose monetary cost, calculate it from a separately saved price schedule and label the value “derived.”</p>
+
+      <h2>Directory layout and integrity checks</h2>
+
+      <pre><code>firered-memory-v1/
+├── manifest.yaml
+├── prompts/
+│   ├── system.txt
+│   └── action-schema.json
+├── conditions/
+│   ├── model-a.yaml
+│   └── model-b.yaml
+├── trials/
+│   ├── model-a-01/
+│   │   ├── trace.jsonl
+│   │   ├── frames/
+│   │   ├── responses/
+│   │   ├── memory.jsonl
+│   │   └── annotations.jsonl
+│   └── model-b-01/
+├── scoring/
+│   ├── milestones.yaml
+│   └── memory-error-rubric.yaml
+└── SHA256SUMS</code></pre>
+
+      <p>After each trial, hash the evidence package:</p>
+
+      <pre><code>find prompts conditions trials scoring \
+  -type f -print0 |
+  sort -z |
+  xargs -0 sha256sum &gt; SHA256SUMS
+
+sha256sum --check SHA256SUMS</code></pre>
+
+      <p>Do not include <code>SHA256SUMS</code> itself in its input set. Run the verification command before analysis and again before sharing results.</p>
+
+      <h2>Run procedure</h2>
+
+      <ol>
+        <li><strong>Freeze the protocol.</strong> Hash the manifest, prompts, schema, milestone definitions, and error rubric.</li>
+        <li><strong>Validate restoration.</strong> Restore the initial state twice and confirm identical first-frame hashes and evaluator state.</li>
+        <li><strong>Dry-run the harness.</strong> Use a scripted policy, not either tested model, to verify input timing, frame capture, logging, and termination.</li>
+        <li><strong>Check isolation.</strong> Confirm that no memory records, conversation IDs, caches, or provider sessions cross trial boundaries.</li>
+        <li><strong>Assign blinded labels.</strong> Map models to Condition X and Condition Y in a file unavailable to annotators.</li>
+        <li><strong>Counterbalance order.</strong> Run X, Y, Y, X, X, Y, Y, X, X, Y for five trials per condition, or use another predeclared balanced order.</li>
+        <li><strong>Restore the canonical state.</strong> Verify its hash before every trial.</li>
+        <li><strong>Start all budgets together.</strong> Count inference retries, parsing repairs, memory calls, and controller actions from the first decision.</li>
+        <li><strong>Terminate mechanically.</strong> Stop at M8 or when any declared budget is exhausted, the harness fails, or the emulator diverges.</li>
+        <li><strong>Annotate independently.</strong> Have two reviewers label milestones, repeated routes, and suspected memory errors without knowing model identity.</li>
+        <li><strong>Resolve disagreements.</strong> Preserve both original labels and record the adjudication reason.</li>
+        <li><strong>Unblind after scoring.</strong> Compute summaries only after the trial-level annotations are frozen.</li>
+      </ol>
+
+      <h2>Budget termination rules</h2>
+
+      <p>A trial ends at the first matching condition:</p>
+
+      <ul>
+        <li>M8 is verified;</li>
+        <li>accepted action budget is exhausted;</li>
+        <li>model decision budget is exhausted;</li>
+        <li>wall-time budget is exhausted;</li>
+        <li>monetary budget is exhausted;</li>
+        <li>the emulator crashes or produces a state that cannot be restored;</li>
+        <li>the agent enters an unrecoverable loop defined as the same route segment repeated three times without new progress.</li>
+      </ul>
+
+      <p>Do not grant extra actions because a model was “almost there.” Report the terminal reason. A harness failure should normally invalidate the paired trial and trigger a rerun of both conditions from the same schedule position; a model-generated invalid command remains part of that model’s result.</p>
+
+      <h2>Calculate the result</h2>
+
+      <p>Keep trial-level data. Do not pool all actions into one giant episode. For each trial report:</p>
+
+      <ul>
+        <li>deepest ordered milestone and total weighted progress;</li>
+        <li>total provider cost, including retries and memory operations;</li>
+        <li>accepted controller actions and model decisions;</li>
+        <li>wall time and model latency;</li>
+        <li>invalid outputs and rejected actions;</li>
+        <li>confirmed memory errors by type and severity;</li>
+        <li>repeated navigation actions;</li>
+        <li>termination reason.</li>
+      </ul>
+
+      <table>
+        <caption>Trial-level result template</caption>
+        <thead>
+          <tr>
+            <th scope="col">Condition</th>
+            <th scope="col">Trial</th>
+            <th scope="col">Deepest milestone</th>
+            <th scope="col">Progress points</th>
+            <th scope="col">Cost</th>
+            <th scope="col">Actions</th>
+            <th scope="col">Decisions</th>
+            <th scope="col">Memory errors</th>
+            <th scope="col">Repeat overhead</th>
+            <th scope="col">End reason</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>Model A</td>
+            <td>1</td>
+            <td>Not measured</td>
+            <td>Not measured</td>
+            <td>Not measured</td>
+            <td>Not measured</td>
+            <td>Not measured</td>
+            <td>Not measured</td>
+            <td>Not measured</td>
+            <td>Not measured</td>
+          </tr>
+          <tr>
+            <td>Model B</td>
+            <td>1</td>
+            <td>Not measured</td>
+            <td>Not measured</td>
+            <td>Not measured</td>
+            <td>Not measured</td>
+            <td>Not measured</td>
+            <td>Not measured</td>
+            <td>Not measured</td>
+            <td>Not measured</td>
+          </tr>
+        </tbody>
+      </table>
+
+      <p>For each condition, publish the median and full range across trials. With only five trials, avoid strong significance claims. Show every trial and emphasize effect size: additional milestones reached, actions saved per milestone, cost saved per point, and change in material memory-error rate.</p>
+
+      <pre><code>summary = {
+  "completion_rate": completed_trials / valid_trials,
+  "median_progress_points": median(progress_points),
+  "median_cost_usd": median(total_cost_usd),
+  "median_actions": median(accepted_actions),
+  "median_cost_per_point": median(
+      total_cost_usd / progress_points
+      for trials where progress_points &gt; 0
+  ),
+  "median_repeat_overhead": median(
+      repeated_navigation_actions / accepted_actions
+  )
+}</code></pre>
+
+      <p>Do not assign infinite cost-per-point values to zero-progress trials and then silently discard them. Report zero-progress count separately. Completion rate and deepest milestone preserve information that ratios cannot.</p>
+
+      <h2>Verification checklist</h2>
+
+      <p>Before accepting the comparison, verify all of the following:</p>
+
+      <ul>
+        <li>The ROM, initial save state, emulator configuration, prompts, schemas, and budgets have matching hashes across conditions.</li>
+        <li>The first captured frame is identical in every valid trial.</li>
+        <li>No trial begins with memory, conversation, or cache state from a previous trial.</li>
+        <li>Every accepted controller action appears in both the trace and emulator input log.</li>
+        <li>Every model call—including retries—appears in cost and latency totals.</li>
+        <li>Every milestone has frame, video, or hidden-oracle evidence.</li>
+        <li>Every confirmed memory error cites an earlier fact and the later contradictory decision.</li>
+        <li>Required backtracking is excluded from repeated-route penalties.</li>
+        <li>Annotators were blinded until labels were frozen.</li>
+        <li>Raw trial rows reconcile with summary statistics.</li>
+        <li><code>sha256sum --check SHA256SUMS</code> succeeds.</li>
+      </ul>
+
+      <h2>Failure cases and how to classify them</h2>
+
+      <h3>The agent walks into a wall repeatedly</h3>
+      <p>If it misread collision geometry, classify the primary cause as perception. If it correctly recorded the obstruction and later repeats the same plan without new evidence, add a memory-use failure. One event may have a primary cause and a secondary memory consequence, but it must not be counted twice in the same aggregate category.</p>
+
+      <h3>The agent forgets whether dialogue finished</h3>
+      <p>Check whether the last frame was captured after sufficient settle frames. If the harness sampled mid-transition, this is an instrumentation failure. If a stable post-dialogue frame was supplied and the event was previously verified, it may be an omission.</p>
+
+      <h3>The model emits a long controller macro</h3>
+      <p>Reject sequences beyond the declared maximum. Log the invalid output, charge the call, and apply the same single retry policy. Never truncate silently because truncation creates an unrequested action policy.</p>
+
+      <h3>The agent saves and reloads the game</h3>
+      <p>Disallow emulator save/load controls entirely. If START is allowed for the in-game menu, distinguish it from emulator hotkeys. The agent must not create private rollback branches.</p>
+
+      <h3>The rival battle diverges</h3>
+      <p>Battle randomness and model choices can change health and timing. This is part of the episode unless the emulator or initial state differs. Report battle actions separately so navigation efficiency is not obscured.</p>
+
+      <h3>A provider call times out</h3>
+      <p>Apply the predeclared retry policy and include timeout latency and any billed usage. If the provider returns no usage record, mark cost unknown rather than zero. Repeated infrastructure failures should be reported separately from agent quality.</p>
+
+      <h3>The model updates memory correctly but ignores it</h3>
+      <p>This is not successful memory behavior. Record the retrieval and classify the contradictory plan as a memory-use failure. Storage quality and use quality should be reported independently.</p>
+
+      <h3>The hidden state probe disagrees with the screen</h3>
+      <p>Pause scoring and inspect emulator timing. A probe taken before an action and a screenshot taken after it are not synchronized evidence. Associate both with a shared frame index before using either as ground truth.</p>
+
+      <h2>Interpretation</h2>
+
+      <p>A useful conclusion is specific:</p>
+
+      <blockquote>
+        Under the frozen FireRed opening-task protocol, one condition reached a deeper median milestone with fewer accepted actions and fewer material memory errors, while total cost was measured from all logged calls.
+      </blockquote>
+
+      <p>A weak conclusion overreaches:</p>
+
+      <blockquote>
+        Model A has better long-term memory and is the best game-playing agent.
+      </blockquote>
+
+      <p>The experiment supports the first form only after real measurements are inserted. Even then, inspect causal patterns. Lower cost may come from shorter outputs rather than better memory. Fewer actions may come from riskier macros. Higher progress may come from stronger visual recognition. The trace should show whether memory errors actually precede repeated routes and stalled objectives.</p>
+
+      <h2>Limitations</h2>
+
+      <ul>
+        <li>One opening mission does not represent the full game, long battles, puzzle areas, item management, or strategy over many hours.</li>
+        <li>Pokémon FireRed contains stochastic events, so identical initial state and inputs do not make model-generated episodes identical.</li>
+        <li>Model comparison does not isolate memory from vision, planning, language understanding, or action-format compliance.</li>
+        <li>Hidden emulator state improves scoring but may depend on version-specific addresses and can be implemented incorrectly.</li>
+        <li>Human memory-error annotation requires judgment. Blinding and dual annotation reduce, but do not remove, subjectivity.</li>
+        <li>Provider pricing and model implementations can change. Preserve the price schedule and exact model identifiers used on the test date.</li>
+        <li>Persistent memory may add cost while improving progress. The correct trade-off depends on the application’s cost of delay and failure.</li>
+        <li>A fixed action budget favors concise control policies; a fixed wall-time budget also reflects provider latency. Publish both.</li>
+        <li>ROM possession and emulation laws differ by jurisdiction. This protocol does not provide legal advice or copyrighted game files.</li>
+      </ul>
+
+      <h2>What a complete experiment package contains</h2>
+
+      <p>A reader should be able to audit the comparison without trusting the summary. Publish the protocol version, redacted manifest, emulator version, hashes that do not expose copyrighted content, prompts, action schema, memory policy, milestone rubric, error rubric, trace schema, analysis code, trial-level results, annotation disagreements, and integrity file. Do not publish the ROM, secrets, private provider payloads, or copyrighted assets.</p>
+
+      <p>The final report should answer four questions side by side: how far each condition progressed, what that progress cost, how many actions it required, and which memory failures created avoidable work. When those four quantities are visible, a cheap but forgetful agent can no longer look efficient merely because each individual call is inexpensive.</p>
+
+      <h2>Final takeaway</h2>
+
+      <p>Memory matters when it changes behavior over time. In this test, the evidence is not an eloquent self-report or a plausible plan. It is a verified parcel collected once, a completed objective not restarted, a return route taken for a reason, and a Pokédex reached within fixed budgets.</p>
+
+      <p>Freeze the environment, separate observations from ground truth, count controller inputs rather than only model calls, charge every retry, annotate memory errors against prior evidence, and publish trial-level results. That turns Pokémon FireRed from an entertaining demo into a reproducible test of agent progress efficiency.</p>
+
+      <p class="back">
+        <a class="text-link" href="guides.html">← Explore practical guides</a>
+        ·
+        <a class="text-link" href="glossary.html">Open the Agent Lab glossary →</a>
+      </p>
+    </article>
+  </main>
+
+  <footer>
+    <span>Agent Lab Journal</span>
+    <span>Real experiments. Verifiable conclusions.</span>
+  </footer>
+</body>
+</html>
