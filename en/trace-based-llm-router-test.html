@@ -1,0 +1,1241 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>Cutting Agent Costs with Trace-Based Model Routing | Agent Lab Journal</title>
+  <meta name="description" content="An advanced, reproducible guide to training an LLM router on your application traces and evaluating cost, quality, latency, routing errors, escalations, and repeated requests.">
+  <link rel="canonical" href="https://agentlabjournal.online/en/trace-based-llm-router-test.html">
+  <link rel="stylesheet" href="../style.css">
+  <link rel="stylesheet" href="../reading.css">
+
+  <meta name="reading-meta" content="Level: advanced; reading time: 90 minutes; outcome: a trace-trained model router and a verified cost, quality, latency, routing-error, and retry report">
+
+  <meta property="og:type" content="article">
+  <meta property="og:locale" content="en_US">
+  <meta property="og:site_name" content="Agent Lab Journal">
+  <meta property="og:title" content="Cutting Agent Costs with Trace-Based Model Routing">
+  <meta property="og:description" content="Train a model router on real application traces and verify savings without silently degrading difficult answers.">
+  <meta property="og:url" content="https://agentlabjournal.online/en/trace-based-llm-router-test.html">
+  <meta property="og:image" content="https://agentlabjournal.online/podcast-cover.png">
+  <meta property="article:modified_time" content="2026-07-31">
+
+  <meta name="twitter:card" content="summary_large_image">
+  <meta name="twitter:title" content="Cutting Agent Costs with Trace-Based Model Routing">
+  <meta name="twitter:description" content="A practical test of an LLM router across cost, quality, latency, wrong routes, escalations, and repeated requests.">
+  <meta name="twitter:image" content="https://agentlabjournal.online/podcast-cover.png">
+
+  <script type="application/ld+json">
+  {
+    "@context": "https://schema.org",
+    "@type": "Article",
+    "headline": "Cutting Agent Costs with Trace-Based Model Routing",
+    "description": "An advanced, reproducible guide to training an LLM router on your application traces and evaluating cost, quality, latency, routing errors, escalations, and repeated requests.",
+    "image": "https://agentlabjournal.online/podcast-cover.png",
+    "dateModified": "2026-07-31",
+    "inLanguage": "en",
+    "author": {
+      "@type": "Organization",
+      "name": "Agent Lab Journal",
+      "url": "https://agentlabjournal.online/"
+    },
+    "publisher": {
+      "@type": "Organization",
+      "name": "Agent Lab Journal",
+      "url": "https://agentlabjournal.online/",
+      "logo": {
+        "@type": "ImageObject",
+        "url": "https://agentlabjournal.online/podcast-cover.png"
+      }
+    },
+    "mainEntityOfPage": {
+      "@type": "WebPage",
+      "@id": "https://agentlabjournal.online/en/trace-based-llm-router-test.html"
+    }
+  }
+  </script>
+</head>
+<body>
+  <noscript>
+    <div><img src="https://mc.yandex.ru/watch/110942679" style="position:absolute;left:-9999px" alt=""></div>
+  </noscript>
+
+  <header class="site-header">
+    <a class="brand" href="./">
+      <span class="brand-mark">AL</span>
+      <span>Agent Lab Journal</span>
+    </a>
+    <nav aria-label="Primary navigation">
+      <a href="guides.html">Guides</a>
+      <a href="glossary.html">Glossary</a>
+    </nav>
+  </header>
+
+  <main class="article">
+    <article>
+      <header class="article-header">
+        <p class="eyebrow">PRACTICE · MODEL ECONOMICS AND EVALUATION</p>
+        <h1>Cutting agent costs with trace-based model routing</h1>
+
+        <div class="reading-meta" aria-label="Article details">
+          <span>Level: advanced</span>
+          <span>Reading time: 90 minutes</span>
+          <span>Outcome: a trained router and a verified operating report</span>
+        </div>
+
+        <p class="lead"><strong>Using the strongest model for every request is expensive, but replacing it with a cheaper model everywhere causes the difficult answers to fail.</strong> The useful middle ground is not a handwritten list of “easy” prompts. It is a router trained and tested on traces from the application it will actually serve. This guide builds that router, deploys it safely, and measures the complete outcome: cost, accepted quality, latency, wrong routes, escalations, automatic retries, and corrective user requests.</p>
+      </header>
+
+      <section aria-labelledby="outcome">
+        <h2 id="outcome">What you will build</h2>
+
+        <p>You will build a two-route policy for an <a class="term-link" href="glossary.html#ai-agent">AI agent</a>:</p>
+
+        <ul>
+          <li><code>cheap</code> sends an operation to the less expensive model;</li>
+          <li><code>strong</code> sends it to the more capable model;</li>
+          <li>a failed cheap attempt may escalate to <code>strong</code>, but that escalation remains visible in the report.</li>
+        </ul>
+
+        <p>The router does not claim to measure intelligence or universal prompt difficulty. It predicts a narrower event: whether the cheap route is likely to satisfy this application’s acceptance contract, with the current instructions, tools, validators, and input distribution.</p>
+
+        <p>The completed work should leave six reproducible artifacts:</p>
+
+        <ol>
+          <li>a privacy-reviewed dataset derived from production-like traces;</li>
+          <li>paired cheap and strong outcomes for the same operations;</li>
+          <li>a versioned router with a calibrated decision threshold;</li>
+          <li>a shadow-mode comparison against fixed routing policies;</li>
+          <li>a canary rollout with an immediate strong-only fallback;</li>
+          <li>a report covering cost, quality, latency, routing errors, escalations, and retries.</li>
+        </ol>
+
+        <aside class="note">
+          <p><strong>No benchmark numbers are supplied in this article.</strong> Model prices, traffic mixes, quality requirements, and application behavior differ. Every numeric result must come from your own replay and live observations.</p>
+        </aside>
+      </section>
+
+      <section aria-labelledby="case">
+        <h2 id="case">Concrete case: an internal support agent</h2>
+
+        <p>Use an internal product-support agent as the working example. This is a reproducible design scenario, not a claim about a customer or a previously measured deployment.</p>
+
+        <p>The agent performs four operations:</p>
+
+        <ol>
+          <li>answers questions from an approved knowledge base;</li>
+          <li>extracts required fields from a support request;</li>
+          <li>classifies the request and proposes the next action;</li>
+          <li>uses a read-only tool to retrieve ticket status.</li>
+        </ol>
+
+        <p>The cheap model may be sufficient for direct retrieval, short classification, and constrained extraction. The strong model may be necessary when the <a class="term-link" href="glossary.html#context">context</a> is contradictory, the policy is ambiguous, the conversation is long, or several dependent <a class="term-link" href="glossary.html#tool-calling">tool calls</a> are required.</p>
+
+        <p>Both routes must receive equivalent inputs: the same normalized conversation, the same retrieved documents, the same <a class="term-link" href="glossary.html#prompt">prompt</a> version, the same tool permissions, and the same output contract. If adapters differ because providers expose different interfaces, record the adapter version as part of the route.</p>
+
+        <p>The routing unit is one completed business operation, not one model call. An operation starts when the application accepts a user request and ends when it returns an accepted result, safely refuses, reaches a terminal error, or exhausts its retry budget.</p>
+      </section>
+
+      <section aria-labelledby="contract">
+        <h2 id="contract">1. Define acceptance before optimizing cost</h2>
+
+        <p>Before collecting labels, write an operation contract. “The request returned HTTP 200” is not a quality criterion. The contract must describe an outcome the product can accept.</p>
+
+        <pre><code>operation: support_answer:v4
+
+starts_when:
+  - user_message_accepted
+
+passes_when:
+  - output_schema_valid
+  - policy_checks_pass
+  - required_claims_supported_by_supplied_sources
+  - requested_read_action_completed_or_safely_declined
+  - no_critical_violation
+  - no_corrective_user_retry_inside_evaluation_window
+
+fails_when:
+  - deterministic_validator_rejects
+  - expert_review_rejects
+  - unauthorized_action_attempted
+  - retry_budget_exhausted
+  - operation_deadline_exceeded
+
+quality_floor:
+  critical_violation_rate: 0
+  accepted_operation_rate: PRODUCT_DEFINED_VALUE
+
+latency_budget_ms: PRODUCT_DEFINED_VALUE
+user_retry_window: PRODUCT_DEFINED_VALUE</code></pre>
+
+        <p>Replace every <code>PRODUCT_DEFINED_VALUE</code> with an approved threshold. There is no universal acceptable error rate. A weak draft title and an incorrect account-status action do not carry the same risk.</p>
+
+        <p>Use three layers of evaluation:</p>
+
+        <ol>
+          <li><strong>Deterministic checks:</strong> schema validity, required fields, tool allowlists, argument constraints, supported citations, and prohibited values.</li>
+          <li><strong>Expert checks:</strong> factual correctness, policy interpretation, sufficient explanation, and appropriate refusal.</li>
+          <li><strong>Behavioral checks:</strong> a corrective user message, a human takeover, a repeated operation, or successful task completion.</li>
+        </ol>
+
+        <p>Name each label according to what it proves. A JSON validator proves <code>schema_valid</code>, not <code>answer_correct</code>. Combining weak signals under an ambitious label is an easy way to train a confidently wrong router.</p>
+      </section>
+
+      <section aria-labelledby="baselines">
+        <h2 id="baselines">2. Establish policies worth comparing</h2>
+
+        <p>Evaluate at least three policies on the same eligible operations:</p>
+
+        <table>
+          <thead>
+            <tr>
+              <th>Policy</th>
+              <th>Behavior</th>
+              <th>Purpose</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td><code>strong_only</code></td>
+              <td>Every operation starts on the strong route</td>
+              <td>Reference quality, cost, and latency</td>
+            </tr>
+            <tr>
+              <td><code>cheap_only</code></td>
+              <td>Every operation starts on the cheap route</td>
+              <td>Maximum nominal savings and the resulting quality loss</td>
+            </tr>
+            <tr>
+              <td><code>rule_router</code></td>
+              <td>Predefined rules select the route</td>
+              <td>A simple baseline the learned router must beat</td>
+            </tr>
+            <tr>
+              <td><code>trace_router</code></td>
+              <td>A trained score plus safety rules selects the route</td>
+              <td>The policy being evaluated</td>
+            </tr>
+          </tbody>
+        </table>
+
+        <p>A practical rule baseline can route operations with tools, large contexts, previous failures, or high-risk action types directly to <code>strong</code>. A learned router is justified only if it produces a better cost-risk trade-off than this understandable baseline.</p>
+      </section>
+
+      <section aria-labelledby="traces">
+        <h2 id="traces">3. Instrument the complete operation trace</h2>
+
+        <p>A <a class="term-link" href="glossary.html#trace">trace</a> must connect the user request, routing decision, every attempt, every model call, validator results, tool activity, and the terminal outcome. This is the minimum <a class="term-link" href="glossary.html#observability">observability</a> needed to distinguish genuine savings from hidden retries.</p>
+
+        <pre><code>{
+  "trace_id": "generated",
+  "operation_id": "generated",
+  "operation_type": "support_answer:v4",
+  "cohort": "eligible_support",
+  "policy_version": "strong_only:v1",
+  "router_version": null,
+  "feature_version": "features:v1",
+  "prompt_version": "support:v4",
+  "selected_route": "strong",
+  "router_score": null,
+  "decision_reason": "baseline",
+  "started_at": "ISO-8601",
+  "completed_at": "ISO-8601",
+  "terminal_status": "accepted",
+  "quality_pass": true,
+  "critical_violation": false,
+  "user_retry": false,
+  "retry_of_operation_id": null
+}</code></pre>
+
+        <p>Record each model call separately. At minimum, include:</p>
+
+        <ul>
+          <li><code>call_id</code>, <code>operation_id</code>, and attempt number;</li>
+          <li>provider, actual model identifier, route, and adapter version;</li>
+          <li>input, cached-input, reasoning, and output <a class="term-link" href="glossary.html#token">token</a> counts when exposed;</li>
+          <li>confirmed charge, currency, and pricing-version identifier;</li>
+          <li>queue time, time to first token, and total call latency;</li>
+          <li>schema, policy, factual, and tool-result checks;</li>
+          <li>error class, automatic repair, retry, and escalation status.</li>
+        </ul>
+
+        <pre><code>CREATE TABLE router_operations (
+  operation_id        TEXT PRIMARY KEY,
+  trace_id            TEXT NOT NULL,
+  operation_type      TEXT NOT NULL,
+  cohort              TEXT NOT NULL,
+  policy_version      TEXT NOT NULL,
+  router_version      TEXT,
+  feature_version     TEXT NOT NULL,
+  selected_route      TEXT NOT NULL,
+  router_score        DOUBLE PRECISION,
+  decision_reason     TEXT NOT NULL,
+  started_at          TIMESTAMP NOT NULL,
+  completed_at        TIMESTAMP,
+  terminal_status     TEXT,
+  quality_pass        BOOLEAN,
+  critical_violation BOOLEAN,
+  user_retry          BOOLEAN NOT NULL DEFAULT FALSE,
+  retry_of            TEXT
+);
+
+CREATE TABLE router_calls (
+  call_id             TEXT PRIMARY KEY,
+  operation_id        TEXT NOT NULL,
+  attempt_no          INTEGER NOT NULL,
+  route               TEXT NOT NULL,
+  model_id            TEXT NOT NULL,
+  prompt_version      TEXT NOT NULL,
+  adapter_version     TEXT NOT NULL,
+  input_tokens        INTEGER,
+  cached_input_tokens INTEGER,
+  output_tokens       INTEGER,
+  charged_cost        NUMERIC,
+  currency            TEXT,
+  price_version       TEXT,
+  queue_ms             INTEGER,
+  first_token_ms       INTEGER,
+  latency_ms           INTEGER,
+  schema_valid        BOOLEAN,
+  validator_pass      BOOLEAN,
+  error_class         TEXT,
+  escalated            BOOLEAN NOT NULL DEFAULT FALSE,
+  created_at           TIMESTAMP NOT NULL,
+  FOREIGN KEY (operation_id) REFERENCES router_operations(operation_id)
+);
+
+CREATE INDEX router_calls_by_operation
+ON router_calls(operation_id, attempt_no);</code></pre>
+
+        <p>Store unknown charges as <code>NULL</code>, never zero. A zero means “confirmed free”; <code>NULL</code> means “not reconciled.” Keep a separate estimated-cost column if estimates are operationally useful.</p>
+      </section>
+
+      <section aria-labelledby="privacy">
+        <h2 id="privacy">4. Turn traces into a privacy-reviewed dataset</h2>
+
+        <p>Production traces can contain personal data, secrets, internal URLs, document contents, and tool results. Do not export raw telemetry into a training directory by default.</p>
+
+        <ol>
+          <li>Define the permitted operation types and time range.</li>
+          <li>Exclude opted-out, regulated, or legally restricted records.</li>
+          <li>Replace stable user and tenant identifiers with scoped pseudonyms.</li>
+          <li>Remove credentials, authorization headers, cookies, signed URLs, and tool secrets.</li>
+          <li>Preserve task structure: redaction must not erase the signals the router needs.</li>
+          <li>Record the redaction-policy version and dataset manifest.</li>
+          <li>Restrict retention and access independently from production logs.</li>
+        </ol>
+
+        <pre><code>{
+  "dataset_id": "router-replay-YYYYMMDD",
+  "source_window": {
+    "from": "APPROVED_START",
+    "to": "APPROVED_END"
+  },
+  "operation_types": ["support_answer:v4"],
+  "redaction_policy": "router-redaction:v2",
+  "prompt_version": "support:v4",
+  "tool_contract_version": "support-read-tools:v3",
+  "feature_version": "features:v1",
+  "record_count": "COMPUTED_VALUE",
+  "content_hash": "COMPUTED_VALUE"
+}</code></pre>
+
+        <p>Do not use raw text, email addresses, customer identifiers, or full URLs as metric labels. High-cardinality telemetry is expensive, hard to aggregate, and prone to leaking sensitive information.</p>
+      </section>
+
+      <section aria-labelledby="sampling">
+        <h2 id="sampling">5. Sample operations that represent the application</h2>
+
+        <p>A random sample of successful calls is insufficient. It excludes the very cases that determine whether routing is safe.</p>
+
+        <p>Stratify the sample by variables known before routing:</p>
+
+        <ul>
+          <li>operation type and product surface;</li>
+          <li>input-length and context-length buckets;</li>
+          <li>language, attachment presence, and retrieval use;</li>
+          <li>number and type of available tools;</li>
+          <li>new conversation versus follow-up;</li>
+          <li>previous attempt state;</li>
+          <li>historical terminal outcome;</li>
+          <li>time period, including recent traffic.</li>
+        </ul>
+
+        <p>Deliberately include failures, timeouts, repairs, human escalations, and user retries. Weight the final aggregate back to the real traffic distribution; otherwise, oversampling rare failures will distort the cost projection.</p>
+
+        <p>Keep an untouched, recent holdout period. Model behavior, prompts, retrieval indexes, and traffic change over time, so a purely random split can make the test look easier than deployment.</p>
+      </section>
+
+      <section aria-labelledby="replay">
+        <h2 id="replay">6. Run paired counterfactual replay</h2>
+
+        <p>In an isolated <a class="term-link" href="glossary.html#benchmark">benchmark</a>, execute each eligible saved input against both routes. Pairing matters: comparing cheap calls from Monday with strong calls from Friday confounds route quality with traffic differences.</p>
+
+        <pre><code>for example in evaluation_set:
+    cheap = run_route(
+        route="cheap",
+        input=example.normalized_input,
+        prompt_version=example.prompt_version,
+        tools=read_only_replay_tools
+    )
+
+    strong = run_route(
+        route="strong",
+        input=example.normalized_input,
+        prompt_version=example.prompt_version,
+        tools=read_only_replay_tools
+    )
+
+    store_pair(
+        example_id=example.id,
+        cheap=cheap,
+        strong=strong,
+        evaluator_version="acceptance:v3"
+    )</code></pre>
+
+        <p>Replay tools must not change live systems. Replace writes with recorded fixtures or a deterministic simulator. If a historical read cannot be reconstructed, mark the example unevaluable rather than silently giving one route different evidence.</p>
+
+        <p>Control nondeterminism:</p>
+
+        <ul>
+          <li>pin model, prompt, adapter, tool contract, and evaluator versions;</li>
+          <li>use the same retrieved evidence for both routes;</li>
+          <li>record sampling parameters and provider request identifiers;</li>
+          <li>repeat a subset to measure outcome variance;</li>
+          <li>keep transient infrastructure errors separate from answer-quality failures.</li>
+        </ul>
+
+        <p>A strong-model response is not automatically ground truth. Both routes can fail. Apply the same acceptance process to both outputs.</p>
+      </section>
+
+      <section aria-labelledby="labels">
+        <h2 id="labels">7. Build the routing label</h2>
+
+        <p>The simplest target is whether the cheap route passes the acceptance contract:</p>
+
+        <pre><code>cheap_success =
+    schema_valid
+    AND policy_pass
+    AND required_facts_supported
+    AND tool_outcome_valid
+    AND NOT critical_violation</code></pre>
+
+        <p>For routing, paired results support four useful classes:</p>
+
+        <table>
+          <thead>
+            <tr>
+              <th>Cheap</th>
+              <th>Strong</th>
+              <th>Interpretation</th>
+              <th>Training treatment</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td>Pass</td>
+              <td>Pass</td>
+              <td>Cheap route is sufficient</td>
+              <td>Positive cheap-route example</td>
+            </tr>
+            <tr>
+              <td>Fail</td>
+              <td>Pass</td>
+              <td>Routing to cheap would be harmful</td>
+              <td>High-cost false-cheap example</td>
+            </tr>
+            <tr>
+              <td>Pass</td>
+              <td>Fail</td>
+              <td>Strong is not a universal oracle</td>
+              <td>Inspect evaluator and model variance</td>
+            </tr>
+            <tr>
+              <td>Fail</td>
+              <td>Fail</td>
+              <td>Neither route solves the operation</td>
+              <td>Usually abstain, repair, or redesign</td>
+            </tr>
+          </tbody>
+        </table>
+
+        <p>Keep infrastructure failures distinct from semantic failures. A provider timeout does not prove that the model was incapable of answering. Depending on the goal, either exclude these records from capability training or model availability as a separate routing signal.</p>
+
+        <h3>Account for corrective user requests</h3>
+
+        <p>A technically accepted response may still be wrong if the user immediately restates the request, corrects a field, or asks for the promised action again. Link likely retries using a conservative rule based on actor, operation type, time window, and semantic or business identifiers.</p>
+
+        <pre><code>user_retry =
+    same_scoped_actor
+    AND same_operation_type
+    AND within_configured_window
+    AND (
+      explicit_correction
+      OR same_business_object
+      OR reviewed_semantic_match
+    )</code></pre>
+
+        <p>Do not declare every follow-up a failure. A user may ask a legitimate next question. Report confirmed retries separately from inferred retries and manually review a sample of both.</p>
+      </section>
+
+      <section aria-labelledby="split">
+        <h2 id="split">8. Split data without leakage</h2>
+
+        <p>Near-duplicate conversations commonly appear in support workloads. If one copy enters training and another enters testing, the reported performance will be optimistic.</p>
+
+        <ol>
+          <li>Group exact duplicates by normalized-input hash.</li>
+          <li>Group related turns by conversation or case identifier.</li>
+          <li>Where appropriate, group repeated templates or the same business object.</li>
+          <li>Assign complete groups to train, validation, or test.</li>
+          <li>Reserve the newest time window as an additional temporal holdout.</li>
+        </ol>
+
+        <pre><code>train:
+  time: earlier_window
+  groups: assigned_train_groups
+
+validation:
+  time: earlier_window
+  groups: assigned_validation_groups
+
+test:
+  time: later_untouched_window
+  groups: assigned_test_groups</code></pre>
+
+        <p>Fit text vocabularies, encoders, scalers, and missing-value rules on training data only. Do not inspect test errors repeatedly while adjusting features; that turns the test set into another validation set.</p>
+      </section>
+
+      <section aria-labelledby="features">
+        <h2 id="features">9. Use only features available before the decision</h2>
+
+        <p>The router may use properties known before the first model call:</p>
+
+        <ul>
+          <li>operation type;</li>
+          <li>input character or token-length bucket;</li>
+          <li>conversation-turn count;</li>
+          <li>retrieved-document count and aggregate length;</li>
+          <li>attachment types;</li>
+          <li>language category;</li>
+          <li>tool availability and required action risk;</li>
+          <li>whether structured output is required;</li>
+          <li>previous attempt count;</li>
+          <li>coarse policy or product area;</li>
+          <li>privacy-safe text representation, if approved.</li>
+        </ul>
+
+        <p>Do not use fields produced after routing, including cheap-model confidence, cheap output length, validator result, final latency, escalation status, or the user’s later correction. Those are future information and will not exist when the live router makes its choice.</p>
+
+        <pre><code>{
+  "operation_type": "support_answer",
+  "input_token_bucket": "513-1024",
+  "conversation_turn_bucket": "4-7",
+  "retrieval_document_bucket": "1-3",
+  "has_attachment": false,
+  "requires_tool": true,
+  "tool_risk": "read_only",
+  "requires_structured_output": true,
+  "attempt_bucket": "first",
+  "language": "en"
+}</code></pre>
+
+        <p>Prefer stable, interpretable features first. A small router is easier to calibrate, debug, and run within a tight latency budget. Add embeddings or a compact language model only if simpler baselines leave a material, verified gap.</p>
+      </section>
+
+      <section aria-labelledby="training">
+        <h2 id="training">10. Train a calibrated probability model</h2>
+
+        <p>A regularized logistic model or gradient-boosted tree is often an adequate first router. The desired output is an estimate of:</p>
+
+        <pre><code>p_cheap_success = P(cheap route passes | pre-route features)</code></pre>
+
+        <p>One possible configuration shape is:</p>
+
+        <pre><code>router:
+  objective: predict_cheap_success
+  model_family: regularized_logistic_regression
+  class_weight:
+    cheap_success: 1
+    cheap_failure_strong_success: PRODUCT_RISK_WEIGHT
+  calibration:
+    method: isotonic_or_sigmoid
+    fit_on: validation_only
+  versions:
+    dataset: router-replay-YYYYMMDD
+    features: features:v1
+    evaluator: acceptance:v3</code></pre>
+
+        <p>The risk weight is a product decision, not a value to copy from this article. Route errors that trigger an incorrect high-impact action should carry more weight than errors that merely require reformatting.</p>
+
+        <p>Measure discrimination and calibration separately. Ranking metrics show whether safer examples tend to receive higher scores. Calibration shows whether a score such as <code>0.90</code> corresponds to roughly that success frequency in the evaluated cohort. Threshold decisions depend on the latter.</p>
+
+        <h3>Why accuracy is inadequate</h3>
+
+        <p>If most operations are easy, a router that always chooses cheap can have high routing accuracy while still sending the small, costly failure class to the wrong model. Report at least:</p>
+
+        <ul>
+          <li>false-cheap rate: cheap selected where cheap fails and strong passes;</li>
+          <li>false-strong rate: strong selected where cheap would pass;</li>
+          <li>critical false-cheap count and rate;</li>
+          <li>accepted-operation rate by route;</li>
+          <li>calibration by score bucket;</li>
+          <li>metrics by operation type, language, tool use, and length bucket.</li>
+        </ul>
+      </section>
+
+      <section aria-labelledby="threshold">
+        <h2 id="threshold">11. Select the threshold using cost and risk</h2>
+
+        <p>Do not select <code>0.5</code> merely because the router is a classifier. Evaluate candidate thresholds on validation data using complete operation economics.</p>
+
+        <pre><code>if p_cheap_success &gt;= threshold:
+    route = "cheap"
+else:
+    route = "strong"</code></pre>
+
+        <p>For each threshold, simulate:</p>
+
+        <pre><code>expected_operation_cost =
+    router_inference_cost
+  + initial_model_cost
+  + automatic_retry_cost
+  + repair_cost
+  + escalation_cost
+  + evaluation_cost
+  + configured_failure_penalty
+
+subject to:
+  accepted_operation_rate &gt;= APPROVED_FLOOR
+  critical_violation_rate &lt;= APPROVED_LIMIT
+  p95_operation_latency_ms &lt;= APPROVED_BUDGET</code></pre>
+
+        <p>Keep monetary spend and business-loss assumptions in separate columns. Provider charges can often be reconciled. Failure penalties are modeled assumptions and must be labeled as such.</p>
+
+        <h3>Add an uncertainty zone</h3>
+
+        <p>A practical policy can use two thresholds:</p>
+
+        <pre><code>if safety_rule_requires_strong(features):
+    route = "strong"
+elif score &gt;= cheap_threshold:
+    route = "cheap"
+elif score &lt;= strong_threshold:
+    route = "strong"
+else:
+    route = uncertainty_policy</code></pre>
+
+        <p>The uncertainty policy may choose strong, apply a deterministic rule, request clarification, or use a separately tested intermediate route. Do not hide uncertainty by forcing every input onto cheap.</p>
+
+        <h3>Apply hard safety rules first</h3>
+
+        <p>Keep known high-risk categories out of the learned cheap route until they have dedicated evidence. Examples include write-capable tools, irreversible actions, authentication changes, money movement, legal commitments, and inputs outside the training distribution.</p>
+
+        <pre><code>force_strong_when:
+  - action_risk in ["write", "irreversible"]
+  - operation_type not in trained_operation_types
+  - required_feature_missing
+  - router_unavailable
+  - prompt_version not in compatible_prompt_versions
+  - context_size outside_trained_range</code></pre>
+      </section>
+
+      <section aria-labelledby="runtime">
+        <h2 id="runtime">12. Implement the runtime policy</h2>
+
+        <pre><code>def execute_operation(operation):
+    features = build_features(operation)
+
+    safety = evaluate_safety_rules(features)
+    if safety.force_strong:
+        decision = Decision(
+            route="strong",
+            score=None,
+            reason=safety.reason
+        )
+    else:
+        score = router.predict_proba(features)
+        route = "cheap" if score &gt;= CHEAP_THRESHOLD else "strong"
+        decision = Decision(
+            route=route,
+            score=score,
+            reason="trained_policy"
+        )
+
+    persist_decision_before_call(
+        operation_id=operation.id,
+        router_version=ROUTER_VERSION,
+        feature_version=FEATURE_VERSION,
+        decision=decision
+    )
+
+    first = call_route(
+        operation=operation,
+        route=decision.route,
+        idempotency_key=operation.id + ":attempt:1"
+    )
+
+    checked = validate(first)
+
+    if checked.pass_all:
+        return finalize(operation, first, status="accepted")
+
+    if decision.route == "cheap" and checked.escalation_allowed:
+        second = call_route(
+            operation=operation,
+            route="strong",
+            idempotency_key=operation.id + ":attempt:2"
+        )
+        return finalize_escalation(operation, first, second)
+
+    return finalize(operation, first, status="rejected")</code></pre>
+
+        <p>Persist the routing decision before the billable call. Otherwise, a worker crash can leave a charge with no recorded policy or score.</p>
+
+        <p>Use an <a class="term-link" href="glossary.html#idempotency">idempotency key</a> when the provider or your application boundary supports it. A retry caused by an uncertain network result must not accidentally create another tool action.</p>
+
+        <p>Separate these concepts:</p>
+
+        <ul>
+          <li><strong>call retry:</strong> the same route is called again after a transient error;</li>
+          <li><strong>repair:</strong> another call corrects schema or formatting;</li>
+          <li><strong>escalation:</strong> a cheap result fails validation and the strong route is invoked;</li>
+          <li><strong>user retry:</strong> the user repeats or corrects the logical request.</li>
+        </ul>
+
+        <p>All four consume resources, but they indicate different failures.</p>
+      </section>
+
+      <section aria-labelledby="shadow">
+        <h2 id="shadow">13. Start in shadow mode</h2>
+
+        <p>In shadow mode, production continues using <code>strong_only</code>. The router computes a hypothetical decision but does not control the response.</p>
+
+        <pre><code>{
+  "effective_route": "strong",
+  "effective_policy": "strong_only:v1",
+  "shadow_route": "cheap",
+  "shadow_router_version": "trace-router:v1",
+  "shadow_score": 0.93,
+  "shadow_reason": "trained_policy"
+}</code></pre>
+
+        <p>Shadow mode verifies feature availability, schema compatibility, score distributions, decision latency, version logging, and cohort assignment without exposing users to route errors.</p>
+
+        <p>It does not prove cheap-route quality unless the cheap route is also evaluated. You can obtain that evidence through offline paired replay or a separately approved shadow call. Extra shadow calls cost money and may process sensitive data, so include them in the experiment budget and privacy review.</p>
+
+        <h3>Exit criteria</h3>
+
+        <ul>
+          <li>no missing required features in the eligible cohort;</li>
+          <li>router and feature versions present on every decision;</li>
+          <li>decision latency within its allocated budget;</li>
+          <li>score distribution consistent with offline observations or explained;</li>
+          <li>no critical false-cheap cases in the reviewed release sample;</li>
+          <li>cost projections include retries and escalations;</li>
+          <li>strong-only fallback tested successfully.</li>
+        </ul>
+      </section>
+
+      <section aria-labelledby="canary">
+        <h2 id="canary">14. Run a controlled canary</h2>
+
+        <p>Enable the router only for an eligible low-risk cohort. Assignment must be stable at the appropriate unit—usually actor, conversation, or operation—so a user is not moved unpredictably between policies.</p>
+
+        <pre><code>routing_experiment:
+  eligibility:
+    operation_types: ["support_answer:v4"]
+    action_risk: ["read_only", "no_tool"]
+    supported_languages: ["en"]
+  assignment_unit: conversation_id
+  policies:
+    control: strong_only:v1
+    treatment: trace_router:v1
+  exclusions:
+    - write_capable_tool
+    - unresolved_previous_failure
+    - unsupported_prompt_version
+    - missing_required_feature
+  emergency_fallback: strong_only:v1</code></pre>
+
+        <p>Choose traffic exposure and duration from your power analysis, operational risk, and rollback capability. A percentage copied from another system has no evidential value.</p>
+
+        <p>Freeze the router, thresholds, prompt, evaluator, and cohort definition during the measurement window unless safety requires a change. If anything changes, start a new report segment rather than merging incompatible versions.</p>
+      </section>
+
+      <section aria-labelledby="metrics">
+        <h2 id="metrics">15. Compute operation-level metrics</h2>
+
+        <h3>Total cost</h3>
+
+        <pre><code>confirmed_model_cost =
+  SUM(charged_cost WHERE charge_status = "confirmed")
+
+complete_operation_cost =
+    confirmed_model_cost
+  + confirmed_router_cost
+  + confirmed_evaluator_cost
+  + confirmed_tool_cost
+
+cost_per_started_operation =
+  SUM(complete_operation_cost) / COUNT(started_operations)
+
+cost_per_accepted_operation =
+  SUM(complete_operation_cost) / COUNT(accepted_operations)</code></pre>
+
+        <p>Report total spend and cost per accepted operation. A cheap policy can lower call cost while increasing cost per accepted result through repairs, escalations, and failures.</p>
+
+        <p>Show the share of costs still estimated or unknown. Do not merge currencies without a dated, documented conversion rule.</p>
+
+        <h3>Quality</h3>
+
+        <pre><code>accepted_operation_rate =
+  accepted_operations / eligible_started_operations
+
+critical_violation_rate =
+  critical_violations / evaluated_operations
+
+review_acceptance_rate =
+  reviewer_accepted / reviewer_evaluated</code></pre>
+
+        <p>Include evaluator coverage. A high pass rate based on a small or selectively reviewed subset is not equivalent to broad evidence.</p>
+
+        <h3>Latency</h3>
+
+        <p>Measure end-to-end operation latency, not just model latency:</p>
+
+        <pre><code>operation_latency_ms =
+  terminal_timestamp - accepted_request_timestamp</code></pre>
+
+        <p>Report median, p90, p95, and p99 where sample size permits. Separate queue time, router time, first call, validation, retry, and escalation so the tail has an explanation.</p>
+
+        <h3>Wrong routes</h3>
+
+        <pre><code>false_cheap =
+  selected_route = "cheap"
+  AND cheap_acceptance = false
+  AND strong_counterfactual_acceptance = true
+
+false_strong =
+  selected_route = "strong"
+  AND cheap_counterfactual_acceptance = true
+
+false_cheap_rate =
+  false_cheap / evaluated_cheap_decisions
+
+false_strong_rate =
+  false_strong / evaluated_strong_decisions</code></pre>
+
+        <p>Live traffic usually lacks both counterfactual outcomes. Estimate wrong-route rates from paired replay, approved exploration, or a reviewed sample. Label the source and coverage instead of presenting an incomplete denominator as universal truth.</p>
+
+        <h3>Retries, repairs, and escalations</h3>
+
+        <pre><code>automatic_retry_rate =
+  operations_with_call_retry / started_operations
+
+repair_rate =
+  operations_with_repair / started_operations
+
+cheap_to_strong_escalation_rate =
+  cheap_started_then_strong / cheap_started_operations
+
+user_retry_rate =
+  confirmed_or_inferred_user_retries / eligible_completed_operations</code></pre>
+
+        <p>Also report average calls per operation and the cost of escalated operations. A high escalation rate can make routing look safe because the strong model repairs the output, while eliminating the expected savings.</p>
+      </section>
+
+      <section aria-labelledby="report">
+        <h2 id="report">16. Produce a report without invented results</h2>
+
+        <p>Generate the table below from your warehouse or evaluation files. Leave missing values explicitly unavailable rather than filling them with assumptions.</p>
+
+        <table>
+          <thead>
+            <tr>
+              <th>Metric</th>
+              <th>Strong only</th>
+              <th>Cheap only</th>
+              <th>Rule router</th>
+              <th>Trace router</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td>Eligible started operations</td>
+              <td>COMPUTE</td>
+              <td>COMPUTE</td>
+              <td>COMPUTE</td>
+              <td>COMPUTE</td>
+            </tr>
+            <tr>
+              <td>Accepted-operation rate</td>
+              <td>COMPUTE</td>
+              <td>COMPUTE</td>
+              <td>COMPUTE</td>
+              <td>COMPUTE</td>
+            </tr>
+            <tr>
+              <td>Critical violations</td>
+              <td>COMPUTE</td>
+              <td>COMPUTE</td>
+              <td>COMPUTE</td>
+              <td>COMPUTE</td>
+            </tr>
+            <tr>
+              <td>Confirmed total cost</td>
+              <td>COMPUTE</td>
+              <td>COMPUTE</td>
+              <td>COMPUTE</td>
+              <td>COMPUTE</td>
+            </tr>
+            <tr>
+              <td>Cost per accepted operation</td>
+              <td>COMPUTE</td>
+              <td>COMPUTE</td>
+              <td>COMPUTE</td>
+              <td>COMPUTE</td>
+            </tr>
+            <tr>
+              <td>Unknown-cost share</td>
+              <td>COMPUTE</td>
+              <td>COMPUTE</td>
+              <td>COMPUTE</td>
+              <td>COMPUTE</td>
+            </tr>
+            <tr>
+              <td>Median operation latency</td>
+              <td>COMPUTE</td>
+              <td>COMPUTE</td>
+              <td>COMPUTE</td>
+              <td>COMPUTE</td>
+            </tr>
+            <tr>
+              <td>p95 operation latency</td>
+              <td>COMPUTE</td>
+              <td>COMPUTE</td>
+              <td>COMPUTE</td>
+              <td>COMPUTE</td>
+            </tr>
+            <tr>
+              <td>False-cheap rate</td>
+              <td>N/A</td>
+              <td>COMPUTE</td>
+              <td>COMPUTE</td>
+              <td>COMPUTE</td>
+            </tr>
+            <tr>
+              <td>False-strong rate</td>
+              <td>COMPUTE</td>
+              <td>N/A</td>
+              <td>COMPUTE</td>
+              <td>COMPUTE</td>
+            </tr>
+            <tr>
+              <td>Automatic retry rate</td>
+              <td>COMPUTE</td>
+              <td>COMPUTE</td>
+              <td>COMPUTE</td>
+              <td>COMPUTE</td>
+            </tr>
+            <tr>
+              <td>Cheap-to-strong escalation rate</td>
+              <td>N/A</td>
+              <td>COMPUTE</td>
+              <td>COMPUTE</td>
+              <td>COMPUTE</td>
+            </tr>
+            <tr>
+              <td>User retry rate</td>
+              <td>COMPUTE</td>
+              <td>COMPUTE</td>
+              <td>COMPUTE</td>
+              <td>COMPUTE</td>
+            </tr>
+          </tbody>
+        </table>
+
+        <p>Accompany the summary with these slices:</p>
+
+        <ul>
+          <li>operation type;</li>
+          <li>input and context-length bucket;</li>
+          <li>language;</li>
+          <li>tool requirement and action risk;</li>
+          <li>new conversation versus follow-up;</li>
+          <li>router-score bucket;</li>
+          <li>prompt, router, feature, adapter, and evaluator version;</li>
+          <li>failure class.</li>
+        </ul>
+
+        <p>Every report should state the evaluation window, cohort definition, exclusion count, sample size, evaluator coverage, price version, currency, unknown-charge count, and confidence interval or uncertainty method where appropriate.</p>
+
+        <h3>Routing-error register</h3>
+
+        <table>
+          <thead>
+            <tr>
+              <th>Field</th>
+              <th>Purpose</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td><code>operation_id</code></td>
+              <td>Links the error to the full trace</td>
+            </tr>
+            <tr>
+              <td><code>router_score</code></td>
+              <td>Shows whether the decision was confident or near threshold</td>
+            </tr>
+            <tr>
+              <td><code>selected_route</code></td>
+              <td>Records the effective route</td>
+            </tr>
+            <tr>
+              <td><code>counterfactual_outcome</code></td>
+              <td>Supports false-cheap or false-strong classification</td>
+            </tr>
+            <tr>
+              <td><code>failure_class</code></td>
+              <td>Schema, policy, factual, tool, timeout, or infrastructure</td>
+            </tr>
+            <tr>
+              <td><code>feature_snapshot</code></td>
+              <td>Supports reproducible diagnosis</td>
+            </tr>
+            <tr>
+              <td><code>review_status</code></td>
+              <td>Separates detected from confirmed errors</td>
+            </tr>
+            <tr>
+              <td><code>corrective_action</code></td>
+              <td>Tracks rule, feature, threshold, prompt, or workflow changes</td>
+            </tr>
+          </tbody>
+        </table>
+      </section>
+
+      <section aria-labelledby="sql">
+        <h2 id="sql">17. Verify the report with independent queries</h2>
+
+        <p>Aggregate at operation level before comparing policies. Joining calls directly to evaluations can multiply rows and inflate cost.</p>
+
+        <pre><code>WITH call_totals AS (
+  SELECT
+    operation_id,
+    COUNT(*) AS call_count,
+    SUM(CASE WHEN charged_cost IS NOT NULL
+             THEN charged_cost ELSE 0 END) AS confirmed_model_cost,
+    SUM(CASE WHEN charged_cost IS NULL
+             THEN 1 ELSE 0 END) AS unknown_charge_calls,
+    MAX(CASE WHEN escalated THEN 1 ELSE 0 END) AS had_escalation
+  FROM router_calls
+  GROUP BY operation_id
+),
+operation_facts AS (
+  SELECT
+    o.operation_id,
+    o.policy_version,
+    o.selected_route,
+    o.quality_pass,
+    o.critical_violation,
+    o.user_retry,
+    EXTRACT(EPOCH FROM (o.completed_at - o.started_at)) * 1000
+      AS operation_latency_ms,
+    COALESCE(c.call_count, 0) AS call_count,
+    COALESCE(c.confirmed_model_cost, 0) AS confirmed_model_cost,
+    COALESCE(c.unknown_charge_calls, 0) AS unknown_charge_calls,
+    COALESCE(c.had_escalation, 0) AS had_escalation
+  FROM router_operations o
+  LEFT JOIN call_totals c USING (operation_id)
+  WHERE o.cohort = 'eligible_support'
+)
+SELECT
+  policy_version,
+  COUNT(*) AS started_operations,
+  SUM(CASE WHEN quality_pass THEN 1 ELSE 0 END) AS accepted_operations,
+  SUM(CASE WHEN critical_violation THEN 1 ELSE 0 END)
+    AS critical_violations,
+  SUM(confirmed_model_cost) AS confirmed_model_cost,
+  SUM(confirmed_model_cost)
+    / NULLIF(SUM(CASE WHEN quality_pass THEN 1 ELSE 0 END), 0)
+    AS model_cost_per_accepted_operation,
+  AVG(call_count) AS calls_per_operation,
+  AVG(had_escalation) AS escalation_rate,
+  AVG(CASE WHEN user_retry THEN 1.0 ELSE 0.0 END) AS user_retry_rate,
+  SUM(unknown_charge_calls) AS unknown_charge_calls
+FROM operation_facts
+GROUP BY policy_version
+ORDER BY policy_version;</code></pre>
+
+        <p>Check repeated calls independently:</p>
+
+        <pre><code>SELECT
+  operation_id,
+  route,
+  COUNT(*) AS calls,
+  MIN(created_at) AS first_call,
+  MAX(created_at) AS last_call,
+  SUM(COALESCE(charged_cost, 0)) AS confirmed_cost
+FROM router_calls
+GROUP BY operation_id, route
+HAVING COUNT(*) &gt; 1
+ORDER BY calls DESC;</code></pre>
+
+        <p>Reconcile these aggregates with provider billing exports for the same model identifiers and time window. Explain differences caused by delayed charges, credits, cached-token accounting, failed calls, or timezone boundaries.</p>
+      </section>
+
+      <section aria-labelledby="verification">
+        <h2 id="verification">18. Verification before increasing traffic</h2>
+
+        <ol>
+          <li><strong>Trace completeness:</strong> every billable call maps to one operation and one recorded decision.</li>
+          <li><strong>Counterfactual comparability:</strong> paired routes used equivalent inputs, evidence, prompts, and tools.</li>
+          <li><strong>Leakage prevention:</strong> no feature depends on the selected route’s output or later user behavior.</li>
+          <li><strong>Split integrity:</strong> duplicate and related conversations do not cross dataset partitions.</li>
+          <li><strong>Evaluator validity:</strong> deterministic and expert labels have documented coverage and versions.</li>
+          <li><strong>Calibration:</strong> score buckets on the holdout set match observed cheap-route success closely enough for the decision policy.</li>
+          <li><strong>Safety rules:</strong> unknown and high-risk operations default to strong.</li>
+          <li><strong>Retry accounting:</strong> call retries, repairs, escalations, and user retries are counted separately.</li>
+          <li><strong>Financial reconciliation:</strong> confirmed, estimated, and unknown costs are not mixed.</li>
+          <li><strong>Latency accounting:</strong> the report uses end-to-end operation latency.</li>
+          <li><strong>Version isolation:</strong> incompatible router, prompt, adapter, feature, or price versions are not aggregated.</li>
+          <li><strong>Fallback:</strong> an immediate <a class="term-link" href="glossary.html#rollback">rollback</a> to <code>strong_only</code> has been exercised.</li>
+        </ol>
+
+        <h3>Minimum automated tests</h3>
+
+        <pre><code>test_unknown_operation_routes_to_strong
+test_missing_feature_routes_to_strong
+test_router_timeout_routes_to_strong
+test_write_tool_routes_to_strong
+test_decision_is_persisted_before_model_call
+test_retry_reuses_logical_operation_id
+test_idempotency_key_changes_only_by_attempt
+test_escalation_cost_is_included
+test_unknown_charge_is_not_zero
+test_future_features_are_rejected
+test_duplicate_groups_do_not_cross_splits
+test_report_aggregates_calls_before_joining
+test_policy_versions_are_not_merged
+test_strong_only_fallback_bypasses_router</code></pre>
+      </section>
+
+      <section aria-labelledby="failures">
+        <h2 id="failures">Common failure cases</h2>
+
+        <h3>The strong model is treated as ground truth</h3>
+        <p>The strong route can also hallucinate, misuse a tool, or violate policy. Evaluate both routes against the same contract and review disagreements.</p>
+
+        <h3>Training uses future information</h3>
+        <p>A feature such as validator outcome makes offline performance excellent and live routing impossible. Enforce a schema of fields available at decision time.</p>
+
+        <h3>Training and test contain duplicate conversations</h3>
+        <p>The router memorizes templates or cases. Group before splitting and maintain a recent temporal holdout.</p>
+
+        <h3>The report counts calls instead of operations</h3>
+        <p>A cheap attempt followed by a strong escalation appears as two successes or two observations. Aggregate the entire trace into one terminal operation first.</p>
+
+        <h3>Escalation hides bad routing</h3>
+        <p>Final quality remains acceptable because strong repairs cheap failures, but cost and tail latency increase. Report initial-route quality and escalation rate separately.</p>
+
+        <h3>User follow-ups are all labeled as retries</h3>
+        <p>Legitimate next questions become false failures. Use explicit correction signals, business identifiers, conservative matching, and reviewed samples.</p>
+
+        <h3>Only averages are monitored</h3>
+        <p>Average latency and quality can conceal a failing language, tool, or long-context segment. Inspect tails and cohort slices.</p>
+
+        <h3>Current prices are applied to historical traffic</h3>
+        <p>The apparent savings change when the price table changes. Store confirmed charges or a versioned price rule effective at call time.</p>
+
+        <h3>The prompt changes without retraining or reevaluation</h3>
+        <p>A prompt update can alter which operations the cheap model handles. Treat prompt compatibility as part of the router release.</p>
+
+        <h3>Router failure defaults to cheap</h3>
+        <p>This converts an infrastructure incident into a quality incident. For risk-sensitive operations, fail closed to the strong route.</p>
+
+        <h3>Retries have no budget</h3>
+        <p>A route that looks cheap per call can become expensive through repeated repairs. Cap attempts per operation and stop unchanged retries on permanent errors.</p>
+      </section>
+
+      <section aria-labelledby="limitations">
+        <h2 id="limitations">Limitations</h2>
+
+        <p>A trace-trained router learns the distribution represented in its dataset. It may not generalize to a new product surface, language, prompt, retrieval index, tool, or model revision.</p>
+
+        <p>Counterfactual replay is imperfect when external state cannot be reconstructed. Live user reactions are also unavailable for hypothetical responses, so behavioral quality requires careful sampling or controlled deployment.</p>
+
+        <p>Evaluator errors become label errors. Deterministic checks are narrow, expert review is costly, and model-based judging requires its own validation. No single evaluator should silently define overall quality.</p>
+
+        <p>Provider behavior and prices can change. Recalculate economics with versioned charges and reevaluate route capability after material model changes.</p>
+
+        <p>A two-route policy does not solve every workload. Some operations need retrieval repair, clarification, a deterministic program, a human reviewer, or refusal rather than a stronger model.</p>
+
+        <p>Finally, routing itself adds operational complexity: another model or ruleset, feature computation, monitoring, version compatibility, and failure handling. If traffic is small or the models have similar economics, that complexity may cost more than it saves.</p>
+      </section>
+
+      <section aria-labelledby="monitoring">
+        <h2 id="monitoring">Operating the router after launch</h2>
+
+        <p>The router becomes part of the production <a class="term-link" href="glossary.html#workflow">workflow</a>. Monitor it as a versioned decision service, not as a static experiment.</p>
+
+        <ul>
+          <li>track input-feature and score-distribution drift;</li>
+          <li>compare accepted-operation, escalation, and retry rates by route;</li>
+          <li>review false-cheap cases and critical failures immediately;</li>
+          <li>replay a stable regression set after model, prompt, tool, or evaluator changes;</li>
+          <li>sample live operations for expert review;</li>
+          <li>reconcile charges on a regular schedule;</li>
+          <li>expire router versions that are incompatible with current prompts or features;</li>
+          <li>retain a tested strong-only fallback.</li>
+        </ul>
+
+        <p>Retrain on a declared trigger—material drift, a changed model, a changed prompt, enough newly reviewed errors, or an agreed schedule. Automatic retraining without gated evaluation can turn temporary anomalies into production policy.</p>
+      </section>
+
+      <section aria-labelledby="checklist">
+        <h2 id="checklist">Final checklist</h2>
+
+        <ul>
+          <li>The routing unit is a completed business operation.</li>
+          <li>Acceptance criteria exist before model comparison.</li>
+          <li>Cheap and strong routes are evaluated on paired inputs.</li>
+          <li>Both routes use equivalent evidence and permissions.</li>
+          <li>Training data is privacy-reviewed and versioned.</li>
+          <li>Related traces remain in one dataset partition.</li>
+          <li>Features exist before the route decision.</li>
+          <li>The router outputs a calibrated score.</li>
+          <li>The threshold reflects cost and asymmetric risk.</li>
+          <li>Hard safety rules override learned routing.</li>
+          <li>Unknown inputs and router failures default safely.</li>
+          <li>Shadow mode validates integration before control.</li>
+          <li>The canary has stable assignment and explicit eligibility.</li>
+          <li>Cost includes retries, repairs, evaluations, and escalations.</li>
+          <li>Quality includes deterministic, expert, and behavioral evidence.</li>
+          <li>Latency is measured end to end and includes tail percentiles.</li>
+          <li>False-cheap and false-strong routes are reported separately.</li>
+          <li>Automatic and user retries have distinct definitions.</li>
+          <li>Unknown financial data remains unknown.</li>
+          <li>The report records every relevant version and denominator.</li>
+          <li>Rollback to <code>strong_only</code> is tested.</li>
+        </ul>
+
+        <p>The router is ready only when it reduces verified cost per accepted operation without crossing the approved quality and latency limits. A lower model bill alone is not success if difficult answers fail, users repeat themselves, or cheap attempts routinely escalate to the strong route.</p>
+      </section>
+
+      <footer class="article-footer">
+        <h2>Continue the work</h2>
+        <p>Find more reproducible implementation material in the <a href="guides.html">Agent Lab Journal guides</a>, and use the <a href="glossary.html">glossary</a> for definitions of agents, traces, prompts, context, tokens, tool calling, benchmarks, observability, idempotency, rollback, and workflows.</p>
+      </footer>
+    </article>
+  </main>
+
+  <footer class="site-footer">
+    <span>Agent Lab Journal</span>
+    <span><a href="privacy-en.html">Privacy</a></span>
+  </footer>
+
+  <script src="../content-bridge.js?v=20260728"></script>
+</body>
+</html>

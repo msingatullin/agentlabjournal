@@ -1,0 +1,1030 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Снижаем стоимость агента с маршрутизацией моделей по реальным трассам — Agent Lab Journal</title>
+  <meta name="description" content="Продвинутое практическое руководство по созданию маршрутизатора LLM на трассах собственного приложения: разметка, обучение, теневой запуск и отчёт о стоимости, качестве, задержке, ошибочных маршрутах и повторах.">
+  <link rel="canonical" href="https://agentlabjournal.online/trace-based-llm-router-test.html">
+  <link rel="stylesheet" href="style.css">
+  <link rel="stylesheet" href="reading.css">
+
+  <meta name="reading-meta" content="Уровень: продвинутый; время: 90 минут; результат: маршрутизатор моделей, обученный на трассах приложения, и проверяемый отчёт">
+  <meta property="og:type" content="article">
+  <meta property="og:locale" content="ru_RU">
+  <meta property="og:site_name" content="Agent Lab Journal">
+  <meta property="og:title" content="Снижаем стоимость агента с маршрутизацией моделей по реальным трассам">
+  <meta property="og:description" content="Как обучить маршрутизатор на собственных трассах и проверить экономию без скрытого ухудшения сложных ответов.">
+  <meta property="og:url" content="https://agentlabjournal.online/trace-based-llm-router-test.html">
+  <meta property="og:image" content="https://agentlabjournal.online/podcast-cover.png">
+  <meta property="article:modified_time" content="2026-07-31">
+
+  <meta name="twitter:card" content="summary_large_image">
+  <meta name="twitter:title" content="Маршрутизация моделей по реальным трассам приложения">
+  <meta name="twitter:description" content="Строим и проверяем LLM-маршрутизатор по стоимости, качеству, задержке, ошибочным маршрутам и повторным запросам.">
+  <meta name="twitter:image" content="https://agentlabjournal.online/podcast-cover.png">
+
+  <script type="application/ld+json">
+  {
+    "@context": "https://schema.org",
+    "@type": "Article",
+    "headline": "Снижаем стоимость агента с маршрутизацией моделей по реальным трассам",
+    "description": "Продвинутое практическое руководство по созданию маршрутизатора LLM на трассах собственного приложения: разметка, обучение, теневой запуск и отчёт о стоимости, качестве, задержке, ошибочных маршрутах и повторах.",
+    "image": [
+      "https://agentlabjournal.online/podcast-cover.png"
+    ],
+    "dateModified": "2026-07-31",
+    "inLanguage": "ru-RU",
+    "author": {
+      "@type": "Organization",
+      "name": "Agent Lab Journal",
+      "url": "https://agentlabjournal.online/"
+    },
+    "publisher": {
+      "@type": "Organization",
+      "name": "Agent Lab Journal",
+      "url": "https://agentlabjournal.online/",
+      "logo": {
+        "@type": "ImageObject",
+        "url": "https://agentlabjournal.online/podcast-cover.png"
+      }
+    },
+    "mainEntityOfPage": {
+      "@type": "WebPage",
+      "@id": "https://agentlabjournal.online/trace-based-llm-router-test.html"
+    },
+    "url": "https://agentlabjournal.online/trace-based-llm-router-test.html",
+    "isAccessibleForFree": true
+  }
+  </script>
+</head>
+<body>
+  <header class="site-header">
+    <nav aria-label="Основная навигация">
+      <a href="index.html">Agent Lab Journal</a>
+      <a href="guides.html">Руководства</a>
+      <a href="glossary.html">Глоссарий</a>
+    </nav>
+  </header>
+
+  <main>
+    <article>
+      <header class="article-header">
+        <p class="eyebrow">Практика · Экономика и качество AI-систем</p>
+        <h1>Снижаем стоимость агента с маршрутизацией моделей по реальным трассам</h1>
+        <p class="lead"><strong>Не выбирайте одну модель для всех запросов и не учите маршрутизатор на догадках о «простых» и «сложных» вопросах.</strong> Сначала воспроизведите реальные запросы приложения на дешёвой и сильной моделях, измерьте фактический исход каждой операции, а затем обучите политику выбирать самый дешёвый маршрут, который сохраняет требуемое качество. Экономия считается только после повторов, эскалаций и неудачных операций.</p>
+        <div class="reading-meta" aria-label="Параметры статьи">
+          <span>Уровень: продвинутый</span>
+          <span>Время: 90 минут</span>
+          <span>Результат: обученный маршрутизатор и проверяемый отчёт</span>
+        </div>
+      </header>
+
+      <section aria-labelledby="result">
+        <h2 id="result">Что получится</h2>
+        <p>Мы соберём <a class="term-link" href="glossary.html#llm">LLM</a>-маршрутизатор для <a class="term-link" href="glossary.html#ai-agent">AI-агента</a> с двумя маршрутами:</p>
+        <ul>
+          <li><code>cheap</code> — более дешёвая и обычно более быстрая модель;</li>
+          <li><code>strong</code> — более дорогая модель для запросов, на которых дешёвый маршрут не проходит критерий качества.</li>
+        </ul>
+        <p>Маршрутизатор не пытается угадать «интеллектуальную сложность» в общем виде. Он предсказывает конкретное событие: сможет ли дешёвый маршрут успешно завершить операцию этого приложения при заданной версии инструкций, инструментов и валидаторов.</p>
+        <p>Итог работы состоит из пяти артефактов:</p>
+        <ol>
+          <li>обезличенного набора трасс с наблюдаемыми исходами;</li>
+          <li>контрфактической разметки: результат дешёвой и сильной модели на одном входе;</li>
+          <li>обученного классификатора с порогом и безопасной зоной неопределённости;</li>
+          <li>теневого и ограниченного рабочего запуска;</li>
+          <li>отчёта о стоимости, качестве, задержке, ошибочных маршрутах, эскалациях и повторах.</li>
+        </ol>
+      </section>
+
+      <section aria-labelledby="problem">
+        <h2 id="problem">Почему замена модели целиком не решает задачу</h2>
+        <p>Сильная модель на каждом шаге создаёт понятный, но дорогой базовый вариант. Полный переход на дешёвую модель сокращает цену отдельных вызовов, однако может увеличить:</p>
+        <ul>
+          <li>число неверных решений и ответов, отклонённых валидатором;</li>
+          <li>повторные запросы пользователя;</li>
+          <li>автоматические повторные попытки;</li>
+          <li>эскалации на сильную модель после уже оплаченного дешёвого вызова;</li>
+          <li>ручную проверку и стоимость незавершённых операций;</li>
+          <li>хвостовую задержку из-за цепочки <code>cheap → repair → strong</code>.</li>
+        </ul>
+        <p>Поэтому сравнивать только цену одного вызова нельзя. Единицей анализа должна быть завершённая операция: от первого пользовательского запроса до принятого результата, отказа или исчерпания бюджета попыток.</p>
+        <aside class="note">
+          <p><strong>Главный принцип:</strong> маршрутизатор полезен, только если снижает полную стоимость потока при сохранении заранее определённого качества и допустимой задержки.</p>
+        </aside>
+      </section>
+
+      <section aria-labelledby="case">
+        <h2 id="case">Конкретный воспроизводимый кейс</h2>
+        <p>Рассмотрим условного агента поддержки внутреннего продукта. Это проектный пример, а не рассказ о существующем клиенте и не готовые результаты теста.</p>
+        <p>Агент выполняет четыре типа операций:</p>
+        <ol>
+          <li>отвечает на вопрос по базе знаний;</li>
+          <li>уточняет недостающие сведения;</li>
+          <li>классифицирует обращение и предлагает следующий шаг;</li>
+          <li>вызывает разрешённый инструмент для чтения статуса заявки.</li>
+        </ol>
+        <p>Дешёвая модель часто справляется с прямыми вопросами и строгим извлечением полей. Сильная нужна при противоречивом <a class="term-link" href="glossary.html#context">контексте</a>, длинной истории, неоднозначной политике, нескольких зависимых шагах и сложном <a class="term-link" href="glossary.html#tool-calling">вызове инструментов</a>.</p>
+        <p>Для эксперимента обе модели получают один и тот же нормализованный вход, одну версию <a class="term-link" href="glossary.html#prompt">промпта</a>, одинаково доступные данные и один контракт результата. Любые различия адаптеров фиксируются как часть версии маршрута.</p>
+      </section>
+
+      <section aria-labelledby="contract">
+        <h2 id="contract">1. Определите операцию и критерий качества</h2>
+        <p>До сбора данных опишите, что значит «дешёвая модель справилась». Оценка не должна сводиться к тому, что ответ получен без HTTP-ошибки.</p>
+        <pre><code>operation: support_answer:v4
+starts_when: user_message_accepted
+succeeds_when:
+  - output_schema_valid
+  - policy_checks_passed
+  - required_facts_supported
+  - requested_action_completed_or_safely_declined
+  - no_corrective_user_retry_within_window
+fails_when:
+  - deterministic_validator_failed
+  - reviewer_rejected
+  - retry_budget_exhausted
+  - deadline_exceeded
+quality_floor:
+  critical_violation_rate: 0
+  aggregate_threshold: PRODUCT_OWNER_VALUE
+latency_budget_ms: PRODUCT_OWNER_VALUE
+retry_window: PRODUCT_OWNER_VALUE</code></pre>
+        <p><code>PRODUCT_OWNER_VALUE</code> необходимо заменить порогом вашего процесса. Универсального допустимого процента ошибок нет: цена неверного рекламного черновика и неверного финансового действия различается.</p>
+        <p>Разделите проверки на три слоя:</p>
+        <ol>
+          <li><strong>Детерминированные:</strong> схема, обязательные поля, допустимые действия, ссылки на предоставленные источники, отсутствие запрещённых значений.</li>
+          <li><strong>Экспертные:</strong> корректность вывода, достаточность объяснения, соблюдение политики в неоднозначном случае.</li>
+          <li><strong>Поведенческие:</strong> повтор пользователя, исправление ответа, эскалация оператору, фактическое завершение операции.</li>
+        </ol>
+        <p>Если машинная проверка видит лишь JSON, метка не должна называться «качественный ответ». Назовите её точнее: <code>schema_and_policy_pass</code>.</p>
+      </section>
+
+      <section aria-labelledby="baseline">
+        <h2 id="baseline">2. Зафиксируйте базовые варианты</h2>
+        <p>Нужны как минимум три сравнимые политики:</p>
+        <table>
+          <thead>
+            <tr>
+              <th>Политика</th>
+              <th>Назначение</th>
+              <th>Что показывает</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td><code>strong_only</code></td>
+              <td>Все запросы идут сильной модели</td>
+              <td>Базовое качество, стоимость и задержку</td>
+            </tr>
+            <tr>
+              <td><code>cheap_only</code></td>
+              <td>Все запросы идут дешёвой модели</td>
+              <td>Максимально доступную экономию и цену ухудшения</td>
+            </tr>
+            <tr>
+              <td><code>trace_router</code></td>
+              <td>Маршрут выбирается по признакам реального входа</td>
+              <td>Компромисс после обучения и настройки порога</td>
+            </tr>
+          </tbody>
+        </table>
+        <p>Дополнительно полезен простой ручной baseline: несколько правил по длине входа, наличию инструментов и типу операции. Обученная модель должна превосходить его по выбранной целевой функции, а не только выглядеть технологичнее.</p>
+      </section>
+
+      <section aria-labelledby="tracing">
+        <h2 id="tracing">3. Спроектируйте трассу операции</h2>
+        <p><a class="term-link" href="glossary.html#observability">Трассировка и наблюдаемость</a> связывают все шаги одной операции. Храните отдельные идентификаторы логического запроса, попытки и модельного вызова:</p>
+        <pre><code>{
+  "trace_id": "generated_trace_id",
+  "operation_id": "generated_operation_id",
+  "attempt_id": "generated_attempt_id",
+  "call_id": "generated_call_id",
+  "parent_call_id": null,
+  "operation_type": "support_answer:v4",
+  "route_policy": "strong_only",
+  "selected_route": "strong",
+  "router_version": null,
+  "prompt_version": "support-v4",
+  "adapter_version": "adapter-v2",
+  "input_features_version": "features-v1",
+  "started_at": "timestamp",
+  "completed_at": "timestamp",
+  "status": "completed",
+  "quality_status": "pending",
+  "is_user_retry": false,
+  "retry_of_operation_id": null
+}</code></pre>
+        <p>Для каждого модельного вызова отдельно сохраняйте:</p>
+        <ul>
+          <li>идентификатор фактической модели и провайдера;</li>
+          <li>входные, кэшированные и выходные <a class="term-link" href="glossary.html#token">токены</a>;</li>
+          <li>фактическую стоимость либо версию применённого прайс-листа;</li>
+          <li>время ожидания, время первого токена и полную длительность;</li>
+          <li>число инструментальных шагов и ошибки адаптера;</li>
+          <li>результат структурного и бизнес-валидаторов;</li>
+          <li>признак автоматического ремонта или эскалации.</li>
+        </ul>
+        <p>Не используйте текст запроса, email, идентификатор клиента или полный URL как метку временного ряда. Такие значения создают высокую кардинальность и могут раскрыть данные. Сырые входы храните в защищённом хранилище с ограниченным сроком жизни, а в метриках оставляйте агрегируемые категории.</p>
+
+        <h3>Минимальная схема таблиц</h3>
+        <pre><code>CREATE TABLE router_operations (
+  operation_id        TEXT PRIMARY KEY,
+  trace_id            TEXT NOT NULL,
+  operation_type      TEXT NOT NULL,
+  cohort              TEXT NOT NULL,
+  policy_version      TEXT NOT NULL,
+  selected_route      TEXT NOT NULL,
+  router_score        DOUBLE PRECISION,
+  started_at          TIMESTAMP NOT NULL,
+  completed_at        TIMESTAMP,
+  terminal_status     TEXT,
+  quality_pass        BOOLEAN,
+  critical_violation BOOLEAN,
+  user_retry          BOOLEAN NOT NULL DEFAULT FALSE,
+  retry_of            TEXT
+);
+
+CREATE TABLE router_calls (
+  call_id             TEXT PRIMARY KEY,
+  operation_id        TEXT NOT NULL,
+  attempt_no          INTEGER NOT NULL,
+  route               TEXT NOT NULL,
+  model_id            TEXT NOT NULL,
+  prompt_version      TEXT NOT NULL,
+  input_tokens        INTEGER,
+  output_tokens       INTEGER,
+  charged_cost        NUMERIC,
+  currency            TEXT,
+  latency_ms          INTEGER,
+  schema_valid        BOOLEAN,
+  validator_pass      BOOLEAN,
+  error_code          TEXT,
+  escalated           BOOLEAN NOT NULL DEFAULT FALSE
+);</code></pre>
+      </section>
+
+      <section aria-labelledby="privacy">
+        <h2 id="privacy">4. Подготовьте трассы без утечки рабочих данных</h2>
+        <p>Маршрутизатору обычно не нужен полный пользовательский текст. Начните с признаков, которые можно получить до модельного вызова и безопасно воспроизвести:</p>
+        <ul>
+          <li>тип операции и канал;</li>
+          <li>число сообщений и приблизительная длина входа;</li>
+          <li>наличие вложений, таблиц, кода и нескольких языков;</li>
+          <li>число доступных документов и объём найденного контекста;</li>
+          <li>необходимость инструмента и число допустимых инструментов;</li>
+          <li>наличие противоречивых или отсутствующих обязательных полей;</li>
+          <li>версия промпта, схемы и приложения;</li>
+          <li>сигналы риска, вычисленные детерминированным кодом.</li>
+        </ul>
+        <p>Не используйте признаки, доступные только после выполнения выбранной модели: фактическую длину ответа, ошибку валидатора или итоговую задержку. Это утечка целевой переменной. Во время обучения такой классификатор покажет хорошее качество, но в рабочем маршрутизаторе этих данных ещё не будет.</p>
+        <p>Сформируйте снимок данных с неизменяемой версией:</p>
+        <pre><code>dataset/
+├── manifest.json
+├── traces.parquet
+├── labels.parquet
+├── splits.json
+└── data_dictionary.md</code></pre>
+        <pre><code>{
+  "dataset_version": "router-traces-v1",
+  "created_at": "timestamp",
+  "source_window": {
+    "from": "timestamp",
+    "to": "timestamp"
+  },
+  "prompt_versions": ["support-v4"],
+  "feature_schema": "features-v1",
+  "label_schema": "route-label-v1",
+  "redaction_policy": "redaction-v3",
+  "raw_text_included": false
+}</code></pre>
+      </section>
+
+      <section aria-labelledby="sampling">
+        <h2 id="sampling">5. Отберите репрезентативные операции</h2>
+        <p>Случайная выборка из всех трасс может почти целиком состоять из лёгких массовых запросов. Тогда маршрутизатор научится отправлять всё на дешёвую модель и не увидит редкие опасные случаи.</p>
+        <p>Отбирайте данные по слоям:</p>
+        <ul>
+          <li>тип операции;</li>
+          <li>диапазон длины контекста;</li>
+          <li>использование инструментов;</li>
+          <li>успех и ошибка текущего процесса;</li>
+          <li>повтор пользователя;</li>
+          <li>язык и формат входа;</li>
+          <li>редкий, но критичный класс риска;</li>
+          <li>период времени, чтобы учесть сезонные изменения.</li>
+        </ul>
+        <p>Сохраняйте вес каждой записи относительно рабочего потока. Иначе сбалансированный тестовый набор даст удобную оценку качества классификации, но неверный прогноз общей стоимости.</p>
+      </section>
+
+      <section aria-labelledby="replay">
+        <h2 id="replay">6. Выполните контрфактический replay</h2>
+        <p>По рабочей трассе обычно известен исход только фактически выбранной модели. Для обучения нужен ответ на другой вопрос: что произошло бы с тем же входом на альтернативном маршруте?</p>
+        <p>Запустите сохранённые входы через обе модели в изолированном <a class="term-link" href="glossary.html#benchmark">бенчмарке</a>:</p>
+        <pre><code>python -m router_lab.replay \
+  --dataset dataset/traces.parquet \
+  --routes config/routes.yaml \
+  --prompt-version support-v4 \
+  --output runs/replay-v1.jsonl \
+  --max-concurrency SAFE_VALUE \
+  --resume</code></pre>
+        <p>Это пример интерфейса локального раннера, а не команда существующего внешнего продукта. Значение <code>SAFE_VALUE</code> выберите с учётом лимитов провайдеров и бюджета.</p>
+        <p>Replay должен соблюдать следующие условия:</p>
+        <ul>
+          <li>один нормализованный вход и одна версия системной инструкции;</li>
+          <li>одинаковый набор доступных источников и инструментов;</li>
+          <li>инструменты с внешними эффектами заменены записанными ответами или безопасными стабами;</li>
+          <li>температура и другие параметры явно зафиксированы;</li>
+          <li>результаты каждой модели проверяются одним контрактом;</li>
+          <li>ошибка провайдера не превращается автоматически в ошибку качества модели;</li>
+          <li>повторные запуски сохраняются отдельно, а не перезаписывают первый исход.</li>
+        </ul>
+        <aside class="note">
+          <p><strong>Важно:</strong> не воспроизводите отправку писем, платежи, публикации и изменения данных. Replay должен повторять принятие решений, но не реальные внешние эффекты.</p>
+        </aside>
+      </section>
+
+      <section aria-labelledby="labels">
+        <h2 id="labels">7. Постройте метку маршрута</h2>
+        <p>Для каждой операции получите четыре наблюдаемых значения:</p>
+        <ul>
+          <li><code>cheap_pass</code> — дешёвая модель прошла критерии;</li>
+          <li><code>strong_pass</code> — сильная модель прошла критерии;</li>
+          <li><code>cheap_total_cost</code> и <code>strong_total_cost</code>;</li>
+          <li><code>cheap_latency_ms</code> и <code>strong_latency_ms</code>.</li>
+        </ul>
+        <p>После этого назначьте метку:</p>
+        <table>
+          <thead>
+            <tr>
+              <th>Дешёвая</th>
+              <th>Сильная</th>
+              <th>Учебная метка</th>
+              <th>Интерпретация</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td>Прошла</td>
+              <td>Прошла</td>
+              <td><code>cheap_safe</code></td>
+              <td>Есть возможность экономии</td>
+            </tr>
+            <tr>
+              <td>Не прошла</td>
+              <td>Прошла</td>
+              <td><code>strong_required</code></td>
+              <td>Критическая ошибка дешёвого маршрута</td>
+            </tr>
+            <tr>
+              <td>Прошла</td>
+              <td>Не прошла</td>
+              <td><code>cheap_safe</code> с флагом анализа</td>
+              <td>Сильная модель не является безусловным эталоном</td>
+            </tr>
+            <tr>
+              <td>Не прошла</td>
+              <td>Не прошла</td>
+              <td><code>unsupported</code></td>
+              <td>Нужны отказ, уточнение, другой процесс или человек</td>
+            </tr>
+          </tbody>
+        </table>
+        <p>Не присваивайте <code>strong_required</code> всем случаям, где ответы моделей просто различаются. Метка должна отражать контракт качества, а не предпочтение более длинного текста.</p>
+
+        <h3>Как учитывать повторы</h3>
+        <p>Повтор пользователя может быть сигналом плохого ответа, но не всегда: человек способен уточнить новую задачу или отправить сообщение дважды из-за интерфейса. Введите явный классификатор причин:</p>
+        <pre><code>retry_reason:
+  - correction_same_intent
+  - missing_required_information
+  - transient_system_error
+  - duplicate_submission
+  - new_intent
+  - unknown</code></pre>
+        <p>Только подтверждённый <code>correction_same_intent</code> должен напрямую ухудшать оценку качества предыдущей операции. Для <code>unknown</code> показывайте отдельную чувствительность отчёта: результат при включении и исключении спорных повторов.</p>
+      </section>
+
+      <section aria-labelledby="split">
+        <h2 id="split">8. Разделите данные без утечки</h2>
+        <p>Случайное деление отдельных строк часто помещает почти одинаковые обращения одного пользователя или шаблона и в обучение, и в тест. Получается завышенная оценка.</p>
+        <p>Группируйте связанные данные по доступному безопасному идентификатору:</p>
+        <ul>
+          <li>шаблон или кластер запроса;</li>
+          <li>диалог или логическая операция;</li>
+          <li>обезличенная группа источника;</li>
+          <li>версия документа или задачи.</li>
+        </ul>
+        <p>Финальную проверочную часть лучше выделить по времени: обучаться на более ранних трассах, а проверяться на последующем окне. Это ближе к рабочему запуску и обнаруживает изменение распределения запросов.</p>
+        <pre><code>{
+  "train": {
+    "rule": "earlier_window_and_group_exclusive"
+  },
+  "validation": {
+    "rule": "later_window_and_group_exclusive"
+  },
+  "test": {
+    "rule": "latest_closed_window",
+    "locked": true
+  }
+}</code></pre>
+        <p>Закрытый test-набор не используйте для подбора признаков и порога. Иначе он перестанет быть независимой проверкой.</p>
+      </section>
+
+      <section aria-labelledby="features">
+        <h2 id="features">9. Соберите признаки, доступные до маршрутизации</h2>
+        <p>Начните с интерпретируемого набора:</p>
+        <pre><code>{
+  "operation_type": "support_answer",
+  "input_chars_bucket": "1000_4000",
+  "message_count_bucket": "2_4",
+  "retrieved_chunks_bucket": "4_8",
+  "retrieval_score_min_bucket": "low",
+  "tool_required": true,
+  "allowed_tool_count": 2,
+  "attachment_present": false,
+  "code_present": false,
+  "table_present": true,
+  "language_count": 1,
+  "missing_required_fields": 1,
+  "policy_conflict_detected": false,
+  "previous_attempt_failed": false
+}</code></pre>
+        <p>Текстовые эмбеддинги могут повысить качество, но усложняют приватность, стоимость, отладку и контроль дрейфа. Сначала проверьте категориальные и числовые признаки. Добавляйте представление текста только после доказанного недостатка простой модели.</p>
+        <p>Любой признак должен иметь:</p>
+        <ul>
+          <li>определение и тип;</li>
+          <li>момент доступности;</li>
+          <li>правило обработки пропусков;</li>
+          <li>версию вычисляющего кода;</li>
+          <li>оценку риска утечки данных;</li>
+          <li>одинаковую реализацию для обучения и рабочего трафика.</li>
+        </ul>
+      </section>
+
+      <section aria-labelledby="training">
+        <h2 id="training">10. Обучите простой вероятностный классификатор</h2>
+        <p>Цель модели — оценить вероятность <code>P(strong_required | features)</code>. Для первой версии подходят логистическая регрессия или неглубокие деревья. Их проще калибровать, объяснять и воспроизводить.</p>
+        <pre><code>python -m router_lab.train \
+  --features dataset/features-v1.parquet \
+  --labels dataset/labels-v1.parquet \
+  --split dataset/splits.json \
+  --estimator logistic_regression \
+  --class-weight cost_sensitive \
+  --calibrate isotonic \
+  --output artifacts/router-v1</code></pre>
+        <p>Это проектный интерфейс. Реальная реализация должна сохранять:</p>
+        <ul>
+          <li>модель и список признаков в фиксированном порядке;</li>
+          <li>схему преобразований и категории неизвестных значений;</li>
+          <li>версию обучающих данных;</li>
+          <li>метрики по каждому типу операции;</li>
+          <li>калибровочную кривую;</li>
+          <li>выбранный порог и его обоснование;</li>
+          <li>хеши артефактов для воспроизводимости.</li>
+        </ul>
+
+        <h3>Почему обычной accuracy недостаточно</h3>
+        <p>Если большинство запросов лёгкие, классификатор «всегда cheap» может иметь высокую долю совпадений и при этом пропускать почти все опасные случаи. Отдельно измеряйте:</p>
+        <ul>
+          <li><strong>false cheap:</strong> выбран <code>cheap</code>, хотя требовался <code>strong</code>;</li>
+          <li><strong>false strong:</strong> выбран <code>strong</code>, хотя <code>cheap</code> прошёл бы проверку;</li>
+          <li>полноту обнаружения <code>strong_required</code>;</li>
+          <li>долю трафика на каждом маршруте;</li>
+          <li>взвешенную стоимость ошибки;</li>
+          <li>калибровку вероятностей.</li>
+        </ul>
+        <p><code>false cheap</code> обычно опаснее: он создаёт ошибку качества. <code>false strong</code> чаще означает упущенную экономию. Эти ошибки нельзя считать равноценными.</p>
+      </section>
+
+      <section aria-labelledby="threshold">
+        <h2 id="threshold">11. Выберите порог через стоимость и риск</h2>
+        <p>Пусть классификатор возвращает <code>p = P(strong_required)</code>. Простейшая политика:</p>
+        <pre><code>if hard_safety_rule(input):
+    route = "strong"
+elif p &gt;= ROUTE_TO_STRONG_THRESHOLD:
+    route = "strong"
+else:
+    route = "cheap"</code></pre>
+        <p>Порог выбирают не по максимальной accuracy, а по допустимому числу <code>false cheap</code> и полной стоимости.</p>
+        <pre><code>expected_cost(threshold) =
+    direct_model_cost
+  + automatic_retry_cost
+  + escalation_cost
+  + failed_operation_cost
+  + human_review_cost
+  + configured_quality_penalty</code></pre>
+        <p><code>configured_quality_penalty</code> — управленческая оценка, а не расход провайдера. Показывайте её отдельно, чтобы финансовые затраты не смешивались с моделью риска.</p>
+
+        <h3>Добавьте зону неопределённости</h3>
+        <p>Одна граница может быть нестабильной при плохо откалиброванной вероятности. Практичнее задать три области:</p>
+        <pre><code>if hard_safety_rule(input):
+    return STRONG
+
+if p &lt;= CHEAP_SAFE_MAX:
+    return CHEAP
+
+if p &gt;= STRONG_REQUIRED_MIN:
+    return STRONG
+
+return STRONG  # безопасная политика для неопределённой зоны</code></pre>
+        <p>Позже неопределённую зону можно направить в отдельный лёгкий классификатор или на проверку человеком, но первая рабочая версия должна оставаться понятной.</p>
+
+        <h3>Жёсткие правила поверх классификатора</h3>
+        <p>Не передавайте статистической модели решения, которые запрещены политикой. Примеры обязательного сильного маршрута или ручной проверки:</p>
+        <ul>
+          <li>необратимое действие;</li>
+          <li>неподдерживаемая версия схемы;</li>
+          <li>неизвестный тип операции;</li>
+          <li>вход за пределами обучающего диапазона;</li>
+          <li>обнаруженный конфликт политик;</li>
+          <li>недоступность обязательного валидатора;</li>
+          <li>критичный домен, исключённый из эксперимента.</li>
+        </ul>
+      </section>
+
+      <section aria-labelledby="runtime">
+        <h2 id="runtime">12. Реализуйте рабочую политику</h2>
+        <pre><code>router:
+  version: trace-router-v1
+  feature_schema: features-v1
+  model_artifact: artifacts/router-v1/model.bin
+
+  thresholds:
+    cheap_safe_max: CONFIGURED_VALUE
+    strong_required_min: CONFIGURED_VALUE
+
+  unknown_feature_policy: strong
+  unsupported_operation_policy: strong
+  router_error_policy: strong
+  timeout_policy: strong
+
+  hard_routes:
+    external_write: strong
+    policy_conflict: strong
+    missing_validator: strong
+
+  cheap_failure:
+    schema_error: escalate_once
+    policy_error: escalate_once
+    provider_timeout: retry_same_route_once
+    other: escalate_once
+
+  budgets:
+    max_model_calls_per_operation: CONFIGURED_VALUE
+    max_escalations: 1
+    deadline_ms: CONFIGURED_VALUE</code></pre>
+        <p>Маршрутизатор должен быть дешёвым и быстрым относительно основного вызова. Если для выбора модели требуется ещё одна дорогая LLM, экономия может исчезнуть.</p>
+        <p>Пример управляющего кода:</p>
+        <pre><code>def execute_operation(request):
+    features = build_features(request)
+
+    if violates_hard_rule(features):
+        decision = RouteDecision("strong", reason="hard_rule")
+    else:
+        decision = router.predict(features)
+
+    record_route_decision(
+        operation_id=request.operation_id,
+        router_version=router.version,
+        feature_version=features.version,
+        score=decision.score,
+        route=decision.route,
+        reason=decision.reason,
+    )
+
+    result = call_route(decision.route, request)
+
+    if result.retryable_transport_error:
+        result = retry_within_budget(decision.route, request)
+
+    if decision.route == "cheap" and not validators_accept(result):
+        result = escalate_once_to_strong(request)
+
+    return finalize_operation(request, result)</code></pre>
+        <p>Записывайте причину каждого выбора: <code>model_score</code>, <code>hard_rule</code>, <code>unknown_input</code>, <code>router_failure</code> или <code>manual_override</code>. Без этого ошибочный маршрут нельзя разобрать.</p>
+      </section>
+
+      <section aria-labelledby="shadow">
+        <h2 id="shadow">13. Начните с теневого режима</h2>
+        <p>В теневом режиме пользователь продолжает получать результат текущей политики, а новый маршрутизатор только записывает предлагаемое решение. Это позволяет измерить:</p>
+        <ul>
+          <li>распределение оценок на текущем трафике;</li>
+          <li>долю неизвестных признаков;</li>
+          <li>потенциальное распределение маршрутов;</li>
+          <li>расхождения с текущей политикой;</li>
+          <li>время вычисления признаков и решения;</li>
+          <li>сбои загрузки артефакта и несовместимость схем.</li>
+        </ul>
+        <p>Теневой запуск сам по себе не доказывает качество альтернативной модели, если она не выполнялась. Он проверяет интеграцию маршрутизатора и распределение решений. Контрфактическое качество берётся из replay или из ограниченного эксперимента.</p>
+
+        <h3>Критерии выхода из тени</h3>
+        <ul>
+          <li>все решения содержат версию маршрутизатора и признаки причины;</li>
+          <li>неизвестный тип входа уходит на безопасный маршрут;</li>
+          <li>решение укладывается в бюджет задержки;</li>
+          <li>распределение признаков сопоставимо с обучающим набором либо различия объяснены;</li>
+          <li>метрики считаются по операциям, а не только по вызовам;</li>
+          <li>доступен немедленный переход на <code>strong_only</code>.</li>
+        </ul>
+      </section>
+
+      <section aria-labelledby="canary">
+        <h2 id="canary">14. Проведите ограниченный рабочий запуск</h2>
+        <p>После тени включайте маршрутизатор только для заранее разрешённой когорты и низкорисковых операций. Распределение должно быть стабильным по <code>operation_id</code>, чтобы повтор одного процесса не попадал в другую политику случайно.</p>
+        <pre><code>cohort = stable_hash(operation_id) % 100
+
+if kill_switch_enabled:
+    policy = "strong_only"
+elif operation_type not in enabled_operation_types:
+    policy = "strong_only"
+elif cohort &lt; rollout_percentage:
+    policy = "trace_router"
+else:
+    policy = "strong_only"</code></pre>
+        <p>Не меняйте одновременно модель, промпт, поиск, инструменты и маршрутизатор. Иначе разницу нельзя будет отнести к конкретному изменению.</p>
+        <p>Заранее задайте условия остановки:</p>
+        <ul>
+          <li>критическое нарушение контракта;</li>
+          <li>рост подтверждённых исправляющих повторов сверх разрешённой границы;</li>
+          <li>ухудшение качества относительно контрольной политики;</li>
+          <li>выход задержки за установленный бюджет;</li>
+          <li>аномальный рост эскалаций;</li>
+          <li>невозможность связать вызовы с операциями;</li>
+          <li>расхождение учтённой стоимости с биллингом сверх допустимой погрешности.</li>
+        </ul>
+      </section>
+
+      <section aria-labelledby="metrics">
+        <h2 id="metrics">15. Рассчитайте обязательные метрики</h2>
+
+        <h3>Полная стоимость</h3>
+        <pre><code>direct_cost =
+  sum(charged_cost for every model call)
+
+operation_cost =
+  direct_cost
+  + tool_cost
+  + allocated_infrastructure_cost
+  + measured_human_review_cost
+
+cost_per_success =
+  sum(operation_cost for all terminal operations)
+  / count(quality_pass = true)</code></pre>
+        <p>Стоимость неудачных операций остаётся в числителе. Иначе ненадёжная политика выглядит искусственно дешёвой.</p>
+
+        <h3>Качество</h3>
+        <pre><code>quality_pass_rate =
+  accepted_operations / evaluated_terminal_operations
+
+critical_violation_rate =
+  critical_violations / evaluated_terminal_operations</code></pre>
+        <p>Показывайте качество целиком и по типам операций. Среднее может скрыть ухудшение редкого важного класса.</p>
+
+        <h3>Задержка</h3>
+        <p>Отчёт должен содержать медиану и хвостовые квантили полной длительности операции, а не только одного модельного вызова:</p>
+        <pre><code>operation_latency =
+  terminal_timestamp - first_request_timestamp</code></pre>
+        <p>Отдельно показывайте задержку без эскалации и задержку цепочки <code>cheap → strong</code>.</p>
+
+        <h3>Ошибочные маршруты</h3>
+        <pre><code>false_cheap_rate =
+  count(selected_cheap AND strong_required)
+  / count(strong_required)
+
+false_strong_rate =
+  count(selected_strong AND cheap_safe)
+  / count(cheap_safe)</code></pre>
+        <p>Первый показатель отражает риск качества, второй — упущенную экономию.</p>
+
+        <h3>Повторы и эскалации</h3>
+        <pre><code>automatic_retry_rate =
+  operations_with_automatic_retry / all_operations
+
+user_correction_retry_rate =
+  confirmed_correction_retries / eligible_operations
+
+cheap_to_strong_escalation_rate =
+  cheap_operations_escalated_to_strong / cheap_operations
+
+escalation_success_rate =
+  successful_escalations / all_escalations</code></pre>
+        <p>Высокая доля успешных эскалаций не означает, что система эффективна: каждый такой случай уже оплатил дешёвый вызов и увеличил задержку.</p>
+      </section>
+
+      <section aria-labelledby="report">
+        <h2 id="report">16. Соберите отчёт без выдуманных результатов</h2>
+        <p>Следующий шаблон заполняется только после запуска. Пустые значения нельзя заменять ожиданиями команды.</p>
+        <table>
+          <thead>
+            <tr>
+              <th>Метрика</th>
+              <th><code>strong_only</code></th>
+              <th><code>cheap_only</code></th>
+              <th><code>trace_router</code></th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td>Число завершённых операций</td>
+              <td>Заполнить</td>
+              <td>Заполнить</td>
+              <td>Заполнить</td>
+            </tr>
+            <tr>
+              <td>Доля прошедших проверку</td>
+              <td>Заполнить</td>
+              <td>Заполнить</td>
+              <td>Заполнить</td>
+            </tr>
+            <tr>
+              <td>Критические нарушения</td>
+              <td>Заполнить</td>
+              <td>Заполнить</td>
+              <td>Заполнить</td>
+            </tr>
+            <tr>
+              <td>Полная стоимость</td>
+              <td>Заполнить</td>
+              <td>Заполнить</td>
+              <td>Заполнить</td>
+            </tr>
+            <tr>
+              <td>Стоимость успешной операции</td>
+              <td>Заполнить</td>
+              <td>Заполнить</td>
+              <td>Заполнить</td>
+            </tr>
+            <tr>
+              <td>Медианная задержка операции</td>
+              <td>Заполнить</td>
+              <td>Заполнить</td>
+              <td>Заполнить</td>
+            </tr>
+            <tr>
+              <td>Хвостовая задержка операции</td>
+              <td>Заполнить</td>
+              <td>Заполнить</td>
+              <td>Заполнить</td>
+            </tr>
+            <tr>
+              <td>Ошибочные маршруты <code>false cheap</code></td>
+              <td>Не применимо</td>
+              <td>Не применимо</td>
+              <td>Заполнить</td>
+            </tr>
+            <tr>
+              <td>Упущенная экономия <code>false strong</code></td>
+              <td>Не применимо</td>
+              <td>Не применимо</td>
+              <td>Заполнить</td>
+            </tr>
+            <tr>
+              <td>Автоматические повторы</td>
+              <td>Заполнить</td>
+              <td>Заполнить</td>
+              <td>Заполнить</td>
+            </tr>
+            <tr>
+              <td>Исправляющие повторы пользователя</td>
+              <td>Заполнить</td>
+              <td>Заполнить</td>
+              <td>Заполнить</td>
+            </tr>
+            <tr>
+              <td>Эскалации <code>cheap → strong</code></td>
+              <td>Не применимо</td>
+              <td>По правилам эксперимента</td>
+              <td>Заполнить</td>
+            </tr>
+          </tbody>
+        </table>
+
+        <h3>Разрез ошибочных маршрутов</h3>
+        <p>К агрегату приложите таблицу разбора:</p>
+        <table>
+          <thead>
+            <tr>
+              <th>Группа</th>
+              <th>Число</th>
+              <th>Доля</th>
+              <th>Стоимость</th>
+              <th>Причина</th>
+              <th>Следующее действие</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td>Неизвестный тип входа</td>
+              <td>Заполнить</td>
+              <td>Заполнить</td>
+              <td>Заполнить</td>
+              <td>Проверить вручную</td>
+              <td>Добавить безопасное правило или данные</td>
+            </tr>
+            <tr>
+              <td>Недостаточный контекст</td>
+              <td>Заполнить</td>
+              <td>Заполнить</td>
+              <td>Заполнить</td>
+              <td>Проверить поиск</td>
+              <td>Не маскировать ошибку поиска маршрутизацией</td>
+            </tr>
+            <tr>
+              <td>Сложный инструментальный шаг</td>
+              <td>Заполнить</td>
+              <td>Заполнить</td>
+              <td>Заполнить</td>
+              <td>Проверить схему инструмента</td>
+              <td>Правило или новый признак</td>
+            </tr>
+            <tr>
+              <td>Дрейф входного потока</td>
+              <td>Заполнить</td>
+              <td>Заполнить</td>
+              <td>Заполнить</td>
+              <td>Сравнить окна</td>
+              <td>Переобучить после разметки</td>
+            </tr>
+          </tbody>
+        </table>
+      </section>
+
+      <section aria-labelledby="sql">
+        <h2 id="sql">17. Проверьте расчёты независимыми запросами</h2>
+        <p>Пример агрегации полной стоимости по политике:</p>
+        <pre><code>WITH call_cost AS (
+  SELECT
+    operation_id,
+    SUM(charged_cost) AS model_cost,
+    COUNT(*) AS model_calls,
+    SUM(CASE WHEN escalated THEN 1 ELSE 0 END) AS escalations
+  FROM router_calls
+  GROUP BY operation_id
+)
+SELECT
+  o.policy_version,
+  COUNT(*) AS operations,
+  SUM(CASE WHEN o.quality_pass THEN 1 ELSE 0 END) AS successful_operations,
+  SUM(c.model_cost) AS total_model_cost,
+  SUM(c.model_cost)
+    / NULLIF(SUM(CASE WHEN o.quality_pass THEN 1 ELSE 0 END), 0)
+    AS model_cost_per_success,
+  AVG(c.model_calls) AS calls_per_operation,
+  AVG(c.escalations) AS escalations_per_operation
+FROM router_operations o
+JOIN call_cost c USING (operation_id)
+WHERE o.terminal_status IS NOT NULL
+GROUP BY o.policy_version;</code></pre>
+
+        <p>Пример отчёта об ошибочных маршрутах требует независимой контрфактической метки:</p>
+        <pre><code>SELECT
+  selected_route,
+  counterfactual_label,
+  COUNT(*) AS operations
+FROM router_evaluation
+WHERE evaluation_status = 'complete'
+GROUP BY selected_route, counterfactual_label
+ORDER BY selected_route, counterfactual_label;</code></pre>
+
+        <p>Перед публикацией итогов выполните сверку:</p>
+        <ul>
+          <li>сумма стоимости вызовов совпадает с доступным биллингом в пределах объяснённой погрешности;</li>
+          <li>каждый вызов принадлежит ровно одной операции;</li>
+          <li>нет завершённых операций без конечного статуса качества;</li>
+          <li>повторы связаны с исходной операцией;</li>
+          <li>валюты и версии цен не смешаны;</li>
+          <li>длительность операции не заменена длительностью последнего вызова;</li>
+          <li>число операций в отчёте совпадает с назначенными экспериментальными когортами.</li>
+        </ul>
+      </section>
+
+      <section aria-labelledby="verification">
+        <h2 id="verification">18. Проверка перед увеличением трафика</h2>
+        <ol>
+          <li><strong>Воспроизводимость.</strong> Повторное обучение на закреплённых данных и конфигурации создаёт эквивалентный артефакт и сопоставимые метрики.</li>
+          <li><strong>Контракт признаков.</strong> Оффлайн- и рабочая реализации возвращают одинаковые признаки для одной фикстуры.</li>
+          <li><strong>Неизвестный вход.</strong> Новая категория, пропущенное поле и несовместимая версия безопасно уходят на сильный маршрут.</li>
+          <li><strong>Отказ маршрутизатора.</strong> Тайм-аут, повреждённый артефакт и исключение не блокируют операцию и не отправляют её на дешёвую модель по умолчанию.</li>
+          <li><strong>Бюджет попыток.</strong> Цепочка не может бесконечно повторять дешёвый и сильный вызовы.</li>
+          <li><strong>Качество.</strong> Порог проходит ограничения целиком и для критичных срезов.</li>
+          <li><strong>Стоимость.</strong> Экономия сохраняется после эскалаций, повторов и неуспешных операций.</li>
+          <li><strong>Задержка.</strong> Хвостовая длительность не скрыта средним значением.</li>
+          <li><strong>Приватность.</strong> В артефактах обучения и отчёте нет исходных персональных данных и секретов.</li>
+          <li><strong>Отключение.</strong> Проверен немедленный <a class="term-link" href="glossary.html#rollback">откат</a> на <code>strong_only</code>.</li>
+        </ol>
+
+        <h3>Минимальный набор автоматических тестов</h3>
+        <pre><code>pytest -q \
+  tests/test_feature_parity.py \
+  tests/test_unknown_categories.py \
+  tests/test_router_fallback.py \
+  tests/test_retry_budget.py \
+  tests/test_cost_aggregation.py \
+  tests/test_cohort_stability.py \
+  tests/test_report_reconciliation.py</code></pre>
+        <p>Названия файлов иллюстрируют структуру проекта. Добавьте реальные тесты для собственных контрактов.</p>
+      </section>
+
+      <section aria-labelledby="failures">
+        <h2 id="failures">Что обычно ломается</h2>
+
+        <h3>Сильная модель объявлена источником истины</h3>
+        <p>Она тоже ошибается. Если метка равна «совпало ли с сильной моделью», маршрутизатор наследует её ошибки и стиль. Проверяйте обе модели независимым контрактом.</p>
+
+        <h3>В обучении есть признаки из будущего</h3>
+        <p>Задержка ответа, итог валидатора и число повторов появляются после выбора маршрута. Их нельзя использовать для рабочего решения.</p>
+
+        <h3>Тест содержит дубликаты обучения</h3>
+        <p>Похожие обращения и соседние сообщения одного диалога создают ложное ощущение обобщения. Делите по группам и времени.</p>
+
+        <h3>Отчёт считает вызовы, а не операции</h3>
+        <p>Эскалация выглядит как два независимых успешных запроса, хотя пользователь ждал одну операцию. Стоимость и задержку связывайте через <code>operation_id</code>.</p>
+
+        <h3>Эскалации скрывают плохую маршрутизацию</h3>
+        <p>Финальное качество может остаться высоким, потому что сильная модель исправляет ошибки дешёвой. При этом стоимость и хвостовая задержка растут. Показывайте результат до и после эскалации.</p>
+
+        <h3>Повтор пользователя автоматически считается ошибкой</h3>
+        <p>Новый вопрос и дублированная отправка не равны исправлению прежнего ответа. Размечайте причину повторов и публикуйте долю неизвестных.</p>
+
+        <h3>Маршрутизатор оптимизировали на среднем значении</h3>
+        <p>Редкие опасные операции растворяются в массовых лёгких запросах. Проверяйте критичные срезы отдельно и применяйте жёсткие правила.</p>
+
+        <h3>Прайс-лист применён задним числом</h3>
+        <p>Историческая стоимость меняется после обновления тарифа. Сохраняйте фактическое списание либо версию цены и валюту на момент вызова.</p>
+
+        <h3>Модель переобучили, но версию признаков не обновили</h3>
+        <p>Несовместимость обучающего и рабочего преобразования может незаметно изменить решения. Версионируйте данные, признаки, артефакт и порог как единый выпуск.</p>
+
+        <h3>Дешёвый маршрут включён при отказе классификатора</h3>
+        <p>Это опасная стратегия отказа. Ошибка маршрутизатора, неизвестная категория и повреждённый артефакт должны вести к безопасному маршруту.</p>
+      </section>
+
+      <section aria-labelledby="limitations">
+        <h2 id="limitations">Ограничения подхода</h2>
+        <ul>
+          <li><strong>Replay не полностью повторяет продакшен.</strong> Состояние внешних систем, кэши, нагрузка и поведение пользователя могут отличаться.</li>
+          <li><strong>Контрфактические вызовы стоят денег.</strong> Репрезентативную выборку и частоту переоценки нужно ограничивать бюджетом.</li>
+          <li><strong>Качество меток ограничивает качество маршрутизатора.</strong> Неполный валидатор превращает незамеченные ошибки в положительные примеры.</li>
+          <li><strong>Недетерминированность усложняет разметку.</strong> Один запуск не всегда характеризует маршрут; для спорных классов нужны повторы и распределение исходов.</li>
+          <li><strong>Распределение запросов меняется.</strong> Новые функции, документы, пользователи и промпты делают старые трассы менее репрезентативными.</li>
+          <li><strong>Две модели не всегда достаточны.</strong> Некоторые операции требуют отдельной специализированной модели, детерминированного кода или человека.</li>
+          <li><strong>Маршрутизация не исправляет плохую архитектуру.</strong> Некачественный поиск, неверная схема инструмента и противоречивая инструкция останутся источниками ошибок.</li>
+          <li><strong>Экономия провайдера не равна бизнес-выгоде.</strong> Нужно учитывать ручной труд, последствия ошибок и ценность завершённой операции.</li>
+          <li><strong>Порог зависит от домена.</strong> Его нельзя переносить между продуктами без нового измерения.</li>
+        </ul>
+      </section>
+
+      <section aria-labelledby="monitoring">
+        <h2 id="monitoring">Как сопровождать маршрутизатор после запуска</h2>
+        <p>Маршрутизатор становится частью рабочего <a class="term-link" href="glossary.html#workflow">процесса</a>, поэтому требует собственного цикла наблюдения:</p>
+        <ol>
+          <li>ежедневно проверять ошибки загрузки модели, неизвестные категории и распределение маршрутов;</li>
+          <li>сравнивать распределение признаков с обучающим окном;</li>
+          <li>еженедельно разбирать <code>false cheap</code>, повторы и дорогие эскалации;</li>
+          <li>периодически воспроизводить свежую стратифицированную выборку на обоих маршрутах;</li>
+          <li>добавлять подтверждённые ошибки в регрессионный набор;</li>
+          <li>переобучать кандидата отдельно от принятой версии;</li>
+          <li>снова проходить replay, тень и ограниченный запуск;</li>
+          <li>хранить прежний артефакт и конфигурацию для возврата.</li>
+        </ol>
+        <p>Не запускайте автоматическое переобучение непосредственно на неразобранных рабочих повторах. Иначе интерфейсные дубли, атаки и временные сбои станут обучающими сигналами.</p>
+      </section>
+
+      <section aria-labelledby="checklist">
+        <h2 id="checklist">Финальный контрольный список</h2>
+        <ul>
+          <li>операция и успех определены до эксперимента;</li>
+          <li>трассы связывают запрос, попытки, вызовы, результат и повторы;</li>
+          <li>данные обезличены, а срок хранения ограничен;</li>
+          <li>обе модели воспроизведены на одном контракте;</li>
+          <li>сильная модель не считается автоматической истиной;</li>
+          <li>признаки доступны до выбора маршрута;</li>
+          <li>train, validation и test разделены по группам и времени;</li>
+          <li>измерены <code>false cheap</code> и <code>false strong</code>;</li>
+          <li>порог выбран по риску и полной стоимости;</li>
+          <li>неизвестный вход и отказ маршрутизатора ведут на безопасный маршрут;</li>
+          <li>теневой режим пройден до воздействия на пользователя;</li>
+          <li>рабочий запуск ограничен стабильной когортой;</li>
+          <li>стоимость включает неудачи, повторы и эскалации;</li>
+          <li>качество и задержка показаны по критичным срезам;</li>
+          <li>итоговый отчёт сверён с исходными событиями и биллингом;</li>
+          <li>проверен аварийный переход на <code>strong_only</code>.</li>
+        </ul>
+        <aside class="note">
+          <p><strong>Практический итог:</strong> хороший маршрутизатор не доказывает, что один запрос «простой». Он показывает, что для наблюдаемого класса операций дешёвый маршрут с измеренной вероятностью проходит конкретный контракт, а все сомнительные и неизвестные случаи обрабатываются более безопасной политикой.</p>
+        </aside>
+      </section>
+
+      <footer class="article-footer">
+        <h2>Продолжить работу</h2>
+        <p>Другие воспроизводимые материалы собраны в <a href="guides.html">практических руководствах Agent Lab Journal</a>. Определения моделей, агентов, промптов, контекста, токенов, бенчмарков, наблюдаемости и рабочих процессов доступны в <a href="glossary.html">лабораторном глоссарии</a>.</p>
+      </footer>
+    </article>
+  </main>
+
+  <footer class="site-footer">
+    <p>Agent Lab Journal — практические материалы о разработке, проверке и эксплуатации AI-систем.</p>
+  </footer>
+  <script src="content-bridge.js?v=20260728"></script>
+</body>
+</html>
