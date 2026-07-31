@@ -1,0 +1,1217 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Как формат графа влияет на стоимость и точность GraphRAG — Agent Lab Journal</title>
+  <meta name="description" content="Воспроизводимый бенчмарк сериализации графа для GraphRAG: сравнение JSON, JSONL, CSV, списков рёбер и компактного DSL по числу токенов, точности обхода и качеству multi-hop ответов.">
+  <link rel="canonical" href="https://agentlabjournal.online/graphrag-serialization-format-benchmark.html">
+  <link rel="stylesheet" href="style.css">
+  <link rel="stylesheet" href="reading.css">
+
+  <meta property="og:type" content="article">
+  <meta property="og:locale" content="ru_RU">
+  <meta property="og:site_name" content="Agent Lab Journal">
+  <meta property="og:title" content="Как формат графа влияет на стоимость и точность GraphRAG">
+  <meta property="og:description" content="Воспроизводимый тест JSON, JSONL, CSV, списков рёбер и компактного DSL по токенам, точности обхода графа и качеству multi-hop ответов.">
+  <meta property="og:url" content="https://agentlabjournal.online/graphrag-serialization-format-benchmark.html">
+  <meta property="og:image" content="https://agentlabjournal.online/images/graphrag-serialization-format-benchmark.jpg">
+  <meta property="og:image:alt" content="Сравнение форматов сериализации графа для GraphRAG">
+
+  <meta name="twitter:card" content="summary_large_image">
+  <meta name="twitter:title" content="Как формат графа влияет на стоимость и точность GraphRAG">
+  <meta name="twitter:description" content="Практический воспроизводимый бенчмарк форматов графа: токены, обход и multi-hop ответы.">
+  <meta name="twitter:image" content="https://agentlabjournal.online/images/graphrag-serialization-format-benchmark.jpg">
+
+  <script type="application/ld+json">
+  {
+    "@context": "https://schema.org",
+    "@type": "Article",
+    "headline": "Как формат графа влияет на стоимость и точность GraphRAG",
+    "description": "Воспроизводимый бенчмарк сериализации графа для GraphRAG: сравнение JSON, JSONL, CSV, списков рёбер и компактного DSL по числу токенов, точности обхода и качеству multi-hop ответов.",
+    "image": "https://agentlabjournal.online/images/graphrag-serialization-format-benchmark.jpg",
+    "dateModified": "2026-07-31",
+    "author": {
+      "@type": "Organization",
+      "name": "Agent Lab Journal"
+    },
+    "publisher": {
+      "@type": "Organization",
+      "name": "Agent Lab Journal",
+      "url": "https://agentlabjournal.online/"
+    },
+    "mainEntityOfPage": {
+      "@type": "WebPage",
+      "@id": "https://agentlabjournal.online/graphrag-serialization-format-benchmark.html"
+    }
+  }
+  </script>
+</head>
+<body>
+  <header class="site-header">
+    <div class="container">
+      <a class="site-brand" href="index.html">Agent Lab Journal</a>
+      <nav class="site-nav" aria-label="Основная навигация">
+        <a href="guides.html">Гайды</a>
+        <a href="glossary.html">Глоссарий</a>
+      </nav>
+    </div>
+  </header>
+
+  <main>
+    <article class="reading-page">
+      <header class="article-header">
+        <div class="container reading-container">
+          <p class="article-kicker">Продвинутый практикум</p>
+          <h1>Как формат графа влияет на стоимость и точность GraphRAG</h1>
+          <p class="reading-meta">
+            <span>Уровень: продвинутый</span>
+            <span aria-hidden="true"> · </span>
+            <span>Время чтения: 45 минут</span>
+            <span aria-hidden="true"> · </span>
+            <time datetime="2026-07-31">Обновлено 31 июля 2026</time>
+          </p>
+          <p class="lead"><strong>Один и тот же граф может занять радикально разный объём контекста и дать модели разные шансы правильно пройти несколько рёбер.</strong> Многословный JSON расходует токены на кавычки, ключи и скобки, но чрезмерное сжатие способно уничтожить типы, направления и семантику связей. Поэтому формат нельзя выбирать только по размеру файла: его нужно проверять одновременно по стоимости, точности обхода и качеству конечных ответов.</p>
+        </div>
+      </header>
+
+      <div class="container reading-container article-body">
+        <nav class="table-of-contents" aria-label="Содержание">
+          <h2>Содержание</h2>
+          <ol>
+            <li><a href="#problem">Почему синтаксис влияет на GraphRAG</a></li>
+            <li><a href="#case">Конкретный тестовый случай</a></li>
+            <li><a href="#formats">Пять форматов одного графа</a></li>
+            <li><a href="#metrics">Метрики и правила оценки</a></li>
+            <li><a href="#project">Структура воспроизводимого эксперимента</a></li>
+            <li><a href="#implementation">Реализация бенчмарка</a></li>
+            <li><a href="#run">Запуск локальных и модельных тестов</a></li>
+            <li><a href="#verification">Проверка корректности</a></li>
+            <li><a href="#interpretation">Как интерпретировать результаты</a></li>
+            <li><a href="#failures">Типовые сбои</a></li>
+            <li><a href="#limitations">Ограничения</a></li>
+            <li><a href="#production">Перенос в production</a></li>
+          </ol>
+        </nav>
+
+        <section id="problem">
+          <h2>1. Почему синтаксис влияет на GraphRAG</h2>
+
+          <p><a href="glossary.html#graphrag">GraphRAG</a> сочетает поиск по структуре графа с генерацией ответа. В простейшем варианте система находит стартовые сущности, извлекает окружающие узлы и рёбра, помещает их в запрос и просит модель вывести ответ. На практике наиболее полезны вопросы, где требуется <a href="glossary.html#multi-hop">multi-hop reasoning</a>: пройти от исходной сущности через две или более связи, отфильтровать неподходящие ветви и объяснить найденный путь.</p>
+
+          <p>После извлечения подграф нужно превратить в текст. Этот этап называется <a href="glossary.html#serialization">сериализацией</a>. Он часто воспринимается как нейтральная техническая операция, хотя именно здесь структура данных превращается в последовательность токенов, доступную языковой модели.</p>
+
+          <p><a href="glossary.html#json">JSON</a> удобен для программ: у него явные поля, вложенность и широкая поддержка библиотеками. Но запись из десяти рёбер может десятки раз повторять ключи <code>source</code>, <code>relation</code> и <code>target</code>. В <a href="glossary.html#context-window">контекстном окне</a> эти служебные элементы конкурируют с названиями сущностей, описаниями отношений, вопросом и инструкцией.</p>
+
+          <p>Проблема не сводится к цене входных токенов. Формат меняет:</p>
+
+          <ul>
+            <li>число рёбер, которые помещаются в заданный бюджет;</li>
+            <li>расстояние между логически связанными фрагментами;</li>
+            <li>заметность направления и типа каждого ребра;</li>
+            <li>вероятность того, что модель перепутает идентификатор с естественным текстом;</li>
+            <li>устойчивость разбора ответа и возможность автоматической проверки;</li>
+            <li>положение полезных фактов относительно начала и конца длинного контекста.</li>
+          </ul>
+
+          <p>Следовательно, «самый компактный» и «самый точный» формат могут оказаться разными. Нужен контролируемый тест, в котором данные, вопросы, модельные параметры и оценивание фиксированы, а меняется только сериализация.</p>
+
+          <aside class="callout">
+            <h3>Главный принцип эксперимента</h3>
+            <p>Сначала докажите, что все сериализаторы кодируют один и тот же граф без потерь. Только после этого сравнивайте токены и ответы модели. Иначе тест измерит различия данных, а не различия представления.</p>
+          </aside>
+        </section>
+
+        <section id="case">
+          <h2>2. Конкретный тестовый случай</h2>
+
+          <p>Используем небольшой синтетический граф исследовательских проектов. Он не содержит customer-фактов и не претендует на статистическую репрезентативность. Его назначение — сделать процедуру полностью повторяемой и показать ошибки, характерные для многошагового поиска.</p>
+
+          <p>В графе есть исследователи, проекты, методы, организации и города. Основной проверочный вопрос:</p>
+
+          <blockquote>
+            Какой город связан с методом, который использует проект под руководством Ирины?
+          </blockquote>
+
+          <p>Эталонный путь состоит из четырёх рёбер:</p>
+
+          <ol>
+            <li><code>person_irina —LEADS→ project_orion</code></li>
+            <li><code>project_orion —USES→ method_graph</code></li>
+            <li><code>method_graph —DEVELOPED_BY→ org_vector</code></li>
+            <li><code>org_vector —LOCATED_IN→ city_kazan</code></li>
+          </ol>
+
+          <p>Ожидаемый ответ — «Казань». В граф добавлены конкурирующие ветви: другой проект Ирины, другой метод и организация в другом городе. Без них модель могла бы угадать ответ по единственной цепочке, не выполняя точный обход.</p>
+
+          <h3>Набор проверочных вопросов</h3>
+
+          <table>
+            <thead>
+              <tr>
+                <th>ID</th>
+                <th>Задача</th>
+                <th>Длина пути</th>
+                <th>Эталон</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td>q1</td>
+                <td>Где находится организация, разработавшая метод проекта под руководством Ирины?</td>
+                <td>4</td>
+                <td>Казань</td>
+              </tr>
+              <tr>
+                <td>q2</td>
+                <td>Кто руководит проектом, использующим метод организации из Томска?</td>
+                <td>4</td>
+                <td>Максим</td>
+              </tr>
+              <tr>
+                <td>q3</td>
+                <td>Какой метод использует проект участника лаборатории «Север»?</td>
+                <td>3</td>
+                <td>Векторный поиск</td>
+              </tr>
+              <tr>
+                <td>q4</td>
+                <td>В каком городе разработан метод проекта «Орион»?</td>
+                <td>3</td>
+                <td>Казань</td>
+              </tr>
+              <tr>
+                <td>q5</td>
+                <td>Назови проект, который использует «Семантическое сжатие».</td>
+                <td>1</td>
+                <td>Атлас</td>
+              </tr>
+              <tr>
+                <td>q6</td>
+                <td>Есть ли в графе город организации, разработавшей «Гибридный обход»?</td>
+                <td>2</td>
+                <td>Нет данных</td>
+              </tr>
+            </tbody>
+          </table>
+
+          <p>Последний вопрос — проверка воздержания. Если у метода нет полного пути до города, система не должна достраивать недостающее ребро из общих знаний или соседних ветвей.</p>
+        </section>
+
+        <section id="formats">
+          <h2>3. Пять форматов одного графа</h2>
+
+          <p>Бенчмарк сравнивает пять представлений. Они выбраны не как исчерпывающий каталог, а как практический диапазон от многословного структурированного формата до компактной доменной записи.</p>
+
+          <h3>3.1. Полный JSON</h3>
+
+          <pre><code>{
+  "edges": [
+    {
+      "source": "person_irina",
+      "relation": "LEADS",
+      "target": "project_orion"
+    }
+  ]
+}</code></pre>
+
+          <p>Преимущества: строгая структура, стандартный парсер, понятные имена полей. Недостатки: повторение ключей, кавычек и пунктуации. Вложенные свойства увеличивают издержки ещё сильнее.</p>
+
+          <h3>3.2. JSONL</h3>
+
+          <p><a href="glossary.html#jsonl">JSONL</a> хранит один объект на строку:</p>
+
+          <pre><code>{"s":"person_irina","r":"LEADS","t":"project_orion"}
+{"s":"project_orion","r":"USES","t":"method_graph"}</code></pre>
+
+          <p>Обёртка массива исчезает, а ключи можно сократить. Формат остаётся машинно разбираемым, но смысл <code>s</code>, <code>r</code> и <code>t</code> необходимо один раз определить в инструкции.</p>
+
+          <h3>3.3. CSV/TSV</h3>
+
+          <p><a href="glossary.html#csv">CSV</a> или табличный вариант с табуляцией записывает схему один раз:</p>
+
+          <pre><code>source	relation	target
+person_irina	LEADS	project_orion
+project_orion	USES	method_graph</code></pre>
+
+          <p>Для идентификаторов без переводов строк и табуляций это компактное представление. Однако экранирование естественного текста и запятых может усложнить как сериализацию, так и чтение моделью. В тесте применяется TSV, чтобы русские названия с запятыми не требовали дополнительных кавычек.</p>
+
+          <h3>3.4. Список рёбер</h3>
+
+          <pre><code>person_irina -LEADS-&gt; project_orion
+project_orion -USES-&gt; method_graph</code></pre>
+
+          <p>Такой формат хорошо показывает направление. Он почти не содержит служебных слов, но требует ограничения символов в идентификаторах и однозначного определения грамматики.</p>
+
+          <h3>3.5. Компактный DSL</h3>
+
+          <p><a href="glossary.html#dsl">DSL</a> — минимальный предметно-ориентированный синтаксис:</p>
+
+          <pre><code>@ person_irina|Ирина|person
+@ project_orion|Орион|project
+&gt; person_irina|LEADS|project_orion</code></pre>
+
+          <p>Строки <code>@</code> задают словарь узлов, а строки <code>&gt;</code> — рёбра. Идентификаторы отделены от отображаемых имён. Это уменьшает повторение длинных названий, но добавляет необходимость обучить модель локальной грамматике.</p>
+
+          <aside class="callout warning">
+            <h3>Не сокращайте отношения до непрозрачных кодов без отдельного теста</h3>
+            <p>Запись <code>p7|r3|m2</code> может быть короче, но заставляет модель постоянно обращаться к легенде. Экономия токенов не гарантирует экономию вычислительного внимания.</p>
+          </aside>
+        </section>
+
+        <section id="metrics">
+          <h2>4. Метрики и правила оценки</h2>
+
+          <h3>4.1. Размер в байтах</h3>
+
+          <p>Полезен для хранения и сетевой передачи, но не является заменой подсчёту токенов. Два текста одинаковой длины могут токенизироваться по-разному.</p>
+
+          <h3>4.2. Число токенов</h3>
+
+          <p><a href="glossary.html#tokenization">Токенизация</a> зависит от конкретной модели или кодировки. Поэтому отчёт обязан указывать:</p>
+
+          <ul>
+            <li>имя токенизатора;</li>
+            <li>версию библиотеки;</li>
+            <li>считался ли только граф или полный запрос;</li>
+            <li>включались ли системная инструкция, вопрос и схема ответа;</li>
+            <li>использовалась ли нормализация Unicode.</li>
+          </ul>
+
+          <p>Основная величина для сравнения — число токенов полного запроса. Дополнительно полезно считать только сериализованный граф, чтобы видеть вклад формата отдельно.</p>
+
+          <h3>4.3. Точность восстановления рёбер</h3>
+
+          <p>До обращения к языковой модели каждый формат декодируется обратно в канонический набор троек. Метрика:</p>
+
+          <pre><code>edge_roundtrip_accuracy =
+  число совпавших рёбер / число эталонных рёбер</code></pre>
+
+          <p>Для формата без потерь значение должно быть равно 1. Любое меньшее значение делает дальнейшее сравнение некорректным.</p>
+
+          <h3>4.4. Точность пути</h3>
+
+          <p>Модель должна вернуть не только короткий ответ, но и последовательность идентификаторов рёбер. Для каждого вопроса сравниваем предсказанный путь с эталонным:</p>
+
+          <ul>
+            <li><code>path_exact_match</code> — совпадает ли вся последовательность;</li>
+            <li><code>edge_precision</code> — доля предсказанных рёбер, входящих в эталон;</li>
+            <li><code>edge_recall</code> — доля эталонных рёбер, найденных моделью;</li>
+            <li><code>valid_path</code> — образуют ли рёбра непрерывную направленную цепочку.</li>
+          </ul>
+
+          <h3>4.5. Качество конечного ответа</h3>
+
+          <p>Для синтетического набора используйте детерминированную нормализацию и точное совпадение, а не оценку другой моделью. Удалите внешние пробелы, приведите регистр, замените <code>ё</code> на <code>е</code>. Не применяйте нечёткое совпадение там, где допустим один короткий ответ.</p>
+
+          <h3>4.6. Воздержание</h3>
+
+          <p>Для вопросов без полного пути проверяется точная метка <code>INSUFFICIENT_DATA</code>. Это отделяет полезный отказ от <a href="glossary.html#hallucination">галлюцинации</a>.</p>
+
+          <h3>4.7. Стоимость</h3>
+
+          <p>Не фиксируйте тарифы в коде: они меняются. Бенчмарк должен выводить токены, а стоимость рассчитывать из явно переданных параметров:</p>
+
+          <pre><code>input_cost = input_tokens / 1_000_000 × input_price_per_million
+output_cost = output_tokens / 1_000_000 × output_price_per_million</code></pre>
+
+          <p>Если цены не переданы, поле стоимости оставляется пустым. Это лучше, чем публиковать устаревшее или выдуманное значение.</p>
+        </section>
+
+        <section id="project">
+          <h2>5. Структура воспроизводимого эксперимента</h2>
+
+          <pre><code>graphrag-format-benchmark/
+├── data/
+│   ├── graph.json
+│   └── questions.json
+├── outputs/
+├── benchmark.py
+├── requirements.txt
+└── README.md</code></pre>
+
+          <p>Создайте виртуальное окружение и установите зависимости:</p>
+
+          <pre><code>python -m venv .venv
+source .venv/bin/activate
+python -m pip install --upgrade pip
+python -m pip install tiktoken</code></pre>
+
+          <p>Файл <code>requirements.txt</code> после успешной установки лучше зафиксировать командой:</p>
+
+          <pre><code>python -m pip freeze &gt; requirements.lock.txt</code></pre>
+
+          <p>Это важно: изменения токенизатора могут изменить измерения даже при неизменном исходном тексте.</p>
+
+          <h3>Канонический граф</h3>
+
+          <p>Сохраните следующий объект в <code>data/graph.json</code>:</p>
+
+          <pre><code>{
+  "nodes": [
+    {"id":"person_irina","name":"Ирина","type":"person"},
+    {"id":"person_maxim","name":"Максим","type":"person"},
+    {"id":"project_orion","name":"Орион","type":"project"},
+    {"id":"project_atlas","name":"Атлас","type":"project"},
+    {"id":"project_pulse","name":"Пульс","type":"project"},
+    {"id":"method_graph","name":"Графовый поиск","type":"method"},
+    {"id":"method_compress","name":"Семантическое сжатие","type":"method"},
+    {"id":"method_vector","name":"Векторный поиск","type":"method"},
+    {"id":"method_hybrid","name":"Гибридный обход","type":"method"},
+    {"id":"org_vector","name":"Институт Вектор","type":"organization"},
+    {"id":"org_siberia","name":"Центр Сибирь","type":"organization"},
+    {"id":"org_north","name":"Лаборатория Север","type":"organization"},
+    {"id":"city_kazan","name":"Казань","type":"city"},
+    {"id":"city_tomsk","name":"Томск","type":"city"}
+  ],
+  "edges": [
+    {"source":"person_irina","relation":"LEADS","target":"project_orion"},
+    {"source":"person_irina","relation":"MEMBER_OF","target":"org_north"},
+    {"source":"person_maxim","relation":"LEADS","target":"project_pulse"},
+    {"source":"project_orion","relation":"USES","target":"method_graph"},
+    {"source":"project_atlas","relation":"USES","target":"method_compress"},
+    {"source":"project_pulse","relation":"USES","target":"method_vector"},
+    {"source":"method_graph","relation":"DEVELOPED_BY","target":"org_vector"},
+    {"source":"method_compress","relation":"DEVELOPED_BY","target":"org_north"},
+    {"source":"method_vector","relation":"DEVELOPED_BY","target":"org_siberia"},
+    {"source":"method_hybrid","relation":"DEVELOPED_BY","target":"org_north"},
+    {"source":"org_vector","relation":"LOCATED_IN","target":"city_kazan"},
+    {"source":"org_siberia","relation":"LOCATED_IN","target":"city_tomsk"},
+    {"source":"org_north","relation":"RUNS","target":"project_atlas"}
+  ]
+}</code></pre>
+
+          <h3>Вопросы и эталонные пути</h3>
+
+          <p>Сохраните в <code>data/questions.json</code>:</p>
+
+          <pre><code>[
+  {
+    "id":"q1",
+    "question":"Где находится организация, разработавшая метод проекта под руководством Ирины?",
+    "answer":"Казань",
+    "path":[0,3,6,10],
+    "insufficient":false
+  },
+  {
+    "id":"q2",
+    "question":"Кто руководит проектом, использующим метод организации из Томска?",
+    "answer":"Максим",
+    "path":[11,8,5,2],
+    "insufficient":false
+  },
+  {
+    "id":"q3",
+    "question":"Какой метод использует проект участника лаборатории Север?",
+    "answer":"Графовый поиск",
+    "path":[1,0,3],
+    "insufficient":false
+  },
+  {
+    "id":"q4",
+    "question":"В каком городе разработан метод проекта Орион?",
+    "answer":"Казань",
+    "path":[3,6,10],
+    "insufficient":false
+  },
+  {
+    "id":"q5",
+    "question":"Назови проект, который использует Семантическое сжатие.",
+    "answer":"Атлас",
+    "path":[4],
+    "insufficient":false
+  },
+  {
+    "id":"q6",
+    "question":"Есть ли в графе город организации, разработавшей Гибридный обход?",
+    "answer":"INSUFFICIENT_DATA",
+    "path":[9],
+    "insufficient":true
+  }
+]</code></pre>
+
+          <p>Индексы путей ссылаются на положение ребра в каноническом массиве. Для production-набора лучше дать рёбрам устойчивые ID, потому что перестановка массива изменит индексы.</p>
+        </section>
+
+        <section id="implementation">
+          <h2>6. Реализация бенчмарка</h2>
+
+          <p>Ниже — самостоятельный скрипт для сериализации, обратного разбора, подсчёта токенов и подготовки запросов. Он не вызывает внешнюю модель и поэтому сразу воспроизводит безопасную часть эксперимента.</p>
+
+          <pre><code>from __future__ import annotations
+
+import argparse
+import csv
+import hashlib
+import io
+import json
+import unicodedata
+from pathlib import Path
+
+import tiktoken
+
+
+ROOT = Path(__file__).resolve().parent
+DATA = ROOT / "data"
+OUTPUTS = ROOT / "outputs"
+
+
+def canonical_edge(edge):
+    return (
+        str(edge["source"]),
+        str(edge["relation"]),
+        str(edge["target"]),
+    )
+
+
+def canonical_graph(graph):
+    nodes = sorted(
+        (
+            str(n["id"]),
+            str(n["name"]),
+            str(n["type"]),
+        )
+        for n in graph["nodes"]
+    )
+    edges = sorted(canonical_edge(e) for e in graph["edges"])
+    return {"nodes": nodes, "edges": edges}
+
+
+def serialize_full_json(graph):
+    return json.dumps(
+        graph,
+        ensure_ascii=False,
+        indent=2,
+        sort_keys=True,
+    )
+
+
+def parse_full_json(text):
+    return json.loads(text)
+
+
+def serialize_jsonl(graph):
+    lines = []
+    for node in graph["nodes"]:
+        lines.append(json.dumps({
+            "k": "n",
+            "i": node["id"],
+            "n": node["name"],
+            "t": node["type"],
+        }, ensure_ascii=False, separators=(",", ":")))
+    for edge in graph["edges"]:
+        lines.append(json.dumps({
+            "k": "e",
+            "s": edge["source"],
+            "r": edge["relation"],
+            "t": edge["target"],
+        }, ensure_ascii=False, separators=(",", ":")))
+    return "\n".join(lines)
+
+
+def parse_jsonl(text):
+    nodes, edges = [], []
+    for line in text.splitlines():
+        if not line.strip():
+            continue
+        item = json.loads(line)
+        if item["k"] == "n":
+            nodes.append({
+                "id": item["i"],
+                "name": item["n"],
+                "type": item["t"],
+            })
+        elif item["k"] == "e":
+            edges.append({
+                "source": item["s"],
+                "relation": item["r"],
+                "target": item["t"],
+            })
+        else:
+            raise ValueError(f"Unknown record kind: {item['k']}")
+    return {"nodes": nodes, "edges": edges}
+
+
+def serialize_tsv(graph):
+    out = io.StringIO()
+    writer = csv.writer(
+        out,
+        delimiter="\t",
+        lineterminator="\n",
+        quoting=csv.QUOTE_MINIMAL,
+    )
+    writer.writerow(["kind", "id/source", "name/relation", "type/target"])
+    for node in graph["nodes"]:
+        writer.writerow(["node", node["id"], node["name"], node["type"]])
+    for edge in graph["edges"]:
+        writer.writerow([
+            "edge",
+            edge["source"],
+            edge["relation"],
+            edge["target"],
+        ])
+    return out.getvalue().rstrip("\n")
+
+
+def parse_tsv(text):
+    nodes, edges = [], []
+    reader = csv.DictReader(io.StringIO(text), delimiter="\t")
+    for row in reader:
+        if row["kind"] == "node":
+            nodes.append({
+                "id": row["id/source"],
+                "name": row["name/relation"],
+                "type": row["type/target"],
+            })
+        elif row["kind"] == "edge":
+            edges.append({
+                "source": row["id/source"],
+                "relation": row["name/relation"],
+                "target": row["type/target"],
+            })
+        else:
+            raise ValueError(f"Unknown row kind: {row['kind']}")
+    return {"nodes": nodes, "edges": edges}
+
+
+def reject_delimiters(value, forbidden):
+    if any(char in value for char in forbidden):
+        raise ValueError(
+            f"Unsafe delimiter in value {value!r}; "
+            "escape it or choose another grammar"
+        )
+
+
+def serialize_edge_list(graph):
+    lines = ["NODES"]
+    for node in graph["nodes"]:
+        for value in (node["id"], node["name"], node["type"]):
+            reject_delimiters(value, "|\n\r")
+        lines.append(
+            f'{node["id"]}|{node["name"]}|{node["type"]}'
+        )
+    lines.append("EDGES")
+    for edge in graph["edges"]:
+        for value in canonical_edge(edge):
+            reject_delimiters(value, "\n\r")
+        lines.append(
+            f'{edge["source"]} -{edge["relation"]}-&gt; {edge["target"]}'
+            .replace("&gt;", "&gt;")
+        )
+    return "\n".join(lines)
+
+
+def parse_edge_list(text):
+    nodes, edges = [], []
+    section = None
+    for line in text.splitlines():
+        if line == "NODES":
+            section = "nodes"
+            continue
+        if line == "EDGES":
+            section = "edges"
+            continue
+        if not line:
+            continue
+        if section == "nodes":
+            node_id, name, node_type = line.split("|", 2)
+            nodes.append({
+                "id": node_id,
+                "name": name,
+                "type": node_type,
+            })
+        elif section == "edges":
+            source, rest = line.split(" -", 1)
+            relation, target = rest.split("-&gt; ", 1)
+            edges.append({
+                "source": source,
+                "relation": relation,
+                "target": target,
+            })
+        else:
+            raise ValueError("Record outside a section")
+    return {"nodes": nodes, "edges": edges}
+
+
+def serialize_dsl(graph):
+    lines = [
+        "# @ id|name|type",
+        "# &gt; source|relation|target",
+    ]
+    for node in graph["nodes"]:
+        for value in (node["id"], node["name"], node["type"]):
+            reject_delimiters(value, "|\n\r")
+        lines.append(
+            f'@ {node["id"]}|{node["name"]}|{node["type"]}'
+        )
+    for edge in graph["edges"]:
+        for value in canonical_edge(edge):
+            reject_delimiters(value, "|\n\r")
+        lines.append(
+            f'&gt; {edge["source"]}|{edge["relation"]}|{edge["target"]}'
+        )
+    return "\n".join(lines)
+
+
+def parse_dsl(text):
+    nodes, edges = [], []
+    for line in text.splitlines():
+        if not line or line.startswith("#"):
+            continue
+        marker, payload = line.split(" ", 1)
+        a, b, c = payload.split("|", 2)
+        if marker == "@":
+            nodes.append({"id": a, "name": b, "type": c})
+        elif marker == "&gt;":
+            edges.append({"source": a, "relation": b, "target": c})
+        else:
+            raise ValueError(f"Unknown DSL marker: {marker}")
+    return {"nodes": nodes, "edges": edges}
+
+
+SERIALIZERS = {
+    "json": (serialize_full_json, parse_full_json),
+    "jsonl": (serialize_jsonl, parse_jsonl),
+    "tsv": (serialize_tsv, parse_tsv),
+    "edge_list": (serialize_edge_list, parse_edge_list),
+    "dsl": (serialize_dsl, parse_dsl),
+}
+
+
+def normalize(text):
+    return unicodedata.normalize("NFC", text)
+
+
+def sha256(text):
+    return hashlib.sha256(text.encode("utf-8")).hexdigest()
+
+
+def build_prompt(serialized_graph, question, format_name):
+    return f"""Ты выполняешь точный обход направленного графа.
+
+Формат графа: {format_name}.
+Используй только явно записанные рёбра.
+Не обращай направление связи.
+Не добавляй отсутствующие факты.
+Если полного пути нет, верни INSUFFICIENT_DATA.
+
+Верни только JSON:
+{{
+  "answer": "краткий ответ или INSUFFICIENT_DATA",
+  "path": [индексы рёбер по порядку],
+  "evidence": [
+    {{"source":"id","relation":"TYPE","target":"id"}}
+  ]
+}}
+
+ГРАФ
+{serialized_graph}
+
+ВОПРОС
+{question}
+"""
+
+
+def count_tokens(text, encoding):
+    return len(encoding.encode(text))
+
+
+def main():
+    parser = argparse.ArgumentParser()
+    parser.add_argument(
+        "--encoding",
+        default="o200k_base",
+        help="Tokenizer encoding name",
+    )
+    args = parser.parse_args()
+
+    OUTPUTS.mkdir(exist_ok=True)
+    graph = json.loads((DATA / "graph.json").read_text(encoding="utf-8"))
+    questions = json.loads(
+        (DATA / "questions.json").read_text(encoding="utf-8")
+    )
+    encoding = tiktoken.get_encoding(args.encoding)
+    reference = canonical_graph(graph)
+    report = []
+
+    for format_name, (serializer, deserializer) in SERIALIZERS.items():
+        serialized = normalize(serializer(graph))
+        decoded = deserializer(serialized)
+        roundtrip_ok = canonical_graph(decoded) == reference
+
+        if not roundtrip_ok:
+            raise AssertionError(
+                f"{format_name}: round-trip mismatch"
+            )
+
+        suffix = "txt"
+        (OUTPUTS / f"graph.{format_name}.{suffix}").write_text(
+            serialized,
+            encoding="utf-8",
+        )
+
+        graph_tokens = count_tokens(serialized, encoding)
+
+        for question in questions:
+            prompt = build_prompt(
+                serialized,
+                question["question"],
+                format_name,
+            )
+            prompt_path = OUTPUTS / (
+                f'prompt.{format_name}.{question["id"]}.txt'
+            )
+            prompt_path.write_text(prompt, encoding="utf-8")
+
+            report.append({
+                "format": format_name,
+                "question_id": question["id"],
+                "bytes": len(serialized.encode("utf-8")),
+                "graph_tokens": graph_tokens,
+                "prompt_tokens": count_tokens(prompt, encoding),
+                "roundtrip_ok": roundtrip_ok,
+                "graph_sha256": sha256(serialized),
+                "encoding": args.encoding,
+            })
+
+    (OUTPUTS / "size_report.json").write_text(
+        json.dumps(report, ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
+
+    print("format\tgraph_tokens\tprompt_tokens_min\tprompt_tokens_max")
+    for format_name in SERIALIZERS:
+        rows = [r for r in report if r["format"] == format_name]
+        print(
+            format_name,
+            rows[0]["graph_tokens"],
+            min(r["prompt_tokens"] for r in rows),
+            max(r["prompt_tokens"] for r in rows),
+            sep="\t",
+        )
+
+
+if __name__ == "__main__":
+    main()</code></pre>
+
+          <aside class="callout warning">
+            <h3>HTML-экранирование в листинге</h3>
+            <p>В коде, скопированном из HTML, последовательности <code>&amp;gt;</code> визуально показаны как <code>&gt;</code>. Для реального Python-файла используйте обычный ASCII-маркер <code>-&gt;</code> и символ <code>&gt;</code> в DSL. Самый надёжный вариант — заменить HTML-сущности после копирования и проверить round-trip тестом.</p>
+          </aside>
+
+          <p>В production-репозитории код сериализаторов разумно покрыть отдельными модульными тестами. Здесь обязательная проверка уже встроена: скрипт завершится ошибкой, если декодированный граф отличается от исходного.</p>
+        </section>
+
+        <section id="run">
+          <h2>7. Запуск локальных и модельных тестов</h2>
+
+          <h3>7.1. Подсчёт токенов</h3>
+
+          <pre><code>python benchmark.py --encoding o200k_base</code></pre>
+
+          <p>Команда создаст сериализованные графы, отдельный prompt для каждой пары «формат × вопрос» и файл <code>outputs/size_report.json</code>. Числа в статье намеренно не приведены: они должны быть получены вашим токенизатором и вашей версией данных.</p>
+
+          <h3>7.2. Проверка нескольких размеров графа</h3>
+
+          <p>Маленький граф выявляет грубые ошибки, но почти не проверяет давление на контекст. Проведите минимум три режима:</p>
+
+          <ol>
+            <li><strong>Малый:</strong> исходные 13 рёбер.</li>
+            <li><strong>Средний:</strong> добавьте 10–20 нерелевантных ветвей на каждый стартовый узел.</li>
+            <li><strong>Большой:</strong> увеличивайте число отвлекающих рёбер до выбранного лимита контекста.</li>
+          </ol>
+
+          <p><a href="glossary.html#distractor">Дистракторы</a> должны быть структурно правдоподобными, но не менять эталонный ответ. Генерируйте их детерминированно с фиксированным seed и сохраняйте полученный граф как артефакт запуска. Не создавайте разные дистракторы для разных форматов.</p>
+
+          <h3>7.3. Честное ограничение бюджета</h3>
+
+          <p>Есть два разных эксперимента, и смешивать их нельзя.</p>
+
+          <h4>Режим A: одинаковый граф</h4>
+
+          <p>Каждый формат получает все рёбра. Этот режим показывает чистую разницу в числе токенов и восприятии представления. Если один prompt не помещается в окно модели, это фиксируется как отдельный исход <code>CONTEXT_OVERFLOW</code>, а не исправляется скрытым усечением.</p>
+
+          <h4>Режим B: одинаковый токен-бюджет</h4>
+
+          <p>Для каждого формата добавляйте рёбра в одном и том же каноническом порядке, пока следующий блок не превысит бюджет. Этот режим показывает, сколько полезной структуры формат способен донести при фиксированной стоимости.</p>
+
+          <p>В режиме B узлы нельзя отрывать от рёбер: словарь должен содержать определения всех ID, присутствующих в выбранных рёбрах. Бюджет проверяется после формирования полного prompt, а не по приблизительному числу символов.</p>
+
+          <h3>7.4. Модельный прогон</h3>
+
+          <p>Используйте доступный вам API или локальную модель. Не помещайте ключ в скрипт или отчёт. Передавайте его через переменную окружения, принятую вашим SDK, либо через локальное хранилище секретов.</p>
+
+          <p>Для каждого prompt сохраните:</p>
+
+          <ul>
+            <li>точное имя модели и версию, если провайдер её раскрывает;</li>
+            <li>время запуска в UTC;</li>
+            <li>температуру и другие параметры семплирования;</li>
+            <li>полный сырой ответ;</li>
+            <li>число входных и выходных токенов из ответа API;</li>
+            <li>идентификатор вопроса, формат и номер повтора;</li>
+            <li>хеш prompt;</li>
+            <li>ошибку или причину отказа, если запрос не завершился.</li>
+          </ul>
+
+          <p>Для оценки способности формата, а не вариативности генерации, начните с наиболее детерминированных параметров, поддерживаемых выбранной моделью. Затем выполните несколько повторов. Даже при минимальной температуре облачный inference не всегда гарантирует побитовую повторяемость.</p>
+
+          <h3>7.5. Формат результата модели</h3>
+
+          <pre><code>{
+  "answer": "Казань",
+  "path": [0, 3, 6, 10],
+  "evidence": [
+    {
+      "source": "person_irina",
+      "relation": "LEADS",
+      "target": "project_orion"
+    },
+    {
+      "source": "project_orion",
+      "relation": "USES",
+      "target": "method_graph"
+    },
+    {
+      "source": "method_graph",
+      "relation": "DEVELOPED_BY",
+      "target": "org_vector"
+    },
+    {
+      "source": "org_vector",
+      "relation": "LOCATED_IN",
+      "target": "city_kazan"
+    }
+  ]
+}</code></pre>
+
+          <p>Если платформа поддерживает <a href="glossary.html#structured-output">структурированный вывод</a> по схеме, используйте одну и ту же схему во всех вариантах. Ошибка разбора должна учитываться как ошибка задачи, а не исключаться из статистики.</p>
+        </section>
+
+        <section id="verification">
+          <h2>8. Проверка корректности</h2>
+
+          <h3>8.1. Round-trip до модельного запуска</h3>
+
+          <p>Для каждого формата должны совпасть:</p>
+
+          <ul>
+            <li>множество узлов с ID, именем и типом;</li>
+            <li>мультимножество направленных рёбер;</li>
+            <li>регистр и Unicode-форма значений;</li>
+            <li>число дубликатов, если дубликаты допустимы.</li>
+          </ul>
+
+          <p>Обычное множество скрывает повторяющиеся рёбра. Если повтор имеет смысл — например, разные источники подтверждают одну связь, — сравнивайте счётчики или добавляйте ID и provenance.</p>
+
+          <h3>8.2. Валидация предсказанного пути</h3>
+
+          <p>Не доверяйте полю <code>path</code> само по себе. Для каждого индекса:</p>
+
+          <ol>
+            <li>проверьте, что индекс существует;</li>
+            <li>получите соответствующее ребро из канонического массива;</li>
+            <li>сопоставьте его с элементом <code>evidence</code>;</li>
+            <li>проверьте непрерывность соседних рёбер;</li>
+            <li>убедитесь, что путь действительно поддерживает ответ.</li>
+          </ol>
+
+          <p>Некоторые вопросы требуют прохода против направления ребра. Например, q2 начинается с города и логически движется от <code>LOCATED_IN</code> к организации. Это допустимо только как явно описанный обратный поиск по существующему ребру. Модель не должна менять семантическое направление связи: из <code>org —LOCATED_IN→ city</code> нельзя выводить <code>city —LOCATED_IN→ org</code>.</p>
+
+          <h3>8.3. Защита от утечки ответа</h3>
+
+          <p>Проверьте, что:</p>
+
+          <ul>
+            <li>эталонный ответ не содержится в системной инструкции;</li>
+            <li>имя файла не кодирует ответ;</li>
+            <li>порядок вариантов не всегда ставит правильную сущность первой;</li>
+            <li>в few-shot примерах нет того же пути с заменёнными именами;</li>
+            <li>в metadata запроса не передаётся эталонный путь.</li>
+          </ul>
+
+          <h3>8.4. Перестановочный тест</h3>
+
+          <p>Повторите эксперимент с несколькими детерминированными перестановками рёбер. Если качество резко меняется, вы измеряете не только формат, но и <a href="glossary.html#position-bias">позиционное смещение</a>. Отчёт должен показывать среднее по перестановкам и разброс, а не единственный удачный порядок.</p>
+
+          <h3>8.5. Контрольный алгоритмический решатель</h3>
+
+          <p>Напишите обычный обход графа без языковой модели. Он должен получать правильный путь для каждого положительного вопроса и отсутствие пути для отрицательного. Это проверяет разметку. Если детерминированный решатель не согласен с эталоном, модельный тест запускать рано.</p>
+
+          <h3>8.6. Итоговая таблица</h3>
+
+          <p>Формируйте таблицу из фактических логов:</p>
+
+          <table>
+            <thead>
+              <tr>
+                <th>Формат</th>
+                <th>Токены графа</th>
+                <th>Токены prompt</th>
+                <th>Round-trip</th>
+                <th>Path EM</th>
+                <th>Answer EM</th>
+                <th>Valid path</th>
+                <th>Воздержание</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td>JSON</td>
+                <td>из запуска</td>
+                <td>из запуска</td>
+                <td>должно быть 100%</td>
+                <td>из запусков</td>
+                <td>из запусков</td>
+                <td>из запусков</td>
+                <td>из запусков</td>
+              </tr>
+              <tr>
+                <td>JSONL</td>
+                <td>из запуска</td>
+                <td>из запуска</td>
+                <td>должно быть 100%</td>
+                <td>из запусков</td>
+                <td>из запусков</td>
+                <td>из запусков</td>
+                <td>из запусков</td>
+              </tr>
+              <tr>
+                <td>TSV</td>
+                <td>из запуска</td>
+                <td>из запуска</td>
+                <td>должно быть 100%</td>
+                <td>из запусков</td>
+                <td>из запусков</td>
+                <td>из запусков</td>
+                <td>из запусков</td>
+              </tr>
+              <tr>
+                <td>Список рёбер</td>
+                <td>из запуска</td>
+                <td>из запуска</td>
+                <td>должно быть 100%</td>
+                <td>из запусков</td>
+                <td>из запусков</td>
+                <td>из запусков</td>
+                <td>из запусков</td>
+              </tr>
+              <tr>
+                <td>DSL</td>
+                <td>из запуска</td>
+                <td>из запуска</td>
+                <td>должно быть 100%</td>
+                <td>из запусков</td>
+                <td>из запусков</td>
+                <td>из запусков</td>
+                <td>из запусков</td>
+              </tr>
+            </tbody>
+          </table>
+
+          <p>Не заменяйте незаполненные значения правдоподобными числами. Пустая ячейка честно показывает, что измерение ещё не выполнено.</p>
+        </section>
+
+        <section id="interpretation">
+          <h2>9. Как интерпретировать результаты</h2>
+
+          <h3>Сценарий 1: формат компактнее и не теряет точность</h3>
+
+          <p>Это сильный кандидат для текущей модели, языка и типа графа. Но проверьте его на большем наборе, длинных значениях, разных степенях узлов и перестановках рёбер. Локальная победа на 13 рёбрах ещё не доказывает устойчивость.</p>
+
+          <h3>Сценарий 2: формат компактнее, но хуже восстанавливает путь</h3>
+
+          <p>Вероятно, потеряна явность. Частые причины:</p>
+
+          <ul>
+            <li>непонятно направление связи;</li>
+            <li>сокращённые коды требуют постоянного обращения к легенде;</li>
+            <li>узлы и рёбра визуально не разделены;</li>
+            <li>несколько смыслов упакованы в одну колонку;</li>
+            <li>инструкция по грамматике слишком далека от данных.</li>
+          </ul>
+
+          <p>Добавляйте минимальную избыточность по одному элементу: заголовок колонок, стрелку направления, отдельный словарь отношений или типы узлов. После каждого изменения повторяйте тест.</p>
+
+          <h3>Сценарий 3: полный JSON точнее на малом графе, но не помещается на большом</h3>
+
+          <p>Это не противоречие. При отсутствии давления на контекст явная схема помогает, а после достижения лимита формат проигрывает из-за усечения полезных рёбер. Сравните режим одинакового графа с режимом одинакового бюджета.</p>
+
+          <h3>Сценарий 4: ответ правильный, путь неправильный</h3>
+
+          <p>Не считайте такой запуск полностью успешным. Модель могла угадать по имени, использовать неразрешённое знание или выбрать правильный город из неправильной ветви. Для GraphRAG точность evidence важна не меньше краткого ответа.</p>
+
+          <h3>Сценарий 5: путь правильный, ответ отличается формой</h3>
+
+          <p>Проверьте нормализацию и контракт ответа. «в Казани» и «Казань» семантически совместимы, но свободная морфология усложняет детерминированную оценку. Лучше попросить вернуть ID узла и отдельно отображаемое имя:</p>
+
+          <pre><code>{
+  "answer_id": "city_kazan",
+  "answer_text": "Казань"
+}</code></pre>
+
+          <h3>Сценарий 6: выигрывает не один формат</h3>
+
+          <p>Это нормальный итог. Можно получить <a href="glossary.html#pareto-frontier">фронт Парето</a>: один формат минимизирует токены, второй лучше сохраняет точность длинных путей, третий проще валидировать. Выбор зависит от ограничений системы, а не от единственного рейтинга.</p>
+        </section>
+
+        <section id="failures">
+          <h2>10. Типовые сбои и способы диагностики</h2>
+
+          <h3>Потеря разделителей</h3>
+
+          <p>Имя узла содержит <code>|</code>, табуляцию или перевод строки, и компактный парсер разбивает запись неверно. Решение: запретить символы валидатором, реализовать экранирование либо использовать стандартный формат с готовым парсером.</p>
+
+          <h3>Нестабильный порядок</h3>
+
+          <p>Сериализатор проходит по множеству или хеш-таблице, из-за чего порядок меняется между запусками. Тогда меняются токены, позиции и индексы путей. Сортируйте узлы и рёбра или фиксируйте входной массив как часть набора.</p>
+
+          <h3>Скрытая разница prompt</h3>
+
+          <p>Для DSL добавлена длинная инструкция, а для JSON — короткая. Сравнение только токенов графа объявляет DSL победителем, хотя полный запрос может оказаться больше. Всегда публикуйте обе метрики.</p>
+
+          <h3>Усечение в середине записи</h3>
+
+          <p>Обрезка по токенам разрывает JSON-объект или строку DSL. Модель получает синтаксически повреждённый контекст. Выбирайте целые блоки до сериализации и проверяйте итоговый бюджет после неё.</p>
+
+          <h3>Обращение направления</h3>
+
+          <p>Модель видит <code>A —LOCATED_IN→ B</code>, но объясняет его как <code>B находится в A</code>. Добавьте типы узлов, явную стрелку и автоматическую проверку последовательности source-target.</p>
+
+          <h3>Слияние одноимённых узлов</h3>
+
+          <p>Две организации называются «Вектор», и формат передаёт только имена. Используйте устойчивые ID. Человекочитаемое имя должно быть атрибутом, а не ключом идентичности.</p>
+
+          <h3>Слишком компактная легенда</h3>
+
+          <p>Коды <code>L</code>, <code>U</code> и <code>D</code> экономят место в каждой строке, но модель путает их значения. Сравните общую экономию с ценой легенды и ростом ошибок. Для небольшого подграфа полные отношения могут быть дешевле.</p>
+
+          <h3>Невалидный JSON ответа</h3>
+
+          <p>Отдельно считайте <code>parse_success</code>. Не извлекайте ответ регулярным выражением из повреждённого объекта только для одной группы: это изменит условия оценки.</p>
+
+          <h3>Случайное изменение данных</h3>
+
+          <p>Один сериализатор пропускает атрибут типа или удаляет дубли. Round-trip проверка должна остановить запуск до обращения к модели.</p>
+
+          <h3>Утечка через идентификатор</h3>
+
+          <p>ID вроде <code>correct_answer_kazan</code> делает задачу тривиальной. Используйте нейтральные идентификаторы или выполните дополнительный тест с псевдослучайным переименованием всех узлов.</p>
+
+          <h3>Слишком лёгкие вопросы</h3>
+
+          <p>Если ответ встречается рядом с формулировкой вопроса, модель может не проходить граф. Добавьте конкурирующие сущности одинакового типа и требуйте evidence.</p>
+
+          <h3>Неполный отрицательный пример</h3>
+
+          <p>Отсутствие ребра в переданном подграфе не обязательно означает отсутствие факта во всей базе. Формулируйте контракт точно: «нет данных в предоставленном графе», а не «в реальности не существует».</p>
+        </section>
+
+        <section id="limitations">
+          <h2>11. Ограничения эксперимента</h2>
+
+          <p>Этот тест даёт воспроизводимую процедуру, но не универсальный рейтинг форматов.</p>
+
+          <ul>
+            <li><strong>Модельная зависимость.</strong> Разные токенизаторы и модели по-разному воспринимают JSON, таблицы, стрелки и сокращения.</li>
+            <li><strong>Языковая зависимость.</strong> Русские и английские имена могут иметь разную токенную стоимость.</li>
+            <li><strong>Размер набора.</strong> Шесть вопросов подходят для smoke-теста, но недостаточны для уверенного статистического вывода.</li>
+            <li><strong>Синтетическая структура.</strong> Реальные графы содержат длинные свойства, источники, даты, веса, гиперрёбра и конфликтующие факты.</li>
+            <li><strong>Изоляция retrieval.</strong> Здесь сравнивается представление уже выбранного подграфа. Ошибки извлечения кандидатов не моделируются.</li>
+            <li><strong>Изменчивость сервисов.</strong> Поведение размещённой модели может измениться без изменения имени endpoint.</li>
+            <li><strong>Стоимость latency.</strong> Меньше токенов не всегда означает пропорционально меньшую задержку.</li>
+            <li><strong>Качество объяснения.</strong> Точное совпадение ответа не измеряет полноту естественно-языкового обоснования.</li>
+          </ul>
+
+          <p>Для серьёзного решения расширьте набор до разных длин путей, степеней узлов и типов отношений. Отдельно анализируйте вопросы на 1, 2, 3, 4 и более переходов. Публикуйте доверительные интервалы или хотя бы разброс по повторам и перестановкам.</p>
+        </section>
+
+        <section id="production">
+          <h2>12. Практический перенос в production</h2>
+
+          <p>Бенчмарк полезен не только для выбора одного статического формата. Его выводы можно превратить в политику формирования контекста.</p>
+
+          <h3>Разделите хранение и prompt-представление</h3>
+
+          <p>Не меняйте базовый формат хранения ради экономии токенов. Граф может оставаться в базе или строгом JSON, а компактное представление генерироваться только после retrieval.</p>
+
+          <h3>Сериализуйте локальный подграф</h3>
+
+          <p>Сначала выберите релевантные узлы и связи, затем назначьте короткие локальные ID. Не отправляйте глобальные UUID многократно, если они не нужны для ответа.</p>
+
+          <h3>Не удаляйте семантически важные поля</h3>
+
+          <p>В первую очередь сокращайте повторяющийся синтаксис. Тип, направление, временной интервал, provenance и отрицание могут быть критичны для правильного пути.</p>
+
+          <h3>Держите грамматику рядом с данными</h3>
+
+          <p>Одно короткое определение непосредственно перед графом обычно надёжнее, чем длинная легенда в начале огромного prompt. Но это гипотеза, которую следует проверить на выбранной модели.</p>
+
+          <h3>Версионируйте формат</h3>
+
+          <pre><code>GRAPH_FORMAT compact-dsl/1
+@ id|name|type
+&gt; source|relation|target</code></pre>
+
+          <p>Версия позволяет менять экранирование и схему без неявного нарушения старых prompt, кешей и оценочных наборов.</p>
+
+          <h3>Включите формат в observability</h3>
+
+          <p>В журнал каждого запроса добавляйте имя и версию сериализации, число переданных узлов и рёбер, входные токены, факт усечения и хеш контекста. Не записывайте чувствительные свойства графа без необходимости.</p>
+
+          <h3>Определите порог отката</h3>
+
+          <p>Компактный формат можно принимать только при заранее заданных условиях, например:</p>
+
+          <ul>
+            <li>round-trip всегда проходит;</li>
+            <li>доля валидных путей не хуже установленного допуска относительно baseline;</li>
+            <li>воздержание на неполных путях не ухудшается;</li>
+            <li>экономия измерена на полном prompt;</li>
+            <li>результат устойчив к перестановке рёбер.</li>
+          </ul>
+
+          <p>Конкретные пороги зависят от риска продукта. Для аналитической подсказки допустим один компромисс, для юридического или медицинского ответа — другой.</p>
+        </section>
+
+        <section id="checklist">
+          <h2>13. Краткий протокол повторения</h2>
+
+          <ol>
+            <li>Зафиксируйте канонический граф, вопросы, ответы и эталонные пути.</li>
+            <li>Реализуйте сериализатор и обратный парсер каждого формата.</li>
+            <li>Добейтесь полного round-trip совпадения.</li>
+            <li>Зафиксируйте версии Python, библиотек и токенизатора.</li>
+            <li>Сохраните сериализованные файлы и их SHA-256.</li>
+            <li>Посчитайте токены графа и полного prompt.</li>
+            <li>Запустите режим одинакового графа.</li>
+            <li>Запустите режим одинакового токен-бюджета.</li>
+            <li>Повторите тест с разными порядками рёбер.</li>
+            <li>Сохраните сырые ответы и usage из API.</li>
+            <li>Проверьте answer exact match, path exact match и непрерывность пути.</li>
+            <li>Отдельно оцените отказ при недостатке данных.</li>
+            <li>Рассчитайте стоимость из актуальных параметров, переданных во время анализа.</li>
+            <li>Выбирайте формат по совокупности метрик, а не только по токенам.</li>
+          </ol>
+        </section>
+
+        <section id="conclusion">
+          <h2>Вывод</h2>
+
+          <p>Сериализация графа — часть retrieval-интерфейса, а не косметический выбор. JSON покупает явность ценой повторяющегося синтаксиса. Таблицы и списки рёбер экономят контекст, но требуют строгой дисциплины разделителей. Компактный DSL способен убрать значительную избыточность, однако его грамматика сама становится частью задачи для модели.</p>
+
+          <p>Правильный вопрос звучит не «какой формат короче?», а «какой формат при нашем токен-бюджете, нашей модели и наших графах чаще возвращает правильный проверяемый путь и умеет отказаться при недостатке данных?». Ответ получается только из теста, где один и тот же граф проходит round-trip проверку, токены считаются для полного запроса, а конечный ответ оценивается вместе с evidence.</p>
+
+          <p class="article-links">Продолжить работу можно в разделе <a href="guides.html">практических гайдов</a>; определения терминов собраны в <a href="glossary.html">глоссарии Agent Lab Journal</a>.</p>
+        </section>
+      </div>
+    </article>
+  </main>
+
+  <footer class="site-footer">
+    <div class="container">
+      <p>© Agent Lab Journal</p>
+    </div>
+  </footer>
+</body>
+</html>

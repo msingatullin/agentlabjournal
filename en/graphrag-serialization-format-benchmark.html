@@ -1,0 +1,973 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>How Graph Serialization Format Affects GraphRAG Cost and Accuracy — Agent Lab Journal</title>
+  <meta name="description" content="A reproducible benchmark for comparing GraphRAG serialization formats by token count, traversal accuracy, truncation resistance, and multi-hop answer quality.">
+  <link rel="canonical" href="https://agentlabjournal.online/en/graphrag-serialization-format-benchmark.html">
+  <link rel="stylesheet" href="../style.css">
+  <link rel="stylesheet" href="../reading.css">
+
+  <meta property="og:type" content="article">
+  <meta property="og:site_name" content="Agent Lab Journal">
+  <meta property="og:title" content="How Graph Serialization Format Affects GraphRAG Cost and Accuracy">
+  <meta property="og:description" content="A reproducible benchmark for comparing one graph encoded as JSON, JSONL, CSV, edge lists, and adjacency lists.">
+  <meta property="og:url" content="https://agentlabjournal.online/en/graphrag-serialization-format-benchmark.html">
+  <meta property="og:image" content="https://agentlabjournal.online/assets/graphrag-serialization-format-benchmark.png">
+  <meta property="og:image:alt" content="A graph represented in several serialization formats with token and traversal measurements">
+
+  <meta name="twitter:card" content="summary_large_image">
+  <meta name="twitter:title" content="How Graph Serialization Format Affects GraphRAG Cost and Accuracy">
+  <meta name="twitter:description" content="Benchmark graph encodings by tokens, traversal accuracy, truncation resistance, and multi-hop answer quality.">
+  <meta name="twitter:image" content="https://agentlabjournal.online/assets/graphrag-serialization-format-benchmark.png">
+
+  <script type="application/ld+json">
+  {
+    "@context": "https://schema.org",
+    "@type": "Article",
+    "headline": "How Graph Serialization Format Affects GraphRAG Cost and Accuracy",
+    "description": "A reproducible benchmark for comparing GraphRAG serialization formats by token count, traversal accuracy, truncation resistance, and multi-hop answer quality.",
+    "image": "https://agentlabjournal.online/assets/graphrag-serialization-format-benchmark.png",
+    "dateModified": "2026-07-31",
+    "author": {
+      "@type": "Organization",
+      "name": "Agent Lab Journal"
+    },
+    "publisher": {
+      "@type": "Organization",
+      "name": "Agent Lab Journal",
+      "url": "https://agentlabjournal.online/"
+    },
+    "mainEntityOfPage": {
+      "@type": "WebPage",
+      "@id": "https://agentlabjournal.online/en/graphrag-serialization-format-benchmark.html"
+    }
+  }
+  </script>
+</head>
+<body>
+  <header class="site-header">
+    <div class="container">
+      <a class="site-title" href="../index.html">Agent Lab Journal</a>
+      <nav aria-label="Primary navigation">
+        <a href="guides.html">Guides</a>
+        <a href="glossary.html">Glossary</a>
+      </nav>
+    </div>
+  </header>
+
+  <main>
+    <article class="reading container">
+      <header class="article-header">
+        <p class="eyebrow">Advanced guide</p>
+        <h1>How Graph Serialization Format Affects GraphRAG Cost and Accuracy</h1>
+        <p class="reading-meta">
+          <time datetime="2026-07-31">Updated July 31, 2026</time>
+          <span aria-hidden="true"> · </span>
+          <span>45-minute read</span>
+          <span aria-hidden="true"> · </span>
+          <span>Reproducible benchmark</span>
+        </p>
+        <p class="lead"><strong>A graph can contain exactly the right evidence and still produce a wrong answer because its textual representation consumed the context window, separated related facts, or made edge direction ambiguous.</strong> This guide turns that failure mode into a repeatable experiment: serialize one graph several ways, measure the actual tokens sent to a model, test deterministic traversal before involving a model, then score multi-hop answers under fixed context budgets.</p>
+      </header>
+
+      <nav class="table-of-contents" aria-label="Article contents">
+        <h2>Contents</h2>
+        <ol>
+          <li><a href="#problem">The format is part of the retrieval system</a></li>
+          <li><a href="#case">Concrete case: dependency impact analysis</a></li>
+          <li><a href="#formats">Formats under test</a></li>
+          <li><a href="#experiment">Experimental design</a></li>
+          <li><a href="#implementation">Reference implementation</a></li>
+          <li><a href="#run">Running the benchmark</a></li>
+          <li><a href="#llm">Multi-hop model evaluation</a></li>
+          <li><a href="#verify">Verification and interpretation</a></li>
+          <li><a href="#failures">Failure cases</a></li>
+          <li><a href="#production">Production decisions</a></li>
+          <li><a href="#limitations">Limitations</a></li>
+        </ol>
+      </nav>
+
+      <section id="problem">
+        <h2>The format is part of the retrieval system</h2>
+        <p><a href="glossary.html#graphrag">GraphRAG</a> combines retrieval with graph structure so that an answer can follow relationships instead of relying only on text similarity. A typical request retrieves a subgraph, serializes it, and places that text in a model prompt. The serializer therefore sits on the critical path between retrieval and reasoning.</p>
+        <p>The graph database may store compact identifiers and typed relationships, but a prompt often expands them into repeated field names:</p>
+        <pre><code>{
+  "source": {"id": "svc-api", "type": "service"},
+  "relationship": {"type": "depends_on"},
+  "target": {"id": "svc-auth", "type": "service"}
+}</code></pre>
+        <p>Repeated keys, braces, quotes, commas, type labels, and duplicated node properties all consume <a href="glossary.html#token">tokens</a>. That syntax is not automatically waste: explicit structure can prevent ambiguity. The engineering question is whether each token improves the probability of a correct traversal enough to justify its cost.</p>
+        <p>A smaller representation can fail too. The line <code>A B C</code> is cheap, but it does not say whether A depends on B, owns B, or replaced B. The useful objective is therefore not minimum tokens. It is the best measured answer quality under a fixed <a href="glossary.html#context-window">context window</a>, latency target, and budget.</p>
+
+        <h3>Three distinct accuracy layers</h3>
+        <p>Do not collapse every error into “the model got it wrong.” Measure these layers independently:</p>
+        <ol>
+          <li><strong>Serialization fidelity:</strong> can a parser reconstruct the original nodes, edges, directions, labels, and required properties?</li>
+          <li><strong>Traversal fidelity:</strong> can the reconstructed graph answer deterministic path queries correctly?</li>
+          <li><strong>Answer quality:</strong> can a language model use the serialized evidence to produce the expected multi-hop answer?</li>
+        </ol>
+        <p>If layer one fails, changing the prompt cannot repair missing information. If layers one and two pass but layer three fails, ordering, verbosity, model behavior, or instructions are more plausible causes.</p>
+      </section>
+
+      <section id="case">
+        <h2>Concrete case: dependency impact analysis</h2>
+        <p>Consider an internal service graph. Nodes represent services and databases. Directed <code>depends_on</code> edges point from a consumer to its dependency. A second relationship, <code>owned_by</code>, connects a service to its team.</p>
+        <p>The operational question is:</p>
+        <blockquote>
+          Which customer-facing services are transitively affected if <code>db-identity</code> fails, and which teams own those services?
+        </blockquote>
+        <p>Answering it requires at least two operations: traverse dependency edges in the reverse direction from the failed database, then follow ownership edges from affected services. A representation that drops direction, omits relationship types, or loses the ownership records cannot support the answer even when every remaining line is syntactically valid.</p>
+        <p>This is also where truncation becomes dangerous. A large JSON document may place the closing edges or ownership section beyond the available budget. The prompt remains readable, but the evidence needed for the last hop is absent.</p>
+      </section>
+
+      <section id="formats">
+        <h2>Formats under test</h2>
+        <p>The benchmark below compares five lossless representations of the same directed, typed graph. All formats retain node identifiers, node types, edge types, and direction.</p>
+
+        <div class="table-wrapper">
+          <table>
+            <thead>
+              <tr>
+                <th>Format</th>
+                <th>Example edge</th>
+                <th>Expected trade-off</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td>Pretty JSON</td>
+                <td><code>{"source":"api", "relation":"depends_on", "target":"auth"}</code></td>
+                <td>Explicit and easy to inspect; indentation and repeated keys increase size.</td>
+              </tr>
+              <tr>
+                <td>Compact JSON</td>
+                <td><code>{"s":"api","r":"depends_on","t":"auth"}</code></td>
+                <td>Preserves machine-readable structure with shorter keys and no whitespace.</td>
+              </tr>
+              <tr>
+                <td>JSONL</td>
+                <td><code>{"k":"e","s":"api","r":"depends_on","t":"auth"}</code></td>
+                <td>Streamable and independently parseable records; keys still repeat.</td>
+              </tr>
+              <tr>
+                <td>CSV records</td>
+                <td><code>E,api,depends_on,auth</code></td>
+                <td>Compact and conventional; quoting rules matter when values contain delimiters.</td>
+              </tr>
+              <tr>
+                <td>Typed edge list</td>
+                <td><code>api -depends_on-&gt; auth</code></td>
+                <td>Readable and compact; requires a declared grammar and escaping policy.</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+
+        <p>Do not include an intentionally lossy format in the main ranking without labeling it. For example, an untyped pair list may win on tokens only because it removed information required by the questions.</p>
+      </section>
+
+      <section id="experiment">
+        <h2>Experimental design</h2>
+
+        <h3>Control variables</h3>
+        <p>Keep the following fixed for every format:</p>
+        <ul>
+          <li>the graph and the order in which records are supplied;</li>
+          <li>the query set and expected answers;</li>
+          <li>the tokenizer and model version;</li>
+          <li>the prompt instructions and output schema;</li>
+          <li>the maximum input budget and truncation policy;</li>
+          <li>generation settings, including temperature and maximum output tokens;</li>
+          <li>the number of repeated runs and the scoring code.</li>
+        </ul>
+
+        <h3>Primary measurements</h3>
+        <dl>
+          <dt><strong>Serialized bytes</strong></dt>
+          <dd>UTF-8 byte length. Useful for storage and transport, but not a substitute for model-specific token measurement.</dd>
+
+          <dt><strong>Token count</strong></dt>
+          <dd>The count produced by the exact tokenizer used for the evaluated model.</dd>
+
+          <dt><strong>Round-trip fidelity</strong></dt>
+          <dd>Whether decoding the representation yields the canonical node and edge sets.</dd>
+
+          <dt><strong>Traversal accuracy</strong></dt>
+          <dd>The fraction of deterministic graph queries whose decoded answers equal the gold answers.</dd>
+
+          <dt><strong>Budget survival</strong></dt>
+          <dd>The fraction of required evidence records remaining after applying the same token budget.</dd>
+
+          <dt><strong>Multi-hop exact match</strong></dt>
+          <dd>The fraction of model answers that normalize to the expected set of identifiers.</dd>
+        </dl>
+
+        <h3>Recommended hypotheses</h3>
+        <p>Write hypotheses before running the test. For example:</p>
+        <ul>
+          <li>Compact JSON will use fewer tokens than pretty JSON while preserving identical deterministic results.</li>
+          <li>A typed edge list will reduce syntax overhead, but may require stronger format instructions.</li>
+          <li>Under a tight budget, record-aware truncation will outperform raw character or token slicing.</li>
+          <li>Ordering edges by relevance to the query will matter more as the budget becomes smaller.</li>
+        </ul>
+        <p>These are hypotheses, not results. The benchmark is designed to confirm or reject them on your graph, tokenizer, model, and query distribution.</p>
+      </section>
+
+      <section id="implementation">
+        <h2>Reference implementation</h2>
+        <p>The following single-file program creates a deterministic synthetic graph, serializes it in five formats, decodes every format, validates round trips, runs reachability queries, and measures tokens. The default graph is deliberately small enough to inspect. Increase <code>--services</code> and <code>--noise-edges</code> for context-pressure tests.</p>
+
+        <h3>Environment</h3>
+        <pre><code>python -m venv .venv
+. .venv/bin/activate
+python -m pip install tiktoken</code></pre>
+        <p>Pin the installed dependency after choosing the version used in your experiment:</p>
+        <pre><code>python -m pip freeze &gt; requirements-lock.txt
+python --version
+python -m pip show tiktoken</code></pre>
+
+        <h3>Save as <code>benchmark_graph_formats.py</code></h3>
+        <pre><code>#!/usr/bin/env python3
+import argparse
+import csv
+import io
+import json
+import random
+from collections import defaultdict, deque
+from dataclasses import dataclass, asdict
+
+import tiktoken
+
+
+@dataclass(frozen=True, order=True)
+class Node:
+    id: str
+    type: str
+
+
+@dataclass(frozen=True, order=True)
+class Edge:
+    source: str
+    relation: str
+    target: str
+
+
+def make_graph(service_count, noise_edges, seed):
+    rng = random.Random(seed)
+
+    nodes = [
+        Node("db-identity", "database"),
+        Node("team-core", "team"),
+        Node("team-growth", "team"),
+        Node("svc-web", "service"),
+        Node("svc-api", "service"),
+        Node("svc-auth", "service"),
+        Node("svc-profile", "service"),
+    ]
+    edges = [
+        Edge("svc-web", "depends_on", "svc-api"),
+        Edge("svc-api", "depends_on", "svc-auth"),
+        Edge("svc-profile", "depends_on", "svc-auth"),
+        Edge("svc-auth", "depends_on", "db-identity"),
+        Edge("svc-web", "owned_by", "team-growth"),
+        Edge("svc-api", "owned_by", "team-core"),
+        Edge("svc-auth", "owned_by", "team-core"),
+        Edge("svc-profile", "owned_by", "team-growth"),
+    ]
+
+    extra_services = [
+        Node(f"svc-noise-{i:04d}", "service")
+        for i in range(max(0, service_count - 4))
+    ]
+    nodes.extend(extra_services)
+
+    all_services = [n.id for n in nodes if n.type == "service"]
+    existing = set(edges)
+    attempts = 0
+    while len(existing) &lt; len(edges) + noise_edges and attempts &lt; noise_edges * 50 + 100:
+        attempts += 1
+        source = rng.choice(all_services)
+        target = rng.choice(all_services)
+        if source != target:
+            existing.add(Edge(source, "depends_on", target))
+
+    edges = sorted(existing)
+    return sorted(nodes), edges
+
+
+def canonical(nodes, edges):
+    return (
+        tuple(sorted((n.id, n.type) for n in nodes)),
+        tuple(sorted((e.source, e.relation, e.target) for e in edges)),
+    )
+
+
+def encode_pretty_json(nodes, edges):
+    value = {
+        "nodes": [asdict(n) for n in nodes],
+        "edges": [asdict(e) for e in edges],
+    }
+    return json.dumps(value, indent=2, ensure_ascii=False)
+
+
+def decode_pretty_json(text):
+    value = json.loads(text)
+    nodes = [Node(x["id"], x["type"]) for x in value["nodes"]]
+    edges = [
+        Edge(x["source"], x["relation"], x["target"])
+        for x in value["edges"]
+    ]
+    return nodes, edges
+
+
+def encode_compact_json(nodes, edges):
+    value = {
+        "n": [[n.id, n.type] for n in nodes],
+        "e": [[e.source, e.relation, e.target] for e in edges],
+    }
+    return json.dumps(value, separators=(",", ":"), ensure_ascii=False)
+
+
+def decode_compact_json(text):
+    value = json.loads(text)
+    nodes = [Node(*x) for x in value["n"]]
+    edges = [Edge(*x) for x in value["e"]]
+    return nodes, edges
+
+
+def encode_jsonl(nodes, edges):
+    records = []
+    records.extend(
+        json.dumps(
+            {"k": "n", "id": n.id, "t": n.type},
+            separators=(",", ":"),
+            ensure_ascii=False,
+        )
+        for n in nodes
+    )
+    records.extend(
+        json.dumps(
+            {"k": "e", "s": e.source, "r": e.relation, "t": e.target},
+            separators=(",", ":"),
+            ensure_ascii=False,
+        )
+        for e in edges
+    )
+    return "\n".join(records)
+
+
+def decode_jsonl(text):
+    nodes, edges = [], []
+    for line in text.splitlines():
+        if not line.strip():
+            continue
+        value = json.loads(line)
+        if value["k"] == "n":
+            nodes.append(Node(value["id"], value["t"]))
+        elif value["k"] == "e":
+            edges.append(Edge(value["s"], value["r"], value["t"]))
+        else:
+            raise ValueError(f"Unknown record kind: {value['k']}")
+    return nodes, edges
+
+
+def encode_csv_records(nodes, edges):
+    output = io.StringIO(newline="")
+    writer = csv.writer(output, lineterminator="\n")
+    writer.writerow(["kind", "a", "b", "c"])
+    for n in nodes:
+        writer.writerow(["N", n.id, n.type, ""])
+    for e in edges:
+        writer.writerow(["E", e.source, e.relation, e.target])
+    return output.getvalue()
+
+
+def decode_csv_records(text):
+    reader = csv.reader(io.StringIO(text))
+    header = next(reader)
+    if header != ["kind", "a", "b", "c"]:
+        raise ValueError("Unexpected CSV header")
+    nodes, edges = [], []
+    for kind, a, b, c in reader:
+        if kind == "N":
+            nodes.append(Node(a, b))
+        elif kind == "E":
+            edges.append(Edge(a, b, c))
+        else:
+            raise ValueError(f"Unknown CSV record kind: {kind}")
+    return nodes, edges
+
+
+def escape_atom(value):
+    return (
+        value.replace("\\", "\\\\")
+             .replace("|", "\\p")
+             .replace("\n", "\\n")
+    )
+
+
+def unescape_atom(value):
+    result = []
+    i = 0
+    while i &lt; len(value):
+        if value[i] != "\\":
+            result.append(value[i])
+            i += 1
+            continue
+        i += 1
+        if i &gt;= len(value):
+            raise ValueError("Trailing escape")
+        result.append({"p": "|", "n": "\n", "\\": "\\"}[value[i]])
+        i += 1
+    return "".join(result)
+
+
+def split_escaped(line):
+    fields, current = [], []
+    escaped = False
+    for char in line:
+        if escaped:
+            current.extend(["\\", char])
+            escaped = False
+        elif char == "\\":
+            escaped = True
+        elif char == "|":
+            fields.append(unescape_atom("".join(current)))
+            current = []
+        else:
+            current.append(char)
+    if escaped:
+        raise ValueError("Trailing escape")
+    fields.append(unescape_atom("".join(current)))
+    return fields
+
+
+def encode_typed_edges(nodes, edges):
+    lines = ["#graph-v1"]
+    lines.extend(
+        f"N|{escape_atom(n.id)}|{escape_atom(n.type)}"
+        for n in nodes
+    )
+    lines.extend(
+        f"E|{escape_atom(e.source)}|{escape_atom(e.relation)}|{escape_atom(e.target)}"
+        for e in edges
+    )
+    return "\n".join(lines)
+
+
+def decode_typed_edges(text):
+    lines = text.splitlines()
+    if not lines or lines[0] != "#graph-v1":
+        raise ValueError("Missing graph format declaration")
+    nodes, edges = [], []
+    for line in lines[1:]:
+        fields = split_escaped(line)
+        if fields[0] == "N" and len(fields) == 3:
+            nodes.append(Node(fields[1], fields[2]))
+        elif fields[0] == "E" and len(fields) == 4:
+            edges.append(Edge(fields[1], fields[2], fields[3]))
+        else:
+            raise ValueError(f"Invalid record: {line!r}")
+    return nodes, edges
+
+
+FORMATS = {
+    "pretty_json": (encode_pretty_json, decode_pretty_json),
+    "compact_json": (encode_compact_json, decode_compact_json),
+    "jsonl": (encode_jsonl, decode_jsonl),
+    "csv": (encode_csv_records, decode_csv_records),
+    "typed_edges": (encode_typed_edges, decode_typed_edges),
+}
+
+
+def reachable_dependencies(edges, start, max_hops):
+    adjacency = defaultdict(list)
+    for edge in edges:
+        if edge.relation == "depends_on":
+            adjacency[edge.source].append(edge.target)
+
+    seen = {start}
+    queue = deque([(start, 0)])
+    answer = set()
+    while queue:
+        node, distance = queue.popleft()
+        if distance == max_hops:
+            continue
+        for target in adjacency[node]:
+            if target not in seen:
+                seen.add(target)
+                answer.add(target)
+                queue.append((target, distance + 1))
+    return sorted(answer)
+
+
+def affected_services(nodes, edges, failed_node):
+    reverse = defaultdict(list)
+    for edge in edges:
+        if edge.relation == "depends_on":
+            reverse[edge.target].append(edge.source)
+
+    seen = {failed_node}
+    queue = deque([failed_node])
+    affected = set()
+    service_ids = {n.id for n in nodes if n.type == "service"}
+
+    while queue:
+        node = queue.popleft()
+        for consumer in reverse[node]:
+            if consumer not in seen:
+                seen.add(consumer)
+                queue.append(consumer)
+                if consumer in service_ids:
+                    affected.add(consumer)
+    return sorted(affected)
+
+
+def owners_of(services, edges):
+    owners = defaultdict(set)
+    wanted = set(services)
+    for edge in edges:
+        if edge.relation == "owned_by" and edge.source in wanted:
+            owners[edge.source].add(edge.target)
+    return {
+        service: sorted(owners[service])
+        for service in sorted(wanted)
+    }
+
+
+def query_suite(nodes, edges):
+    affected = affected_services(nodes, edges, "db-identity")
+    return {
+        "api_dependencies_3_hops":
+            reachable_dependencies(edges, "svc-api", 3),
+        "identity_failure_affected_services":
+            affected,
+        "owners_of_affected_services":
+            owners_of(affected, edges),
+    }
+
+
+def token_count(encoding, text):
+    return len(encoding.encode(text))
+
+
+def main():
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--services", type=int, default=40)
+    parser.add_argument("--noise-edges", type=int, default=80)
+    parser.add_argument("--seed", type=int, default=7)
+    parser.add_argument("--encoding", default="o200k_base")
+    parser.add_argument("--output", default="benchmark-results.json")
+    args = parser.parse_args()
+
+    encoding = tiktoken.get_encoding(args.encoding)
+    nodes, edges = make_graph(
+        args.services,
+        args.noise_edges,
+        args.seed,
+    )
+    gold_graph = canonical(nodes, edges)
+    gold_queries = query_suite(nodes, edges)
+
+    report = {
+        "parameters": vars(args),
+        "graph": {
+            "nodes": len(nodes),
+            "edges": len(edges),
+        },
+        "gold_queries": gold_queries,
+        "formats": {},
+    }
+
+    for name, (encoder, decoder) in FORMATS.items():
+        text = encoder(nodes, edges)
+        decoded_nodes, decoded_edges = decoder(text)
+        decoded_graph = canonical(decoded_nodes, decoded_edges)
+        decoded_queries = query_suite(decoded_nodes, decoded_edges)
+
+        query_checks = {
+            key: decoded_queries[key] == expected
+            for key, expected in gold_queries.items()
+        }
+        report["formats"][name] = {
+            "utf8_bytes": len(text.encode("utf-8")),
+            "characters": len(text),
+            "tokens": token_count(encoding, text),
+            "round_trip_equal": decoded_graph == gold_graph,
+            "query_checks": query_checks,
+            "traversal_accuracy": (
+                sum(query_checks.values()) / len(query_checks)
+            ),
+        }
+
+        with open(f"graph.{name}.txt", "w", encoding="utf-8") as handle:
+            handle.write(text)
+
+    with open(args.output, "w", encoding="utf-8") as handle:
+        json.dump(report, handle, indent=2, ensure_ascii=False)
+
+    print(json.dumps(report, indent=2, ensure_ascii=False))
+
+
+if __name__ == "__main__":
+    main()</code></pre>
+
+        <h3>Why the benchmark begins with deterministic parsing</h3>
+        <p>A model is not a parser conformance test. Before spending inference budget, prove that every supposedly lossless format can reconstruct the same graph. The program compares canonical tuples rather than serialized strings, so harmless ordering and whitespace differences do not count as failures.</p>
+        <p>The query suite then operates on the decoded graph. A traversal score below 1.0 means the serialization or decoder changed usable graph semantics. Stop there and fix the representation before evaluating a language model.</p>
+      </section>
+
+      <section id="run">
+        <h2>Running the benchmark</h2>
+
+        <h3>Baseline</h3>
+        <pre><code>python benchmark_graph_formats.py \
+  --services 40 \
+  --noise-edges 80 \
+  --seed 7 \
+  --encoding o200k_base \
+  --output baseline.json</code></pre>
+
+        <h3>Scale sweep</h3>
+        <pre><code>for size in 40 100 250 500
+do
+  python benchmark_graph_formats.py \
+    --services "$size" \
+    --noise-edges "$((size * 2))" \
+    --seed 7 \
+    --encoding o200k_base \
+    --output "results-${size}.json"
+done</code></pre>
+
+        <p>Use the encoding required by your selected model. Do not copy an encoding name merely because it appears in this example. Record it alongside the model identifier and dependency lock file.</p>
+
+        <h3>Inspect the generated representations</h3>
+        <pre><code>wc -c graph.*.txt
+sed -n '1,30p' graph.pretty_json.txt
+sed -n '1,30p' graph.typed_edges.txt
+python -m json.tool baseline.json</code></pre>
+
+        <h3>Record-aware budget tests</h3>
+        <p>Raw token slicing can cut a JSON object or CSV record in half. That measures corruption as much as compactness. Run two policies and report them separately:</p>
+        <ol>
+          <li><strong>Raw budget:</strong> encode the complete representation, keep the first <em>B</em tokens, decode the retained tokens, and record parse success.</li>
+          <li><strong>Record-aware budget:</strong> append complete records while the next record still fits. For monolithic JSON, build the largest valid object that fits.</li>
+        </ol>
+        <p>Use several budgets rather than one convenient threshold:</p>
+        <pre><code>budgets = [512, 1024, 2048, 4096, 8192]</code></pre>
+        <p>For each budget, store:</p>
+        <ul>
+          <li>whether the truncated representation parses;</li>
+          <li>the retained node and edge counts;</li>
+          <li>whether every gold path remains present;</li>
+          <li>deterministic traversal accuracy;</li>
+          <li>model answer score, if model evaluation is enabled.</li>
+        </ul>
+
+        <h3>Test more than one ordering</h3>
+        <p>Serialization format and record order interact. Compare at least:</p>
+        <ul>
+          <li>canonical identifier order;</li>
+          <li>deterministically shuffled order using recorded seeds;</li>
+          <li>query-relevant edges first;</li>
+          <li>breadth-first order from the query entities;</li>
+          <li>nodes followed by edges, and interleaved node-edge records where supported.</li>
+        </ul>
+        <p>A format should not receive an ordering advantage that other formats are denied. Either use an equivalent order everywhere or treat ordering as a separate experimental factor.</p>
+      </section>
+
+      <section id="llm">
+        <h2>Multi-hop model evaluation</h2>
+        <p>After all formats pass deterministic checks, test whether a model can use them. A <a href="glossary.html#multi-hop-reasoning">multi-hop answer</a> should depend on multiple linked facts, not on a label that directly reveals the result.</p>
+
+        <h3>Prompt template</h3>
+        <pre><code>You answer only from the graph data below.
+
+Graph semantics:
+- "A depends_on B" means A is a consumer of B.
+- If B fails, A may be affected.
+- Dependency impact propagates transitively in the reverse direction.
+- "A owned_by T" identifies the team responsible for A.
+
+Return JSON only:
+{
+  "affected_services": ["service-id"],
+  "owners": {
+    "service-id": ["team-id"]
+  }
+}
+
+Question:
+If db-identity fails, which services are transitively affected,
+and which teams own those services?
+
+GRAPH_FORMAT:
+{{format_name}}
+
+GRAPH_DATA:
+{{serialized_graph}}</code></pre>
+
+        <p>Keep these instructions byte-for-byte identical between formats except for <code>format_name</code> and <code>serialized_graph</code>. If a format needs a grammar explanation, include the grammar in its token accounting. Otherwise, a compact custom format receives an unfair advantage by hiding instructions outside the measured input.</p>
+
+        <h3>Gold answers</h3>
+        <p>Generate expected answers with deterministic graph code, not with another model. Normalize both gold and candidate outputs before comparison:</p>
+        <ul>
+          <li>parse JSON strictly;</li>
+          <li>reject missing required fields;</li>
+          <li>deduplicate and sort identifier arrays;</li>
+          <li>compare identifiers exactly rather than using semantic similarity;</li>
+          <li>score affected services and ownership mappings separately.</li>
+        </ul>
+
+        <h3>Suggested scoring</h3>
+        <p>For set-valued answers, report precision, recall, and F1. Let <em>P</em> be the predicted identifier set and <em>G</em> the gold set:</p>
+        <pre><code>precision = |P ∩ G| / |P|
+recall    = |P ∩ G| / |G|
+F1        = 2 × precision × recall / (precision + recall)</code></pre>
+        <p>Define behavior for empty sets before running the experiment. Also report strict exact match, because an F1 score can hide one unsupported service in an otherwise long correct list.</p>
+
+        <h3>Repeated trials</h3>
+        <p>Even low-temperature generation may vary. Use the same number of attempts per format and query. Store every raw request, raw response, parse outcome, normalized answer, latency, and usage value returned by the provider. Do not reconstruct token usage later when the API already supplied it.</p>
+
+        <h3>Result schema</h3>
+        <pre><code>{
+  "run_id": "locally-assigned-id",
+  "graph_hash": "sha256-of-canonical-graph",
+  "format": "typed_edges",
+  "ordering": "bfs_from_query",
+  "budget_tokens": 4096,
+  "model": "exact-model-identifier",
+  "tokenizer": "exact-tokenizer-identifier",
+  "prompt_tokens_reported": 0,
+  "completion_tokens_reported": 0,
+  "parse_success": false,
+  "exact_match": false,
+  "affected_services_f1": 0.0,
+  "owners_exact_match": false,
+  "latency_ms": 0,
+  "raw_response_path": "responses/run-id.txt"
+}</code></pre>
+        <p>The zeros above are placeholders defining fields, not benchmark findings.</p>
+
+        <h3>Cost calculation</h3>
+        <p>Store token usage first. Apply pricing later from an explicitly recorded price table:</p>
+        <pre><code>input_cost =
+  prompt_tokens / 1_000_000 * input_price_per_million
+
+output_cost =
+  completion_tokens / 1_000_000 * output_price_per_million
+
+total_cost = input_cost + output_cost</code></pre>
+        <p>Pricing changes, and cached-input rules may differ. Keeping raw usage separate from price assumptions makes historical runs comparable without rewriting the evidence.</p>
+      </section>
+
+      <section id="verify">
+        <h2>Verification and interpretation</h2>
+
+        <h3>Pre-flight verification</h3>
+        <ul>
+          <li>Every format has <code>round_trip_equal: true</code>.</li>
+          <li>Every untruncated format has traversal accuracy of 1.0.</li>
+          <li>The same canonical graph hash appears in every run.</li>
+          <li>The tokenizer corresponds to the evaluated model.</li>
+          <li>Grammar instructions are included in measured prompt tokens.</li>
+          <li>All random seeds, package versions, budgets, and model settings are recorded.</li>
+          <li>Gold answers come from deterministic traversal.</li>
+        </ul>
+
+        <h3>Use a Pareto comparison</h3>
+        <p>A single weighted score can conceal important trade-offs. First identify the <a href="glossary.html#pareto-frontier">Pareto frontier</a>: a format is dominated if another format uses no more tokens and achieves equal or better accuracy at every tested budget, with at least one strict improvement.</p>
+        <p>Then choose among non-dominated formats using operational constraints. For example, a team may accept a modest token increase for standard parsing, better observability, and fewer escaping bugs.</p>
+
+        <h3>Report uncertainty</h3>
+        <p>Deterministic token counts need no confidence interval, but model answer scores do. Report the number of queries and repeated trials. For proportions such as exact match, use a suitable binomial interval or bootstrap the query-level results. Avoid presenting a difference of one successful answer as a general format advantage.</p>
+
+        <h3>Separate these conclusions</h3>
+        <ul>
+          <li><strong>Format efficiency:</strong> tokens required for the complete graph.</li>
+          <li><strong>Budget robustness:</strong> answer quality as the graph is constrained.</li>
+          <li><strong>Reasoning usability:</strong> quality when all required evidence fits.</li>
+          <li><strong>Engineering reliability:</strong> parse failures, escaping errors, schema drift, and debugging cost.</li>
+        </ul>
+
+        <h3>Minimum results table</h3>
+        <div class="table-wrapper">
+          <table>
+            <thead>
+              <tr>
+                <th>Format</th>
+                <th>Tokens</th>
+                <th>Round trip</th>
+                <th>Traversal accuracy</th>
+                <th>Budget</th>
+                <th>Parse rate</th>
+                <th>Multi-hop exact match</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td>Pretty JSON</td>
+                <td>Measured locally</td>
+                <td>Measured locally</td>
+                <td>Measured locally</td>
+                <td>Recorded value</td>
+                <td>Measured locally</td>
+                <td>Measured locally</td>
+              </tr>
+              <tr>
+                <td>Compact JSON</td>
+                <td>Measured locally</td>
+                <td>Measured locally</td>
+                <td>Measured locally</td>
+                <td>Recorded value</td>
+                <td>Measured locally</td>
+                <td>Measured locally</td>
+              </tr>
+              <tr>
+                <td>JSONL</td>
+                <td>Measured locally</td>
+                <td>Measured locally</td>
+                <td>Measured locally</td>
+                <td>Recorded value</td>
+                <td>Measured locally</td>
+                <td>Measured locally</td>
+              </tr>
+              <tr>
+                <td>CSV</td>
+                <td>Measured locally</td>
+                <td>Measured locally</td>
+                <td>Measured locally</td>
+                <td>Recorded value</td>
+                <td>Measured locally</td>
+                <td>Measured locally</td>
+              </tr>
+              <tr>
+                <td>Typed edge list</td>
+                <td>Measured locally</td>
+                <td>Measured locally</td>
+                <td>Measured locally</td>
+                <td>Recorded value</td>
+                <td>Measured locally</td>
+                <td>Measured locally</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      </section>
+
+      <section id="failures">
+        <h2>Failure cases worth testing explicitly</h2>
+
+        <h3>Duplicate identifiers</h3>
+        <p>If two node records share an identifier but disagree on type or properties, decide whether decoding rejects the graph or applies a documented merge rule. Silent last-write-wins behavior can make format ordering change the answer.</p>
+
+        <h3>Delimiter collisions</h3>
+        <p>Custom edge lists often work until an identifier contains a pipe, tab, newline, backslash, or arrow-like sequence. Add adversarial fixtures and verify round trips. A compact grammar without an escaping specification is not a production format.</p>
+
+        <h3>Direction reversal</h3>
+        <p><code>A depends_on B</code> and <code>B is_dependency_of A</code> describe the same relation from different viewpoints. Mixing the two conventions reverses impact analysis. Put semantics in the prompt and encode direction unambiguously.</p>
+
+        <h3>Relationship-type collapse</h3>
+        <p>If <code>depends_on</code>, <code>owned_by</code>, and <code>deployed_in</code> are serialized as unlabeled pairs, deterministic reachability may return syntactically connected but semantically invalid paths.</p>
+
+        <h3>Orphan edges</h3>
+        <p>An edge may reference a node omitted by retrieval or truncation. Decide whether the model needs the node record, whether the identifier alone is sufficient, and whether the decoder rejects or retains the edge.</p>
+
+        <h3>Broken monolithic JSON</h3>
+        <p>Cutting a JSON document at a token boundary commonly produces invalid syntax. Record-aware construction or JSONL can preserve valid prefixes, but a valid prefix may still omit decisive evidence. Track parse validity and evidence completeness separately.</p>
+
+        <h3>Schema verbosity disguised as evidence</h3>
+        <p>Repeated natural-language property descriptions may dominate the graph. Measure structural records separately from node content. In production, retrieve long descriptions only for nodes on candidate paths.</p>
+
+        <h3>Tokenizer mismatch</h3>
+        <p>Byte size, character count, and tokens are correlated but not interchangeable. Punctuation-heavy encodings, long identifiers, Unicode labels, and whitespace can tokenize differently. Measure with the deployed tokenizer.</p>
+
+        <h3>Identifier leakage</h3>
+        <p>A node named <code>service-affected-by-identity</code> gives away the answer. Use neutral identifiers or test whether labels alone solve the question without traversal.</p>
+
+        <h3>Random graph shortcuts</h3>
+        <p>Noise edges can accidentally create shorter paths or change the gold affected set. Always compute gold answers after graph generation and store the canonical graph used for the run.</p>
+      </section>
+
+      <section id="production">
+        <h2>From benchmark to production design</h2>
+
+        <h3>Prefer query-shaped subgraphs</h3>
+        <p>Serialization cannot compensate for retrieving an unnecessarily large graph. Extract candidate paths, retain relationship direction and provenance, and serialize only the evidence required for the question plus a controlled amount of neighboring context.</p>
+
+        <h3>Use stable dictionaries when repetition is high</h3>
+        <p>A dictionary can map repeated types and relation names to short codes:</p>
+        <pre><code>REL: d=depends_on, o=owned_by
+TYPE: s=service, t=team, b=database
+
+N|svc-api|s
+N|svc-auth|s
+E|svc-api|d|svc-auth</code></pre>
+        <p>Include the dictionary and its explanation in token measurements. Version it, reject unknown codes, and avoid codes that are easy to confuse.</p>
+
+        <h3>Place decisive evidence deliberately</h3>
+        <p>Under hard budgets, order records by relevance or path structure instead of database insertion order. Keep the policy deterministic and evaluate it as its own factor. A useful sequence is query entities, their node records, candidate path edges, intermediate nodes, terminal evidence, then optional context.</p>
+
+        <h3>Preserve provenance without repeating it everywhere</h3>
+        <p>If every edge cites the same document, assign the source a short identifier and provide a source table once. If provenance varies by edge, retain the mapping required for answer verification. Removing provenance may reduce tokens while making grounded answers impossible to audit.</p>
+
+        <h3>Version the grammar</h3>
+        <p>Custom formats should begin with a version marker such as <code>#graph-v1</code>. Store the encoder, decoder, grammar description, and benchmark fixtures together. Treat a grammar change as a data-contract change, not a prompt tweak.</p>
+
+        <h3>Recommended decision rule</h3>
+        <p>Select the simplest representation that meets all of these conditions:</p>
+        <ol>
+          <li>lossless round trip for required graph semantics;</li>
+          <li>perfect deterministic traversal on the test suite;</li>
+          <li>acceptable multi-hop quality at the production budget;</li>
+          <li>no unacceptable degradation across orderings and seeds;</li>
+          <li>documented escaping, schema, and version behavior;</li>
+          <li>operationally acceptable cost, latency, and debugging effort.</li>
+        </ol>
+      </section>
+
+      <section id="limitations">
+        <h2>Limitations</h2>
+        <p>This experiment does not establish a universally best graph format. Results depend on graph density, identifier length, property volume, language, tokenizer, model, prompt, question type, retrieval policy, and context budget.</p>
+        <p>The reference graph emphasizes directed dependency and ownership queries. Knowledge graphs with qualifiers, temporal validity, confidence scores, hyperedges, nested properties, or multiple provenance records require additional fixtures and possibly different encodings.</p>
+        <p>Exact-match scoring is appropriate for identifier sets but insufficient for open-ended explanations. If explanations matter, score factual claims against graph-derived evidence and keep that evaluation separate from identifier retrieval.</p>
+        <p>Synthetic scale tests reveal mechanical behavior but cannot replace a sanitized sample of the production distribution. Real graphs often contain irregular identifiers, missing properties, duplicate facts, skewed degrees, multilingual labels, and long text fields.</p>
+        <p>Finally, token savings do not guarantee lower end-to-end cost. A format that needs more retries, produces invalid output, or requires a larger model may cost more despite a shorter prompt.</p>
+      </section>
+
+      <section id="checklist">
+        <h2>Reproduction checklist</h2>
+        <ol>
+          <li>Freeze one canonical graph and compute its hash.</li>
+          <li>Define multi-hop queries and generate gold answers deterministically.</li>
+          <li>Implement an encoder and decoder for every format.</li>
+          <li>Require lossless round trips before model testing.</li>
+          <li>Measure UTF-8 bytes and exact model-tokenizer counts.</li>
+          <li>Test multiple budgets, orderings, graph sizes, and seeds.</li>
+          <li>Apply both raw and record-aware truncation policies.</li>
+          <li>Keep prompts and generation settings fixed.</li>
+          <li>Include grammar instructions in token accounting.</li>
+          <li>Store raw requests, responses, usage, latency, and parse outcomes.</li>
+          <li>Report exact match, precision, recall, F1, and uncertainty.</li>
+          <li>Publish configuration and unfilled result templates alongside conclusions.</li>
+        </ol>
+      </section>
+
+      <section class="article-conclusion">
+        <h2>Conclusion</h2>
+        <p>Graph serialization is not merely an output preference. It determines how much evidence fits, whether direction and relation types survive, how truncation behaves, and how easily a model can recover a path. Benchmark it with the same discipline as retrieval and ranking.</p>
+        <p>Start with lossless round trips and deterministic queries. Only then add model calls, fixed budgets, repeated trials, and cost calculations. That sequence tells you whether an error came from the graph representation, the retained evidence, or the model’s use of valid evidence—and it produces a result another engineer can actually reproduce.</p>
+        <p>Continue with the <a href="guides.html">Agent Lab Journal guides</a>, or review terminology in the <a href="glossary.html">AI systems glossary</a>.</p>
+      </section>
+    </article>
+  </main>
+
+  <footer class="site-footer">
+    <div class="container">
+      <p>Agent Lab Journal — practical engineering notes for building and evaluating agentic systems.</p>
+    </div>
+  </footer>
+</body>
+</html>
