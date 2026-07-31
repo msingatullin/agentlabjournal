@@ -1,0 +1,1288 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+
+  <title>Проверяем наследование правил и памяти между AI-агентами в FROST — Agent Lab Journal</title>
+  <meta name="description" content="Продвинутый практикум по тестированию иерархии AI-агентов в FROST: наследование памяти, запрет изменения данных предка, проверка SOP, журнал решений и воспроизводимый Python-прототип.">
+  <link rel="canonical" href="https://agentlabjournal.online/frost-agent-governance-test.html">
+
+  <link rel="stylesheet" href="style.css">
+  <link rel="stylesheet" href="reading.css">
+
+  <meta property="og:type" content="article">
+  <meta property="og:locale" content="ru_RU">
+  <meta property="og:site_name" content="Agent Lab Journal">
+  <meta property="og:title" content="Проверяем наследование правил и памяти между AI-агентами в FROST">
+  <meta property="og:description" content="Собираем воспроизводимый стенд для проверки памяти, запрета записи в область предка и отклонения недопустимого SOP.">
+  <meta property="og:url" content="https://agentlabjournal.online/frost-agent-governance-test.html">
+  <meta property="og:image" content="https://agentlabjournal.online/podcast-cover.png">
+  <meta property="article:modified_time" content="2026-07-31">
+
+  <meta name="twitter:card" content="summary_large_image">
+  <meta name="twitter:title" content="Проверяем наследование правил и памяти между AI-агентами в FROST">
+  <meta name="twitter:description" content="Рабочий Python-прототип и тесты управления иерархией агентов: память, права записи и допустимость SOP.">
+  <meta name="twitter:image" content="https://agentlabjournal.online/podcast-cover.png">
+
+  <meta name="reading-meta" content="Продвинутый уровень · 60 минут · рабочий прототип и набор тестов">
+
+  <script type="application/ld+json">
+  {
+    "@context": "https://schema.org",
+    "@type": "Article",
+    "headline": "Проверяем наследование правил и памяти между AI-агентами в FROST",
+    "description": "Продвинутый практикум по тестированию иерархии AI-агентов в FROST: наследование памяти, запрет изменения данных предка, проверка SOP, журнал решений и воспроизводимый Python-прототип.",
+    "image": [
+      "https://agentlabjournal.online/podcast-cover.png"
+    ],
+    "dateModified": "2026-07-31",
+    "inLanguage": "ru-RU",
+    "author": {
+      "@type": "Organization",
+      "name": "Agent Lab Journal",
+      "url": "https://agentlabjournal.online/"
+    },
+    "publisher": {
+      "@type": "Organization",
+      "name": "Agent Lab Journal",
+      "url": "https://agentlabjournal.online/",
+      "logo": {
+        "@type": "ImageObject",
+        "url": "https://agentlabjournal.online/podcast-cover.png"
+      }
+    },
+    "mainEntityOfPage": {
+      "@type": "WebPage",
+      "@id": "https://agentlabjournal.online/frost-agent-governance-test.html"
+    },
+    "proficiencyLevel": "Advanced",
+    "timeRequired": "PT60M",
+    "articleSection": "Multi-agent systems",
+    "keywords": [
+      "FROST",
+      "AI-агенты",
+      "иерархия агентов",
+      "наследование памяти",
+      "SOP",
+      "контроль доступа",
+      "тестирование агентов"
+    ]
+  }
+  </script>
+</head>
+<body>
+  <header class="site-header">
+    <div class="container">
+      <a class="site-name" href="index.html">Agent Lab Journal</a>
+      <nav aria-label="Основная навигация">
+        <a href="guides.html">Гайды</a>
+        <a href="glossary.html">Глоссарий</a>
+      </nav>
+    </div>
+  </header>
+
+  <main>
+    <article class="reading">
+      <header class="article-header">
+        <p class="eyebrow">Практика · Multi-agent systems</p>
+        <h1>Проверяем наследование правил и памяти между AI-агентами в FROST</h1>
+        <p class="lead"><strong>Потомок не должен получать власть над системой только потому, что родитель передал ему задачу.</strong> В этом практикуме мы вынесем правила доступа из промптов в детерминированный слой, разрешим дочернему агенту читать унаследованную память, запретим изменять данные предка и остановим SOP, который требует запрещённого инструмента.</p>
+
+        <div class="reading-meta" aria-label="Параметры статьи">
+          <span>Продвинутый уровень</span>
+          <span>60 минут</span>
+          <span>Результат: рабочий прототип и набор тестов</span>
+        </div>
+      </header>
+
+      <section id="result">
+        <h2>Что именно мы построим</h2>
+
+        <p><a class="term-link" href="glossary.html#ai-agent">AI-агент</a> в этом стенде — субъект с идентификатором, родителем, собственной областью памяти и набором разрешённых возможностей. FROST отвечает за создание и запуск иерархии, а отдельный governance-слой принимает окончательное решение перед чтением, записью или выполнением процесса.</p>
+
+        <p>Прототип проверяет три обязательных свойства:</p>
+
+        <ol>
+          <li>потомок читает разрешённые данные из памяти предков, если у него нет собственного значения;</li>
+          <li>потомок не может изменить или удалить запись, владельцем которой является предок;</li>
+          <li>недопустимый <a class="term-link" href="glossary.html#sop">SOP</a> отклоняется целиком до выполнения первого шага.</li>
+        </ol>
+
+        <p>Мы намеренно не поручаем модели решать, можно ли ей выполнить действие. Модель может предложить операцию, но допуск рассчитывается обычным кодом по версии правил, происхождению памяти и возможностям агента.</p>
+
+        <aside class="note">
+          <p><strong>Важно:</strong> интерфейсы конкретной установки FROST могут отличаться по названиям методов и формату конфигурации. Поэтому стенд использует небольшой адаптер: замените только создание агента и обработчики инструментов, сохранив контракты авторизации и тестовые сценарии.</p>
+        </aside>
+      </section>
+
+      <section id="case">
+        <h2>Конкретный случай: команда подготовки отчёта</h2>
+
+        <p>Родительский агент <code>report_manager</code> хранит общие ограничения проекта и делегирует сбор материалов агенту <code>researcher</code>. Тот может создать ещё одного потомка — <code>formatter</code>.</p>
+
+        <p>У родителя есть такая память:</p>
+
+        <ul>
+          <li><code>project.client_region = "RU"</code> — доступна потомкам для чтения;</li>
+          <li><code>policy.external_upload = false</code> — обязательное ограничение;</li>
+          <li><code>report.retention_days = 30</code> — настройка, которую может менять только владелец;</li>
+          <li><code>credentials.storage_token</code> — секрет, не наследуемый потомками.</li>
+        </ul>
+
+        <p>Исследователь должен прочитать регион и срок хранения, сохранить собственные заметки и выполнить допустимый процесс подготовки черновика. Атакующий сценарий просит его изменить срок хранения в памяти родителя и запустить SOP с выгрузкой исходных документов во внешний сервис.</p>
+
+        <p>Если ограничения находятся только в системном <a class="term-link" href="glossary.html#prompt">промпте</a>, тест проверит главным образом послушность модели. Нам нужен более сильный инвариант: запрещённая операция не достигает хранилища или инструмента независимо от текста ответа модели.</p>
+      </section>
+
+      <section id="model">
+        <h2>Модель наследования: значение, происхождение и право записи</h2>
+
+        <p><a class="term-link" href="glossary.html#agent-memory">Память агента</a> нельзя представлять одним общим словарём. После объединения словарей теряется происхождение записи, а вместе с ним — возможность доказать, кто имеет право её менять.</p>
+
+        <p>Каждая запись должна содержать как минимум:</p>
+
+        <pre><code>{
+  "namespace": "report",
+  "key": "retention_days",
+  "value": 30,
+  "owner_agent_id": "report_manager",
+  "visibility": "descendants",
+  "mutable_by": "owner",
+  "revision": 1
+}</code></pre>
+
+        <p>Для чтения мы идём от текущего агента к корню и берём ближайшую видимую запись. Для записи не применяем такой поиск: операция всегда адресуется конкретной области владельца. Это различие защищает от случайной перезаписи родительского значения.</p>
+
+        <p>Наследование правил должно быть монотонным: потомок может получить более узкие права, но не расширить ограничения родителя. Если родитель запрещает <code>external_upload</code>, локальная конфигурация потомка не должна превращать запрет в разрешение.</p>
+
+        <p>Эффективные возможности удобно вычислять как пересечение:</p>
+
+        <pre><code>effective_capabilities(child) =
+    effective_capabilities(parent)
+    ∩ declared_capabilities(child)
+    ∩ environment_capabilities</code></pre>
+
+        <p>Так реализуется принцип <a class="term-link" href="glossary.html#least-privilege">минимальных привилегий</a>: делегирование задачи не означает делегирование всех инструментов родителя.</p>
+      </section>
+
+      <section id="threat-model">
+        <h2>Граница угроз</h2>
+
+        <p>Перед кодом зафиксируем, от чего именно защищает стенд.</p>
+
+        <table>
+          <thead>
+            <tr>
+              <th>Риск</th>
+              <th>Пример</th>
+              <th>Контроль</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td>Перезапись памяти предка</td>
+              <td>Потомок меняет <code>retention_days</code></td>
+              <td>Проверка владельца перед записью</td>
+            </tr>
+            <tr>
+              <td>Чтение закрытой записи</td>
+              <td>Потомок запрашивает токен родителя</td>
+              <td>Проверка видимости при разрешении памяти</td>
+            </tr>
+            <tr>
+              <td>Расширение прав</td>
+              <td>Потомок объявляет себе <code>external_upload</code></td>
+              <td>Пересечение возможностей</td>
+            </tr>
+            <tr>
+              <td>Частичное выполнение плохого SOP</td>
+              <td>Сначала читаются файлы, затем обнаруживается запрещённая отправка</td>
+              <td>Полная предварительная валидация плана</td>
+            </tr>
+            <tr>
+              <td>Обход через неизвестный шаг</td>
+              <td>SOP использует новый тип <code>shell_eval</code></td>
+              <td>Режим <a class="term-link" href="glossary.html#deny-by-default">запрещено по умолчанию</a></td>
+            </tr>
+            <tr>
+              <td>Гонка между проверкой и записью</td>
+              <td>Запись изменилась после проверки revision</td>
+              <td>Условное обновление по ревизии</td>
+            </tr>
+          </tbody>
+        </table>
+
+        <p>Прототип не пытается защищаться от администратора хоста, который напрямую изменяет базу или код policy engine. Такая угроза требует изоляции процесса, подписанных политик и отдельного доверенного хранилища.</p>
+      </section>
+
+      <section id="layout">
+        <h2>Шаг 1. Создаём проект</h2>
+
+        <p>Нужны Python 3.11 или новее и <a class="term-link" href="glossary.html#pytest">pytest</a>. Сам governance-слой не зависит от SDK модели и не требует ключей доступа.</p>
+
+        <pre><code>mkdir frost-governance-lab
+cd frost-governance-lab
+python -m venv .venv
+source .venv/bin/activate
+python -m pip install pytest
+mkdir -p frost_governance tests
+touch frost_governance/__init__.py
+touch frost_governance/core.py
+touch tests/test_governance.py</code></pre>
+
+        <p>В Windows PowerShell активация окружения выглядит так:</p>
+
+        <pre><code>.\.venv\Scripts\Activate.ps1</code></pre>
+
+        <p>Структура после подготовки:</p>
+
+        <pre><code>frost-governance-lab/
+├── frost_governance/
+│   ├── __init__.py
+│   └── core.py
+└── tests/
+    └── test_governance.py</code></pre>
+      </section>
+
+      <section id="implementation">
+        <h2>Шаг 2. Реализуем доверенный слой</h2>
+
+        <p>Поместите следующий код в <code>frost_governance/core.py</code>. Он не имитирует рассуждения модели: это исполняемый контур авторизации, который должен находиться между FROST и реальными хранилищами или инструментами.</p>
+
+        <pre><code>from __future__ import annotations
+
+from dataclasses import dataclass, field
+from typing import Any, Iterable, Literal
+
+
+Visibility = Literal["private", "children", "descendants"]
+MutableBy = Literal["owner"]
+
+
+class GovernanceError(RuntimeError):
+    pass
+
+
+class AccessDenied(GovernanceError):
+    pass
+
+
+class ValidationError(GovernanceError):
+    pass
+
+
+class RevisionConflict(GovernanceError):
+    pass
+
+
+@dataclass(frozen=True)
+class Agent:
+    agent_id: str
+    parent_id: str | None
+    declared_capabilities: frozenset[str]
+
+
+@dataclass
+class MemoryRecord:
+    namespace: str
+    key: str
+    value: Any
+    owner_agent_id: str
+    visibility: Visibility = "private"
+    mutable_by: MutableBy = "owner"
+    revision: int = 1
+
+
+@dataclass(frozen=True)
+class SOPStep:
+    step_id: str
+    action: str
+    arguments: dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass(frozen=True)
+class SOP:
+    sop_id: str
+    version: int
+    steps: tuple[SOPStep, ...]
+
+
+@dataclass(frozen=True)
+class Decision:
+    allowed: bool
+    subject: str
+    operation: str
+    resource: str
+    reason: str
+
+
+class Governance:
+    KNOWN_ACTIONS = frozenset({
+        "memory.read",
+        "memory.write",
+        "document.summarize",
+        "artifact.save",
+        "external.upload",
+    })
+
+    def __init__(
+        self,
+        agents: Iterable[Agent],
+        environment_capabilities: Iterable[str],
+    ) -> None:
+        agent_list = list(agents)
+        self.agents = {agent.agent_id: agent for agent in agent_list}
+        if len(self.agents) != len(agent_list):
+            raise ValidationError("duplicate agent_id")
+
+        self.environment_capabilities = frozenset(
+            environment_capabilities
+        )
+        self.memory: dict[tuple[str, str, str], MemoryRecord] = {}
+        self.audit: list[Decision] = []
+        self._validate_hierarchy()
+
+    def _validate_hierarchy(self) -> None:
+        for agent in self.agents.values():
+            if (
+                agent.parent_id is not None
+                and agent.parent_id not in self.agents
+            ):
+                raise ValidationError(
+                    f"unknown parent: {agent.parent_id}"
+                )
+
+            seen: set[str] = set()
+            cursor: Agent | None = agent
+            while cursor is not None:
+                if cursor.agent_id in seen:
+                    raise ValidationError("agent hierarchy contains a cycle")
+                seen.add(cursor.agent_id)
+                cursor = (
+                    self.agents[cursor.parent_id]
+                    if cursor.parent_id is not None
+                    else None
+                )
+
+    def lineage(self, agent_id: str) -> list[str]:
+        result: list[str] = []
+        cursor = self.agents[agent_id]
+        while True:
+            result.append(cursor.agent_id)
+            if cursor.parent_id is None:
+                return result
+            cursor = self.agents[cursor.parent_id]
+
+    def is_descendant(
+        self,
+        candidate_id: str,
+        ancestor_id: str,
+    ) -> bool:
+        return ancestor_id in self.lineage(candidate_id)[1:]
+
+    def is_direct_child(
+        self,
+        candidate_id: str,
+        parent_id: str,
+    ) -> bool:
+        return self.agents[candidate_id].parent_id == parent_id
+
+    def effective_capabilities(
+        self,
+        agent_id: str,
+    ) -> frozenset[str]:
+        lineage = self.lineage(agent_id)
+        effective = set(self.environment_capabilities)
+        for item_id in reversed(lineage):
+            effective.intersection_update(
+                self.agents[item_id].declared_capabilities
+            )
+        return frozenset(effective)
+
+    def _record(self, decision: Decision) -> Decision:
+        self.audit.append(decision)
+        return decision
+
+    def put_initial(self, record: MemoryRecord) -> None:
+        storage_key = (
+            record.owner_agent_id,
+            record.namespace,
+            record.key,
+        )
+        if record.owner_agent_id not in self.agents:
+            raise ValidationError("unknown memory owner")
+        if storage_key in self.memory:
+            raise ValidationError("initial record already exists")
+        self.memory[storage_key] = record
+
+    def _visible(
+        self,
+        reader_id: str,
+        record: MemoryRecord,
+    ) -> bool:
+        if reader_id == record.owner_agent_id:
+            return True
+        if record.visibility == "private":
+            return False
+        if record.visibility == "children":
+            return self.is_direct_child(
+                reader_id,
+                record.owner_agent_id,
+            )
+        return self.is_descendant(
+            reader_id,
+            record.owner_agent_id,
+        )
+
+    def resolve(
+        self,
+        reader_id: str,
+        namespace: str,
+        key: str,
+    ) -> MemoryRecord:
+        resource = f"{namespace}.{key}"
+
+        if "memory.read" not in self.effective_capabilities(reader_id):
+            self._record(Decision(
+                False,
+                reader_id,
+                "memory.read",
+                resource,
+                "capability_not_inherited",
+            ))
+            raise AccessDenied("memory.read is not allowed")
+
+        for owner_id in self.lineage(reader_id):
+            record = self.memory.get((owner_id, namespace, key))
+            if record is None:
+                continue
+            if self._visible(reader_id, record):
+                self._record(Decision(
+                    True,
+                    reader_id,
+                    "memory.read",
+                    resource,
+                    f"visible_from:{owner_id}",
+                ))
+                return record
+
+            self._record(Decision(
+                False,
+                reader_id,
+                "memory.read",
+                resource,
+                f"not_visible_from:{owner_id}",
+            ))
+            raise AccessDenied("record is not visible")
+
+        self._record(Decision(
+            False,
+            reader_id,
+            "memory.read",
+            resource,
+            "record_not_found",
+        ))
+        raise KeyError(resource)
+
+    def write(
+        self,
+        actor_id: str,
+        owner_id: str,
+        namespace: str,
+        key: str,
+        value: Any,
+        expected_revision: int | None = None,
+    ) -> MemoryRecord:
+        resource = f"{owner_id}:{namespace}.{key}"
+
+        if "memory.write" not in self.effective_capabilities(actor_id):
+            self._record(Decision(
+                False,
+                actor_id,
+                "memory.write",
+                resource,
+                "capability_not_inherited",
+            ))
+            raise AccessDenied("memory.write is not allowed")
+
+        if actor_id != owner_id:
+            self._record(Decision(
+                False,
+                actor_id,
+                "memory.write",
+                resource,
+                "actor_is_not_owner",
+            ))
+            raise AccessDenied("cannot modify another agent's memory")
+
+        storage_key = (owner_id, namespace, key)
+        current = self.memory.get(storage_key)
+
+        if current is not None:
+            if (
+                expected_revision is not None
+                and current.revision != expected_revision
+            ):
+                self._record(Decision(
+                    False,
+                    actor_id,
+                    "memory.write",
+                    resource,
+                    "revision_conflict",
+                ))
+                raise RevisionConflict(resource)
+
+            current.value = value
+            current.revision += 1
+            result = current
+        else:
+            result = MemoryRecord(
+                namespace=namespace,
+                key=key,
+                value=value,
+                owner_agent_id=owner_id,
+                visibility="private",
+            )
+            self.memory[storage_key] = result
+
+        self._record(Decision(
+            True,
+            actor_id,
+            "memory.write",
+            resource,
+            "owner_write",
+        ))
+        return result
+
+    def validate_sop(
+        self,
+        actor_id: str,
+        sop: SOP,
+    ) -> tuple[Decision, ...]:
+        capabilities = self.effective_capabilities(actor_id)
+        decisions: list[Decision] = []
+        seen_ids: set[str] = set()
+
+        if not sop.steps:
+            raise ValidationError("SOP must contain at least one step")
+
+        for step in sop.steps:
+            resource = f"{sop.sop_id}:{step.step_id}"
+
+            if step.step_id in seen_ids:
+                decision = Decision(
+                    False,
+                    actor_id,
+                    "sop.validate",
+                    resource,
+                    "duplicate_step_id",
+                )
+            elif step.action not in self.KNOWN_ACTIONS:
+                decision = Decision(
+                    False,
+                    actor_id,
+                    "sop.validate",
+                    resource,
+                    "unknown_action",
+                )
+            elif step.action not in capabilities:
+                decision = Decision(
+                    False,
+                    actor_id,
+                    "sop.validate",
+                    resource,
+                    "action_not_in_effective_capabilities",
+                )
+            elif (
+                step.action == "memory.write"
+                and step.arguments.get("owner_agent_id") != actor_id
+            ):
+                decision = Decision(
+                    False,
+                    actor_id,
+                    "sop.validate",
+                    resource,
+                    "cross_owner_memory_write",
+                )
+            else:
+                decision = Decision(
+                    True,
+                    actor_id,
+                    "sop.validate",
+                    resource,
+                    "step_allowed",
+                )
+
+            decisions.append(decision)
+            seen_ids.add(step.step_id)
+
+        self.audit.extend(decisions)
+
+        rejected = [item for item in decisions if not item.allowed]
+        if rejected:
+            reasons = ", ".join(item.reason for item in rejected)
+            raise AccessDenied(f"SOP rejected: {reasons}")
+
+        return tuple(decisions)</code></pre>
+
+        <p>Ключевой участок — <code>validate_sop</code>. Он просматривает весь процесс до исполнения. Если последний шаг запрещён, система не должна успеть выполнить первые разрешённые шаги.</p>
+
+        <p>Список <code>KNOWN_ACTIONS</code> является <a class="term-link" href="glossary.html#allowlist">списком разрешённых операций</a>. Неизвестное действие отклоняется, даже если оно выглядит безобидно или модель убедительно объясняет его необходимость.</p>
+      </section>
+
+      <section id="tests">
+        <h2>Шаг 3. Добавляем воспроизводимые тесты</h2>
+
+        <p>Поместите код ниже в <code>tests/test_governance.py</code>. Тесты проверяют фактическое состояние и журнал решений, а не текст, который вернул агент.</p>
+
+        <pre><code>import pytest
+
+from frost_governance.core import (
+    AccessDenied,
+    Agent,
+    Governance,
+    MemoryRecord,
+    RevisionConflict,
+    SOP,
+    SOPStep,
+)
+
+
+ALL = frozenset({
+    "memory.read",
+    "memory.write",
+    "document.summarize",
+    "artifact.save",
+    "external.upload",
+})
+
+
+@pytest.fixture
+def governance() -> Governance:
+    root = Agent(
+        agent_id="report_manager",
+        parent_id=None,
+        declared_capabilities=ALL,
+    )
+    researcher = Agent(
+        agent_id="researcher",
+        parent_id="report_manager",
+        declared_capabilities=frozenset({
+            "memory.read",
+            "memory.write",
+            "document.summarize",
+            "artifact.save",
+        }),
+    )
+    formatter = Agent(
+        agent_id="formatter",
+        parent_id="researcher",
+        declared_capabilities=frozenset({
+            "memory.read",
+            "artifact.save",
+        }),
+    )
+
+    service = Governance(
+        agents=[root, researcher, formatter],
+        environment_capabilities=ALL,
+    )
+
+    service.put_initial(MemoryRecord(
+        namespace="project",
+        key="client_region",
+        value="RU",
+        owner_agent_id="report_manager",
+        visibility="descendants",
+    ))
+    service.put_initial(MemoryRecord(
+        namespace="report",
+        key="retention_days",
+        value=30,
+        owner_agent_id="report_manager",
+        visibility="descendants",
+    ))
+    service.put_initial(MemoryRecord(
+        namespace="credentials",
+        key="storage_token",
+        value="test-only-placeholder",
+        owner_agent_id="report_manager",
+        visibility="private",
+    ))
+    return service
+
+
+def test_child_inherits_visible_parent_memory(governance):
+    record = governance.resolve(
+        "researcher",
+        "project",
+        "client_region",
+    )
+
+    assert record.value == "RU"
+    assert record.owner_agent_id == "report_manager"
+    assert governance.audit[-1].allowed is True
+    assert governance.audit[-1].reason == (
+        "visible_from:report_manager"
+    )
+
+
+def test_grandchild_inherits_descendant_memory(governance):
+    record = governance.resolve(
+        "formatter",
+        "report",
+        "retention_days",
+    )
+
+    assert record.value == 30
+    assert record.owner_agent_id == "report_manager"
+
+
+def test_private_parent_memory_is_hidden(governance):
+    with pytest.raises(AccessDenied):
+        governance.resolve(
+            "researcher",
+            "credentials",
+            "storage_token",
+        )
+
+    assert governance.audit[-1].allowed is False
+    assert governance.audit[-1].reason.startswith(
+        "not_visible_from:"
+    )
+
+
+def test_child_can_write_only_its_own_memory(governance):
+    created = governance.write(
+        actor_id="researcher",
+        owner_id="researcher",
+        namespace="notes",
+        key="draft",
+        value="Локальные заметки",
+    )
+
+    assert created.owner_agent_id == "researcher"
+    assert created.value == "Локальные заметки"
+
+
+def test_child_cannot_modify_parent_memory(governance):
+    original = governance.resolve(
+        "researcher",
+        "report",
+        "retention_days",
+    )
+
+    with pytest.raises(AccessDenied):
+        governance.write(
+            actor_id="researcher",
+            owner_id="report_manager",
+            namespace="report",
+            key="retention_days",
+            value=0,
+            expected_revision=original.revision,
+        )
+
+    unchanged = governance.memory[
+        ("report_manager", "report", "retention_days")
+    ]
+    assert unchanged.value == 30
+    assert unchanged.revision == 1
+    assert governance.audit[-1].reason == "actor_is_not_owner"
+
+
+def test_stale_revision_is_rejected(governance):
+    governance.write(
+        actor_id="report_manager",
+        owner_id="report_manager",
+        namespace="report",
+        key="retention_days",
+        value=45,
+        expected_revision=1,
+    )
+
+    with pytest.raises(RevisionConflict):
+        governance.write(
+            actor_id="report_manager",
+            owner_id="report_manager",
+            namespace="report",
+            key="retention_days",
+            value=60,
+            expected_revision=1,
+        )
+
+    assert governance.memory[
+        ("report_manager", "report", "retention_days")
+    ].value == 45
+
+
+def test_child_cannot_expand_parent_capabilities(governance):
+    effective = governance.effective_capabilities("researcher")
+
+    assert "external.upload" not in effective
+    assert "document.summarize" in effective
+
+
+def test_grandchild_is_narrower_than_parent(governance):
+    effective = governance.effective_capabilities("formatter")
+
+    assert effective == frozenset({
+        "memory.read",
+        "artifact.save",
+    })
+
+
+def test_valid_sop_is_accepted(governance):
+    sop = SOP(
+        sop_id="prepare-report",
+        version=1,
+        steps=(
+            SOPStep(
+                "read-region",
+                "memory.read",
+                {"namespace": "project", "key": "client_region"},
+            ),
+            SOPStep(
+                "summarize",
+                "document.summarize",
+                {"source": "workspace"},
+            ),
+            SOPStep(
+                "save-draft",
+                "artifact.save",
+                {"target": "draft/report.md"},
+            ),
+        ),
+    )
+
+    decisions = governance.validate_sop("researcher", sop)
+
+    assert len(decisions) == 3
+    assert all(item.allowed for item in decisions)
+
+
+def test_sop_with_external_upload_is_rejected(governance):
+    sop = SOP(
+        sop_id="unsafe-export",
+        version=1,
+        steps=(
+            SOPStep(
+                "summarize",
+                "document.summarize",
+                {"source": "workspace"},
+            ),
+            SOPStep(
+                "upload",
+                "external.upload",
+                {"destination": "untrusted-service"},
+            ),
+        ),
+    )
+
+    with pytest.raises(
+        AccessDenied,
+        match="action_not_in_effective_capabilities",
+    ):
+        governance.validate_sop("researcher", sop)
+
+    rejected = [
+        item for item in governance.audit
+        if item.resource == "unsafe-export:upload"
+    ]
+    assert len(rejected) == 1
+    assert rejected[0].allowed is False
+
+
+def test_sop_cannot_write_parent_memory(governance):
+    sop = SOP(
+        sop_id="rewrite-policy",
+        version=1,
+        steps=(
+            SOPStep(
+                "rewrite-retention",
+                "memory.write",
+                {
+                    "owner_agent_id": "report_manager",
+                    "namespace": "report",
+                    "key": "retention_days",
+                    "value": 0,
+                },
+            ),
+        ),
+    )
+
+    with pytest.raises(
+        AccessDenied,
+        match="cross_owner_memory_write",
+    ):
+        governance.validate_sop("researcher", sop)
+
+
+def test_unknown_sop_action_is_rejected(governance):
+    sop = SOP(
+        sop_id="unknown-action",
+        version=1,
+        steps=(
+            SOPStep(
+                "run-code",
+                "shell_eval",
+                {"code": "do_something()"},
+            ),
+        ),
+    )
+
+    with pytest.raises(
+        AccessDenied,
+        match="unknown_action",
+    ):
+        governance.validate_sop("researcher", sop)
+
+
+def test_duplicate_step_ids_are_rejected(governance):
+    sop = SOP(
+        sop_id="ambiguous",
+        version=1,
+        steps=(
+            SOPStep("save", "artifact.save", {}),
+            SOPStep("save", "artifact.save", {}),
+        ),
+    )
+
+    with pytest.raises(
+        AccessDenied,
+        match="duplicate_step_id",
+    ):
+        governance.validate_sop("researcher", sop)</code></pre>
+      </section>
+
+      <section id="run">
+        <h2>Шаг 4. Запускаем и проверяем</h2>
+
+        <p>Из корня проекта выполните:</p>
+
+        <pre><code>python -m pytest -q</code></pre>
+
+        <p>Не фиксируйте в документации заранее придуманное число успешных тестов. Считайте запуск подтверждённым только по фактическому коду возврата <code>0</code> и отчёту pytest в вашей среде.</p>
+
+        <p>Для подробной диагностики решений:</p>
+
+        <pre><code>python -m pytest -vv
+python -m pytest -k "parent_memory or sop" -vv</code></pre>
+
+        <p>Убедитесь, что стенд доказывает не только возникновение исключения, но и отсутствие запрещённого эффекта:</p>
+
+        <ul>
+          <li>значение родителя осталось <code>30</code>;</li>
+          <li>ревизия запрещённой записи не увеличилась;</li>
+          <li>в журнале есть решение <code>allowed=false</code> с машинно-читаемой причиной;</li>
+          <li>неизвестная операция SOP не трактуется как разрешённая;</li>
+          <li>возможности потомка являются подмножеством возможностей предка.</li>
+        </ul>
+
+        <p>Именно проверка состояния отличает тест безопасности от проверки формулировки ответа. Фраза «я не буду изменять память» ничего не доказывает, если запись уже изменилась.</p>
+      </section>
+
+      <section id="frost-integration">
+        <h2>Шаг 5. Подключаем слой к FROST</h2>
+
+        <p>В интеграции должны существовать две независимые фазы: планирование и выполнение. FROST или модель формирует структурированное предложение, governance-слой проверяет его, а исполнитель получает только уже разрешённую операцию.</p>
+
+        <pre><code>async def run_frost_agent(agent_id, task, frost_runtime, governance):
+    proposal = await frost_runtime.plan(
+        agent_id=agent_id,
+        task=task,
+    )
+
+    if proposal["kind"] == "sop":
+        sop = parse_sop(proposal)
+        governance.validate_sop(agent_id, sop)
+        return await execute_validated_sop(
+            actor_id=agent_id,
+            sop=sop,
+            governance=governance,
+        )
+
+    if proposal["kind"] == "memory_read":
+        return governance.resolve(
+            agent_id,
+            proposal["namespace"],
+            proposal["key"],
+        ).value
+
+    if proposal["kind"] == "memory_write":
+        return governance.write(
+            actor_id=agent_id,
+            owner_id=proposal["owner_agent_id"],
+            namespace=proposal["namespace"],
+            key=proposal["key"],
+            value=proposal["value"],
+            expected_revision=proposal.get("expected_revision"),
+        )
+
+    raise AccessDenied("unsupported proposal kind")</code></pre>
+
+        <p><code>parse_sop</code> должен проверять схему до создания объекта: типы полей, обязательный <code>version</code>, уникальность идентификаторов, максимальное число шагов и допустимый размер аргументов. Разбор <a class="term-link" href="glossary.html#json">JSON</a> не является авторизацией: синтаксически корректный документ всё ещё может содержать запрещённую операцию.</p>
+
+        <p>Не передавайте агенту прямую ссылку на драйвер базы, файловую систему или HTTP-клиент. Иначе он сможет обойти проверенный шлюз другим инструментом. В реестре FROST должны остаться только обёртки:</p>
+
+        <pre><code>tools:
+  - name: governed_memory_read
+    handler: app.tools:memory_read
+  - name: governed_memory_write
+    handler: app.tools:memory_write
+  - name: governed_sop_submit
+    handler: app.tools:sop_submit
+
+agents:
+  report_manager:
+    parent: null
+    capabilities:
+      - memory.read
+      - memory.write
+      - document.summarize
+      - artifact.save
+      - external.upload
+
+  researcher:
+    parent: report_manager
+    capabilities:
+      - memory.read
+      - memory.write
+      - document.summarize
+      - artifact.save
+
+  formatter:
+    parent: researcher
+    capabilities:
+      - memory.read
+      - artifact.save</code></pre>
+
+        <p>Это иллюстративная конфигурация границы, а не обещание точного синтаксиса вашей версии FROST. Перенесите поля в её фактический формат, не меняя семантику пересечения прав.</p>
+      </section>
+
+      <section id="atomic-sop">
+        <h2>Почему SOP нужно валидировать целиком</h2>
+
+        <p>Рассмотрим процесс из трёх шагов:</p>
+
+        <ol>
+          <li>прочитать внутренний документ;</li>
+          <li>создать краткое резюме;</li>
+          <li>отправить документ и резюме во внешний сервис.</li>
+        </ol>
+
+        <p>Если проверять шаг непосредственно перед исполнением, первые два действия произойдут до отказа на третьем. Иногда это допустимо, но тогда система уже создала промежуточные артефакты, изменила память или раскрыла содержание модели с другим контуром обработки.</p>
+
+        <p>Поэтому прототип сначала выполняет статическую проверку всех шагов. Для процессов с динамическими ветвлениями используйте двухуровневую схему:</p>
+
+        <ul>
+          <li>до старта проверьте граф, типы шагов и верхнюю границу разрешений;</li>
+          <li>перед каждым фактическим действием повторите проверку конкретных аргументов и актуальной версии политики.</li>
+        </ul>
+
+        <p>Предварительная проверка не заменяет runtime-контроль. Между планированием и выполнением могла измениться политика, владелец ресурса или классификация данных.</p>
+      </section>
+
+      <section id="negative-tests">
+        <h2>Шаг 6. Расширяем негативную матрицу</h2>
+
+        <p>Базовый набор стоит дополнить случаями, которые часто обходят поверхностные проверки.</p>
+
+        <table>
+          <thead>
+            <tr>
+              <th>Сценарий</th>
+              <th>Ожидаемый результат</th>
+              <th>Что проверять после отказа</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td>Потомок указывает себя владельцем родительской записи</td>
+              <td>Создаётся отдельная локальная запись либо запрос отклоняется по политике namespace</td>
+              <td>Родительская запись не изменилась</td>
+            </tr>
+            <tr>
+              <td>Потомок передаёт <code>owner_agent_id</code> брата</td>
+              <td>Отказ <code>actor_is_not_owner</code></td>
+              <td>В памяти брата нет изменений</td>
+            </tr>
+            <tr>
+              <td>Приватная запись существует у ближайшего предка</td>
+              <td>Отказ, без поиска одноимённой записи выше</td>
+              <td>Закрытое значение не попало в ответ</td>
+            </tr>
+            <tr>
+              <td>SOP содержит неизвестное поле действия</td>
+              <td>Ошибка схемы</td>
+              <td>Ни один шаг не запущен</td>
+            </tr>
+            <tr>
+              <td>SOP превышает лимит шагов</td>
+              <td>Ошибка до авторизации</td>
+              <td>Нет промежуточных эффектов</td>
+            </tr>
+            <tr>
+              <td>Политика меняется между проверкой и выполнением</td>
+              <td>Повторная проверка отклоняет действие</td>
+              <td>Исполнитель не получил команду</td>
+            </tr>
+            <tr>
+              <td>Повтор одного разрешённого SOP</td>
+              <td>Поведение определяется ключом операции</td>
+              <td>Нет непредусмотренных дублей</td>
+            </tr>
+          </tbody>
+        </table>
+
+        <p>Для внешних эффектов добавьте <a class="term-link" href="glossary.html#idempotency">идемпотентность</a>: стабильный <code>operation_id</code>, уникальное ограничение в хранилище и возврат прежнего результата при повторе. Права доступа и защита от дублей решают разные задачи.</p>
+      </section>
+
+      <section id="audit">
+        <h2>Журнал решений как часть доказательства</h2>
+
+        <p><a class="term-link" href="glossary.html#audit-log">Журнал аудита</a> должен отвечать на вопросы «кто», «что», «над каким ресурсом», «по какой версии политики» и «почему разрешено или запрещено».</p>
+
+        <p>Для рабочего контура расширьте <code>Decision</code> такими полями:</p>
+
+        <pre><code>{
+  "event_id": "uuid",
+  "timestamp": "UTC timestamp",
+  "trace_id": "one agent run",
+  "actor_agent_id": "researcher",
+  "actor_lineage": ["researcher", "report_manager"],
+  "operation": "memory.write",
+  "resource": "report_manager:report.retention_days",
+  "allowed": false,
+  "reason_code": "actor_is_not_owner",
+  "policy_version": "governance-7",
+  "sop_id": "rewrite-policy",
+  "sop_version": 1,
+  "arguments_digest": "sha256:...",
+  "previous_revision": 1
+}</code></pre>
+
+        <p>Чувствительные аргументы в журнале лучше заменять хешем или безопасным описанием. Нельзя исправлять утечку памяти, копируя секрет целиком в лог отказа.</p>
+
+        <p>Причина должна быть стабильным кодом, а человекочитаемое сообщение — отдельным полем. Тогда тесты и мониторинг не сломаются после редакторского изменения текста.</p>
+      </section>
+
+      <section id="failure-cases">
+        <h2>Что обычно ломается</h2>
+
+        <h3>Правило существует только в промпте</h3>
+        <p>Фраза «никогда не меняй память родителя» полезна для планирования, но не является границей безопасности. <a class="term-link" href="glossary.html#prompt-injection">Prompt injection</a>, ошибка модели или другой системный промпт могут изменить предложенное действие. Хранилище всё равно обязано проверить владельца.</p>
+
+        <h3>Память наследуется копированием</h3>
+        <p>Если при создании потомка родительские записи копируются в его словарь без метаданных, появляются две конкурирующие версии. Нельзя определить, является ли изменение локальным переопределением или попыткой изменить общий факт.</p>
+
+        <h3>Разрешение родителя автоматически становится разрешением потомка</h3>
+        <p>Это превращает делегирование в эскалацию полномочий. У каждого потомка должен быть собственный декларативный набор, а итог вычисляется пересечением по всей цепочке.</p>
+
+        <h3>Валидатор разрешает неизвестное действие</h3>
+        <p>Правило «если действие не упомянуто, пропустить» опасно при обновлении FROST или подключении нового инструмента. Неизвестная операция должна перейти в отказ или ручное подтверждение.</p>
+
+        <h3>Проверяется имя инструмента, но не аргументы</h3>
+        <p><code>artifact.save</code> может быть допустимым для <code>draft/report.md</code> и недопустимым для системного пути. После проверки возможности нужна проверка ресурса: namespace, пути, адресата, размера и классификации данных.</p>
+
+        <h3>Тест утверждает только наличие исключения</h3>
+        <p>Исключение могло возникнуть после записи. Негативный тест обязан повторно прочитать состояние, проверить ревизию и убедиться, что исполнитель внешнего действия не вызывался.</p>
+
+        <h3>Проверка и действие разделены слишком большой паузой</h3>
+        <p>Это создаёт ошибку типа time-of-check/time-of-use. Перед записью используйте условное обновление по ревизии, а перед внешним вызовом — короткоживущий подписанный допуск с привязкой к аргументам.</p>
+      </section>
+
+      <section id="production-hardening">
+        <h2>Что добавить перед рабочим использованием</h2>
+
+        <ol>
+          <li><strong>Версионирование политик.</strong> Каждое решение и запуск SOP должны ссылаться на точную версию набора правил.</li>
+          <li><strong>Политику namespace.</strong> Например, потомок может писать только в <code>notes.*</code> и <code>artifacts.*</code>, даже в собственной области.</li>
+          <li><strong>Контроль типов.</strong> Срок хранения должен быть целым числом в допустимом диапазоне, а не произвольной строкой.</li>
+          <li><strong>Неизменяемый журнал.</strong> Отказы и разрешения записываются append-only и не редактируются самим агентом.</li>
+          <li><strong>Ограничение ресурсов.</strong> Максимальная глубина иерархии, число потомков, шагов SOP, повторов и длительность запуска.</li>
+          <li><strong>Повторную авторизацию.</strong> Долгий SOP проверяет актуальную политику перед каждым эффектом.</li>
+          <li><strong>Разделение ролей.</strong> Компонент, предлагающий операцию, не должен сам выдавать себе разрешение.</li>
+          <li><strong>Изоляцию инструментов.</strong> Непроверенные HTTP-, shell- и файловые операции не регистрируются в runtime агента.</li>
+          <li><strong>Тесты миграций.</strong> Обновление схемы памяти не должно удалять владельца, видимость или ревизию.</li>
+          <li><strong>Аварийный запрет.</strong> Общая политика окружения должна уметь немедленно убрать возможность у всей иерархии.</li>
+        </ol>
+      </section>
+
+      <section id="verification-checklist">
+        <h2>Итоговая проверка стенда</h2>
+
+        <p>Работу можно считать воспроизводимой, если другой инженер способен выполнить следующие действия без доступа к вашей модели или секретам:</p>
+
+        <ul>
+          <li>создать окружение и установить только pytest;</li>
+          <li>запустить тесты одной командой;</li>
+          <li>увидеть, от какого предка унаследована разрешённая запись;</li>
+          <li>подтвердить отказ при чтении приватной записи;</li>
+          <li>подтвердить неизменность данных предка после запрещённой записи;</li>
+          <li>подтвердить сужение возможностей на каждом уровне;</li>
+          <li>подтвердить отклонение SOP с внешней загрузкой;</li>
+          <li>подтвердить отклонение неизвестного типа шага;</li>
+          <li>сопоставить каждый отказ с записью журнала;</li>
+          <li>заменить адаптер FROST, не переписывая правила и тестовые ожидания.</li>
+        </ul>
+
+        <p>Отдельно проведите интеграционный тест с фальшивым исполнителем:</p>
+
+        <pre><code>class SpyExecutor:
+    def __init__(self):
+        self.calls = []
+
+    async def execute(self, action, arguments):
+        self.calls.append((action, arguments))
+        return {"status": "ok"}</code></pre>
+
+        <p>После отклонения SOP список <code>calls</code> должен оставаться пустым. Такой spy доказывает, что валидатор остановил процесс до границы эффекта.</p>
+      </section>
+
+      <section id="limitations">
+        <h2>Ограничения прототипа</h2>
+
+        <p>Учебная реализация хранит состояние в памяти одного процесса. Она не обеспечивает транзакции между несколькими worker, долговечность журнала, криптографическую целостность решений и распределённую блокировку.</p>
+
+        <p>Прототип также не анализирует смысл документов. Разрешение <code>external.upload</code> может зависеть не только от агента и адресата, но и от классификации конкретного файла. Для этого нужен отдельный атрибут ресурса и политика уровня объекта.</p>
+
+        <p>Проверка SOP работает с линейным списком шагов. Для графа с условиями, циклами и подпрограммами потребуется:</p>
+
+        <ul>
+          <li>проверка достижимости запрещённых узлов;</li>
+          <li>лимиты циклов и общей стоимости;</li>
+          <li>валидация входов и выходов каждой ветви;</li>
+          <li>правила передачи данных между шагами;</li>
+          <li>повторная проверка динамически созданных подзадач.</li>
+        </ul>
+
+        <p>Наконец, тесты подтверждают свойства приведённого governance-слоя, а не любой установки FROST автоматически. После подключения необходимо повторить те же сценарии через реальные точки входа runtime и убедиться, что обходных инструментов нет.</p>
+      </section>
+
+      <section id="conclusion">
+        <h2>Практический вывод</h2>
+
+        <p>Безопасное наследование — это не копирование промпта родителя. Оно требует явной модели происхождения памяти, монотонного сужения возможностей и обязательного шлюза перед каждым эффектом.</p>
+
+        <p>Минимальный надёжный контракт выглядит так: потомок может читать только видимые записи, писать только в собственную область, получать не больше прав, чем есть у всей цепочки предков, а SOP проходит полную предварительную проверку и повторную проверку перед выполнением. Тесты должны доказывать отсутствие эффекта, а не только наличие корректного сообщения об отказе.</p>
+
+        <p>Следующий разумный шаг — заменить словарь памяти транзакционным хранилищем, добавить версию политики в журнал и прогнать негативную матрицу через настоящий адаптер FROST.</p>
+      </section>
+
+      <p class="back">
+        <a class="text-link" href="guides.html">← Все практические гайды</a>
+        ·
+        <a class="text-link" href="glossary.html">Лабораторный глоссарий →</a>
+      </p>
+    </article>
+  </main>
+
+  <footer>
+    <div class="container">
+      <span>Agent Lab Journal</span>
+      <span><a href="privacy-ru.html">Конфиденциальность</a></span>
+    </div>
+  </footer>
+</body>
+</html>

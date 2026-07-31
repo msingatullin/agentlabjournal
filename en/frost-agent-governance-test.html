@@ -1,0 +1,1431 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+
+  <title>Testing Rule and Memory Inheritance Between AI Agents in FROST — Agent Lab Journal</title>
+  <meta name="description" content="An advanced, reproducible FROST governance lab covering inherited agent memory, immutable ancestor data, capability narrowing, atomic SOP rejection, audit records, and executable Python tests.">
+  <link rel="canonical" href="https://agentlabjournal.online/en/frost-agent-governance-test.html">
+
+  <link rel="stylesheet" href="style.css">
+  <link rel="stylesheet" href="reading.css">
+
+  <meta property="og:type" content="article">
+  <meta property="og:locale" content="en_US">
+  <meta property="og:site_name" content="Agent Lab Journal">
+  <meta property="og:title" content="Testing Rule and Memory Inheritance Between AI Agents in FROST">
+  <meta property="og:description" content="Build a working governance prototype that lets descendants read inherited memory while preventing ancestor writes and rejecting an invalid SOP before execution.">
+  <meta property="og:url" content="https://agentlabjournal.online/en/frost-agent-governance-test.html">
+  <meta property="og:image" content="https://agentlabjournal.online/podcast-cover.png">
+  <meta property="article:modified_time" content="2026-07-31">
+
+  <meta name="twitter:card" content="summary_large_image">
+  <meta name="twitter:title" content="Testing Rule and Memory Inheritance Between AI Agents in FROST">
+  <meta name="twitter:description" content="A working Python prototype and tests for memory provenance, ancestor write protection, capability inheritance, and SOP validation.">
+  <meta name="twitter:image" content="https://agentlabjournal.online/podcast-cover.png">
+
+  <meta name="reading-meta" content="Advanced · 60 minutes · Working prototype and reproducible test suite">
+
+  <script type="application/ld+json">
+  {
+    "@context": "https://schema.org",
+    "@type": "Article",
+    "headline": "Testing Rule and Memory Inheritance Between AI Agents in FROST",
+    "description": "An advanced, reproducible FROST governance lab covering inherited agent memory, immutable ancestor data, capability narrowing, atomic SOP rejection, audit records, and executable Python tests.",
+    "image": [
+      "https://agentlabjournal.online/podcast-cover.png"
+    ],
+    "dateModified": "2026-07-31",
+    "inLanguage": "en",
+    "author": {
+      "@type": "Organization",
+      "name": "Agent Lab Journal",
+      "url": "https://agentlabjournal.online/"
+    },
+    "publisher": {
+      "@type": "Organization",
+      "name": "Agent Lab Journal",
+      "url": "https://agentlabjournal.online/",
+      "logo": {
+        "@type": "ImageObject",
+        "url": "https://agentlabjournal.online/podcast-cover.png"
+      }
+    },
+    "mainEntityOfPage": {
+      "@type": "WebPage",
+      "@id": "https://agentlabjournal.online/en/frost-agent-governance-test.html"
+    },
+    "proficiencyLevel": "Advanced",
+    "timeRequired": "PT60M",
+    "articleSection": "Multi-agent systems",
+    "keywords": [
+      "FROST",
+      "AI agents",
+      "agent hierarchy",
+      "memory inheritance",
+      "SOP validation",
+      "agent governance",
+      "access control",
+      "multi-agent testing"
+    ]
+  }
+  </script>
+</head>
+<body>
+  <header class="site-header">
+    <div class="container">
+      <a class="site-name" href="index.html">Agent Lab Journal</a>
+      <nav aria-label="Primary navigation">
+        <a href="guides.html">Guides</a>
+        <a href="glossary.html">Glossary</a>
+      </nav>
+    </div>
+  </header>
+
+  <main>
+    <article class="reading">
+      <header class="article-header">
+        <p class="eyebrow">Hands-on lab · Multi-agent systems</p>
+        <h1>Testing Rule and Memory Inheritance Between AI Agents in FROST</h1>
+
+        <p class="lead"><strong>Delegating a task must not delegate control over the parent.</strong> In this lab, we place a deterministic governance boundary between a FROST agent hierarchy and its storage and tools. Descendants will be able to read explicitly inherited memory, but they will be unable to modify ancestor-owned data, grant themselves additional capabilities, or begin an invalid operating procedure.</p>
+
+        <div class="reading-meta" aria-label="Article details">
+          <span>Advanced</span>
+          <span>60 minutes</span>
+          <span>Result: working prototype and reproducible tests</span>
+        </div>
+      </header>
+
+      <section id="outcome">
+        <h2>What you will build</h2>
+
+        <p>An <a class="term-link" href="glossary.html#ai-agent">AI agent</a> in this prototype is a principal with an identifier, an optional parent, a private memory scope, and a declared capability set. FROST remains responsible for creating and coordinating agents. A separate governance component makes the final authorization decision before storage or tool execution.</p>
+
+        <p>The finished prototype demonstrates four properties:</p>
+
+        <ol>
+          <li>A child can resolve a visible value from an ancestor when it has no local value.</li>
+          <li>A child can create and update its own memory but cannot change or delete ancestor-owned records.</li>
+          <li>A descendant cannot gain a capability that an ancestor did not pass down.</li>
+          <li>An invalid <a class="term-link" href="glossary.html#sop">standard operating procedure (SOP)</a> is rejected in full before its first step executes.</li>
+        </ol>
+
+        <p>The tests inspect stored state, authorization decisions, and executed side effects. They do not treat an agent’s final message as proof that a control worked.</p>
+
+        <aside class="note">
+          <p><strong>Adapter boundary:</strong> FROST installations can expose different agent constructors, hooks, and process formats. The lab therefore keeps framework-specific wiring outside the policy core. Adapt agent registration and tool dispatch to your installation, but preserve the authorization contracts and tests.</p>
+        </aside>
+      </section>
+
+      <section id="case">
+        <h2>Concrete case: a report-production hierarchy</h2>
+
+        <p>A root agent named <code>report_manager</code> owns project policy and delegates research to <code>researcher</code>. The researcher creates a narrower child named <code>formatter</code>.</p>
+
+        <p>The manager owns these records:</p>
+
+        <ul>
+          <li><code>project.client_region = "EU"</code>, visible to all descendants;</li>
+          <li><code>policy.external_upload = false</code>, visible to all descendants;</li>
+          <li><code>report.retention_days = 30</code>, visible to all descendants but writable only by its owner;</li>
+          <li><code>credentials.storage_token</code>, private to the manager.</li>
+        </ul>
+
+        <p>The researcher may read the region and retention period, write its own notes, summarize documents, and save an internal artifact. The hostile scenario asks it to change the manager’s retention setting and run an SOP that uploads source documents to an external service.</p>
+
+        <p>A rule written only in a system <a class="term-link" href="glossary.html#prompt">prompt</a> tests model compliance, not access control. The stronger invariant is that a forbidden operation never reaches storage or a tool, regardless of the model’s explanation or intent.</p>
+      </section>
+
+      <section id="invariants">
+        <h2>Define the invariants before writing code</h2>
+
+        <p>Use explicit invariants so that framework behavior, model behavior, and security behavior do not become mixed together:</p>
+
+        <ol>
+          <li><strong>Provenance is preserved.</strong> A resolved value always retains its original owner.</li>
+          <li><strong>Visibility does not imply mutability.</strong> Reading an ancestor record never creates permission to update it.</li>
+          <li><strong>Capabilities narrow down the hierarchy.</strong> A child’s effective set is never wider than its parent’s effective set.</li>
+          <li><strong>Authorization precedes execution.</strong> Every SOP step is validated before any handler runs.</li>
+          <li><strong>Unknown actions fail closed.</strong> Adding an unfamiliar step type does not create an implicit permission.</li>
+          <li><strong>Denied operations leave evidence.</strong> The decision log records the subject, operation, resource, policy version, and reason.</li>
+        </ol>
+
+        <p>These invariants are independent of language-model quality. A stronger model may propose better plans, but it receives no special route around the policy boundary.</p>
+      </section>
+
+      <section id="memory-model">
+        <h2>Model memory as records, not a merged dictionary</h2>
+
+        <p><a class="term-link" href="glossary.html#agent-memory">Agent memory</a> cannot safely be represented as one recursively merged dictionary. Merging removes provenance, and without provenance the system cannot prove who owns a value or who may modify it.</p>
+
+        <p>Each stored record needs at least:</p>
+
+        <pre><code>{
+  "namespace": "report",
+  "key": "retention_days",
+  "value": 30,
+  "owner_agent_id": "report_manager",
+  "visibility": "descendants",
+  "mutable_by": "owner",
+  "revision": 1
+}</code></pre>
+
+        <p>Reading and writing deliberately use different addressing rules:</p>
+
+        <ul>
+          <li>A read walks from the current agent toward the root and returns the nearest visible record.</li>
+          <li>A write names an exact owner scope and is permitted only when the actor is that owner.</li>
+        </ul>
+
+        <p>This distinction prevents a common bug: a child resolves a parent value and then accidentally writes the updated value back into the same parent record.</p>
+
+        <p>Effective capabilities are calculated as an intersection:</p>
+
+        <pre><code>effective(child) =
+    environment_capabilities
+    ∩ declared(root)
+    ∩ declared(intermediate_parent)
+    ∩ declared(child)</code></pre>
+
+        <p>This applies the <a class="term-link" href="glossary.html#least-privilege">principle of least privilege</a>. Delegating a report does not automatically delegate every tool available to the manager.</p>
+      </section>
+
+      <section id="threat-model">
+        <h2>Threat model</h2>
+
+        <table>
+          <thead>
+            <tr>
+              <th>Risk</th>
+              <th>Example</th>
+              <th>Control</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td>Ancestor memory overwrite</td>
+              <td>A child changes <code>retention_days</code></td>
+              <td>Owner check before every mutation</td>
+            </tr>
+            <tr>
+              <td>Private memory disclosure</td>
+              <td>A child requests the manager’s token</td>
+              <td>Visibility check during resolution</td>
+            </tr>
+            <tr>
+              <td>Privilege expansion</td>
+              <td>A child declares <code>external.upload</code></td>
+              <td>Capability intersection across the lineage</td>
+            </tr>
+            <tr>
+              <td>Partial execution</td>
+              <td>Two safe steps run before an unsafe third step is found</td>
+              <td>Complete preflight validation</td>
+            </tr>
+            <tr>
+              <td>Unknown-operation bypass</td>
+              <td>An SOP introduces <code>shell.eval</code></td>
+              <td><a class="term-link" href="glossary.html#deny-by-default">Deny by default</a></td>
+            </tr>
+            <tr>
+              <td>Lost update</td>
+              <td>Two writers update the same revision</td>
+              <td>Optimistic revision check</td>
+            </tr>
+          </tbody>
+        </table>
+
+        <p>The prototype does not defend against a host administrator who can directly edit the process, policy code, or memory database. That requires process isolation, protected policy deployment, and a separately trusted persistence layer.</p>
+      </section>
+
+      <section id="setup">
+        <h2>Step 1: create the project</h2>
+
+        <p>You need Python 3.11 or newer and <a class="term-link" href="glossary.html#pytest">pytest</a>. The policy core requires no model API key and no external service.</p>
+
+        <pre><code>mkdir frost-governance-lab
+cd frost-governance-lab
+
+python -m venv .venv
+source .venv/bin/activate
+python -m pip install pytest
+
+mkdir -p frost_governance tests
+touch frost_governance/__init__.py
+touch frost_governance/core.py
+touch tests/test_governance.py</code></pre>
+
+        <p>On Windows PowerShell, activate the environment with:</p>
+
+        <pre><code>.\.venv\Scripts\Activate.ps1</code></pre>
+
+        <p>The resulting layout is:</p>
+
+        <pre><code>frost-governance-lab/
+├── frost_governance/
+│   ├── __init__.py
+│   └── core.py
+└── tests/
+    └── test_governance.py</code></pre>
+      </section>
+
+      <section id="implementation">
+        <h2>Step 2: implement the trusted governance layer</h2>
+
+        <p>Save the following as <code>frost_governance/core.py</code>. This code does not imitate agent reasoning. It is an executable authorization boundary that belongs between FROST and real memory or tool handlers.</p>
+
+        <pre><code>from __future__ import annotations
+
+from dataclasses import dataclass, field
+from typing import Any, Callable, Iterable, Literal
+
+
+Visibility = Literal["private", "children", "descendants"]
+
+
+class GovernanceError(RuntimeError):
+    pass
+
+
+class AccessDenied(GovernanceError):
+    pass
+
+
+class ValidationError(GovernanceError):
+    pass
+
+
+class RevisionConflict(GovernanceError):
+    pass
+
+
+@dataclass(frozen=True)
+class Agent:
+    agent_id: str
+    parent_id: str | None
+    declared_capabilities: frozenset[str]
+
+
+@dataclass
+class MemoryRecord:
+    namespace: str
+    key: str
+    value: Any
+    owner_agent_id: str
+    visibility: Visibility = "private"
+    revision: int = 1
+
+
+@dataclass(frozen=True)
+class SOPStep:
+    step_id: str
+    action: str
+    arguments: dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass(frozen=True)
+class SOP:
+    sop_id: str
+    version: int
+    steps: tuple[SOPStep, ...]
+
+
+@dataclass(frozen=True)
+class Decision:
+    allowed: bool
+    subject: str
+    operation: str
+    resource: str
+    policy_version: str
+    reason: str
+
+
+class Governance:
+    KNOWN_ACTIONS = frozenset({
+        "memory.read",
+        "memory.write",
+        "document.summarize",
+        "artifact.save",
+        "external.upload",
+    })
+
+    def __init__(
+        self,
+        agents: Iterable[Agent],
+        environment_capabilities: Iterable[str],
+        policy_version: str = "1",
+    ) -&gt; None:
+        agent_list = list(agents)
+        self.agents = {
+            agent.agent_id: agent for agent in agent_list
+        }
+        if len(self.agents) != len(agent_list):
+            raise ValidationError("duplicate agent_id")
+
+        self.environment_capabilities = frozenset(
+            environment_capabilities
+        )
+        self.policy_version = policy_version
+        self.memory: dict[
+            tuple[str, str, str], MemoryRecord
+        ] = {}
+        self.audit: list[Decision] = []
+        self._validate_hierarchy()
+
+    def _validate_hierarchy(self) -&gt; None:
+        for agent in self.agents.values():
+            if (
+                agent.parent_id is not None
+                and agent.parent_id not in self.agents
+            ):
+                raise ValidationError(
+                    f"unknown parent: {agent.parent_id}"
+                )
+
+            seen: set[str] = set()
+            cursor: Agent | None = agent
+            while cursor is not None:
+                if cursor.agent_id in seen:
+                    raise ValidationError(
+                        "agent hierarchy contains a cycle"
+                    )
+                seen.add(cursor.agent_id)
+                cursor = (
+                    self.agents[cursor.parent_id]
+                    if cursor.parent_id is not None
+                    else None
+                )
+
+    def lineage(self, agent_id: str) -&gt; list[str]:
+        if agent_id not in self.agents:
+            raise ValidationError(f"unknown agent: {agent_id}")
+
+        result: list[str] = []
+        cursor = self.agents[agent_id]
+        while True:
+            result.append(cursor.agent_id)
+            if cursor.parent_id is None:
+                return result
+            cursor = self.agents[cursor.parent_id]
+
+    def is_descendant(
+        self,
+        candidate_id: str,
+        ancestor_id: str,
+    ) -&gt; bool:
+        return ancestor_id in self.lineage(candidate_id)[1:]
+
+    def is_direct_child(
+        self,
+        candidate_id: str,
+        parent_id: str,
+    ) -&gt; bool:
+        return self.agents[candidate_id].parent_id == parent_id
+
+    def effective_capabilities(
+        self,
+        agent_id: str,
+    ) -&gt; frozenset[str]:
+        effective = set(self.environment_capabilities)
+
+        for item_id in reversed(self.lineage(agent_id)):
+            effective.intersection_update(
+                self.agents[item_id].declared_capabilities
+            )
+
+        return frozenset(effective)
+
+    def _decision(
+        self,
+        *,
+        allowed: bool,
+        subject: str,
+        operation: str,
+        resource: str,
+        reason: str,
+    ) -&gt; Decision:
+        decision = Decision(
+            allowed=allowed,
+            subject=subject,
+            operation=operation,
+            resource=resource,
+            policy_version=self.policy_version,
+            reason=reason,
+        )
+        self.audit.append(decision)
+        return decision
+
+    def put_initial(self, record: MemoryRecord) -&gt; None:
+        if record.owner_agent_id not in self.agents:
+            raise ValidationError("unknown memory owner")
+
+        storage_key = (
+            record.owner_agent_id,
+            record.namespace,
+            record.key,
+        )
+        if storage_key in self.memory:
+            raise ValidationError("initial record already exists")
+
+        self.memory[storage_key] = record
+
+    def _visible(
+        self,
+        reader_id: str,
+        record: MemoryRecord,
+    ) -&gt; bool:
+        if reader_id == record.owner_agent_id:
+            return True
+        if record.visibility == "private":
+            return False
+        if record.visibility == "children":
+            return self.is_direct_child(
+                reader_id,
+                record.owner_agent_id,
+            )
+        return self.is_descendant(
+            reader_id,
+            record.owner_agent_id,
+        )
+
+    def resolve(
+        self,
+        reader_id: str,
+        namespace: str,
+        key: str,
+    ) -&gt; MemoryRecord:
+        resource = f"{namespace}.{key}"
+
+        if "memory.read" not in self.effective_capabilities(
+            reader_id
+        ):
+            self._decision(
+                allowed=False,
+                subject=reader_id,
+                operation="memory.read",
+                resource=resource,
+                reason="capability_not_inherited",
+            )
+            raise AccessDenied("memory.read is not allowed")
+
+        for owner_id in self.lineage(reader_id):
+            record = self.memory.get(
+                (owner_id, namespace, key)
+            )
+            if record is None:
+                continue
+
+            if self._visible(reader_id, record):
+                self._decision(
+                    allowed=True,
+                    subject=reader_id,
+                    operation="memory.read",
+                    resource=resource,
+                    reason=f"visible_from:{owner_id}",
+                )
+                return record
+
+            self._decision(
+                allowed=False,
+                subject=reader_id,
+                operation="memory.read",
+                resource=resource,
+                reason=f"not_visible_from:{owner_id}",
+            )
+            raise AccessDenied("record is not visible")
+
+        self._decision(
+            allowed=False,
+            subject=reader_id,
+            operation="memory.read",
+            resource=resource,
+            reason="record_not_found",
+        )
+        raise KeyError(resource)
+
+    def write(
+        self,
+        *,
+        actor_id: str,
+        owner_id: str,
+        namespace: str,
+        key: str,
+        value: Any,
+        expected_revision: int | None = None,
+        visibility: Visibility = "private",
+    ) -&gt; MemoryRecord:
+        resource = f"{owner_id}:{namespace}.{key}"
+
+        if "memory.write" not in self.effective_capabilities(
+            actor_id
+        ):
+            self._decision(
+                allowed=False,
+                subject=actor_id,
+                operation="memory.write",
+                resource=resource,
+                reason="capability_not_inherited",
+            )
+            raise AccessDenied("memory.write is not allowed")
+
+        if actor_id != owner_id:
+            self._decision(
+                allowed=False,
+                subject=actor_id,
+                operation="memory.write",
+                resource=resource,
+                reason="actor_is_not_owner",
+            )
+            raise AccessDenied(
+                "cannot modify another agent's memory"
+            )
+
+        storage_key = (owner_id, namespace, key)
+        current = self.memory.get(storage_key)
+
+        if current is not None:
+            if (
+                expected_revision is not None
+                and current.revision != expected_revision
+            ):
+                self._decision(
+                    allowed=False,
+                    subject=actor_id,
+                    operation="memory.write",
+                    resource=resource,
+                    reason="revision_conflict",
+                )
+                raise RevisionConflict(resource)
+
+            current.value = value
+            current.visibility = visibility
+            current.revision += 1
+            result = current
+        else:
+            result = MemoryRecord(
+                namespace=namespace,
+                key=key,
+                value=value,
+                owner_agent_id=owner_id,
+                visibility=visibility,
+            )
+            self.memory[storage_key] = result
+
+        self._decision(
+            allowed=True,
+            subject=actor_id,
+            operation="memory.write",
+            resource=resource,
+            reason="owner_write",
+        )
+        return result
+
+    def validate_sop(
+        self,
+        actor_id: str,
+        sop: SOP,
+    ) -&gt; tuple[Decision, ...]:
+        if sop.version &lt; 1:
+            raise ValidationError("SOP version must be positive")
+        if not sop.steps:
+            raise ValidationError(
+                "SOP must contain at least one step"
+            )
+        if len(sop.steps) &gt; 50:
+            raise ValidationError("SOP is too large")
+
+        capabilities = self.effective_capabilities(actor_id)
+        decisions: list[Decision] = []
+        seen_ids: set[str] = set()
+
+        for step in sop.steps:
+            resource = f"{sop.sop_id}:{step.step_id}"
+
+            if not step.step_id:
+                reason = "empty_step_id"
+            elif step.step_id in seen_ids:
+                reason = "duplicate_step_id"
+            elif step.action not in self.KNOWN_ACTIONS:
+                reason = "unknown_action"
+            elif step.action not in capabilities:
+                reason = "action_not_in_effective_capabilities"
+            elif (
+                step.action == "memory.write"
+                and step.arguments.get("owner_agent_id")
+                != actor_id
+            ):
+                reason = "cross_owner_memory_write"
+            else:
+                reason = "step_allowed"
+
+            allowed = reason == "step_allowed"
+            decision = Decision(
+                allowed=allowed,
+                subject=actor_id,
+                operation="sop.validate",
+                resource=resource,
+                policy_version=self.policy_version,
+                reason=reason,
+            )
+            decisions.append(decision)
+            seen_ids.add(step.step_id)
+
+        self.audit.extend(decisions)
+
+        rejected = [
+            item for item in decisions if not item.allowed
+        ]
+        if rejected:
+            reasons = ", ".join(
+                item.reason for item in rejected
+            )
+            raise AccessDenied(f"SOP rejected: {reasons}")
+
+        return tuple(decisions)
+
+    def execute_sop(
+        self,
+        actor_id: str,
+        sop: SOP,
+        handlers: dict[
+            str, Callable[[dict[str, Any]], Any]
+        ],
+    ) -&gt; list[Any]:
+        self.validate_sop(actor_id, sop)
+
+        missing_handlers = {
+            step.action
+            for step in sop.steps
+            if step.action not in handlers
+        }
+        if missing_handlers:
+            missing = ", ".join(sorted(missing_handlers))
+            raise ValidationError(
+                f"missing handlers: {missing}"
+            )
+
+        results: list[Any] = []
+        for step in sop.steps:
+            results.append(
+                handlers[step.action](step.arguments)
+            )
+        return results</code></pre>
+
+        <p><code>validate_sop</code> evaluates every step before dispatch. If the final step is forbidden, the system does not run the preceding allowed steps. <code>KNOWN_ACTIONS</code> is an <a class="term-link" href="glossary.html#allowlist">allowlist</a>: an unfamiliar action is denied even if its name looks harmless.</p>
+
+        <p>Handler availability is checked after authorization but still before execution. This avoids starting a process that cannot complete because one local adapter is missing.</p>
+      </section>
+
+      <section id="tests">
+        <h2>Step 3: add reproducible tests</h2>
+
+        <p>Save the following as <code>tests/test_governance.py</code>. The placeholder token is synthetic test data; do not insert a real secret.</p>
+
+        <pre><code>import pytest
+
+from frost_governance.core import (
+    AccessDenied,
+    Agent,
+    Governance,
+    MemoryRecord,
+    RevisionConflict,
+    SOP,
+    SOPStep,
+)
+
+
+ALL = frozenset({
+    "memory.read",
+    "memory.write",
+    "document.summarize",
+    "artifact.save",
+    "external.upload",
+})
+
+
+@pytest.fixture
+def governance() -&gt; Governance:
+    manager = Agent(
+        agent_id="report_manager",
+        parent_id=None,
+        declared_capabilities=ALL,
+    )
+    researcher = Agent(
+        agent_id="researcher",
+        parent_id="report_manager",
+        declared_capabilities=frozenset({
+            "memory.read",
+            "memory.write",
+            "document.summarize",
+            "artifact.save",
+        }),
+    )
+    formatter = Agent(
+        agent_id="formatter",
+        parent_id="researcher",
+        declared_capabilities=frozenset({
+            "memory.read",
+            "artifact.save",
+        }),
+    )
+
+    service = Governance(
+        agents=[manager, researcher, formatter],
+        environment_capabilities=ALL,
+        policy_version="lab-1",
+    )
+
+    service.put_initial(MemoryRecord(
+        namespace="project",
+        key="client_region",
+        value="EU",
+        owner_agent_id="report_manager",
+        visibility="descendants",
+    ))
+    service.put_initial(MemoryRecord(
+        namespace="policy",
+        key="external_upload",
+        value=False,
+        owner_agent_id="report_manager",
+        visibility="descendants",
+    ))
+    service.put_initial(MemoryRecord(
+        namespace="report",
+        key="retention_days",
+        value=30,
+        owner_agent_id="report_manager",
+        visibility="descendants",
+    ))
+    service.put_initial(MemoryRecord(
+        namespace="credentials",
+        key="storage_token",
+        value="test-only-placeholder",
+        owner_agent_id="report_manager",
+        visibility="private",
+    ))
+    return service
+
+
+def test_child_reads_visible_parent_memory(governance):
+    record = governance.resolve(
+        "researcher",
+        "project",
+        "client_region",
+    )
+
+    assert record.value == "EU"
+    assert record.owner_agent_id == "report_manager"
+    assert governance.audit[-1].allowed is True
+    assert governance.audit[-1].reason == (
+        "visible_from:report_manager"
+    )
+
+
+def test_grandchild_reads_descendant_memory(governance):
+    record = governance.resolve(
+        "formatter",
+        "report",
+        "retention_days",
+    )
+
+    assert record.value == 30
+    assert record.owner_agent_id == "report_manager"
+
+
+def test_private_parent_memory_is_hidden(governance):
+    with pytest.raises(AccessDenied):
+        governance.resolve(
+            "researcher",
+            "credentials",
+            "storage_token",
+        )
+
+    assert governance.audit[-1].allowed is False
+    assert governance.audit[-1].reason == (
+        "not_visible_from:report_manager"
+    )
+
+
+def test_child_can_write_its_own_memory(governance):
+    created = governance.write(
+        actor_id="researcher",
+        owner_id="researcher",
+        namespace="notes",
+        key="summary",
+        value="Draft is ready",
+        visibility="children",
+    )
+
+    assert created.owner_agent_id == "researcher"
+    assert created.revision == 1
+    assert governance.resolve(
+        "formatter", "notes", "summary"
+    ).value == "Draft is ready"
+
+
+def test_child_cannot_change_parent_memory(governance):
+    before = governance.resolve(
+        "report_manager",
+        "report",
+        "retention_days",
+    )
+    original_revision = before.revision
+
+    with pytest.raises(AccessDenied):
+        governance.write(
+            actor_id="researcher",
+            owner_id="report_manager",
+            namespace="report",
+            key="retention_days",
+            value=0,
+            expected_revision=original_revision,
+        )
+
+    after = governance.resolve(
+        "report_manager",
+        "report",
+        "retention_days",
+    )
+    assert after.value == 30
+    assert after.revision == original_revision
+
+    denied = [
+        item for item in governance.audit
+        if item.reason == "actor_is_not_owner"
+    ]
+    assert len(denied) == 1
+
+
+def test_revision_conflict_preserves_newer_value(governance):
+    first = governance.write(
+        actor_id="researcher",
+        owner_id="researcher",
+        namespace="notes",
+        key="status",
+        value="started",
+    )
+
+    governance.write(
+        actor_id="researcher",
+        owner_id="researcher",
+        namespace="notes",
+        key="status",
+        value="reviewed",
+        expected_revision=first.revision,
+    )
+
+    with pytest.raises(RevisionConflict):
+        governance.write(
+            actor_id="researcher",
+            owner_id="researcher",
+            namespace="notes",
+            key="status",
+            value="stale update",
+            expected_revision=1,
+        )
+
+    current = governance.resolve(
+        "researcher", "notes", "status"
+    )
+    assert current.value == "reviewed"
+    assert current.revision == 2
+
+
+def test_child_cannot_add_parent_capability(governance):
+    researcher_caps = governance.effective_capabilities(
+        "researcher"
+    )
+    formatter_caps = governance.effective_capabilities(
+        "formatter"
+    )
+
+    assert "external.upload" not in researcher_caps
+    assert "external.upload" not in formatter_caps
+    assert "memory.write" not in formatter_caps
+
+
+def test_valid_sop_executes_all_steps(governance):
+    effects = []
+
+    sop = SOP(
+        sop_id="prepare-report",
+        version=1,
+        steps=(
+            SOPStep(
+                "summarize",
+                "document.summarize",
+                {"document_id": "fixture-1"},
+            ),
+            SOPStep(
+                "save",
+                "artifact.save",
+                {"path": "internal/report.txt"},
+            ),
+        ),
+    )
+
+    handlers = {
+        "document.summarize": (
+            lambda arguments: effects.append(
+                ("summarize", arguments["document_id"])
+            )
+        ),
+        "artifact.save": (
+            lambda arguments: effects.append(
+                ("save", arguments["path"])
+            )
+        ),
+    }
+
+    governance.execute_sop(
+        "researcher", sop, handlers
+    )
+
+    assert effects == [
+        ("summarize", "fixture-1"),
+        ("save", "internal/report.txt"),
+    ]
+
+
+def test_forbidden_sop_has_zero_side_effects(governance):
+    effects = []
+
+    sop = SOP(
+        sop_id="unsafe-report",
+        version=1,
+        steps=(
+            SOPStep(
+                "summarize",
+                "document.summarize",
+                {"document_id": "fixture-1"},
+            ),
+            SOPStep(
+                "save",
+                "artifact.save",
+                {"path": "internal/report.txt"},
+            ),
+            SOPStep(
+                "upload",
+                "external.upload",
+                {"destination": "untrusted-service"},
+            ),
+        ),
+    )
+
+    handlers = {
+        "document.summarize": (
+            lambda arguments: effects.append("summarize")
+        ),
+        "artifact.save": (
+            lambda arguments: effects.append("save")
+        ),
+        "external.upload": (
+            lambda arguments: effects.append("upload")
+        ),
+    }
+
+    with pytest.raises(
+        AccessDenied,
+        match="action_not_in_effective_capabilities",
+    ):
+        governance.execute_sop(
+            "researcher", sop, handlers
+        )
+
+    assert effects == []
+
+
+def test_cross_owner_write_sop_is_rejected(governance):
+    sop = SOP(
+        sop_id="rewrite-manager-memory",
+        version=1,
+        steps=(
+            SOPStep(
+                "change-retention",
+                "memory.write",
+                {
+                    "owner_agent_id": "report_manager",
+                    "namespace": "report",
+                    "key": "retention_days",
+                    "value": 0,
+                },
+            ),
+        ),
+    )
+
+    with pytest.raises(
+        AccessDenied,
+        match="cross_owner_memory_write",
+    ):
+        governance.validate_sop("researcher", sop)
+
+
+def test_unknown_action_is_denied(governance):
+    sop = SOP(
+        sop_id="unknown-action",
+        version=1,
+        steps=(
+            SOPStep(
+                "run-shell",
+                "shell.eval",
+                {"command": "not executed"},
+            ),
+        ),
+    )
+
+    with pytest.raises(
+        AccessDenied,
+        match="unknown_action",
+    ):
+        governance.validate_sop("researcher", sop)
+
+
+def test_duplicate_step_ids_are_denied(governance):
+    sop = SOP(
+        sop_id="duplicate-steps",
+        version=1,
+        steps=(
+            SOPStep(
+                "same",
+                "document.summarize",
+                {},
+            ),
+            SOPStep(
+                "same",
+                "artifact.save",
+                {},
+            ),
+        ),
+    )
+
+    with pytest.raises(
+        AccessDenied,
+        match="duplicate_step_id",
+    ):
+        governance.validate_sop("researcher", sop)
+
+
+def test_audit_contains_policy_version(governance):
+    governance.resolve(
+        "researcher",
+        "project",
+        "client_region",
+    )
+
+    decision = governance.audit[-1]
+    assert decision.subject == "researcher"
+    assert decision.operation == "memory.read"
+    assert decision.policy_version == "lab-1"</code></pre>
+      </section>
+
+      <section id="run">
+        <h2>Step 4: run and interpret the suite</h2>
+
+        <p>Execute:</p>
+
+        <pre><code>python -m pytest -q</code></pre>
+
+        <p>Do not copy an expected pass count into an operational report. Test discovery changes as the suite evolves. Instead, verify that the command exits with status <code>0</code> and that every discovered test is reported as passed.</p>
+
+        <p>For a more inspectable run:</p>
+
+        <pre><code>python -m pytest -vv
+python -m pytest -vv -k "parent_memory or forbidden_sop"
+python -m pytest --collect-only -q</code></pre>
+
+        <p>The critical evidence is:</p>
+
+        <ul>
+          <li><code>test_child_reads_visible_parent_memory</code> returns a value whose owner remains <code>report_manager</code>;</li>
+          <li><code>test_private_parent_memory_is_hidden</code> proves that inheritance is selective;</li>
+          <li><code>test_child_cannot_change_parent_memory</code> proves both denial and unchanged storage state;</li>
+          <li><code>test_child_cannot_add_parent_capability</code> proves monotonic narrowing;</li>
+          <li><code>test_forbidden_sop_has_zero_side_effects</code> proves preflight rejection rather than late failure;</li>
+          <li>the audit test proves that a decision is tied to a policy version.</li>
+        </ul>
+
+        <aside class="note">
+          <p><strong>Verification rule:</strong> a raised exception alone is insufficient. A write adapter could mutate storage and then raise. Always assert the state after denial, including the value and revision.</p>
+        </aside>
+      </section>
+
+      <section id="frost-adapter">
+        <h2>Step 5: place the boundary around FROST</h2>
+
+        <p>The framework adapter should never expose raw storage or unrestricted tool functions to an agent. Route every proposed operation through a narrow gateway:</p>
+
+        <pre><code>class FrostGovernanceAdapter:
+    def __init__(self, governance, tool_handlers):
+        self.governance = governance
+        self.tool_handlers = tool_handlers
+
+    def read_memory(self, frost_agent_id, namespace, key):
+        record = self.governance.resolve(
+            frost_agent_id,
+            namespace,
+            key,
+        )
+        return {
+            "value": record.value,
+            "owner_agent_id": record.owner_agent_id,
+            "revision": record.revision,
+        }
+
+    def write_memory(
+        self,
+        frost_agent_id,
+        namespace,
+        key,
+        value,
+        expected_revision=None,
+    ):
+        return self.governance.write(
+            actor_id=frost_agent_id,
+            owner_id=frost_agent_id,
+            namespace=namespace,
+            key=key,
+            value=value,
+            expected_revision=expected_revision,
+        )
+
+    def run_sop(self, frost_agent_id, sop):
+        return self.governance.execute_sop(
+            frost_agent_id,
+            sop,
+            self.tool_handlers,
+        )</code></pre>
+
+        <p>When FROST creates a child, register the child’s stable identifier, parent identifier, and requested capability set. Do not trust a parent identifier supplied later inside model-generated arguments. The runtime should bind identity to the execution context.</p>
+
+        <pre><code># Pseudocode: adapt these hooks to your FROST version.
+child = frost.create_agent(
+    name="researcher",
+    parent=manager,
+)
+
+governance.registered_identity = {
+    child.runtime_id: "researcher"
+}
+
+result = adapter.read_memory(
+    frost_agent_id="researcher",
+    namespace="project",
+    key="client_region",
+)</code></pre>
+
+        <p>The important property is not the exact FROST method name. It is that the trusted adapter derives <code>actor_id</code> from the runtime session and never accepts an arbitrary actor identity from the generated SOP.</p>
+      </section>
+
+      <section id="sop-input">
+        <h2>Validate serialized SOP input before authorization</h2>
+
+        <p>Production agents will usually propose an SOP as <a class="term-link" href="glossary.html#json">JSON</a>. Parsing valid JSON is not authorization. Validate its shape before constructing domain objects:</p>
+
+        <ul>
+          <li>require a non-empty <code>sop_id</code> and positive integer <code>version</code>;</li>
+          <li>limit the number of steps and argument size;</li>
+          <li>require unique, non-empty step identifiers;</li>
+          <li>require action names to be strings;</li>
+          <li>reject unexpected top-level fields when strict compatibility matters;</li>
+          <li>reject references to agents or resources outside the current execution scope.</li>
+        </ul>
+
+        <p>A minimal parser can look like this:</p>
+
+        <pre><code>def parse_sop(payload: dict) -&gt; SOP:
+    if not isinstance(payload, dict):
+        raise ValidationError("SOP must be an object")
+
+    required = {"sop_id", "version", "steps"}
+    if set(payload) != required:
+        raise ValidationError("unexpected SOP fields")
+
+    if not isinstance(payload["sop_id"], str):
+        raise ValidationError("invalid sop_id")
+    if not isinstance(payload["version"], int):
+        raise ValidationError("invalid version")
+    if not isinstance(payload["steps"], list):
+        raise ValidationError("steps must be a list")
+    if len(payload["steps"]) &gt; 50:
+        raise ValidationError("too many steps")
+
+    steps = []
+    for raw in payload["steps"]:
+        if not isinstance(raw, dict):
+            raise ValidationError("step must be an object")
+        if set(raw) - {"step_id", "action", "arguments"}:
+            raise ValidationError("unexpected step fields")
+        if not isinstance(raw.get("step_id"), str):
+            raise ValidationError("invalid step_id")
+        if not isinstance(raw.get("action"), str):
+            raise ValidationError("invalid action")
+
+        arguments = raw.get("arguments", {})
+        if not isinstance(arguments, dict):
+            raise ValidationError("invalid arguments")
+
+        steps.append(SOPStep(
+            step_id=raw["step_id"],
+            action=raw["action"],
+            arguments=arguments,
+        ))
+
+    return SOP(
+        sop_id=payload["sop_id"],
+        version=payload["version"],
+        steps=tuple(steps),
+    )</code></pre>
+      </section>
+
+      <section id="failure-cases">
+        <h2>Failure cases the happy path misses</h2>
+
+        <h3>Local shadowing hides a policy record</h3>
+
+        <p>The current resolver returns the nearest visible value. That behavior is useful for ordinary preferences but dangerous for mandatory policy. A child could create <code>policy.external_upload = true</code> in its own scope and shadow the inherited value.</p>
+
+        <p>Separate memory classes in production:</p>
+
+        <ul>
+          <li><strong>Preferences</strong> may use nearest-value shadowing.</li>
+          <li><strong>Mandatory policy</strong> must be combined monotonically or resolved from an authoritative policy store.</li>
+          <li><strong>Secrets</strong> should use explicit grants rather than hierarchical lookup.</li>
+        </ul>
+
+        <p>For Boolean deny rules, a safe merge can require every applicable level to allow the operation. More complex policy needs typed combination logic, not generic dictionary merging.</p>
+
+        <h3>The check and the mutation are separate</h3>
+
+        <p>The in-memory prototype performs them in one process. With a database, checking revision <code>4</code> and later issuing an unconditional update creates a time-of-check/time-of-use race. Use an atomic statement equivalent to:</p>
+
+        <pre><code>UPDATE memory
+SET value = :value, revision = revision + 1
+WHERE owner_agent_id = :owner
+  AND namespace = :namespace
+  AND key = :key
+  AND revision = :expected_revision;</code></pre>
+
+        <p>Treat zero updated rows as a revision conflict.</p>
+
+        <h3>A tool performs effects during validation</h3>
+
+        <p>Tool discovery, schema lookup, or argument normalization must not trigger the tool. Preflight should operate on static schemas and policy data. Actual handlers run only after the full SOP is accepted.</p>
+
+        <h3>A child spoofs its identity</h3>
+
+        <p>Never authorize using <code>actor_id</code> from model output. Bind the identity to the FROST task, worker token, or process context. Arguments may identify a target resource, but not the authenticated subject.</p>
+
+        <h3>A known action accepts an unsafe destination</h3>
+
+        <p>Action-level permission is necessary but insufficient. If <code>artifact.save</code> permits any path, it may write outside the workspace. Add argument policies for paths, hosts, MIME types, record identifiers, size, and data classification.</p>
+
+        <h3>The audit log can be edited by the actor</h3>
+
+        <p>An <a class="term-link" href="glossary.html#audit-log">audit log</a> is useful only if denied agents cannot rewrite it. Send decisions to append-only or separately controlled storage. Avoid recording secret values or full sensitive prompts.</p>
+
+        <h3>Retries duplicate external effects</h3>
+
+        <p>For real tools, add <a class="term-link" href="glossary.html#idempotency">idempotency</a>: assign a stable operation identifier, enforce uniqueness in the effect store, and return the recorded result on retry. Authorization and duplicate prevention solve different problems.</p>
+      </section>
+
+      <section id="adversarial-tests">
+        <h2>Extend the suite with adversarial cases</h2>
+
+        <p>After the basic suite passes, add parameterized tests for:</p>
+
+        <ul>
+          <li>unknown parent identifiers and cyclic hierarchies;</li>
+          <li>duplicate agent identifiers;</li>
+          <li>direct-child visibility versus grandchild access;</li>
+          <li>an agent without <code>memory.read</code> requesting its own record;</li>
+          <li>a formatter attempting to grant itself <code>memory.write</code>;</li>
+          <li>an empty SOP, oversized SOP, invalid version, and duplicate step IDs;</li>
+          <li>a valid action with an invalid resource target;</li>
+          <li>a handler missing after all policy checks pass;</li>
+          <li>two writes using the same expected revision;</li>
+          <li>a denied request containing a <a class="term-link" href="glossary.html#prompt-injection">prompt injection</a> that claims administrator approval.</li>
+        </ul>
+
+        <p>The injection case should produce the same denial as a plain request. Policy code must evaluate structured identity, ownership, capabilities, and arguments—not persuasive natural language.</p>
+      </section>
+
+      <section id="production-checklist">
+        <h2>Production hardening checklist</h2>
+
+        <ul>
+          <li>Keep policy enforcement outside the model process.</li>
+          <li>Use stable runtime identities and validate the hierarchy when agents are created.</li>
+          <li>Store provenance and revision with every memory record.</li>
+          <li>Separate preferences, mandatory policy, credentials, and temporary task state.</li>
+          <li>Compute effective capability sets server-side.</li>
+          <li>Validate the complete SOP and every argument before dispatch.</li>
+          <li>Execute through registered handlers rather than arbitrary function names.</li>
+          <li>Use atomic conditional writes in persistent storage.</li>
+          <li>Record allowed and denied decisions with a policy version.</li>
+          <li>Redact values and credentials from decision logs.</li>
+          <li>Add timeouts, quotas, output limits, and cancellation.</li>
+          <li>Use operation identifiers for retry-safe external effects.</li>
+          <li>Run the suite whenever FROST, the policy adapter, schemas, or agent templates change.</li>
+        </ul>
+      </section>
+
+      <section id="limitations">
+        <h2>Limitations</h2>
+
+        <p>This prototype is intentionally small. It does not provide:</p>
+
+        <ul>
+          <li>persistent or tamper-resistant storage;</li>
+          <li>distributed transactions across several tools;</li>
+          <li>cryptographic agent identity;</li>
+          <li>revocation of already issued worker credentials;</li>
+          <li>resource-level rules for every tool argument;</li>
+          <li>rollback after a handler performs an irreversible effect;</li>
+          <li>protection against a compromised host or policy administrator;</li>
+          <li>formal verification of the policy engine.</li>
+        </ul>
+
+        <p>Preflight validation provides atomic admission, not atomic execution. Once an accepted multi-step SOP begins, a later handler can still fail. Use compensating actions, transactional services, or a durable workflow engine when all-or-nothing execution is required.</p>
+      </section>
+
+      <section id="acceptance">
+        <h2>Final acceptance criteria</h2>
+
+        <p>The lab is complete when you can independently demonstrate all of the following:</p>
+
+        <ol>
+          <li>The researcher reads <code>project.client_region</code> and the returned record still names <code>report_manager</code> as owner.</li>
+          <li>The formatter reads descendant-visible memory but cannot use <code>memory.write</code>.</li>
+          <li>The manager’s private token is not returned to either descendant.</li>
+          <li>The researcher writes its own note successfully.</li>
+          <li>An attempted write to manager-owned retention data raises a denial and leaves both value and revision unchanged.</li>
+          <li>The unsafe upload SOP produces zero handler effects.</li>
+          <li>An unknown action fails closed.</li>
+          <li>Every relevant decision contains the subject, resource, reason, and policy version.</li>
+        </ol>
+
+        <p>If any criterion is verified only by the agent saying that it complied, it is not yet verified. Repeat the check against storage state, handler effects, and the decision record.</p>
+      </section>
+
+      <section id="conclusion">
+        <h2>The rule to keep</h2>
+
+        <p>Inheritance should transfer context without transferring ownership. A child may observe selected ancestor state, but mutation remains scoped to the owner; capabilities can narrow but cannot expand; and a process is admitted only after every step is known and authorized.</p>
+
+        <p>That boundary turns hierarchy from a prompt convention into a testable system property. FROST can continue coordinating agents, while deterministic code decides what those agents are actually allowed to read, change, and execute.</p>
+
+        <p class="back"><a class="text-link" href="guides.html">← Browse all guides</a> · <a class="text-link" href="glossary.html">Open the Agent Lab glossary →</a></p>
+      </section>
+    </article>
+  </main>
+
+  <footer>
+    <div class="container">
+      <span>Agent Lab Journal</span>
+      <span>Real experiments. Verifiable conclusions.</span>
+    </div>
+  </footer>
+</body>
+</html>
