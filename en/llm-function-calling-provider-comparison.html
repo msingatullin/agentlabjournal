@@ -1,0 +1,1297 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>LLM Function Calling: A Reproducible Provider Comparison | Agent Lab Journal</title>
+  <meta name="description" content="Build a reproducible benchmark for LLM function calling across models and providers, covering tool selection, argument generation, validation, retries, and error handling.">
+  <link rel="canonical" href="https://agentlabjournal.online/en/llm-function-calling-provider-comparison.html">
+  <link rel="stylesheet" href="../style.css">
+  <link rel="stylesheet" href="../reading.css">
+
+  <meta property="og:type" content="article">
+  <meta property="og:site_name" content="Agent Lab Journal">
+  <meta property="og:title" content="LLM Function Calling: A Reproducible Provider Comparison">
+  <meta property="og:description" content="A practical benchmark for comparing tool selection, argument generation, and error recovery across LLM APIs.">
+  <meta property="og:url" content="https://agentlabjournal.online/en/llm-function-calling-provider-comparison.html">
+  <meta property="og:image" content="https://agentlabjournal.online/assets/og/llm-function-calling-provider-comparison.png">
+  <meta property="og:image:alt" content="A comparison matrix for language-model function calling">
+
+  <meta name="twitter:card" content="summary_large_image">
+  <meta name="twitter:title" content="LLM Function Calling: A Reproducible Provider Comparison">
+  <meta name="twitter:description" content="Test tool choice, structured arguments, validation failures, and recovery across multiple models.">
+  <meta name="twitter:image" content="https://agentlabjournal.online/assets/og/llm-function-calling-provider-comparison.png">
+
+  <script type="application/ld+json">
+  {
+    "@context": "https://schema.org",
+    "@type": "Article",
+    "headline": "LLM Function Calling: A Reproducible Provider Comparison",
+    "description": "Build a reproducible benchmark for LLM function calling across models and providers, covering tool selection, argument generation, validation, retries, and error handling.",
+    "image": "https://agentlabjournal.online/assets/og/llm-function-calling-provider-comparison.png",
+    "dateModified": "2026-08-01",
+    "author": {
+      "@type": "Organization",
+      "name": "Agent Lab Journal"
+    },
+    "publisher": {
+      "@type": "Organization",
+      "name": "Agent Lab Journal"
+    },
+    "mainEntityOfPage": {
+      "@type": "WebPage",
+      "@id": "https://agentlabjournal.online/en/llm-function-calling-provider-comparison.html"
+    }
+  }
+  </script>
+</head>
+<body>
+  <header class="site-header">
+    <div class="container">
+      <a class="site-name" href="../index.html">Agent Lab Journal</a>
+      <nav aria-label="Primary navigation">
+        <a href="guides.html">Guides</a>
+        <a href="../glossary.html">Glossary</a>
+      </nav>
+    </div>
+  </header>
+
+  <main>
+    <article class="reading">
+      <header class="article-header">
+        <p class="eyebrow">Practical evaluation · Intermediate</p>
+        <h1>LLM Function Calling: Comparing Schemas and Tool Selection Across Providers</h1>
+
+        <div class="reading-meta" aria-label="Article information">
+          <span>35 min read</span>
+          <span>Intermediate</span>
+          <time datetime="2026-08-01">Updated August 1, 2026</time>
+        </div>
+
+        <p class="lead">
+          Give several models the same function description and they may choose different
+          tools, omit different arguments, normalize values differently, or recover from
+          errors in incompatible ways. A reliable integration therefore cannot be judged
+          by one successful demo. It needs a repeatable test that separates model behavior,
+          provider protocol, schema validation, and application-side recovery.
+        </p>
+      </header>
+
+      <nav class="table-of-contents" aria-label="On this page">
+        <h2>Contents</h2>
+        <ol>
+          <li><a href="#problem">Why identical tools behave differently</a></li>
+          <li><a href="#case">The concrete test case</a></li>
+          <li><a href="#contract">Define a provider-neutral contract</a></li>
+          <li><a href="#dataset">Create the test dataset</a></li>
+          <li><a href="#adapters">Normalize provider responses</a></li>
+          <li><a href="#runner">Build the benchmark runner</a></li>
+          <li><a href="#scoring">Score selection, arguments, and recovery</a></li>
+          <li><a href="#errors">Test error handling</a></li>
+          <li><a href="#verification">Verify reproducibility</a></li>
+          <li><a href="#failure-cases">Common failure cases</a></li>
+          <li><a href="#limitations">Limitations</a></li>
+        </ol>
+      </nav>
+
+      <section id="problem">
+        <h2>Why identical tools behave differently</h2>
+
+        <p>
+          <a href="../glossary.html#function-calling">Function calling</a> is a protocol in
+          which a model requests that the host application execute a named operation with
+          structured arguments. The model does not run the function itself. It produces a
+          proposed call; your application validates it, performs the operation, and may
+          return a result to the model.
+        </p>
+
+        <p>
+          In practice, <strong>llm function calling</strong> is not one universal wire
+          format. Providers differ in request fields, supported
+          <a href="../glossary.html#json-schema">JSON Schema</a> features, tool-choice
+          controls, response envelopes, streaming events, parallel-call behavior, and the
+          messages required to return a tool result. Models add another layer of variation:
+          they interpret descriptions and ambiguous user requests differently.
+        </p>
+
+        <p>
+          The surrounding <strong>llm api</strong> also matters. A provider may reject an
+          unsupported schema keyword before inference, silently ignore it, or accept the
+          schema while the model later violates it. Those outcomes should not be collapsed
+          into a single “function calling failed” metric.
+        </p>
+
+        <p>A useful comparison separates four stages:</p>
+
+        <ol>
+          <li><strong>Request acceptance:</strong> did the provider accept the tool schema?</li>
+          <li><strong>Tool decision:</strong> did the model call, abstain, or choose the wrong tool?</li>
+          <li><strong>Argument construction:</strong> were the supplied values structurally and semantically correct?</li>
+          <li><strong>Recovery:</strong> after a validation or execution error, did the model repair the call appropriately?</li>
+        </ol>
+
+        <aside class="note">
+          <strong>Core rule:</strong> record raw requests and responses, but score a
+          normalized representation. Without both, provider syntax can distort the
+          comparison and normalization bugs can become invisible.
+        </aside>
+      </section>
+
+      <section id="case">
+        <h2>The concrete case: a support operations assistant</h2>
+
+        <p>
+          We will test three read-only tools for a fictional support workflow. No real
+          customer data, credentials, or measured provider results are included. The
+          benchmark produces its own evidence when you run it against the models you are
+          authorized to use.
+        </p>
+
+        <pre><code>{
+  "tools": [
+    {
+      "name": "lookup_order",
+      "description": "Find one order by its exact public order ID.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "order_id": {
+            "type": "string",
+            "pattern": "^ORD-[0-9]{6}$",
+            "description": "Public order ID, for example ORD-104821."
+          }
+        },
+        "required": ["order_id"],
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "search_orders",
+      "description": "Search orders when an exact order ID is not available.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "email": {
+            "type": "string",
+            "description": "Customer email address."
+          },
+          "status": {
+            "type": "string",
+            "enum": ["processing", "shipped", "delivered", "cancelled"]
+          },
+          "limit": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 20,
+            "default": 5
+          }
+        },
+        "required": ["email"],
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "get_shipping_quote",
+      "description": "Estimate shipping price and delivery window for a destination.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "country_code": {
+            "type": "string",
+            "pattern": "^[A-Z]{2}$",
+            "description": "ISO-style two-letter uppercase country code."
+          },
+          "postal_code": {
+            "type": "string",
+            "description": "Postal code as user-provided text; preserve leading zeros."
+          },
+          "weight_grams": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 50000
+          },
+          "service": {
+            "type": "string",
+            "enum": ["standard", "express"]
+          }
+        },
+        "required": ["country_code", "postal_code", "weight_grams"],
+        "additionalProperties": false
+      }
+    }
+  ]
+}</code></pre>
+
+        <p>
+          This tool set exposes common problems without requiring destructive actions:
+          overlapping lookup and search functions, formatted identifiers, enums, bounded
+          integers, optional defaults, uppercase normalization, and postal codes that must
+          remain strings.
+        </p>
+
+        <p>
+          The distinction between <code>lookup_order</code> and
+          <code>search_orders</code> is especially valuable. A model that merely notices
+          the word “order” cannot pass consistently; it must decide whether the user
+          supplied an exact identifier.
+        </p>
+      </section>
+
+      <section id="contract">
+        <h2>Define a provider-neutral contract first</h2>
+
+        <p>
+          Do not begin by copying one provider’s request object throughout the application.
+          Define a small internal representation, then translate it at the boundary of each
+          <strong>llm api</strong>. This gives the benchmark one source of truth.
+        </p>
+
+        <pre><code>export type CanonicalTool = {
+  name: string;
+  description: string;
+  parameters: Record&lt;string, unknown&gt;;
+};
+
+export type CanonicalToolCall = {
+  id: string | null;
+  name: string;
+  arguments: unknown;
+};
+
+export type CanonicalOutcome =
+  | { kind: "tool_calls"; calls: CanonicalToolCall[] }
+  | { kind: "text"; text: string }
+  | { kind: "refusal"; text: string | null }
+  | { kind: "provider_error"; code: string; message: string };</code></pre>
+
+        <p>
+          Keep parsed arguments as <code>unknown</code> until validation. If an adapter
+          casts <code>"750"</code> to <code>750</code>, removes an unexpected property, or
+          supplies a default before scoring, it hides the model’s actual output.
+        </p>
+
+        <h3>Use the schema intersection for the main comparison</h3>
+
+        <p>
+          Providers support different schema subsets. Start the primary benchmark with
+          conservative constructs: object, string, integer, number, boolean, array,
+          properties, required, enum, and simple bounds. Keep advanced keywords in a
+          separate compatibility suite.
+        </p>
+
+        <p>
+          Maintain two schema files:
+        </p>
+
+        <ul>
+          <li><code>tools.core.json</code> contains the portable schema used to compare models.</li>
+          <li><code>tools.compatibility.json</code> probes keywords such as patterns, unions, nested constraints, and strictness controls.</li>
+        </ul>
+
+        <p>
+          If a provider cannot accept <code>pattern</code>, for example, remove it only in
+          that provider’s compatibility adapter and record the transformation. Do not then
+          claim that all models received semantically identical constraints.
+        </p>
+
+        <h3>Freeze the instructions</h3>
+
+        <pre><code>You are a support operations assistant.
+
+Use a tool only when the user's request requires information supplied by that tool.
+Never invent missing required values.
+If exactly one required value is missing, ask one concise clarification question.
+Use lookup_order only when an exact public order ID is present.
+Use search_orders when the user supplies an email address but no exact order ID.
+Do not call tools for greetings, explanations of policy, or unsupported actions.</code></pre>
+
+        <p>
+          Store this text in a versioned fixture. Whitespace changes, extra examples, and
+          provider-specific instructions are experimental variables, not harmless edits.
+        </p>
+      </section>
+
+      <section id="dataset">
+        <h2>Create a diagnostic test dataset</h2>
+
+        <p>
+          A test row needs more than an expected function name. It should state whether a
+          call is expected, the exact acceptable arguments, and why alternative behavior
+          is wrong.
+        </p>
+
+        <pre><code>{"id":"select-lookup-01","prompt":"Where is order ORD-104821?","expected":{"kind":"tool","name":"lookup_order","arguments":{"order_id":"ORD-104821"}},"tags":["selection","exact-id"]}
+{"id":"select-search-01","prompt":"Show my shipped orders. My email is sam@example.test.","expected":{"kind":"tool","name":"search_orders","arguments":{"email":"sam@example.test","status":"shipped"}},"tags":["selection","enum"]}
+{"id":"abstain-01","prompt":"Hello! What can you help me with?","expected":{"kind":"text"},"tags":["abstention"]}
+{"id":"clarify-01","prompt":"How much is express shipping to Germany for 750 grams?","expected":{"kind":"clarification","missing":["postal_code"]},"tags":["missing-required"]}
+{"id":"types-01","prompt":"Quote standard shipping for 750 grams to US postal code 02139.","expected":{"kind":"tool","name":"get_shipping_quote","arguments":{"country_code":"US","postal_code":"02139","weight_grams":750,"service":"standard"}},"tags":["types","leading-zero"]}
+{"id":"normalize-01","prompt":"Shipping quote for 1 kg to ca, M5V 3L9.","expected":{"kind":"tool","name":"get_shipping_quote","arguments":{"country_code":"CA","postal_code":"M5V 3L9","weight_grams":1000}},"tags":["normalization","unit-conversion"]}
+{"id":"unsupported-01","prompt":"Cancel every order on my account.","expected":{"kind":"text"},"tags":["unsupported","safety"]}
+{"id":"conflict-01","prompt":"Find ORD-104821. My email is sam@example.test.","expected":{"kind":"tool","name":"lookup_order","arguments":{"order_id":"ORD-104821"}},"tags":["selection","overlap"]}</code></pre>
+
+        <p>
+          Use a reserved domain such as <code>example.test</code> and synthetic identifiers.
+          The fixture does not need a live order database because the first evaluation
+          stage stops after the proposed call.
+        </p>
+
+        <h3>Cover five behavior classes</h3>
+
+        <ol>
+          <li>
+            <strong>Positive selection:</strong> the request clearly maps to exactly one
+            function.
+          </li>
+          <li>
+            <strong>Confusable selection:</strong> two tools share vocabulary, but only one
+            satisfies the request.
+          </li>
+          <li>
+            <strong>Abstention:</strong> no tool is necessary or available.
+          </li>
+          <li>
+            <strong>Argument pressure:</strong> values require conversion, normalization,
+            or preservation of string formatting.
+          </li>
+          <li>
+            <strong>Missing information:</strong> the model must ask instead of guessing a
+            required value.
+          </li>
+        </ol>
+
+        <p>
+          Add paraphrases, but keep each original prompt. Replacing cases over time makes
+          historical comparisons impossible. A practical convention is
+          <code>dataset_version: "1.0.0"</code> in every run manifest.
+        </p>
+      </section>
+
+      <section id="adapters">
+        <h2>Normalize provider requests and responses</h2>
+
+        <p>
+          Each provider adapter should have three responsibilities:
+        </p>
+
+        <ol>
+          <li>Translate canonical tools and messages into the provider request.</li>
+          <li>Extract text, refusals, errors, and every proposed tool call.</li>
+          <li>Preserve the unmodified request and response for diagnosis.</li>
+        </ol>
+
+        <p>
+          Keep the rest of the runner provider-agnostic. The following interface is enough
+          for a first benchmark:
+        </p>
+
+        <pre><code>export interface ModelAdapter {
+  provider: string;
+  model: string;
+
+  run(input: {
+    system: string;
+    prompt: string;
+    tools: CanonicalTool[];
+    toolChoice: "auto" | "required" | "none";
+    temperature?: number;
+  }): Promise&lt;{
+    outcome: CanonicalOutcome;
+    rawRequest: unknown;
+    rawResponse: unknown;
+    latencyMs: number;
+    usage?: {
+      inputTokens?: number;
+      outputTokens?: number;
+    };
+  }&gt;;
+}</code></pre>
+
+        <h3>Do not compare provider controls as if they were identical</h3>
+
+        <p>
+          A mode named <code>auto</code> can allow either text or a call. A mode named
+          <code>required</code> may force any tool, a particular tool, or at least one
+          tool, depending on the provider. Document the actual semantics beside every
+          adapter.
+        </p>
+
+        <p>
+          Run the main selection test with the closest available equivalent of
+          <code>auto</code>. Run forced-tool behavior as a separate experiment. Otherwise,
+          a provider with a forced call may appear to have better recall while producing
+          unusable calls on abstention cases.
+        </p>
+
+        <h3>A note on function calling openai integrations</h3>
+
+        <p>
+          When implementing <strong>function calling openai</strong> support, isolate the
+          current request and response translation in its own adapter. Do not make the
+          canonical format depend on provider-specific message roles, call IDs, strictness
+          switches, or streaming event names. Apply the same rule to every other provider.
+          This article intentionally avoids fixed endpoint and model identifiers because
+          those operational details can change; pin the exact values available in your
+          environment inside the run manifest.
+        </p>
+
+        <h3>Normalize calls without repairing them</h3>
+
+        <pre><code>export function normalizeArguments(value: unknown): unknown {
+  if (typeof value !== "string") return value;
+
+  try {
+    return JSON.parse(value);
+  } catch {
+    return {
+      __parse_error: true,
+      __raw: value
+    };
+  }
+}</code></pre>
+
+        <p>
+          Parsing a JSON string is protocol normalization. Converting units, fixing enum
+          spelling, removing unknown keys, or changing types is semantic repair. Score
+          those repairs separately if your production stack performs them.
+        </p>
+      </section>
+
+      <section id="runner">
+        <h2>Build the benchmark runner</h2>
+
+        <p>
+          The runner executes every case against every configured model, repeats cases,
+          writes append-only records, and never calls a real business tool during the
+          selection stage.
+        </p>
+
+        <pre><code>type TestCase = {
+  id: string;
+  prompt: string;
+  expected:
+    | { kind: "tool"; name: string; arguments: Record&lt;string, unknown&gt; }
+    | { kind: "text" }
+    | { kind: "clarification"; missing: string[] };
+  tags: string[];
+};
+
+for (const adapter of adapters) {
+  for (const testCase of cases) {
+    for (let repeat = 0; repeat &lt; config.repeats; repeat++) {
+      const startedAt = new Date().toISOString();
+
+      try {
+        const result = await adapter.run({
+          system: fixtures.system,
+          prompt: testCase.prompt,
+          tools: fixtures.tools,
+          toolChoice: "auto",
+          temperature: 0
+        });
+
+        await appendRecord({
+          runId,
+          startedAt,
+          datasetVersion: config.datasetVersion,
+          provider: adapter.provider,
+          model: adapter.model,
+          caseId: testCase.id,
+          repeat,
+          expected: testCase.expected,
+          outcome: result.outcome,
+          latencyMs: result.latencyMs,
+          usage: result.usage,
+          rawRequest: redact(result.rawRequest),
+          rawResponse: redact(result.rawResponse)
+        });
+      } catch (error) {
+        await appendRecord({
+          runId,
+          startedAt,
+          provider: adapter.provider,
+          model: adapter.model,
+          caseId: testCase.id,
+          repeat,
+          harnessError: serializeError(error)
+        });
+      }
+    }
+  }
+}</code></pre>
+
+        <p>
+          A temperature of zero can reduce variation, but it does not prove deterministic
+          behavior. Providers may change serving infrastructure, model revisions, or
+          decoding internals. Repeat each case enough times to observe instability rather
+          than assuming it away.
+        </p>
+
+        <h3>Suggested project layout</h3>
+
+        <pre><code>function-benchmark/
+├── fixtures/
+│   ├── system.txt
+│   ├── tools.core.json
+│   ├── tools.compatibility.json
+│   └── cases.jsonl
+├── src/
+│   ├── adapters/
+│   │   ├── provider-a.ts
+│   │   └── provider-b.ts
+│   ├── normalize.ts
+│   ├── validate.ts
+│   ├── score.ts
+│   └── run.ts
+├── results/
+├── package.json
+├── tsconfig.json
+└── benchmark.config.json</code></pre>
+
+        <h3>Minimal local commands</h3>
+
+        <pre><code>mkdir function-benchmark
+cd function-benchmark
+npm init -y
+npm install ajv
+npm install --save-dev typescript tsx @types/node
+npx tsc --init
+npx tsx src/run.ts --config benchmark.config.json</code></pre>
+
+        <p>
+          Install provider SDKs only for adapters you actually use, and pin their versions
+          in the lockfile. Prefer environment-variable names scoped to each provider.
+          Never write secrets into fixtures, result files, console snapshots, or version
+          control.
+        </p>
+
+        <pre><code>{
+  "datasetVersion": "1.0.0",
+  "repeats": 5,
+  "temperature": 0,
+  "timeoutMs": 30000,
+  "concurrency": 1,
+  "models": [
+    {
+      "provider": "provider-a",
+      "model": "replace-with-pinned-model-id"
+    },
+    {
+      "provider": "provider-b",
+      "model": "replace-with-pinned-model-id"
+    }
+  ]
+}</code></pre>
+
+        <p>
+          Start with concurrency one. It makes rate limits and response ordering easier to
+          diagnose. Increase concurrency only after the baseline is stable, then record it
+          as part of the experiment.
+        </p>
+      </section>
+
+      <section id="scoring">
+        <h2>Score selection and arguments separately</h2>
+
+        <p>
+          A single pass rate conceals important differences. A model can select the right
+          tool but invent a required argument; another can produce perfect arguments for
+          the wrong operation. Treat these as separate failures.
+        </p>
+
+        <h3>1. Request acceptance</h3>
+
+        <p>
+          Record whether the <strong>llm api</strong> accepted the request. Recommended
+          categories are:
+        </p>
+
+        <ul>
+          <li><code>accepted</code></li>
+          <li><code>schema_rejected</code></li>
+          <li><code>authentication_error</code></li>
+          <li><code>rate_limited</code></li>
+          <li><code>timeout</code></li>
+          <li><code>provider_error</code></li>
+          <li><code>harness_error</code></li>
+        </ul>
+
+        <p>
+          Do not count authentication, rate-limit, or harness failures as incorrect model
+          decisions. Report them as coverage loss.
+        </p>
+
+        <h3>2. Tool selection</h3>
+
+        <p>Build a confusion matrix with these outcomes:</p>
+
+        <ul>
+          <li>correct tool;</li>
+          <li>wrong tool;</li>
+          <li>tool called when abstention was expected;</li>
+          <li>no tool when a call was expected;</li>
+          <li>multiple calls when exactly one was expected;</li>
+          <li>clarification when the fixture expected clarification;</li>
+          <li>clarification when sufficient information was already present.</li>
+        </ul>
+
+        <p>
+          The last distinction matters. Asking a safe but unnecessary question may avoid a
+          malformed call while still degrading the user experience.
+        </p>
+
+        <h3>3. Structural argument validity</h3>
+
+        <p>
+          Validate the untouched model arguments against the canonical schema. With Ajv:
+        </p>
+
+        <pre><code>import Ajv from "ajv";
+
+const ajv = new Ajv({
+  allErrors: true,
+  strict: false,
+  useDefaults: false,
+  coerceTypes: false,
+  removeAdditional: false
+});
+
+export function validateCall(
+  schema: Record&lt;string, unknown&gt;,
+  args: unknown
+) {
+  const validate = ajv.compile(schema);
+  const valid = validate(args);
+
+  return {
+    valid: Boolean(valid),
+    errors: validate.errors ?? []
+  };
+}</code></pre>
+
+        <p>
+          The disabled coercion, default insertion, and property removal are deliberate.
+          They prevent the validator from improving the output before it is measured.
+        </p>
+
+        <h3>4. Semantic argument correctness</h3>
+
+        <p>
+          Schema validity is necessary but insufficient. <code>weight_grams: 1</code> is a
+          valid integer but is wrong when the user said “1 kg.” Compare values against the
+          fixture after validation.
+        </p>
+
+        <pre><code>export function compareExpected(
+  expected: Record&lt;string, unknown&gt;,
+  actual: Record&lt;string, unknown&gt;
+) {
+  const missing = Object.keys(expected).filter((key) =&gt; !(key in actual));
+  const wrong = Object.entries(expected)
+    .filter(([key, value]) =&gt; key in actual &amp;&amp; actual[key] !== value)
+    .map(([key, value]) =&gt; ({
+      key,
+      expected: value,
+      actual: actual[key]
+    }));
+
+  const unexpected = Object.keys(actual)
+    .filter((key) =&gt; !(key in expected));
+
+  return {
+    exact: missing.length === 0 &amp;&amp; wrong.length === 0 &amp;&amp; unexpected.length === 0,
+    missing,
+    wrong,
+    unexpected
+  };
+}</code></pre>
+
+        <p>
+          Some optional arguments admit multiple correct outputs. Encode explicit
+          assertions rather than forcing exact object equality:
+        </p>
+
+        <pre><code>{
+  "arguments": {
+    "requiredEquals": {
+      "email": "sam@example.test",
+      "status": "shipped"
+    },
+    "optional": ["limit"],
+    "constraints": {
+      "limit": { "integer": true, "minimum": 1, "maximum": 20 }
+    }
+  }
+}</code></pre>
+
+        <h3>5. Stability</h3>
+
+        <p>
+          For each model and case, group repeated normalized outcomes by a stable hash. A
+          simple stability measure is:
+        </p>
+
+        <pre><code>stability = count(most_common_normalized_outcome) / successful_repeats</code></pre>
+
+        <p>
+          Report the numerator and denominator. A value without the number of successful
+          repeats can be misleading, especially when provider errors removed observations.
+        </p>
+
+        <h3>Recommended report columns</h3>
+
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>Field</th>
+                <th>What it reveals</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td>Accepted requests</td>
+                <td>Protocol and schema compatibility</td>
+              </tr>
+              <tr>
+                <td>Selection accuracy</td>
+                <td>Whether the correct tool or abstention was chosen</td>
+              </tr>
+              <tr>
+                <td>Schema-valid calls</td>
+                <td>Structural compliance before repair</td>
+              </tr>
+              <tr>
+                <td>Semantically exact calls</td>
+                <td>Whether arguments match the user’s request</td>
+              </tr>
+              <tr>
+                <td>Clarification accuracy</td>
+                <td>Whether missing data was handled without guessing</td>
+              </tr>
+              <tr>
+                <td>Recovery success</td>
+                <td>Whether a failed call was repaired correctly</td>
+              </tr>
+              <tr>
+                <td>Stability by case</td>
+                <td>Whether repeated runs agree</td>
+              </tr>
+              <tr>
+                <td>Provider-error count</td>
+                <td>How much of the planned test was actually observed</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      </section>
+
+      <section id="errors">
+        <h2>Test validation and execution errors as conversations</h2>
+
+        <p>
+          Production <strong>llm function calling</strong> does not end when a call is
+          emitted. The application may reject the arguments, the target system may reject
+          the operation, or the result may reveal that the model needs another tool.
+        </p>
+
+        <p>
+          Add a second suite that executes deterministic fake tools. A
+          <a href="../glossary.html#mock">mock</a> tool should return predictable results
+          and errors without contacting an external service.
+        </p>
+
+        <pre><code>export function fakeLookupOrder(args: unknown) {
+  const validation = validateCall(lookupOrderSchema, args);
+
+  if (!validation.valid) {
+    return {
+      ok: false,
+      error: {
+        code: "INVALID_ARGUMENTS",
+        message: "The tool arguments did not match the schema.",
+        details: validation.errors
+      }
+    };
+  }
+
+  const { order_id } = args as { order_id: string };
+
+  if (order_id === "ORD-000000") {
+    return {
+      ok: false,
+      error: {
+        code: "ORDER_NOT_FOUND",
+        message: "No order matched that order ID.",
+        retryable: false
+      }
+    };
+  }
+
+  return {
+    ok: true,
+    order: {
+      order_id,
+      status: "shipped"
+    }
+  };
+}</code></pre>
+
+        <h3>Use machine-readable error envelopes</h3>
+
+        <pre><code>{
+  "ok": false,
+  "error": {
+    "code": "INVALID_ARGUMENTS",
+    "message": "weight_grams must be an integer between 1 and 50000.",
+    "field": "weight_grams",
+    "retryable": true
+  }
+}</code></pre>
+
+        <p>
+          The model should not have to infer the error type from a stack trace. At the same
+          time, do not expose internal exceptions, database details, or secrets in tool
+          messages.
+        </p>
+
+        <h3>Recovery scenarios</h3>
+
+        <ol>
+          <li>
+            <strong>Repairable type error:</strong> return that
+            <code>weight_grams</code> must be an integer. Expect one corrected call.
+          </li>
+          <li>
+            <strong>Missing required value:</strong> return that
+            <code>postal_code</code> is missing. Expect a user clarification, not an
+            invented value.
+          </li>
+          <li>
+            <strong>Not found:</strong> return <code>ORDER_NOT_FOUND</code>. Expect an
+            honest explanation or a request for another identifier, not repeated identical
+            calls.
+          </li>
+          <li>
+            <strong>Transient failure:</strong> return a retryable error. Permit a bounded
+            retry according to application policy.
+          </li>
+          <li>
+            <strong>Non-retryable failure:</strong> return a permission or policy error.
+            Expect the model to stop.
+          </li>
+        </ol>
+
+        <p>
+          Bound the conversation with <code>maxToolRounds</code>. A model that alternates
+          between two invalid calls should not consume the entire request budget.
+        </p>
+
+        <pre><code>const MAX_TOOL_ROUNDS = 3;
+
+for (let round = 0; round &lt; MAX_TOOL_ROUNDS; round++) {
+  const response = await adapter.continue(messages, tools);
+  const calls = extractCalls(response);
+
+  if (calls.length === 0) return finalize(response);
+
+  const results = calls.map((call) =&gt; fakeToolRouter(call));
+  messages.push(response.message);
+  messages.push(...toProviderToolResults(calls, results));
+}
+
+return {
+  kind: "stopped",
+  reason: "max_tool_rounds_exceeded"
+};</code></pre>
+
+        <h3>Score recovery precisely</h3>
+
+        <p>
+          A recovery pass should require the expected terminal behavior, not merely a
+          second response. Record:
+        </p>
+
+        <ul>
+          <li>number of tool rounds;</li>
+          <li>whether the invalid call was repeated unchanged;</li>
+          <li>whether the corrected arguments validate;</li>
+          <li>whether a missing value was invented;</li>
+          <li>whether the model stopped on a non-retryable error;</li>
+          <li>whether the final user-facing statement agrees with the tool result.</li>
+        </ul>
+      </section>
+
+      <section id="verification">
+        <h2>Verify that the comparison is reproducible</h2>
+
+        <p>
+          Before interpreting model quality, verify the harness itself. The following
+          checklist prevents many false conclusions.
+        </p>
+
+        <h3>1. Save a run manifest</h3>
+
+        <pre><code>{
+  "runId": "2026-08-01T09-30-00Z",
+  "datasetVersion": "1.0.0",
+  "systemPromptSha256": "computed-at-runtime",
+  "toolsSha256": "computed-at-runtime",
+  "runnerCommit": "local-revision-or-archive-id",
+  "runtime": {
+    "node": "record-at-runtime",
+    "platform": "record-at-runtime"
+  },
+  "settings": {
+    "temperature": 0,
+    "repeats": 5,
+    "toolChoice": "auto",
+    "timeoutMs": 30000,
+    "concurrency": 1
+  },
+  "models": [
+    {
+      "provider": "provider-a",
+      "requestedModel": "exact-model-id-used",
+      "reportedModel": "capture-from-response-if-available"
+    }
+  ]
+}</code></pre>
+
+        <p>
+          Compute hashes from the exact bytes sent by the runner. This catches accidental
+          fixture edits and adapter transformations.
+        </p>
+
+        <h3>2. Snapshot adapter translations</h3>
+
+        <p>
+          For one representative case per provider, save a sanitized request fixture and
+          test it locally. The snapshot should prove that:
+        </p>
+
+        <ul>
+          <li>all three tools are present;</li>
+          <li>required fields remain required;</li>
+          <li>enums and numeric bounds survive translation;</li>
+          <li>the system instruction is in the intended message field;</li>
+          <li>the tool-choice mode is correct;</li>
+          <li>no adapter has injected examples or provider-only hints.</li>
+        </ul>
+
+        <h3>3. Unit-test the scorer with deliberate mistakes</h3>
+
+        <pre><code>const scorerCases = [
+  {
+    name: "right tool and exact arguments",
+    actual: call("lookup_order", { order_id: "ORD-104821" }),
+    expectedScore: "pass"
+  },
+  {
+    name: "right tool but wrong identifier",
+    actual: call("lookup_order", { order_id: "ORD-104822" }),
+    expectedScore: "semantic_failure"
+  },
+  {
+    name: "wrong tool with plausible arguments",
+    actual: call("search_orders", { email: "sam@example.test" }),
+    expectedScore: "selection_failure"
+  },
+  {
+    name: "unexpected extra property",
+    actual: call("lookup_order", {
+      order_id: "ORD-104821",
+      email: "sam@example.test"
+    }),
+    expectedScore: "schema_failure"
+  }
+];</code></pre>
+
+        <p>
+          If the scorer cannot distinguish these cases, model comparisons will not be
+          trustworthy.
+        </p>
+
+        <h3>4. Replay stored responses offline</h3>
+
+        <p>
+          Add a replay mode that reads sanitized raw responses, runs normalization again,
+          and recomputes scores without contacting a provider. The replay should reproduce
+          the original normalized records and summary.
+        </p>
+
+        <pre><code>npx tsx src/run.ts --config benchmark.config.json
+npx tsx src/report.ts results/2026-08-01T09-30-00Z.jsonl
+npx tsx src/replay.ts results/2026-08-01T09-30-00Z.jsonl
+npx tsx src/report.ts results/replayed.jsonl</code></pre>
+
+        <h3>5. Compare hashes, not formatted output</h3>
+
+        <p>
+          Canonicalize object key order before hashing normalized outcomes. Do not reorder
+          arrays unless their order is semantically irrelevant. Tool-call order may matter
+          when one call depends on another.
+        </p>
+
+        <h3>6. Inspect failures manually</h3>
+
+        <p>
+          Metrics identify patterns; raw records explain them. Review at least one example
+          from every failure category and every model. Check whether the problem belongs
+          to the model, the provider protocol, your adapter, the validator, or an
+          incorrectly specified fixture.
+        </p>
+
+        <aside class="note">
+          A benchmark is reproducible when another authorized operator can use the same
+          fixtures, adapter versions, settings, and scoring code to regenerate a comparable
+          report. Reproducible does not mean that a hosted model must return byte-identical
+          output forever.
+        </aside>
+      </section>
+
+      <section id="failure-cases">
+        <h2>Failure cases worth testing explicitly</h2>
+
+        <h3>Wrong tool chosen from overlapping descriptions</h3>
+
+        <p>
+          Symptoms include using <code>search_orders</code> despite an exact order ID, or
+          using <code>lookup_order</code> with an email address. Improve descriptions by
+          stating both the positive condition and the boundary:
+          “Use only when an exact public order ID is present.”
+        </p>
+
+        <p>
+          Do not immediately add the same rule to the system prompt, every tool
+          description, and the user message. First change one variable and rerun the same
+          cases. Otherwise you will not know which intervention helped.
+        </p>
+
+        <h3>Required arguments are guessed</h3>
+
+        <p>
+          A model may invent a postal code because the schema requires it. Include
+          missing-information cases and score clarification explicitly. If tool use is
+          forced, this test cannot measure natural clarification behavior.
+        </p>
+
+        <h3>Numbers and identifiers change type</h3>
+
+        <p>
+          Postal codes, account numbers, and telephone numbers should generally be strings.
+          Quantities used in calculations should be numbers or integers. The
+          <code>02139</code> case detects pipelines that accidentally turn a code into
+          <code>2139</code>.
+        </p>
+
+        <h3>Units are copied without conversion</h3>
+
+        <p>
+          If the schema expects grams and the prompt says kilograms, semantic validation
+          must check the conversion. A structurally valid value of <code>1</code> is still
+          wrong.
+        </p>
+
+        <h3>Unsupported enum synonyms</h3>
+
+        <p>
+          A model may emit <code>"fast"</code> when the schema allows only
+          <code>"express"</code>. Decide whether the model must map synonyms, the
+          application may repair them, or the user must clarify. Measure the raw and
+          repaired outcomes separately.
+        </p>
+
+        <h3>Extra arguments leak from the conversation</h3>
+
+        <p>
+          The model may carry an email address into <code>lookup_order</code> even though
+          that tool does not accept it. Keep <code>additionalProperties: false</code> in
+          the canonical schema and ensure the validator does not remove extras before
+          scoring.
+        </p>
+
+        <h3>Malformed serialized arguments</h3>
+
+        <p>
+          Some protocols represent arguments as serialized JSON. Truncated output, invalid
+          escaping, or surrounding prose must become a parse failure, not an empty object.
+          Preserve the raw string for diagnosis.
+        </p>
+
+        <h3>Parallel calls appear unexpectedly</h3>
+
+        <p>
+          A model may request several functions in one response. Your adapter must retain
+          every call and its identifier. For cases expecting one call, score additional
+          calls as a policy violation even if the first call is correct.
+        </p>
+
+        <h3>Identical invalid calls loop</h3>
+
+        <p>
+          Hash the tool name and canonical arguments at every round. If the same failed
+          call repeats after the model receives a non-transient error, stop early and
+          classify the outcome as an unrecovered loop.
+        </p>
+
+        <h3>Text claims success before execution</h3>
+
+        <p>
+          A proposed call is not a completed action. Reject responses that tell the user
+          an order was found, changed, or shipped before the application returns a
+          successful tool result.
+        </p>
+
+        <h3>Provider schema rejection is mistaken for model failure</h3>
+
+        <p>
+          If one <strong>llm api</strong> rejects a keyword, the model never saw the
+          request. Track schema compatibility independently and report the transformed
+          schema used for any fallback run.
+        </p>
+
+        <h3>Retries bias the results</h3>
+
+        <p>
+          An SDK may automatically retry timeouts or rate limits. Record attempt counts
+          when possible and apply the same retry policy across adapters. Model-level
+          recovery after a tool error is different from transport-level retry.
+        </p>
+      </section>
+
+      <section>
+        <h2>Turn benchmark findings into production policy</h2>
+
+        <p>
+          The most accurate model in a small fixture is not automatically the best
+          production choice. Use the report to build explicit runtime controls.
+        </p>
+
+        <ul>
+          <li>Validate every call on the server, regardless of benchmark performance.</li>
+          <li>Allowlist tool names instead of dynamically resolving arbitrary model text.</li>
+          <li>Separate read-only tools from tools with side effects.</li>
+          <li>Require confirmation or authorization for consequential operations.</li>
+          <li>Set timeouts, retry limits, and maximum tool rounds.</li>
+          <li>Use idempotency keys for retryable write operations.</li>
+          <li>Log sanitized call decisions and validation outcomes.</li>
+          <li>Keep a text fallback for provider outages or unsupported requests.</li>
+        </ul>
+
+        <p>
+          For high-risk tools, use a two-stage design: the model proposes a typed intent,
+          then deterministic application logic checks permissions, state, and business
+          rules before execution. Schema validity is not authorization.
+        </p>
+
+        <h3>A practical release gate</h3>
+
+        <p>
+          Define thresholds from your own risk tolerance and baseline data rather than
+          copying universal numbers. A release gate can require:
+        </p>
+
+        <ul>
+          <li>no regression on high-risk abstention cases;</li>
+          <li>no invented values in missing-required tests;</li>
+          <li>no unresolved validation errors in accepted calls;</li>
+          <li>bounded recovery without repeated-call loops;</li>
+          <li>a documented explanation for every schema transformation;</li>
+          <li>successful replay of the stored evaluation records.</li>
+        </ul>
+
+        <p>
+          Keep raw counts beside percentages. “Nine of ten” and “nine hundred of one
+          thousand” may display the same percentage while providing very different
+          evidence.
+        </p>
+      </section>
+
+      <section id="limitations">
+        <h2>Limitations of this benchmark</h2>
+
+        <p>
+          This method measures behavior on a controlled fixture, not universal model
+          quality. Results are conditional on the exact prompts, schemas, provider
+          adapters, settings, model versions, language, and date of execution.
+        </p>
+
+        <ul>
+          <li>
+            Hosted models and provider routing can change even when your application code
+            does not.
+          </li>
+          <li>
+            Temperature zero does not guarantee identical responses.
+          </li>
+          <li>
+            Synthetic cases do not reproduce the full distribution of production
+            conversations.
+          </li>
+          <li>
+            The portable schema subset may underuse provider-specific capabilities.
+          </li>
+          <li>
+            Exact-match scoring can penalize valid alternatives unless fixtures define
+            acceptable variation.
+          </li>
+          <li>
+            Latency and token usage can be recorded, but fair cost comparison requires the
+            current terms and accounting rules of each provider.
+          </li>
+          <li>
+            English-only fixtures do not establish multilingual reliability.
+          </li>
+          <li>
+            Fake tools evaluate recovery logic but cannot reproduce every external-system
+            failure.
+          </li>
+        </ul>
+
+        <p>
+          Run two complementary suites: a portable suite for cross-provider comparison and
+          a provider-optimized suite for the best production configuration on each
+          platform. Label them clearly and never merge their scores.
+        </p>
+      </section>
+
+      <section>
+        <h2>Repeatable workflow</h2>
+
+        <ol>
+          <li>Write a canonical tool contract and freeze its version.</li>
+          <li>Create positive, confusable, abstention, argument, and clarification cases.</li>
+          <li>Implement thin adapters around each provider’s <strong>llm api</strong>.</li>
+          <li>Save sanitized raw requests and responses.</li>
+          <li>Normalize protocol syntax without repairing semantic errors.</li>
+          <li>Score request acceptance, tool choice, schema validity, and semantic accuracy separately.</li>
+          <li>Use deterministic fake tools to test recovery from structured errors.</li>
+          <li>Repeat cases and report stability with raw denominators.</li>
+          <li>Replay stored responses to verify the scorer and normalizer.</li>
+          <li>Promote findings into validation, authorization, retry, and release policies.</li>
+        </ol>
+
+        <p>
+          The important outcome is not a permanent leaderboard. It is a versioned,
+          inspectable process that shows exactly where <strong>llm function calling</strong>
+          succeeds or breaks in your application—and lets you rerun the same test after a
+          model, prompt, schema, SDK, or provider changes.
+        </p>
+      </section>
+
+      <footer class="article-footer">
+        <p>
+          Continue with the <a href="guides.html">Agent Lab Journal guides</a>, or review
+          terminology in the <a href="../glossary.html">AI engineering glossary</a>.
+        </p>
+      </footer>
+    </article>
+  </main>
+
+  <footer class="site-footer">
+    <div class="container">
+      <p>&copy; 2026 Agent Lab Journal</p>
+    </div>
+  </footer>
+</body>
+</html>
