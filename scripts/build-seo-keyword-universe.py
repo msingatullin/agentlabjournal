@@ -70,10 +70,13 @@ def main() -> int:
     if any(item["region"]["label"] != evidence["region"]["label"] for item in evidence_sets):
         raise SystemExit("all evidence snapshots must use the same region")
     keywords: dict[str, dict] = {}
+    cluster_counts: dict[str, dict[str, int]] = {}
     for observation in (row for item in evidence_sets for row in item["observations"]):
         seed = observation["seed"]
+        cluster = cluster_counts.setdefault(seed, {})
         total = observation["response"].get("totalCount")
         if total is not None:
+            cluster[seed.casefold()] = int(total)
             keywords.setdefault(seed.casefold(), {
                 "query": seed, "frequency_value": int(total), "observed_from": []
             })["observed_from"].append(seed)
@@ -81,6 +84,7 @@ def main() -> int:
             query = row["phrase"].strip()
             value = int(row["count"])
             key = query.casefold()
+            cluster[key] = max(cluster.get(key, 0), value)
             current = keywords.get(key)
             if current is None or value > current["frequency_value"]:
                 keywords[key] = {"query": query, "frequency_value": value, "observed_from": [seed]}
@@ -93,6 +97,28 @@ def main() -> int:
     for row in keywords.values():
         value = row["frequency_value"]
         row["frequency_class"] = "low" if value <= low_max else "high" if value >= high_min else "medium"
+        row["cluster_frequency_classes"] = []
+        key = row["query"].casefold()
+        for seed in row["observed_from"]:
+            counts = cluster_counts.get(seed, {})
+            if key not in counts or not counts:
+                continue
+            cluster_values = list(counts.values())
+            cluster_low = percentile(cluster_values, 0.25)
+            cluster_high = percentile(cluster_values, 0.75)
+            cluster_value = counts[key]
+            cluster_class = (
+                "insufficient_distribution" if len(cluster_values) < 4
+                else "low" if cluster_value <= cluster_low
+                else "high" if cluster_value >= cluster_high
+                else "medium"
+            )
+            row["cluster_frequency_classes"].append({
+                "seed": seed,
+                "frequency_class": cluster_class,
+                "low_max": cluster_low,
+                "high_min": cluster_high,
+            })
     rows = sorted(keywords.values(), key=lambda row: (-row["frequency_value"], row["query"]))
     source_refs = [
         "raw:" + str(path).removeprefix("/root/raw/") if str(path).startswith("/root/raw/") else str(path)
