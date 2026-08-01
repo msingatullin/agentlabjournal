@@ -76,6 +76,7 @@ def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--env", type=Path, default=DEFAULT_ENV)
     parser.add_argument("--seeds", type=Path, default=DEFAULT_SEEDS)
+    parser.add_argument("--raw-dir", type=Path, default=RAW_DIR)
     parser.add_argument("--max-requests", type=int, default=MAX_REQUESTS_PER_RUN)
     args = parser.parse_args()
     if not 1 <= args.max_requests <= MAX_REQUESTS_PER_RUN:
@@ -154,9 +155,9 @@ def main() -> int:
         "credentials_included": False,
         "observations": observations,
     }
-    RAW_DIR.mkdir(parents=True, exist_ok=True)
+    args.raw_dir.mkdir(parents=True, exist_ok=True)
     timestamp = collected.strftime("%Y%m%d-%H%M%S")
-    output = RAW_DIR / f"wordstat-{timestamp}.json"
+    output = args.raw_dir / f"wordstat-{timestamp}.json"
     with output.open("x", encoding="utf-8") as handle:
         json.dump(evidence, handle, ensure_ascii=False, indent=2)
         handle.write("\n")

@@ -39,15 +39,16 @@ def similarity(left: str, right: str) -> float:
     return len(a & b) / len(a | b)
 
 
-def pages() -> list[dict]:
+def pages(site_root: Path, domain: str, recursive: bool) -> list[dict]:
     result = []
-    for path in sorted(ROOT.glob("*.html")):
+    paths = site_root.rglob("*.html") if recursive else site_root.glob("*.html")
+    for path in sorted(paths):
         match = TITLE_RE.search(path.read_text(encoding="utf-8", errors="ignore"))
         if not match:
             continue
         title = re.sub(r"\s+", " ", unescape(match.group(1))).strip()
         result.append({
-            "url": f"https://agentlabjournal.online/{path.name}",
+            "url": f"https://{domain}/{path.relative_to(site_root).as_posix()}",
             "title": title,
         })
     return result
@@ -58,6 +59,9 @@ def main() -> int:
     parser.add_argument("evidence", type=Path)
     parser.add_argument("--output", type=Path, default=ROOT / "seo-keyword-universe.json")
     parser.add_argument("--cannibalization-output", type=Path, default=ROOT / "seo-cannibalization-report.json")
+    parser.add_argument("--site-root", type=Path, default=ROOT)
+    parser.add_argument("--domain", default="agentlabjournal.online")
+    parser.add_argument("--recursive-pages", action="store_true")
     args = parser.parse_args()
 
     evidence = json.loads(args.evidence.read_text(encoding="utf-8"))
@@ -105,7 +109,7 @@ def main() -> int:
     }
     args.output.write_text(json.dumps(output, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
 
-    site_pages = pages()
+    site_pages = pages(args.site_root, args.domain, args.recursive_pages)
     candidates = []
     for row in rows:
         ranked = sorted(
