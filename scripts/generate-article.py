@@ -27,6 +27,15 @@ target.parent.mkdir(exist_ok=True)
 if target.exists():
     raise SystemExit(f"Refusing to overwrite existing article: {filename}")
 
+seo_gate = subprocess.run([
+    sys.executable,
+    str(ROOT / "scripts" / "seo-query-gate.py"),
+    "--slug",
+    target.stem,
+], cwd=ROOT)
+if seo_gate.returncode:
+    raise SystemExit("Generation blocked: SEO query passport is missing or invalid")
+
 prompt = f"""Create one complete {'English' if args.language == 'en' else 'Russian'} HTML article for Agent Lab Journal.
 Topic: {args.title}
 Real problem: {args.problem}

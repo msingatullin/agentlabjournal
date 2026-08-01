@@ -21,6 +21,15 @@ article = ROOT / relative
 if article.suffix != ".html" or not article.exists():
     raise SystemExit(f"Article not found in repository root: {filename}")
 
+seo_gate = subprocess.run([
+    sys.executable,
+    str(ROOT / "scripts" / "seo-query-gate.py"),
+    "--slug",
+    article.stem,
+], cwd=ROOT)
+if seo_gate.returncode:
+    raise SystemExit("Publication blocked: SEO query passport is missing or invalid")
+
 text = article.read_text()
 if "reading-meta" not in text or "canonical" not in text:
     raise SystemExit("Article must contain reading-meta and canonical before registration")

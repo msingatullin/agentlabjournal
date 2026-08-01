@@ -91,6 +91,16 @@ else:
     raise SystemExit(0)
 
 topic = topics[next(i for i, item in enumerate(topics) if not (ROOT / f"{item['slug']}.html").exists())]
+seo_gate = subprocess.run([
+    sys.executable,
+    str(ROOT / "scripts" / "seo-query-gate.py"),
+    "--slug",
+    topic["slug"],
+], cwd=ROOT)
+if seo_gate.returncode:
+    notify_error("SEO НЧ/СЧ/ВЧ gate", f"{topic['slug']}: query passport or measured frequency is missing")
+    raise SystemExit(seo_gate.returncode)
+
 graph_result = GraphRun(content_graph(), 'source').execute({
     'source': topic.get('summary', topic['title']),
     'topic': topic['slug'],
