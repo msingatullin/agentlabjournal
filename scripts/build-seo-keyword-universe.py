@@ -56,7 +56,8 @@ def pages(site_root: Path, domain: str, recursive: bool) -> list[dict]:
 
 def main() -> int:
     parser = argparse.ArgumentParser()
-    parser.add_argument("evidence", type=Path)
+    parser.add_argument("evidence", type=Path, nargs="+")
+    parser.add_argument("--project")
     parser.add_argument("--output", type=Path, default=ROOT / "seo-keyword-universe.json")
     parser.add_argument("--cannibalization-output", type=Path, default=ROOT / "seo-cannibalization-report.json")
     parser.add_argument("--site-root", type=Path, default=ROOT)
@@ -64,9 +65,12 @@ def main() -> int:
     parser.add_argument("--recursive-pages", action="store_true")
     args = parser.parse_args()
 
-    evidence = json.loads(args.evidence.read_text(encoding="utf-8"))
+    evidence_sets = [json.loads(path.read_text(encoding="utf-8")) for path in args.evidence]
+    evidence = evidence_sets[0]
+    if any(item["region"]["label"] != evidence["region"]["label"] for item in evidence_sets):
+        raise SystemExit("all evidence snapshots must use the same region")
     keywords: dict[str, dict] = {}
-    for observation in evidence["observations"]:
+    for observation in (row for item in evidence_sets for row in item["observations"]):
         seed = observation["seed"]
         total = observation["response"].get("totalCount")
         if total is not None:
@@ -90,12 +94,16 @@ def main() -> int:
         value = row["frequency_value"]
         row["frequency_class"] = "low" if value <= low_max else "high" if value >= high_min else "medium"
     rows = sorted(keywords.values(), key=lambda row: (-row["frequency_value"], row["query"]))
-    source_ref = f"raw:seo/agentlab/{args.evidence.name}"
+    source_refs = [
+        "raw:" + str(path).removeprefix("/root/raw/") if str(path).startswith("/root/raw/") else str(path)
+        for path in args.evidence
+    ]
+    source_ref: str | list[str] = source_refs[0] if len(source_refs) == 1 else source_refs
     output = {
         "schema_version": 1,
-        "project": evidence["project"],
+        "project": args.project or evidence["project"],
         "source_evidence": source_ref,
-        "collected_at": evidence["collected_at"],
+        "collected_at": max(item["collected_at"] for item in evidence_sets),
         "measurement_period": evidence["measurement_period"],
         "region": evidence["region"]["label"],
         "classification": {
@@ -126,7 +134,7 @@ def main() -> int:
         })
     report = {
         "schema_version": 1,
-        "project": evidence["project"],
+        "project": args.project or evidence["project"],
         "source_evidence": source_ref,
         "rule": "Similarity is discovery evidence only; no query is assigned to a URL automatically.",
         "pages_scanned": len(site_pages),
