@@ -32,7 +32,7 @@ def valid_http_url(value: object) -> bool:
     return parsed.scheme == "https" and bool(parsed.netloc)
 
 
-def validate(slug: str) -> list[str]:
+def validate(slug: str, language: str) -> list[str]:
     if not MAP_PATH.exists():
         return [f"missing query map: {MAP_PATH}"]
     try:
@@ -40,9 +40,16 @@ def validate(slug: str) -> list[str]:
     except (OSError, json.JSONDecodeError) as exc:
         return [f"cannot read query map: {exc}"]
 
-    passport = data.get("articles", {}).get(slug)
-    if not isinstance(passport, dict):
+    base_passport = data.get("articles", {}).get(slug)
+    if not isinstance(base_passport, dict):
         return [f"{slug}: query passport not found in {MAP_PATH.name}"]
+    if base_passport.get("language") == language:
+        passport = base_passport
+    else:
+        localization = base_passport.get("localizations", {}).get(language)
+        if not isinstance(localization, dict):
+            return [f"{slug}: {language} query passport not found in {MAP_PATH.name}"]
+        passport = {**base_passport, **localization}
 
     errors: list[str] = []
     required_text = (
@@ -59,7 +66,7 @@ def validate(slug: str) -> list[str]:
         errors.append(f"{slug}: target_url must be an HTTPS URL")
     if not valid_http_url(passport.get("pillar_url")):
         errors.append(f"{slug}: pillar_url must be an HTTPS URL")
-    expected_url = f"https://agentlabjournal.online/{slug}.html"
+    expected_url = f"https://agentlabjournal.online/{'en/' if language == 'en' else ''}{slug}.html"
     if passport.get("target_url") != expected_url:
         errors.append(f"{slug}: target_url must equal {expected_url}")
     if passport.get("cannibalization_status") != "passed":
@@ -126,9 +133,10 @@ def validate(slug: str) -> list[str]:
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--slug", required=True)
+    parser.add_argument("--language", choices=("ru", "en"), default="ru")
     args = parser.parse_args()
     slug = re.sub(r"[^a-z0-9-]+", "-", args.slug.lower()).strip("-")
-    errors = validate(slug)
+    errors = validate(slug, args.language)
     if errors:
         return fail(errors)
     print(f"SEO_QUERY_GATE: OK ({slug})")
