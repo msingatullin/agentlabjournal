@@ -51,6 +51,7 @@ seo_brief = "\n".join(
     f"- {row['frequency_class']}: {row['query']} ({row['frequency_value']})"
     for row in seo_passport["measurements"]
 )
+glossary_href = "../glossary.html" if args.language == "en" else "glossary.html"
 
 prompt = f"""Create one complete {'English' if args.language == 'en' else 'Russian'} HTML article for Agent Lab Journal.
 Topic: {args.title}
@@ -68,8 +69,8 @@ https://agentlabjournal.online/{'en/' if args.language == 'en' else ''}{filename
 description, image, dateModified, author, publisher and mainEntityOfPage. Add Open Graph and Twitter
 card metadata, reading-meta, a strong lead, a concrete
 case, practical steps, commands or configuration where useful, verification, failure cases,
-limitations, and a final link to guides.html and glossary.html. The first mention of each
-special term must link to glossary.html using an existing or appropriate anchor. Do not
+limitations, and a final link to guides.html and {glossary_href}. The first mention of each
+special term must link to {glossary_href} using an existing or appropriate anchor. Do not
 invent test results, credentials, customer facts, or external citations. The article must
 be useful to a reader who wants to repeat the work."""
 
