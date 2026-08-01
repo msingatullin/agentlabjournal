@@ -29,6 +29,17 @@ target.parent.mkdir(exist_ok=True)
 if target.exists():
     raise SystemExit(f"Refusing to overwrite existing article: {filename}")
 
+# Editorial cover approval is a pre-generation gate: do not leave an orphan HTML
+# file when the article has no distinct, source-based visual.
+cover_map = json.loads((ROOT / "homepage-covers.json").read_text(encoding="utf-8"))
+cover_row = cover_map.get(target.stem)
+if not cover_row or not all(cover_row.get(key) for key in ("path", "social_path", "alt", "evidence", "type")):
+    raise SystemExit("Generation blocked: approved article cover metadata is missing")
+if not (ROOT / cover_row["path"]).exists():
+    raise SystemExit("Generation blocked: approved article cover file is missing")
+if not (ROOT / cover_row["social_path"]).exists():
+    raise SystemExit("Generation blocked: approved article social cover file is missing")
+
 seo_gate = subprocess.run([
     sys.executable,
     str(ROOT / "scripts" / "seo-query-gate.py"),
@@ -124,6 +135,16 @@ missing_queries = [query for query in seo_queries if normalized(query) not in vi
 if missing_queries:
     raise SystemExit(f"Generated output failed SEO use gate: missing measured queries {missing_queries}")
 target.write_text(html + "\n")
+
+cover_apply = subprocess.run([
+    sys.executable,
+    str(ROOT / "scripts" / "apply-article-cover.py"),
+    "--file",
+    str(target.relative_to(ROOT)),
+], cwd=ROOT)
+if cover_apply.returncode:
+    target.unlink(missing_ok=True)
+    raise SystemExit("Generation blocked: approved cover could not be applied")
 
 publish = [sys.executable, str(ROOT / "scripts/publish-article.py"), "--file", str(target.relative_to(ROOT)), "--summary", args.summary]
 if args.news:
