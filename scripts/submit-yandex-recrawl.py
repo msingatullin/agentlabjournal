@@ -15,7 +15,7 @@ from pathlib import Path
 ENV_PATH = Path("/root/.config/yandex-webmaster.env")
 RAW_DIR = Path("/root/raw/seo/yandex-webmaster")
 API = "https://api.webmaster.yandex.net/v4"
-EXPECTED_HOST = "agentlabjournal.online"
+DEFAULT_HOST = "agentlabjournal.online"
 
 
 def read_env() -> dict[str, str]:
@@ -61,11 +61,12 @@ def write_evidence(event: dict) -> Path:
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--url", required=True)
+    parser.add_argument("--host", default=DEFAULT_HOST)
     parser.add_argument("--dry-run", action="store_true")
     args = parser.parse_args()
     parsed = urllib.parse.urlparse(args.url)
-    if parsed.scheme != "https" or parsed.hostname != EXPECTED_HOST or parsed.query or parsed.fragment:
-        print("RECRAWL: BLOCKED (URL must be a canonical Agent Lab HTTPS URL)", file=sys.stderr)
+    if parsed.scheme != "https" or parsed.hostname != args.host or parsed.query or parsed.fragment:
+        print(f"RECRAWL: BLOCKED (URL must be a canonical HTTPS URL for {args.host})", file=sys.stderr)
         return 2
 
     token = read_env().get("YANDEX_WEBMASTER_TOKEN")
@@ -82,7 +83,7 @@ def main() -> int:
         print(f"RECRAWL: BLOCKED (host lookup HTTP {status})", file=sys.stderr)
         return 3
     host = next(
-        (row for row in host_data.get("hosts", []) if urllib.parse.urlparse(row.get("ascii_host_url", "")).hostname == EXPECTED_HOST),
+        (row for row in host_data.get("hosts", []) if urllib.parse.urlparse(row.get("ascii_host_url", "")).hostname == args.host),
         None,
     )
     if not host or not host.get("verified"):
@@ -108,13 +109,13 @@ def main() -> int:
 
     queue_url = f"{API}/user/{user_id}/hosts/{host_id}/recrawl/queue"
     status, response = request_json(queue_url, token, method="POST", payload={"url": args.url})
-    accepted = status in {201, 409} and (status != 409 or response.get("error_code") == "URL_ALREADY_ADDED")
+    accepted = status in {201, 202, 409} and (status != 409 or response.get("error_code") == "URL_ALREADY_ADDED")
     event = {
         "submitted_at": dt.datetime.now(dt.timezone.utc).isoformat(),
         "site": host["ascii_host_url"], "url": args.url, "accepted": accepted,
         "http_status": status, "quota_before": quota,
         "task_id": response.get("task_id"),
-        "response_code": response.get("error_code", "CREATED" if status == 201 else "UNKNOWN"),
+        "response_code": response.get("error_code", "ACCEPTED" if status in {201, 202} else "UNKNOWN"),
     }
     evidence_path = write_evidence(event)
     if not accepted:
