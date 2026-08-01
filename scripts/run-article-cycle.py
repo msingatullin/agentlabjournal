@@ -153,6 +153,16 @@ try:
 except Exception as error:
     notify_error("проверка публичной ссылки", error)
     raise
+canonical_url = f"https://agentlabjournal.online/{topic['slug']}.html"
+recrawl = subprocess.run([
+    sys.executable,
+    str(ROOT / "scripts" / "submit-yandex-recrawl.py"),
+    "--url",
+    canonical_url,
+], cwd=ROOT)
+if recrawl.returncode:
+    notify_error("Yandex.Webmaster recrawl", f"{canonical_url}: exit code {recrawl.returncode}")
+    raise SystemExit(recrawl.returncode)
 update_status(topic['slug'], {'canonical': {'status': 'published', 'url': f"https://agentlabjournal.online/{topic['slug']}.html"}})
 channel_errors = []
 def publish_with_retry(command, attempts=3):
