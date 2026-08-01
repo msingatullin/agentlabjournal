@@ -1,0 +1,1297 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>How to Audit Hidden Reminders and Context Usage in Claude Code Logs | Agent Lab Journal</title>
+  <meta name="description" content="Build a local, repeatable report that finds ip_reminder insertions and analyzes input, output, cache creation, and cache read tokens in a selected Claude Code session.">
+  <link rel="canonical" href="https://agentlabjournal.online/en/audit-claude-code-hidden-reminders.html">
+  <link rel="stylesheet" href="style.css">
+  <link rel="stylesheet" href="reading.css">
+
+  <meta property="og:type" content="article">
+  <meta property="og:site_name" content="Agent Lab Journal">
+  <meta property="og:title" content="How to Audit Hidden Reminders and Context Usage in Claude Code Logs">
+  <meta property="og:description" content="Create a local report of ip_reminder occurrences and input, output, cache creation, and cache read tokens for one Claude Code session.">
+  <meta property="og:url" content="https://agentlabjournal.online/en/audit-claude-code-hidden-reminders.html">
+  <meta property="og:image" content="https://agentlabjournal.online/images/audit-claude-code-hidden-reminders.webp">
+  <meta property="og:image:alt" content="A terminal report showing hidden reminder events and token usage in a Claude Code session">
+
+  <meta name="twitter:card" content="summary_large_image">
+  <meta name="twitter:title" content="How to Audit Hidden Reminders and Context Usage in Claude Code Logs">
+  <meta name="twitter:description" content="A repeatable local workflow for auditing ip_reminder insertions and token usage in Claude Code session logs.">
+  <meta name="twitter:image" content="https://agentlabjournal.online/images/audit-claude-code-hidden-reminders.webp">
+  <meta name="twitter:image:alt" content="A terminal report showing hidden reminder events and token usage in a Claude Code session">
+
+  <script type="application/ld+json">
+  {
+    "@context": "https://schema.org",
+    "@type": "Article",
+    "headline": "How to Audit Hidden Reminders and Context Usage in Claude Code Logs",
+    "description": "Build a local, repeatable report that finds ip_reminder insertions and analyzes input, output, cache creation, and cache read tokens in a selected Claude Code session.",
+    "image": "https://agentlabjournal.online/images/audit-claude-code-hidden-reminders.webp",
+    "dateModified": "2026-08-01",
+    "author": {
+      "@type": "Organization",
+      "name": "Agent Lab Journal"
+    },
+    "publisher": {
+      "@type": "Organization",
+      "name": "Agent Lab Journal",
+      "url": "https://agentlabjournal.online/"
+    },
+    "mainEntityOfPage": {
+      "@type": "WebPage",
+      "@id": "https://agentlabjournal.online/en/audit-claude-code-hidden-reminders.html"
+    }
+  }
+  </script>
+</head>
+<body>
+  <header class="site-header">
+    <div class="container">
+      <a class="site-name" href="index.html">Agent Lab Journal</a>
+      <nav aria-label="Primary navigation">
+        <a href="guides.html">Guides</a>
+        <a href="glossary.html">Glossary</a>
+      </nav>
+    </div>
+  </header>
+
+  <main>
+    <article class="reading">
+      <header class="article-header">
+        <p class="eyebrow">Advanced field guide</p>
+        <h1>How to Audit Hidden Reminders and Context Usage in Claude Code Logs</h1>
+        <p class="reading-meta">
+          Advanced · 45 min read · Local analysis · Updated August 1, 2026
+        </p>
+        <p class="lead">
+          The visible transcript in <a href="glossary.html#claude-code">Claude Code</a> is not necessarily a complete representation of everything recorded around a request. Service messages, internal reminder markers, tool payloads, and usage metadata can exist in session logs without appearing as ordinary chat turns. If you want to know how often <code>ip_reminder</code> occurs—or how input, output, cache creation, and cache read tokens are distributed—you need to inspect the stored records directly and preserve enough structure to avoid misleading totals.
+        </p>
+      </header>
+
+      <nav class="table-of-contents" aria-label="Article contents">
+        <h2>In this guide</h2>
+        <ol>
+          <li><a href="#scope">What this audit can establish</a></li>
+          <li><a href="#case">Concrete investigation case</a></li>
+          <li><a href="#locate">Locate and select one session</a></li>
+          <li><a href="#preserve">Preserve an auditable copy</a></li>
+          <li><a href="#quick-check">Run a quick structural check</a></li>
+          <li><a href="#report-script">Build the full local report</a></li>
+          <li><a href="#interpret">Interpret reminder and token data</a></li>
+          <li><a href="#verify">Verify the report independently</a></li>
+          <li><a href="#failures">Failure cases and repairs</a></li>
+          <li><a href="#limitations">Limitations</a></li>
+        </ol>
+      </nav>
+
+      <section id="scope">
+        <h2>What this audit can—and cannot—establish</h2>
+        <p>
+          This workflow examines one local session stored as <a href="glossary.html#jsonl">JSON Lines (JSONL)</a>: a text format in which each line is normally an independent JSON value. It creates a report with:
+        </p>
+        <ul>
+          <li>the selected file’s path, size, modification time, and SHA-256 digest;</li>
+          <li>the number of physical lines, parsed records, blank lines, and malformed lines;</li>
+          <li>every record containing the exact, case-sensitive string <code>ip_reminder</code>;</li>
+          <li>the JSON paths at which the marker was found;</li>
+          <li>timestamps and record types when those fields are available;</li>
+          <li>per-record and aggregate input, output, cache creation, and cache read token values;</li>
+          <li>a chronological CSV suitable for a spreadsheet or notebook;</li>
+          <li>a machine-readable JSON report for later comparison.</li>
+        </ul>
+        <p>
+          The report shows what is present in the selected file. It does not prove why a reminder was inserted, whether it was transmitted to a model exactly as stored, or how the client’s undocumented internal state behaved. Treat <code>ip_reminder</code> as an observable marker, not as a complete explanation of the request pipeline.
+        </p>
+        <p>
+          The same distinction applies to the <a href="glossary.html#context-window">context window</a>. Logged token counters can help characterize request activity, but they do not reconstruct the exact context visible to the model at every instant. Cache reads, retries, branching, compaction, and duplicated usage objects can all invalidate a naive sum.
+        </p>
+      </section>
+
+      <section id="case">
+        <h2>Concrete case: a long coding session feels unexpectedly expensive</h2>
+        <p>
+          Imagine a long refactoring session. The visible conversation contains a few dozen user and assistant turns, but the session log is much larger than expected. You suspect two things:
+        </p>
+        <ol>
+          <li>the client is recording repeated <code>ip_reminder</code> insertions that are not obvious in the interface;</li>
+          <li>large cache reads or repeated input processing—not assistant output—account for most of the recorded usage.</li>
+        </ol>
+        <p>
+          The useful question is not merely “Does the marker exist?” It is:
+        </p>
+        <blockquote>
+          <p>Where does the marker occur, how are its occurrences distributed through the session, and what token-usage records appear around the same points?</p>
+        </blockquote>
+        <p>
+          A defensible answer needs record-level evidence. Counting raw text matches alone is insufficient because one record can contain the string multiple times, a field can quote an earlier payload, and the same API usage object can be repeated in several wrapper records.
+        </p>
+      </section>
+
+      <section id="prerequisites">
+        <h2>Prerequisites and safety</h2>
+        <p>
+          You need a shell, Python 3.9 or later, and read access to your local Claude Code data. The optional spot checks use <code>rg</code>, <code>jq</code>, <code>find</code>, <code>sort</code>, <code>sha256sum</code>, and <code>wc</code>. On macOS, <code>shasum -a 256</code> can replace <code>sha256sum</code>.
+        </p>
+        <p>
+          Session files can contain source code, prompts, tool results, local paths, environment details, and other sensitive material. Keep the report local. Do not paste raw records into an issue, public repository, or shared chat without reviewing and redacting them.
+        </p>
+        <aside class="note">
+          <h3>Work on a copy</h3>
+          <p>
+            Do not modify the live session file. Claude Code may still be writing to it, and even a harmless formatter would destroy the one-record-per-line layout needed for reliable auditing.
+          </p>
+        </aside>
+      </section>
+
+      <section id="locate">
+        <h2>Step 1: locate and select exactly one session</h2>
+        <p>
+          Installations and versions can organize local data differently, so begin with discovery rather than assuming one fixed path. The following command searches the conventional user-level Claude directory for JSONL files and prints their modification time and path:
+        </p>
+        <pre><code>find "$HOME/.claude" -type f -name '*.jsonl' -printf '%T@ %p\n' 2&gt;/dev/null \
+  | sort -nr \
+  | head -n 30</code></pre>
+        <p>
+          BSD <code>find</code>, commonly used on macOS, does not support <code>-printf</code>. Use:
+        </p>
+        <pre><code>find "$HOME/.claude" -type f -name '*.jsonl' -print0 2&gt;/dev/null \
+  | xargs -0 stat -f '%m %N' \
+  | sort -nr \
+  | head -n 30</code></pre>
+        <p>
+          If the directory is absent, search a limited part of your home directory rather than the entire filesystem:
+        </p>
+        <pre><code>find "$HOME" -maxdepth 5 -type f \
+  \( -name '*.jsonl' -o -name '*.json' \) \
+  2&gt;/dev/null \
+  | rg '/\.claude/|claude|projects|sessions'</code></pre>
+        <p>
+          Choose the file using evidence:
+        </p>
+        <ul>
+          <li>its modification time overlaps the session you want;</li>
+          <li>its project path or working-directory fields match the project;</li>
+          <li>its early user text matches a prompt you remember;</li>
+          <li>its session identifier remains consistent across the file.</li>
+        </ul>
+        <p>
+          Set an explicit variable. Quote it in every command:
+        </p>
+        <pre><code>SESSION_FILE="/absolute/path/to/the/selected-session.jsonl"
+
+test -f "$SESSION_FILE" || {
+  printf 'Session file not found: %s\n' "$SESSION_FILE" &gt;&amp;2
+  exit 1
+}
+
+wc -l -c "$SESSION_FILE"
+file "$SESSION_FILE"</code></pre>
+        <p>
+          Do not select a file solely because it is the newest. A background process, a second terminal, or a brief later session may have a more recent timestamp.
+        </p>
+
+        <h3>Preview structure without dumping content</h3>
+        <p>
+          Inspect only field names and common metadata first:
+        </p>
+        <pre><code>head -n 5 "$SESSION_FILE" \
+  | jq -c '{
+      keys: (keys | sort),
+      type: (.type // .kind // .event // null),
+      timestamp: (.timestamp // .created_at // .createdAt // null),
+      session_id: (.sessionId // .session_id // null)
+    }'</code></pre>
+        <p>
+          If this fails, the file may contain malformed lines, a JSON array instead of JSONL, or non-JSON prefixes. Do not “repair” the source yet; the reporting script below records malformed lines without altering the evidence.
+        </p>
+      </section>
+
+      <section id="preserve">
+        <h2>Step 2: preserve an auditable snapshot</h2>
+        <p>
+          A moving source file creates irreproducible counts. Finish or pause activity in the selected session, then create a private working directory and copy the file:
+        </p>
+        <pre><code>umask 077
+AUDIT_DIR="$PWD/claude-session-audit"
+mkdir -p "$AUDIT_DIR"
+
+cp -p "$SESSION_FILE" "$AUDIT_DIR/session.jsonl"
+
+sha256sum "$AUDIT_DIR/session.jsonl" \
+  | tee "$AUDIT_DIR/session.sha256"
+
+wc -l -c "$AUDIT_DIR/session.jsonl" \
+  | tee "$AUDIT_DIR/session.size.txt"</code></pre>
+        <p>
+          On macOS:
+        </p>
+        <pre><code>shasum -a 256 "$AUDIT_DIR/session.jsonl" \
+  | tee "$AUDIT_DIR/session.sha256"</code></pre>
+        <p>
+          From this point forward, analyze <code>$AUDIT_DIR/session.jsonl</code>. The hash identifies the exact bytes used to produce the report. If the live file changes later, your original result remains reproducible.
+        </p>
+      </section>
+
+      <section id="quick-check">
+        <h2>Step 3: run a quick marker and schema check</h2>
+        <p>
+          Start with a raw, case-sensitive search:
+        </p>
+        <pre><code>rg -n -F -- 'ip_reminder' "$AUDIT_DIR/session.jsonl"</code></pre>
+        <p>
+          Count matching physical lines:
+        </p>
+        <pre><code>rg -c -F -- 'ip_reminder' "$AUDIT_DIR/session.jsonl" || true</code></pre>
+        <p>
+          Count all literal occurrences, including repeated occurrences on one line:
+        </p>
+        <pre><code>rg -o -F -- 'ip_reminder' "$AUDIT_DIR/session.jsonl" \
+  | wc -l</code></pre>
+        <p>
+          These numbers answer different questions. A line count approximates matching records only when every physical line is one record. The occurrence count includes repeated mentions inside a record and can include quoted or escaped historical content.
+        </p>
+
+        <h3>Find candidate usage fields</h3>
+        <p>
+          <a href="glossary.html#token">Tokens</a> are units used by the model and API accounting layers; they are not equivalent to characters or words. Search field names rather than assuming a single schema:
+        </p>
+        <pre><code>rg -o --no-filename \
+  '"[^"]*(input|output|cache)[^"]*tokens?[^"]*"' \
+  "$AUDIT_DIR/session.jsonl" \
+  | sort \
+  | uniq -c \
+  | sort -nr</code></pre>
+        <p>
+          Typical usage objects may contain names such as <code>input_tokens</code>, <code>output_tokens</code>, <code>cache_creation_input_tokens</code>, and <code>cache_read_input_tokens</code>. Other versions may use camelCase or nested structures. The script normalizes several common variants while retaining every source path.
+        </p>
+
+        <h3>Why not sum everything with one jq expression?</h3>
+        <p>
+          A command that recursively collects every numeric field named <code>input_tokens</code> can double-count the same usage object when the log stores it both in a request wrapper and a response event. Before producing totals, you must distinguish:
+        </p>
+        <ul>
+          <li>raw usage objects found anywhere in a record;</li>
+          <li>identical usage objects repeated at different paths;</li>
+          <li>records that share a stable message or request identifier;</li>
+          <li>separate API calls that happen to have identical token values.</li>
+        </ul>
+      </section>
+
+      <section id="report-script">
+        <h2>Step 4: build a schema-tolerant local report</h2>
+        <p>
+          Save the following as <code>audit_claude_session.py</code>. It uses only the Python standard library. It never sends data over the network and does not include full record bodies in its outputs.
+        </p>
+        <pre><code>#!/usr/bin/env python3
+import argparse
+import csv
+import hashlib
+import json
+import os
+import re
+import sys
+from collections import Counter, defaultdict
+from datetime import datetime, timezone
+from pathlib import Path
+
+MARKER = "ip_reminder"
+
+TOKEN_ALIASES = {
+    "input_tokens": "input_tokens",
+    "inputTokens": "input_tokens",
+    "output_tokens": "output_tokens",
+    "outputTokens": "output_tokens",
+    "cache_creation_input_tokens": "cache_creation_tokens",
+    "cacheCreationInputTokens": "cache_creation_tokens",
+    "cache_creation_tokens": "cache_creation_tokens",
+    "cacheCreationTokens": "cache_creation_tokens",
+    "cache_read_input_tokens": "cache_read_tokens",
+    "cacheReadInputTokens": "cache_read_tokens",
+    "cache_read_tokens": "cache_read_tokens",
+    "cacheReadTokens": "cache_read_tokens",
+}
+
+ID_KEYS = (
+    "request_id", "requestId",
+    "message_id", "messageId",
+    "event_id", "eventId",
+    "uuid", "id",
+)
+
+TIME_KEYS = (
+    "timestamp", "created_at", "createdAt",
+    "time", "date",
+)
+
+TYPE_KEYS = (
+    "type", "kind", "event", "event_type", "eventType",
+)
+
+def sha256_file(path):
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for block in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(block)
+    return digest.hexdigest()
+
+def json_path(parts):
+    out = "$"
+    for part in parts:
+        if isinstance(part, int):
+            out += f"[{part}]"
+        elif re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", str(part)):
+            out += "." + str(part)
+        else:
+            out += "[" + json.dumps(str(part), ensure_ascii=False) + "]"
+    return out
+
+def walk(value, path=()):
+    yield path, value
+    if isinstance(value, dict):
+        for key, child in value.items():
+            yield from walk(child, path + (key,))
+    elif isinstance(value, list):
+        for index, child in enumerate(value):
+            yield from walk(child, path + (index,))
+
+def scalar_string(value):
+    if isinstance(value, (str, int, float)) and not isinstance(value, bool):
+        return str(value)
+    return None
+
+def find_first_scalar(record, keys):
+    if isinstance(record, dict):
+        for key in keys:
+            if key in record:
+                value = scalar_string(record[key])
+                if value is not None:
+                    return value
+    for _, value in walk(record):
+        if isinstance(value, dict):
+            for key in keys:
+                if key in value:
+                    found = scalar_string(value[key])
+                    if found is not None:
+                        return found
+    return None
+
+def marker_hits(record):
+    hits = []
+    for path, value in walk(record):
+        if isinstance(value, str):
+            count = value.count(MARKER)
+            if count:
+                hits.append({
+                    "path": json_path(path),
+                    "occurrences": count,
+                    "value_length": len(value),
+                })
+    return hits
+
+def numeric_token(value):
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, int) and value &gt;= 0:
+        return value
+    if isinstance(value, float) and value &gt;= 0 and value.is_integer():
+        return int(value)
+    return None
+
+def usage_objects(record):
+    found = []
+    for path, value in walk(record):
+        if not isinstance(value, dict):
+            continue
+        normalized = {}
+        source_keys = {}
+        for key, raw in value.items():
+            metric = TOKEN_ALIASES.get(key)
+            number = numeric_token(raw)
+            if metric is not None and number is not None:
+                normalized[metric] = number
+                source_keys[metric] = key
+        if normalized:
+            found.append({
+                "path": json_path(path),
+                "metrics": normalized,
+                "source_keys": source_keys,
+            })
+    return found
+
+def usage_fingerprint(metrics):
+    ordered = {
+        key: metrics.get(key)
+        for key in (
+            "input_tokens",
+            "output_tokens",
+            "cache_creation_tokens",
+            "cache_read_tokens",
+        )
+        if key in metrics
+    }
+    return json.dumps(ordered, sort_keys=True, separators=(",", ":"))
+
+def choose_record_usage(objects):
+    """
+    Collapse exact duplicate metric sets only within one record.
+
+    This reduces obvious wrapper duplication but deliberately does not merge
+    identical values from different records: those may be separate API calls.
+    """
+    unique = {}
+    for item in objects:
+        fingerprint = usage_fingerprint(item["metrics"])
+        unique.setdefault(fingerprint, item)
+    totals = Counter()
+    for item in unique.values():
+        totals.update(item["metrics"])
+    return dict(totals), list(unique.values())
+
+def main():
+    parser = argparse.ArgumentParser(
+        description="Audit ip_reminder and token usage in one JSONL session."
+    )
+    parser.add_argument("session", type=Path)
+    parser.add_argument(
+        "--out",
+        type=Path,
+        default=Path("claude-audit-report"),
+    )
+    args = parser.parse_args()
+
+    source = args.session.expanduser().resolve()
+    output = args.out.expanduser().resolve()
+
+    if not source.is_file():
+        raise SystemExit(f"Not a file: {source}")
+
+    output.mkdir(parents=True, exist_ok=True)
+
+    stat = source.stat()
+    summary = {
+        "report_version": 1,
+        "generated_at_utc": datetime.now(timezone.utc).isoformat(),
+        "source": {
+            "path": str(source),
+            "bytes": stat.st_size,
+            "modified_at_utc": datetime.fromtimestamp(
+                stat.st_mtime, timezone.utc
+            ).isoformat(),
+            "sha256": sha256_file(source),
+        },
+        "marker": MARKER,
+        "physical_lines": 0,
+        "blank_lines": 0,
+        "parsed_records": 0,
+        "malformed_lines": 0,
+        "records_with_marker": 0,
+        "literal_marker_occurrences": 0,
+        "records_with_usage": 0,
+        "raw_usage_objects": 0,
+        "unique_usage_objects_within_records": 0,
+        "token_totals_after_in_record_exact_deduplication": {
+            "input_tokens": 0,
+            "output_tokens": 0,
+            "cache_creation_tokens": 0,
+            "cache_read_tokens": 0,
+        },
+        "warnings": [],
+    }
+
+    marker_rows = []
+    usage_rows = []
+    malformed_rows = []
+    record_type_counts = Counter()
+    marker_path_counts = Counter()
+    usage_path_counts = Counter()
+
+    with source.open("r", encoding="utf-8", errors="replace") as handle:
+        for line_number, line in enumerate(handle, start=1):
+            summary["physical_lines"] += 1
+
+            if not line.strip():
+                summary["blank_lines"] += 1
+                continue
+
+            try:
+                record = json.loads(line)
+            except json.JSONDecodeError as exc:
+                summary["malformed_lines"] += 1
+                malformed_rows.append({
+                    "line": line_number,
+                    "error": str(exc),
+                    "text_length": len(line),
+                })
+                continue
+
+            summary["parsed_records"] += 1
+
+            timestamp = find_first_scalar(record, TIME_KEYS)
+            record_type = find_first_scalar(record, TYPE_KEYS)
+            record_id = find_first_scalar(record, ID_KEYS)
+
+            if record_type:
+                record_type_counts[record_type] += 1
+
+            hits = marker_hits(record)
+            if hits:
+                summary["records_with_marker"] += 1
+                occurrence_count = sum(hit["occurrences"] for hit in hits)
+                summary["literal_marker_occurrences"] += occurrence_count
+                for hit in hits:
+                    marker_path_counts[hit["path"]] += hit["occurrences"]
+                    marker_rows.append({
+                        "line": line_number,
+                        "timestamp": timestamp or "",
+                        "record_type": record_type or "",
+                        "record_id": record_id or "",
+                        "json_path": hit["path"],
+                        "occurrences": hit["occurrences"],
+                        "value_length": hit["value_length"],
+                    })
+
+            objects = usage_objects(record)
+            if objects:
+                summary["records_with_usage"] += 1
+                summary["raw_usage_objects"] += len(objects)
+
+                record_totals, unique_objects = choose_record_usage(objects)
+                summary["unique_usage_objects_within_records"] += len(
+                    unique_objects
+                )
+
+                for metric, value in record_totals.items():
+                    summary[
+                        "token_totals_after_in_record_exact_deduplication"
+                    ][metric] += value
+
+                marker_in_record = bool(hits)
+                for item in objects:
+                    usage_path_counts[item["path"]] += 1
+                    metrics = item["metrics"]
+                    usage_rows.append({
+                        "line": line_number,
+                        "timestamp": timestamp or "",
+                        "record_type": record_type or "",
+                        "record_id": record_id or "",
+                        "marker_in_record": str(marker_in_record).lower(),
+                        "json_path": item["path"],
+                        "input_tokens": metrics.get("input_tokens", ""),
+                        "output_tokens": metrics.get("output_tokens", ""),
+                        "cache_creation_tokens": metrics.get(
+                            "cache_creation_tokens", ""
+                        ),
+                        "cache_read_tokens": metrics.get(
+                            "cache_read_tokens", ""
+                        ),
+                        "fingerprint": usage_fingerprint(metrics),
+                    })
+
+    summary["record_type_counts"] = dict(record_type_counts.most_common())
+    summary["marker_path_counts"] = dict(marker_path_counts.most_common())
+    summary["usage_path_counts"] = dict(usage_path_counts.most_common())
+
+    if summary["malformed_lines"]:
+        summary["warnings"].append(
+            "Malformed lines were excluded from structured analysis."
+        )
+    if summary["raw_usage_objects"] != summary[
+        "unique_usage_objects_within_records"
+    ]:
+        summary["warnings"].append(
+            "At least one record contained duplicate usage metric sets; "
+            "aggregate totals collapse exact duplicates only within that record."
+        )
+    summary["warnings"].append(
+        "Identical usage values in different records are not deduplicated "
+        "because they may represent separate API calls."
+    )
+    summary["warnings"].append(
+        "Token totals describe logged usage fields, not a reconstruction of "
+        "the model's exact context window."
+    )
+
+    with (output / "summary.json").open(
+        "w", encoding="utf-8"
+    ) as handle:
+        json.dump(summary, handle, indent=2, ensure_ascii=False)
+        handle.write("\n")
+
+    def write_csv(name, rows, fields):
+        with (output / name).open(
+            "w", newline="", encoding="utf-8"
+        ) as handle:
+            writer = csv.DictWriter(handle, fieldnames=fields)
+            writer.writeheader()
+            writer.writerows(rows)
+
+    write_csv(
+        "marker-events.csv",
+        marker_rows,
+        [
+            "line", "timestamp", "record_type", "record_id",
+            "json_path", "occurrences", "value_length",
+        ],
+    )
+    write_csv(
+        "usage-events.csv",
+        usage_rows,
+        [
+            "line", "timestamp", "record_type", "record_id",
+            "marker_in_record", "json_path",
+            "input_tokens", "output_tokens",
+            "cache_creation_tokens", "cache_read_tokens",
+            "fingerprint",
+        ],
+    )
+    write_csv(
+        "malformed-lines.csv",
+        malformed_rows,
+        ["line", "error", "text_length"],
+    )
+
+    totals = summary[
+        "token_totals_after_in_record_exact_deduplication"
+    ]
+    print(f"Source: {source}")
+    print(f"SHA-256: {summary['source']['sha256']}")
+    print(f"Parsed records: {summary['parsed_records']}")
+    print(f"Malformed lines: {summary['malformed_lines']}")
+    print(f"Records with {MARKER}: {summary['records_with_marker']}")
+    print(
+        f"Literal {MARKER} occurrences: "
+        f"{summary['literal_marker_occurrences']}"
+    )
+    print(f"Records with usage: {summary['records_with_usage']}")
+    print("Token totals after within-record exact deduplication:")
+    for key, value in totals.items():
+        print(f"  {key}: {value}")
+    print(f"Report directory: {output}")
+
+if __name__ == "__main__":
+    try:
+        main()
+    except BrokenPipeError:
+        sys.exit(0)</code></pre>
+
+        <h3>Run the audit</h3>
+        <pre><code>python3 audit_claude_session.py \
+  "$AUDIT_DIR/session.jsonl" \
+  --out "$AUDIT_DIR/report"</code></pre>
+        <p>
+          The output directory will contain:
+        </p>
+        <ul>
+          <li><code>summary.json</code> — source identity, counts, aggregate token values, paths, and warnings;</li>
+          <li><code>marker-events.csv</code> — one row per JSON string containing <code>ip_reminder</code>;</li>
+          <li><code>usage-events.csv</code> — one row per discovered usage object;</li>
+          <li><code>malformed-lines.csv</code> — parse failures, without copying their potentially sensitive contents.</li>
+        </ul>
+
+        <h3>Inspect the summary</h3>
+        <pre><code>jq '{
+  source,
+  parsed_records,
+  malformed_lines,
+  records_with_marker,
+  literal_marker_occurrences,
+  records_with_usage,
+  raw_usage_objects,
+  unique_usage_objects_within_records,
+  token_totals_after_in_record_exact_deduplication,
+  warnings
+}' "$AUDIT_DIR/report/summary.json"</code></pre>
+
+        <h3>Inspect event distributions</h3>
+        <p>
+          Count marker hits by JSON path:
+        </p>
+        <pre><code>jq '.marker_path_counts' \
+  "$AUDIT_DIR/report/summary.json"</code></pre>
+        <p>
+          Count usage objects by path:
+        </p>
+        <pre><code>jq '.usage_path_counts' \
+  "$AUDIT_DIR/report/summary.json"</code></pre>
+        <p>
+          Show the marker timeline without exposing message bodies:
+        </p>
+        <pre><code>column -s, -t &lt; "$AUDIT_DIR/report/marker-events.csv" \
+  | less -S</code></pre>
+        <p>
+          CSV fields can contain commas, so <code>column</code> is only a convenient preview. Use a spreadsheet, Python’s CSV module, or another CSV-aware tool for authoritative parsing.
+        </p>
+      </section>
+
+      <section id="method">
+        <h2>How the report avoids the most common counting errors</h2>
+
+        <h3>It separates records from literal occurrences</h3>
+        <p>
+          Suppose one JSON record contains <code>ip_reminder</code> in two nested strings. That is one matching record but two literal occurrences. Both values matter: the former describes record frequency, while the latter reveals repeated embedding inside a record.
+        </p>
+
+        <h3>It records JSON paths</h3>
+        <p>
+          A marker at <code>$.message.content[1].text</code> is structurally different from one at <code>$.metadata.reminder_type</code>. Paths let you group similar insertions and detect quoted copies without storing full content in the report.
+        </p>
+
+        <h3>It distinguishes raw and locally deduplicated usage objects</h3>
+        <p>
+          The report provides the raw number of usage objects and a second count after collapsing identical metric sets within each record. This limited deduplication addresses obvious nested duplication while avoiding an unsafe assumption that identical values in different records represent the same request.
+        </p>
+
+        <h3>It keeps cache categories separate</h3>
+        <p>
+          A <a href="glossary.html#prompt-caching">prompt cache</a> can record tokens written to a reusable prefix and tokens read from it later. Cache-read tokens should not be silently added to ordinary input tokens and presented as “context size.” They are separate operational measurements with different meanings.
+        </p>
+
+        <h3>It does not copy sensitive payloads</h3>
+        <p>
+          The generated CSV files contain line numbers, paths, identifiers, metric values, and lengths—not prompts or tool outputs. You can return to the private source file when a specific event needs deeper inspection.
+        </p>
+      </section>
+
+      <section id="interpret">
+        <h2>Step 5: interpret the results</h2>
+
+        <h3>Reminder frequency</h3>
+        <p>
+          Start with three values:
+        </p>
+        <ul>
+          <li><code>records_with_marker</code>;</li>
+          <li><code>literal_marker_occurrences</code>;</li>
+          <li><code>marker_path_counts</code>.</li>
+        </ul>
+        <p>
+          If records and occurrences are equal, each matching record probably contains one literal marker. If occurrences are much higher, inspect whether a payload contains repeated reminder blocks or historical copies.
+        </p>
+        <p>
+          Distribution is often more informative than a total. Compare the marker line numbers against the full record count:
+        </p>
+        <pre><code>python3 - "$AUDIT_DIR/report/marker-events.csv" &lt;&lt;'PY'
+import csv
+import sys
+from collections import Counter
+
+path = sys.argv[1]
+lines = set()
+paths = Counter()
+
+with open(path, newline="", encoding="utf-8") as handle:
+    for row in csv.DictReader(handle):
+        lines.add(int(row["line"]))
+        paths[row["json_path"]] += int(row["occurrences"])
+
+print("Distinct matching lines:", len(lines))
+if lines:
+    ordered = sorted(lines)
+    print("First matching line:", ordered[0])
+    print("Last matching line:", ordered[-1])
+    print("Matching lines:", ", ".join(map(str, ordered)))
+
+print("Occurrences by path:")
+for path, count in paths.most_common():
+    print(f"{count:8d}  {path}")
+PY</code></pre>
+        <p>
+          Clusters can indicate a phase of the session in which a particular mechanism was active. Regular spacing can suggest insertion tied to repeated events. Neither pattern alone proves causation; it tells you where to inspect.
+        </p>
+
+        <h3>Input and output distribution</h3>
+        <p>
+          <code>input_tokens</code> usually describes request-side processing reported by a usage object, while <code>output_tokens</code> describes generated output. Do not infer that one record’s input value is the amount added by that single visible user message. It may include a larger assembled prompt, system material, tool results, or other context.
+        </p>
+        <p>
+          To summarize raw usage rows by metric:
+        </p>
+        <pre><code>python3 - "$AUDIT_DIR/report/usage-events.csv" &lt;&lt;'PY'
+import csv
+import statistics
+import sys
+
+metrics = [
+    "input_tokens",
+    "output_tokens",
+    "cache_creation_tokens",
+    "cache_read_tokens",
+]
+values = {name: [] for name in metrics}
+
+with open(sys.argv[1], newline="", encoding="utf-8") as handle:
+    for row in csv.DictReader(handle):
+        for name in metrics:
+            value = row[name].strip()
+            if value:
+                values[name].append(int(value))
+
+for name in metrics:
+    series = values[name]
+    if not series:
+        print(f"{name}: no values")
+        continue
+    ordered = sorted(series)
+    p95_index = max(0, int(0.95 * len(ordered)) - 1)
+    print(
+        f"{name}: n={len(series)} "
+        f"sum={sum(series)} "
+        f"min={ordered[0]} "
+        f"median={statistics.median(ordered)} "
+        f"p95={ordered[p95_index]} "
+        f"max={ordered[-1]}"
+    )
+PY</code></pre>
+        <p>
+          This summarizes raw rows, not deduplicated calls. Use it to understand shape and outliers. Use the aggregate values in <code>summary.json</code> only after reviewing the deduplication warnings and usage paths.
+        </p>
+
+        <h3>Cache creation and cache reads</h3>
+        <p>
+          <code>cache_creation_tokens</code> indicates tokens associated with creating a cacheable prefix when that metric is logged. <code>cache_read_tokens</code> indicates reuse from a previously created cache. A high cache-read total can be consistent with repeated reuse of a large stable prefix; it does not mean the client freshly transmitted or paid for those tokens under the same rules as uncached input.
+        </p>
+        <p>
+          Keep four columns in every table:
+        </p>
+        <table>
+          <thead>
+            <tr>
+              <th>Metric</th>
+              <th>What it helps describe</th>
+              <th>Do not treat it as</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td><code>input_tokens</code></td>
+              <td>Logged request-side token usage</td>
+              <td>The exact size of one visible user message</td>
+            </tr>
+            <tr>
+              <td><code>output_tokens</code></td>
+              <td>Logged generated token usage</td>
+              <td>Total transcript growth in characters</td>
+            </tr>
+            <tr>
+              <td><code>cache_creation_tokens</code></td>
+              <td>Tokens associated with cache creation</td>
+              <td>Ordinary uncached input</td>
+            </tr>
+            <tr>
+              <td><code>cache_read_tokens</code></td>
+              <td>Tokens reused from cache</td>
+              <td>Newly created context or ordinary input</td>
+            </tr>
+          </tbody>
+        </table>
+
+        <h3>Compare marker-bearing and other records</h3>
+        <p>
+          The <code>marker_in_record</code> column allows a narrow comparison. It does not establish that reminder text caused a token value; it merely tests whether usage objects are stored in the same JSON records.
+        </p>
+        <pre><code>python3 - "$AUDIT_DIR/report/usage-events.csv" &lt;&lt;'PY'
+import csv
+import sys
+from collections import Counter
+
+groups = {
+    "marker_record": Counter(),
+    "other_record": Counter(),
+}
+row_counts = Counter()
+metrics = [
+    "input_tokens",
+    "output_tokens",
+    "cache_creation_tokens",
+    "cache_read_tokens",
+]
+
+with open(sys.argv[1], newline="", encoding="utf-8") as handle:
+    for row in csv.DictReader(handle):
+        group = (
+            "marker_record"
+            if row["marker_in_record"] == "true"
+            else "other_record"
+        )
+        row_counts[group] += 1
+        for metric in metrics:
+            if row[metric].strip():
+                groups[group][metric] += int(row[metric])
+
+for group in ("marker_record", "other_record"):
+    print(group, "usage rows:", row_counts[group])
+    for metric in metrics:
+        print(f"  {metric}: {groups[group][metric]}")
+PY</code></pre>
+        <p>
+          A zero in the marker group may simply mean reminders and usage metadata live in different record types. To study proximity, compare line numbers or timestamps rather than expecting co-location.
+        </p>
+
+        <h3>Create a proximity table</h3>
+        <p>
+          The next script finds the nearest marker-bearing line for every usage row. Line distance is only an ordering proxy, but it is useful when timestamps are inconsistent:
+        </p>
+        <pre><code>python3 - \
+  "$AUDIT_DIR/report/marker-events.csv" \
+  "$AUDIT_DIR/report/usage-events.csv" &lt;&lt;'PY'
+import bisect
+import csv
+import sys
+
+marker_file, usage_file = sys.argv[1:3]
+
+with open(marker_file, newline="", encoding="utf-8") as handle:
+    marker_lines = sorted({
+        int(row["line"])
+        for row in csv.DictReader(handle)
+    })
+
+if not marker_lines:
+    print("No marker events; proximity table not generated.")
+    raise SystemExit(0)
+
+def nearest(value):
+    index = bisect.bisect_left(marker_lines, value)
+    choices = []
+    if index:
+        choices.append(marker_lines[index - 1])
+    if index &lt; len(marker_lines):
+        choices.append(marker_lines[index])
+    target = min(choices, key=lambda item: abs(item - value))
+    return target, value - target
+
+with open(usage_file, newline="", encoding="utf-8") as handle:
+    rows = list(csv.DictReader(handle))
+
+fieldnames = list(rows[0].keys()) + [
+    "nearest_marker_line",
+    "line_delta_from_marker",
+] if rows else []
+
+if rows:
+    writer = csv.DictWriter(sys.stdout, fieldnames=fieldnames)
+    writer.writeheader()
+    for row in rows:
+        marker_line, delta = nearest(int(row["line"]))
+        row["nearest_marker_line"] = marker_line
+        row["line_delta_from_marker"] = delta
+        writer.writerow(row)
+PY</code></pre>
+        <p>
+          Redirect the output to a file if needed:
+        </p>
+        <pre><code>python3 proximity_script.py \
+  "$AUDIT_DIR/report/marker-events.csv" \
+  "$AUDIT_DIR/report/usage-events.csv" \
+  &gt; "$AUDIT_DIR/report/usage-marker-proximity.csv"</code></pre>
+      </section>
+
+      <section id="verify">
+        <h2>Step 6: verify the report independently</h2>
+        <p>
+          A useful audit includes cross-checks that do not reuse exactly the same logic.
+        </p>
+
+        <h3>Verify source identity</h3>
+        <pre><code>EXPECTED_HASH="$(
+  jq -r '.source.sha256' "$AUDIT_DIR/report/summary.json"
+)"
+ACTUAL_HASH="$(
+  sha256sum "$AUDIT_DIR/session.jsonl" | awk '{print $1}'
+)"
+
+test "$EXPECTED_HASH" = "$ACTUAL_HASH" \
+  &amp;&amp; printf 'Hash verified\n' \
+  || printf 'Hash mismatch\n' &gt;&amp;2</code></pre>
+
+        <h3>Compare raw marker counts</h3>
+        <pre><code>RAW_OCCURRENCES="$(
+  rg -o -F -- 'ip_reminder' "$AUDIT_DIR/session.jsonl" \
+    | wc -l \
+    | tr -d ' '
+)"
+REPORT_OCCURRENCES="$(
+  jq -r '.literal_marker_occurrences' \
+    "$AUDIT_DIR/report/summary.json"
+)"
+
+printf 'raw=%s report=%s\n' \
+  "$RAW_OCCURRENCES" "$REPORT_OCCURRENCES"</code></pre>
+        <p>
+          These values normally agree when all markers occur inside parsed JSON strings. A mismatch is actionable:
+        </p>
+        <ul>
+          <li>the marker exists on a malformed line;</li>
+          <li>it appears as an object key rather than a string value;</li>
+          <li>the raw bytes contain an encoding anomaly;</li>
+          <li>the JSON parser interprets escapes differently from the raw search.</li>
+        </ul>
+
+        <h3>Verify parsed-record counts with jq</h3>
+        <pre><code>JQ_RECORDS="$(
+  jq -c . "$AUDIT_DIR/session.jsonl" 2&gt;/dev/null \
+    | wc -l \
+    | tr -d ' '
+)"
+REPORT_RECORDS="$(
+  jq -r '.parsed_records' "$AUDIT_DIR/report/summary.json"
+)"
+
+printf 'jq=%s report=%s\n' \
+  "$JQ_RECORDS" "$REPORT_RECORDS"</code></pre>
+        <p>
+          If malformed lines exist, plain <code>jq</code> may stop at the first error and produce a lower count. That is expected; consult <code>malformed-lines.csv</code>.
+        </p>
+
+        <h3>Manually inspect selected records</h3>
+        <p>
+          Use line numbers from <code>marker-events.csv</code>. For example, inspect line 417 without printing the entire file:
+        </p>
+        <pre><code>sed -n '417p' "$AUDIT_DIR/session.jsonl" \
+  | jq '{
+      keys: keys,
+      type: (.type // .kind // .event // null),
+      timestamp: (.timestamp // .created_at // .createdAt // null)
+    }'</code></pre>
+        <p>
+          To identify marker paths using an independent jq traversal:
+        </p>
+        <pre><code>sed -n '417p' "$AUDIT_DIR/session.jsonl" \
+  | jq -c '
+      paths(strings) as $p
+      | getpath($p) as $v
+      | select($v | contains("ip_reminder"))
+      | {path: $p, occurrences: ($v | length)}
+    '</code></pre>
+        <p>
+          The <code>occurrences</code> field in that quick jq example is string length, not marker count. Its purpose is path verification. Avoid treating it as a substitute for the report’s literal count.
+        </p>
+
+        <h3>Review duplicate fingerprints</h3>
+        <p>
+          Find metric sets repeated across multiple rows:
+        </p>
+        <pre><code>python3 - "$AUDIT_DIR/report/usage-events.csv" &lt;&lt;'PY'
+import csv
+import sys
+from collections import defaultdict
+
+seen = defaultdict(list)
+
+with open(sys.argv[1], newline="", encoding="utf-8") as handle:
+    for row in csv.DictReader(handle):
+        seen[row["fingerprint"]].append(
+            (row["line"], row["record_id"], row["json_path"])
+        )
+
+for fingerprint, locations in seen.items():
+    if len(locations) &gt; 1:
+        print(fingerprint)
+        for location in locations:
+            print("  ", *location)
+PY</code></pre>
+        <p>
+          Repeated fingerprints are candidates for investigation, not automatic duplicates. Two real requests can have identical usage values. Stronger deduplication requires a stable request, message, or event identifier and knowledge of the file’s event model.
+        </p>
+      </section>
+
+      <section id="failure-criteria">
+        <h2>What a successful audit looks like</h2>
+        <p>
+          Before drawing conclusions, confirm all of the following:
+        </p>
+        <ul>
+          <li>the report hash matches the copied session file;</li>
+          <li>the selected file belongs to the intended project and time range;</li>
+          <li>malformed-line count is zero, or every malformed line has been accounted for;</li>
+          <li>raw marker occurrence counts agree with structured counts, or the mismatch is explained;</li>
+          <li>marker paths have been reviewed rather than reduced to one total;</li>
+          <li>usage paths and duplicate fingerprints have been inspected;</li>
+          <li>cache creation and cache read values remain separate from input and output;</li>
+          <li>any claim about proximity uses record ordering or valid timestamps, not visual intuition;</li>
+          <li>the final report contains no prompt bodies or secrets.</li>
+        </ul>
+        <p>
+          The expected deliverable is a local directory containing an immutable session snapshot, its digest, <code>summary.json</code>, <code>marker-events.csv</code>, <code>usage-events.csv</code>, and any documented verification notes.
+        </p>
+      </section>
+
+      <section id="failures">
+        <h2>Failure cases and repairs</h2>
+
+        <h3>No JSONL files are found</h3>
+        <p>
+          The storage location may differ, the session may not be persisted, or the relevant data may use another extension. Search for recently modified files under the Claude data directory:
+        </p>
+        <pre><code>find "$HOME/.claude" -type f -mtime -7 -print 2&gt;/dev/null \
+  | head -n 100</code></pre>
+        <p>
+          Inspect file types and small structural previews. Do not run a recursive content dump across your entire home directory.
+        </p>
+
+        <h3>The file is one JSON array, not JSONL</h3>
+        <p>
+          Test its top-level type:
+        </p>
+        <pre><code>jq -r 'type' "$SESSION_FILE" | head -n 1</code></pre>
+        <p>
+          If it reports <code>array</code>, convert a copy:
+        </p>
+        <pre><code>jq -c '.[]' "$SESSION_FILE" \
+  &gt; "$AUDIT_DIR/session.jsonl"</code></pre>
+        <p>
+          Hash both the original and converted files, and document the transformation.
+        </p>
+
+        <h3>The report finds no <code>ip_reminder</code></h3>
+        <p>
+          A zero result means only that the exact marker was absent from parsed string values in this snapshot. Verify with case-insensitive and related-term searches:
+        </p>
+        <pre><code>rg -n -i -- 'ip[_-]?reminder|reminder' \
+  "$AUDIT_DIR/session.jsonl"</code></pre>
+        <p>
+          Do not silently combine related spellings with the primary count. Record them as separate marker definitions.
+        </p>
+
+        <h3>Raw search finds the marker, but the report does not</h3>
+        <p>
+          Check malformed lines first:
+        </p>
+        <pre><code>cat "$AUDIT_DIR/report/malformed-lines.csv"</code></pre>
+        <p>
+          Then check whether the marker is a JSON key:
+        </p>
+        <pre><code>rg -n -F -- '"ip_reminder"' \
+  "$AUDIT_DIR/session.jsonl"</code></pre>
+        <p>
+          The script counts string values, not keys. If your schema uses the marker as a key, extend <code>marker_hits</code> to inspect dictionary keys and label key hits separately.
+        </p>
+
+        <h3>All token totals are zero</h3>
+        <p>
+          Search discovered field names:
+        </p>
+        <pre><code>rg -o --no-filename '"[^"]*token[^"]*"' \
+  "$AUDIT_DIR/session.jsonl" \
+  | sort \
+  | uniq -c \
+  | sort -nr \
+  | head -n 100</code></pre>
+        <p>
+          If the log uses aliases not listed in <code>TOKEN_ALIASES</code>, add an explicit mapping. Do not match every field containing the word <code>token</code>; identifiers, rate-limit counters, and authentication-related keys are not usage metrics.
+        </p>
+
+        <h3>Totals look implausibly high</h3>
+        <p>
+          Inspect <code>raw_usage_objects</code>, <code>unique_usage_objects_within_records</code>, <code>usage_path_counts</code>, and duplicate fingerprints. The likely causes are repeated wrapper records, retries, streaming snapshots, or cumulative usage values being mistaken for per-event increments.
+        </p>
+        <p>
+          If values are cumulative, summing them is wrong. Look for a monotonic series associated with one stable request identifier. In that case, use the final value for that request or calculate non-negative deltas only after confirming the schema.
+        </p>
+
+        <h3>Totals look implausibly low</h3>
+        <p>
+          The chosen file may contain transcript events while usage metadata lives elsewhere, or malformed lines may hold relevant records. Search neighboring files with the same session identifier. Keep results separated by source file until you can demonstrate how the files relate.
+        </p>
+
+        <h3>Timestamps cannot be sorted</h3>
+        <p>
+          Logs can mix ISO timestamps, Unix seconds, Unix milliseconds, or missing values. Preserve raw timestamp strings and use physical line order as the primary sequence unless the format has been validated.
+        </p>
+
+        <h3>The session is still changing</h3>
+        <p>
+          Compare hashes before and after the audit:
+        </p>
+        <pre><code>sha256sum "$SESSION_FILE"
+sleep 2
+sha256sum "$SESSION_FILE"</code></pre>
+        <p>
+          If they differ, stop the active session or analyze a copied snapshot. Do not claim that changing-file counts represent a stable session.
+        </p>
+
+        <h3>Python reports an encoding problem</h3>
+        <p>
+          The script opens the source as UTF-8 and replaces invalid byte sequences for parsing. If replacements affect JSON syntax, lines may be marked malformed. Preserve the original bytes, inspect encoding with <code>file</code>, and document any conversion performed on a copy.
+        </p>
+      </section>
+
+      <section id="limitations">
+        <h2>Limitations</h2>
+        <ul>
+          <li>
+            <strong>Local visibility only.</strong> The method analyzes files available on your machine. It cannot observe server-side processing that is not represented locally.
+          </li>
+          <li>
+            <strong>Schema variability.</strong> Record types, paths, identifiers, and metric names can change between versions. The alias list is deliberately explicit and may need extension.
+          </li>
+          <li>
+            <strong>No causal proof.</strong> Temporal or record-level proximity between <code>ip_reminder</code> and high token usage does not show that the reminder caused the usage.
+          </li>
+          <li>
+            <strong>No exact prompt reconstruction.</strong> Usage counters do not reveal the precise final prompt, ordering of hidden material, tokenizer behavior, or eviction decisions.
+          </li>
+          <li>
+            <strong>Deduplication is conservative.</strong> The script collapses exact duplicate metric sets only within a record. This can leave cross-record duplicates, but broader automatic merging could erase legitimate calls.
+          </li>
+          <li>
+            <strong>Retries and branches matter.</strong> A session can contain abandoned branches, retried calls, streaming snapshots, or resumed state that never appears as one linear visible conversation.
+          </li>
+          <li>
+            <strong>Cache metrics are not context occupancy.</strong> A cache read describes reuse reported by a usage object; it is not a direct measurement of remaining context capacity.
+          </li>
+          <li>
+            <strong>Line distance is approximate.</strong> Nearby JSONL lines are nearby in storage order, but not necessarily one request-response pair.
+          </li>
+          <li>
+            <strong>Absence is narrow evidence.</strong> Not finding the literal marker does not establish that no service insertion occurred under another name or representation.
+          </li>
+        </ul>
+      </section>
+
+      <section id="extend">
+        <h2>Extending the audit responsibly</h2>
+        <p>
+          Once the basic report is verified, you can add analyses without changing the source:
+        </p>
+        <ul>
+          <li>group usage by stable request or message identifier;</li>
+          <li>calculate time gaps between reminder-bearing records;</li>
+          <li>separate record types before aggregating token metrics;</li>
+          <li>compare two immutable session snapshots with the same script version;</li>
+          <li>plot per-call metrics while keeping the underlying CSV private;</li>
+          <li>add new marker names as separately reported categories;</li>
+          <li>record the Claude Code version alongside every report.</li>
+        </ul>
+        <p>
+          If you modify the script, add a script digest to your audit notes:
+        </p>
+        <pre><code>sha256sum audit_claude_session.py \
+  | tee "$AUDIT_DIR/report/script.sha256"</code></pre>
+        <p>
+          This matters when reports produced months apart need to be compared. A change to alias mapping or deduplication logic can alter totals even when the source data is identical.
+        </p>
+      </section>
+
+      <section id="conclusion">
+        <h2>Final takeaway</h2>
+        <p>
+          The interface is designed for interaction, not forensic accounting. A reliable audit therefore begins with an immutable session snapshot, counts <code>ip_reminder</code> at both record and literal-occurrence levels, preserves JSON paths, and treats each token category independently. The central discipline is to keep observations separate from interpretation: the log can show that a marker and usage metadata exist, but only careful schema inspection can tell you how safely they may be aggregated.
+        </p>
+        <p>
+          Continue with the <a href="guides.html">Agent Lab Journal guides</a> for more repeatable agent-engineering workflows, or use the <a href="glossary.html">glossary</a> when a logging, caching, or context term needs a precise definition.
+        </p>
+      </section>
+    </article>
+  </main>
+
+  <footer class="site-footer">
+    <div class="container">
+      <p>Agent Lab Journal — practical methods for building, inspecting, and operating AI agents.</p>
+    </div>
+  </footer>
+</body>
+</html>

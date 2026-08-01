@@ -1,0 +1,943 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+
+  <title>Как проверить скрытые напоминания и расход контекста в логах Claude Code — Agent Lab Journal</title>
+  <meta name="description" content="Продвинутый локальный аудит сессии Claude Code: поиск вхождений ip_reminder и раздельный подсчёт input-, output-, cache creation- и cache read-токенов без отправки логов наружу.">
+  <link rel="canonical" href="https://agentlabjournal.online/audit-claude-code-hidden-reminders.html">
+  <link rel="stylesheet" href="style.css">
+  <link rel="stylesheet" href="reading.css">
+
+  <meta property="og:type" content="article">
+  <meta property="og:locale" content="ru_RU">
+  <meta property="og:site_name" content="Agent Lab Journal">
+  <meta property="og:title" content="Как проверить скрытые напоминания и расход контекста в логах Claude Code">
+  <meta property="og:description" content="Локально находим ip_reminder в выбранной сессии Claude Code и строим проверяемое распределение input-, output- и cache-токенов.">
+  <meta property="og:url" content="https://agentlabjournal.online/audit-claude-code-hidden-reminders.html">
+  <meta property="og:image" content="https://agentlabjournal.online/podcast-cover.png">
+  <meta property="og:image:alt" content="Локальный аудит журналов Claude Code и расхода токенов">
+
+  <meta name="twitter:card" content="summary_large_image">
+  <meta name="twitter:title" content="Как проверить скрытые напоминания и расход контекста в логах Claude Code">
+  <meta name="twitter:description" content="Воспроизводимый локальный аудит ip_reminder и четырёх категорий токенов в одной сессии Claude Code.">
+  <meta name="twitter:image" content="https://agentlabjournal.online/podcast-cover.png">
+
+  <meta name="reading-meta" content="Продвинутый уровень · 45 минут · локальный отчёт по выбранной сессии">
+
+  <script type="application/ld+json">
+  {
+    "@context": "https://schema.org",
+    "@type": "Article",
+    "headline": "Как проверить скрытые напоминания и расход контекста в логах Claude Code",
+    "description": "Продвинутый локальный аудит сессии Claude Code: поиск вхождений ip_reminder и раздельный подсчёт input-, output-, cache creation- и cache read-токенов без отправки логов наружу.",
+    "image": "https://agentlabjournal.online/podcast-cover.png",
+    "dateModified": "2026-08-01",
+    "inLanguage": "ru-RU",
+    "author": {
+      "@type": "Organization",
+      "name": "Agent Lab Journal",
+      "url": "https://agentlabjournal.online/"
+    },
+    "publisher": {
+      "@type": "Organization",
+      "name": "Agent Lab Journal",
+      "url": "https://agentlabjournal.online/",
+      "logo": {
+        "@type": "ImageObject",
+        "url": "https://agentlabjournal.online/podcast-cover.png"
+      }
+    },
+    "mainEntityOfPage": {
+      "@type": "WebPage",
+      "@id": "https://agentlabjournal.online/audit-claude-code-hidden-reminders.html"
+    },
+    "url": "https://agentlabjournal.online/audit-claude-code-hidden-reminders.html",
+    "articleSection": "Практические руководства",
+    "proficiencyLevel": "Advanced",
+    "timeRequired": "PT45M",
+    "isAccessibleForFree": true,
+    "keywords": [
+      "Claude Code",
+      "ip_reminder",
+      "аудит логов",
+      "контекст",
+      "input tokens",
+      "output tokens",
+      "cache tokens",
+      "JSONL"
+    ]
+  }
+  </script>
+</head>
+<body>
+  <header class="site-header">
+    <nav aria-label="Основная навигация">
+      <a href="index.html">Agent Lab Journal</a>
+      <a href="guides.html">Руководства</a>
+      <a href="glossary.html">Глоссарий</a>
+    </nav>
+  </header>
+
+  <main>
+    <article class="reading container">
+      <header class="article-header">
+        <p class="eyebrow">Практика эксплуатации · Продвинутый уровень</p>
+        <h1>Как проверить скрытые напоминания и расход контекста в логах Claude Code</h1>
+        <p class="lead"><strong>Терминальный интерфейс Claude Code показывает диалог, но не обязан отображать каждую служебную вставку, которую получила модель.</strong> Поэтому частоту <code>ip_reminder</code> и её возможную связь с ростом контекста нельзя надёжно оценить по экрану. Проверяем локальный JSONL-транскрипт, отдельно считаем напоминания и четыре категории токенов, а затем формируем отчёт, который можно повторно проверить без отправки истории во внешний сервис.</p>
+
+        <div class="reading-meta" aria-label="Информация о статье">
+          <span>Уровень: продвинутый</span>
+          <span>Чтение: 45 минут</span>
+          <span>Результат: локальный JSON- и текстовый отчёт</span>
+        </div>
+      </header>
+
+      <section>
+        <h2>Что получится в конце</h2>
+        <p>Мы выберем один файл сессии Claude Code и получим два локальных отчёта:</p>
+        <ul>
+          <li>число записей и точных открывающих тегов <code>&lt;ip_reminder&gt;</code>;</li>
+          <li>номера строк, время, роль и путь внутри JSON для каждого совпадения;</li>
+          <li>количество уникальных ответов модели с данными <code>usage</code>;</li>
+          <li>суммы <code>input_tokens</code>, <code>output_tokens</code>, <code>cache_creation_input_tokens</code> и <code>cache_read_input_tokens</code>;</li>
+          <li>распределение токенов по модели и по ответам;</li>
+          <li>предупреждения о битых строках, отсутствующих идентификаторах сообщений и неоднозначных дубликатах.</li>
+        </ul>
+
+        <p><a class="term-link" href="glossary.html#observability">Наблюдаемость</a> здесь означает не просмотр красивого интерфейса, а возможность восстановить фактическую структуру сессии по сохранённым событиям. <a class="term-link" href="glossary.html#context">Контекст</a> — всё, что модель получает перед генерацией ответа: инструкции, сообщения, результаты инструментов и служебные добавления. <a class="term-link" href="glossary.html#token">Токен</a> — единица текста, используемая моделью при обработке ввода и создании вывода.</p>
+
+        <aside class="note">
+          <p><strong>Граница вывода:</strong> наличие <code>ip_reminder</code> в транскрипте доказывает только наличие соответствующего маркера в сохранённой записи. Оно само по себе не доказывает, почему вставка появилась, сколько токенов заняла, изменила ли ответ и была ли вызвана конкретной фразой пользователя.</p>
+        </aside>
+      </section>
+
+      <section>
+        <h2>Конкретный случай: экран не объясняет рост ввода</h2>
+        <p>Представим воспроизводимую ситуацию без заранее заданного результата. Разработчик ведёт длинную сессию: просит проанализировать файлы, несколько раз уточняет задачу и получает ответы обычной длины. В терминале нет отдельной строки про <code>ip_reminder</code>, но индикатор доступного контекста уменьшается быстрее ожидаемого.</p>
+
+        <p>Из интерфейса нельзя строго ответить на четыре вопроса:</p>
+        <ol>
+          <li>присутствовал ли маркер <code>&lt;ip_reminder&gt;</code> в сохранённой сессии;</li>
+          <li>сколько раз он встретился и в каких записях;</li>
+          <li>какой объём пришёлся на обычный ввод, вывод, создание кэша и чтение кэша;</li>
+          <li>совпали ли напоминания по времени с более тяжёлыми ответами модели.</li>
+        </ol>
+
+        <p>Для ответа нужен не новый эксперимент с намеренной провокацией фильтров, а аудит уже существующей сессии. Это безопаснее и методологически чище: мы не меняем исследуемый диалог и не пытаемся обойти ограничения модели.</p>
+      </section>
+
+      <section>
+        <h2>Как устроены локальные данные</h2>
+        <p>Claude Code обычно сохраняет проектные транскрипты в каталоге:</p>
+
+        <pre><code>~/.claude/projects/&lt;кодированный-путь-проекта&gt;/&lt;session-id&gt;.jsonl</code></pre>
+
+        <p><a class="term-link" href="glossary.html#jsonl">JSONL</a>, или JSON Lines, — формат, в котором каждая строка является самостоятельным JSON-объектом. Одна сессия может включать пользовательские и ассистентские сообщения, системные события, результаты инструментов и вспомогательные записи.</p>
+
+        <p>Формат локального транскрипта является внутренней поверхностью продукта и может меняться между версиями Claude Code. Поэтому скрипт ниже не требует фиксированного набора типов строк. Он рекурсивно ищет строковые значения и объект <code>usage</code>, а неизвестные структуры не объявляет ошибочными автоматически.</p>
+
+        <p>В ответах модели могут встречаться поля:</p>
+
+        <pre><code>{
+  "message": {
+    "id": "идентификатор-ответа",
+    "role": "assistant",
+    "model": "имя-модели",
+    "usage": {
+      "input_tokens": 0,
+      "output_tokens": 0,
+      "cache_creation_input_tokens": 0,
+      "cache_read_input_tokens": 0
+    }
+  }
+}</code></pre>
+
+        <p>Нули показаны только как схема. Они не являются результатом теста. В конкретной версии часть полей может отсутствовать, находиться в другом месте или появляться в нескольких строках одного потокового ответа.</p>
+      </section>
+
+      <section>
+        <h2>Что именно считать</h2>
+
+        <h3>Вхождения напоминания</h3>
+        <p>Поиск простого слова <code>ip_reminder</code> даёт ложные совпадения: пользователь мог сам написать это имя, оно могло попасть в команду или в статью. Основной показатель скрипта — число точных открывающих тегов по регулярному выражению:</p>
+
+        <pre><code>&lt;ip_reminder(?:\s[^&gt;]*)?&gt;</code></pre>
+
+        <p>Дополнительно отчёт сохраняет JSON-путь до совпавшего значения. Это позволяет отличить содержимое сообщения от имени поля или другого метаданного. Закрывающий тег отдельно не считается событием.</p>
+
+        <h3>Четыре категории токенов</h3>
+        <dl>
+          <dt><code>input_tokens</code></dt>
+          <dd>Входные токены, указанные в объекте <code>usage</code>. Это не обязательно полный физический размер всего видимого пользователю диалога.</dd>
+
+          <dt><code>output_tokens</code></dt>
+          <dd>Токены, созданные моделью для ответа.</dd>
+
+          <dt><code>cache_creation_input_tokens</code></dt>
+          <dd>Вход, записанный в кэш промпта. Название отражает категорию учёта, а не количество уникальных символов на диске.</dd>
+
+          <dt><code>cache_read_input_tokens</code></dt>
+          <dd>Вход, повторно использованный из кэша промпта.</dd>
+        </dl>
+
+        <p><a class="term-link" href="glossary.html#prompt">Промпт</a> в этой схеме шире последней пользовательской реплики: модель может получать историю и служебные инструкции. Кэшированные категории нужно показывать отдельно. Складывать их в безымянное поле «все токены», а затем трактовать сумму как размер текущего контекстного окна некорректно.</p>
+      </section>
+
+      <section>
+        <h2>Шаг 1. Зафиксируйте среду и не меняйте исходник</h2>
+        <p>Сначала запишите версию Claude Code и убедитесь, что каталог существует:</p>
+
+        <pre><code>claude --version
+test -d "$HOME/.claude/projects" &amp;&amp; echo "Каталог найден"</code></pre>
+
+        <p>Найдите недавние транскрипты. Команда только читает метаданные файлов:</p>
+
+        <pre><code>find "$HOME/.claude/projects" \
+  -type f -name '*.jsonl' \
+  -printf '%T@ %TY-%Tm-%Td %TH:%TM:%TS %p\n' 2&gt;/dev/null \
+  | sort -nr \
+  | head -20</code></pre>
+
+        <p>В macOS системный <code>find</code> обычно не поддерживает <code>-printf</code>. Используйте:</p>
+
+        <pre><code>find "$HOME/.claude/projects" -type f -name '*.jsonl' -exec stat \
+  -f '%m %Sm %N' -t '%Y-%m-%d %H:%M:%S' {} \; \
+  | sort -nr \
+  | head -20</code></pre>
+
+        <p>Выберите файл по времени и проектному каталогу. Не используйте автоматически «самый новый», если одновременно открыты несколько сессий или работают дочерние агенты.</p>
+
+        <p>Задайте явный путь и проверьте его:</p>
+
+        <pre><code>SESSION_FILE="/абсолютный/путь/к/session-id.jsonl"
+
+test -f "$SESSION_FILE" || {
+  echo "Файл сессии не найден" &gt;&amp;2
+  exit 1
+}
+
+wc -l -c "$SESSION_FILE"
+file "$SESSION_FILE"</code></pre>
+
+        <aside class="note">
+          <p><strong>Не редактируйте активный транскрипт.</strong> Анализатор открывает его только для чтения. Для строго повторяемого аудита завершите сессию или сделайте обычную копию в отдельный проверенный каталог и анализируйте копию.</p>
+        </aside>
+      </section>
+
+      <section>
+        <h2>Шаг 2. Выполните быструю разведку</h2>
+        <p>До запуска полноценного анализатора полезно понять, есть ли точный маркер:</p>
+
+        <pre><code>grep -n -F '&lt;ip_reminder' "$SESSION_FILE"</code></pre>
+
+        <p>Если установлен <code>rg</code>:</p>
+
+        <pre><code>rg -n --fixed-strings '&lt;ip_reminder' "$SESSION_FILE"</code></pre>
+
+        <p>Отсутствие вывода означает только, что буквальная последовательность не найдена. Это не доказывает отсутствие любых скрытых инструкций: они могли не сохраняться, называться иначе или быть представлены другой структурой.</p>
+
+        <p>Не публикуйте найденные строки целиком. Транскрипт может содержать исходный запрос, фрагменты файлов, пути, результаты инструментов, персональные данные и секреты. Итоговый анализатор выводит путь и короткий обезличенный фрагмент вокруг тега, но не печатает всё сообщение.</p>
+      </section>
+
+      <section>
+        <h2>Шаг 3. Сохраните локальный анализатор</h2>
+        <p>Создайте файл <code>audit_claude_session.py</code> в каталоге, доступном только вам. Скрипт использует стандартную библиотеку Python, ничего не отправляет в сеть и не изменяет транскрипт.</p>
+
+        <pre><code>#!/usr/bin/env python3
+import argparse
+import hashlib
+import json
+import re
+import sys
+from collections import Counter, defaultdict
+from datetime import datetime, timezone
+from pathlib import Path
+from typing import Any, Iterator
+
+TOKEN_FIELDS = (
+    "input_tokens",
+    "output_tokens",
+    "cache_creation_input_tokens",
+    "cache_read_input_tokens",
+)
+
+IP_TAG = re.compile(r"&lt;ip_reminder(?:\s[^&gt;]*)?&gt;", re.IGNORECASE)
+
+
+def walk(value: Any, path: str = "$") -&gt; Iterator[tuple[str, Any]]:
+    yield path, value
+
+    if isinstance(value, dict):
+        for key, child in value.items():
+            yield from walk(child, f"{path}.{key}")
+    elif isinstance(value, list):
+        for index, child in enumerate(value):
+            yield from walk(child, f"{path}[{index}]")
+
+
+def as_nonnegative_int(value: Any) -&gt; int | None:
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, int) and value &gt;= 0:
+        return value
+    return None
+
+
+def usage_score(usage: dict[str, int]) -&gt; int:
+    return sum(usage.get(field, 0) for field in TOKEN_FIELDS)
+
+
+def safe_excerpt(text: str, match: re.Match[str], radius: int = 32) -&gt; str:
+    left = max(0, match.start() - radius)
+    right = min(len(text), match.end() + radius)
+    excerpt = text[left:right]
+    excerpt = re.sub(r"\s+", " ", excerpt)
+    excerpt = excerpt.replace("\n", " ")
+    return excerpt
+
+
+def extract_usage_candidates(
+    record: Any,
+    line_number: int,
+) -&gt; list[dict[str, Any]]:
+    candidates = []
+
+    for path, value in walk(record):
+        if not isinstance(value, dict):
+            continue
+
+        raw_usage = value.get("usage")
+        if not isinstance(raw_usage, dict):
+            continue
+
+        usage = {}
+        present_fields = []
+
+        for field in TOKEN_FIELDS:
+            parsed = as_nonnegative_int(raw_usage.get(field))
+            if parsed is not None:
+                usage[field] = parsed
+                present_fields.append(field)
+            else:
+                usage[field] = 0
+
+        if not present_fields:
+            continue
+
+        message_id = value.get("id")
+        model = value.get("model")
+
+        if not isinstance(message_id, str) or not message_id:
+            message_id = None
+        if not isinstance(model, str) or not model:
+            model = "unknown"
+
+        candidates.append({
+            "line": line_number,
+            "path": f"{path}.usage",
+            "message_id": message_id,
+            "model": model,
+            "usage": usage,
+            "present_fields": present_fields,
+        })
+
+    return candidates
+
+
+def choose_usage_records(
+    candidates: list[dict[str, Any]],
+) -&gt; tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    by_message_id = defaultdict(list)
+    without_id = []
+
+    for candidate in candidates:
+        if candidate["message_id"]:
+            by_message_id[candidate["message_id"]].append(candidate)
+        else:
+            without_id.append(candidate)
+
+    selected = []
+    ambiguous = []
+
+    for message_id, versions in by_message_id.items():
+        signatures = {
+            tuple(item["usage"][field] for field in TOKEN_FIELDS)
+            for item in versions
+        }
+
+        best = max(
+            versions,
+            key=lambda item: (usage_score(item["usage"]), item["line"]),
+        )
+        selected.append(best)
+
+        if len(signatures) &gt; 1:
+            ambiguous.append({
+                "message_id": message_id,
+                "versions": len(versions),
+                "selected_line": best["line"],
+                "selection_rule": "largest_usage_sum_then_latest_line",
+            })
+
+    # Без message.id безопасно доказать дубликаты нельзя.
+    # Такие usage-объекты учитываются построчно и явно помечаются.
+    selected.extend(without_id)
+    selected.sort(key=lambda item: item["line"])
+
+    return selected, ambiguous
+
+
+def main() -&gt; int:
+    parser = argparse.ArgumentParser(
+        description="Локальный аудит одного JSONL-транскрипта Claude Code."
+    )
+    parser.add_argument("session", type=Path)
+    parser.add_argument(
+        "--json-out",
+        type=Path,
+        default=Path("claude-session-audit.json"),
+    )
+    args = parser.parse_args()
+
+    session = args.session.expanduser().resolve()
+
+    if not session.is_file():
+        print(f"Ошибка: файл не найден: {session}", file=sys.stderr)
+        return 2
+    if session.suffix.lower() != ".jsonl":
+        print("Ошибка: ожидается файл с расширением .jsonl", file=sys.stderr)
+        return 2
+
+    digest = hashlib.sha256()
+    line_count = 0
+    parsed_records = 0
+    invalid_lines = []
+    type_counts = Counter()
+    reminder_hits = []
+    usage_candidates = []
+
+    with session.open("rb") as binary:
+        for chunk in iter(lambda: binary.read(1024 * 1024), b""):
+            digest.update(chunk)
+
+    with session.open("r", encoding="utf-8", errors="replace") as source:
+        for line_number, raw_line in enumerate(source, start=1):
+            line_count += 1
+            stripped = raw_line.strip()
+
+            if not stripped:
+                continue
+
+            try:
+                record = json.loads(stripped)
+            except json.JSONDecodeError as error:
+                invalid_lines.append({
+                    "line": line_number,
+                    "error": error.msg,
+                })
+                continue
+
+            parsed_records += 1
+
+            if isinstance(record, dict):
+                record_type = record.get("type", "missing")
+                type_counts[str(record_type)] += 1
+                role = None
+
+                message = record.get("message")
+                if isinstance(message, dict):
+                    candidate_role = message.get("role")
+                    if isinstance(candidate_role, str):
+                        role = candidate_role
+            else:
+                role = None
+                type_counts[type(record).__name__] += 1
+
+            for path, value in walk(record):
+                if not isinstance(value, str):
+                    continue
+
+                for match in IP_TAG.finditer(value):
+                    reminder_hits.append({
+                        "line": line_number,
+                        "record_type": (
+                            record.get("type")
+                            if isinstance(record, dict)
+                            else type(record).__name__
+                        ),
+                        "role": role,
+                        "json_path": path,
+                        "excerpt": safe_excerpt(value, match),
+                    })
+
+            usage_candidates.extend(
+                extract_usage_candidates(record, line_number)
+            )
+
+    selected_usage, ambiguous = choose_usage_records(usage_candidates)
+
+    totals = {field: 0 for field in TOKEN_FIELDS}
+    by_model = defaultdict(lambda: {field: 0 for field in TOKEN_FIELDS})
+    usage_rows = []
+
+    for item in selected_usage:
+        for field in TOKEN_FIELDS:
+            value = item["usage"][field]
+            totals[field] += value
+            by_model[item["model"]][field] += value
+
+        usage_rows.append({
+            "line": item["line"],
+            "message_id": item["message_id"],
+            "model": item["model"],
+            **item["usage"],
+            "present_fields": item["present_fields"],
+        })
+
+    cache_total = (
+        totals["cache_creation_input_tokens"]
+        + totals["cache_read_input_tokens"]
+    )
+    reported_total = sum(totals.values())
+
+    report = {
+        "report_version": 1,
+        "generated_at_utc": datetime.now(timezone.utc).isoformat(),
+        "source": {
+            "path": str(session),
+            "sha256": digest.hexdigest(),
+            "bytes": session.stat().st_size,
+            "lines": line_count,
+            "parsed_records": parsed_records,
+            "invalid_json_lines": invalid_lines,
+        },
+        "ip_reminder": {
+            "match_rule": "opening tag &lt;ip_reminder...&gt;, case-insensitive",
+            "occurrences": len(reminder_hits),
+            "records_with_match": len({
+                hit["line"] for hit in reminder_hits
+            }),
+            "hits": reminder_hits,
+        },
+        "usage": {
+            "candidate_usage_objects": len(usage_candidates),
+            "selected_usage_records": len(selected_usage),
+            "records_without_message_id": sum(
+                1 for item in selected_usage
+                if item["message_id"] is None
+            ),
+            "deduplication": (
+                "For equal message.id choose largest sum of the four "
+                "token fields, then latest line. Records without id "
+                "are counted per line."
+            ),
+            "ambiguous_message_versions": ambiguous,
+            "totals": {
+                **totals,
+                "cache_total": cache_total,
+                "reported_total_all_categories": reported_total,
+            },
+            "by_model": dict(sorted(by_model.items())),
+            "records": usage_rows,
+        },
+        "record_types": dict(type_counts.most_common()),
+        "interpretation_limits": [
+            "A marker proves presence in the saved transcript, not its cause.",
+            "Token fields are provider-reported accounting categories.",
+            "The sum of categories is not the current context-window size.",
+            "Local transcript schema may change between Claude Code versions.",
+            "Missing fields are reported as absent and contribute zero.",
+        ],
+    }
+
+    output = args.json_out.expanduser().resolve()
+    output.write_text(
+        json.dumps(report, ensure_ascii=False, indent=2) + "\n",
+        encoding="utf-8",
+    )
+
+    print("CLAUDE CODE SESSION AUDIT")
+    print(f"Source: {session}")
+    print(f"SHA-256: {report['source']['sha256']}")
+    print(f"JSONL lines: {line_count}")
+    print(f"Parsed records: {parsed_records}")
+    print(f"Invalid JSON lines: {len(invalid_lines)}")
+    print()
+    print("IP REMINDER")
+    print(f"Occurrences: {len(reminder_hits)}")
+    print(
+        "Records with match: "
+        f"{report['ip_reminder']['records_with_match']}"
+    )
+
+    for hit in reminder_hits:
+        print(
+            f"  line={hit['line']} "
+            f"type={hit['record_type']} "
+            f"role={hit['role']} "
+            f"path={hit['json_path']}"
+        )
+
+    print()
+    print("TOKEN USAGE")
+    for field in TOKEN_FIELDS:
+        print(f"{field}: {totals[field]}")
+    print(f"cache_total: {cache_total}")
+    print(f"reported_total_all_categories: {reported_total}")
+    print(f"selected_usage_records: {len(selected_usage)}")
+    print(
+        "selected_records_without_message_id: "
+        f"{report['usage']['records_without_message_id']}"
+    )
+    print(
+        "ambiguous_message_versions: "
+        f"{len(ambiguous)}"
+    )
+    print()
+    print(f"JSON report: {output}")
+
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())</code></pre>
+      </section>
+
+      <section>
+        <h2>Почему анализатор не суммирует каждую строку вслепую</h2>
+        <p>Во время потоковой генерации один логический ответ модели может быть представлен несколькими записями с одинаковым <code>message.id</code>. Если сложить все найденные объекты <code>usage</code>, один ответ иногда можно посчитать несколько раз.</p>
+
+        <p>Скрипт применяет явную эвристику:</p>
+        <ol>
+          <li>группирует объекты <code>usage</code> по <code>message.id</code>;</li>
+          <li>выбирает версию с наибольшей суммой четырёх категорий;</li>
+          <li>при равной сумме выбирает более позднюю строку;</li>
+          <li>сохраняет предупреждение, если у одного ID были разные наборы значений;</li>
+          <li>записи без ID считает по строкам и сообщает их количество.</li>
+        </ol>
+
+        <p>Это не универсальный контракт Claude Code, а проверяемое правило анализа нестабильного формата. Если в вашей версии каждый фрагмент с одинаковым ID представляет отдельный оплачиваемый вызов, правило потребуется изменить. Поэтому JSON-отчёт сохраняет исходные номера строк и список неоднозначных групп.</p>
+      </section>
+
+      <section>
+        <h2>Шаг 4. Запустите аудит выбранной сессии</h2>
+        <p>Проверьте синтаксис скрипта:</p>
+
+        <pre><code>python3 -m py_compile audit_claude_session.py</code></pre>
+
+        <p>Запустите анализ с явным входом и выходом:</p>
+
+        <pre><code>python3 audit_claude_session.py \
+  "$SESSION_FILE" \
+  --json-out ./claude-session-audit.json \
+  | tee ./claude-session-audit.txt</code></pre>
+
+        <p>После выполнения рядом появятся:</p>
+        <ul>
+          <li><code>claude-session-audit.txt</code> — короткая сводка для чтения;</li>
+          <li><code>claude-session-audit.json</code> — детальный машиночитаемый отчёт.</li>
+        </ul>
+
+        <p>Никаких ожидаемых чисел в статье нет: правильные значения зависят исключительно от выбранного локального файла. Нулевое число напоминаний является допустимым результатом, а не признаком ошибки анализатора.</p>
+      </section>
+
+      <section>
+        <h2>Шаг 5. Прочитайте отчёт без неверных выводов</h2>
+
+        <h3>Сначала проверьте качество входа</h3>
+        <p>Поля <code>lines</code> и <code>parsed_records</code> должны быть близки. Пустые строки не считаются JSON-записями. Если <code>invalid_json_lines</code> не пуст, посмотрите номера строк. Для активного файла причиной может быть ещё не дописанная последняя строка; для завершённого — повреждение или изменение формата.</p>
+
+        <h3>Затем изучите совпадения</h3>
+        <p>Для каждого вхождения проверьте:</p>
+        <ul>
+          <li><code>line</code> — строку транскрипта;</li>
+          <li><code>record_type</code> и <code>role</code> — тип записи и роль;</li>
+          <li><code>json_path</code> — место внутри объекта;</li>
+          <li><code>excerpt</code> — короткий фрагмент, подтверждающий точный тег.</li>
+        </ul>
+
+        <p>Если тег найден внутри пользовательского текста, где вы сами обсуждали <code>ip_reminder</code>, это не следует автоматически считать служебной вставкой. Сделайте локальную адресную проверку строки, не печатая весь журнал:</p>
+
+        <pre><code>LINE_NUMBER=123
+sed -n "${LINE_NUMBER}p" "$SESSION_FILE" \
+  | python3 -m json.tool \
+  | less</code></pre>
+
+        <p>Подставьте реальный номер из отчёта. Выйдите из <code>less</code> клавишей <code>q</code>. Не копируйте содержимое в публичный тикет без редактирования чувствительных данных.</p>
+
+        <h3>После этого смотрите токены</h3>
+        <p><code>reported_total_all_categories</code> — арифметическая сумма четырёх отчётных категорий. Она удобна для сверки агрегирования, но не является ответом на вопрос «сколько токенов прямо сейчас находится в окне модели».</p>
+
+        <p>Интерпретация категорий:</p>
+        <ul>
+          <li>большой <code>input_tokens</code> указывает на значительный некэшированный вход в учёте конкретного вызова;</li>
+          <li>большой <code>output_tokens</code> отражает длинную генерацию;</li>
+          <li>большой <code>cache_creation_input_tokens</code> показывает объём входа, отнесённый к созданию кэша;</li>
+          <li>большой <code>cache_read_input_tokens</code> показывает повторное использование кэшированного входа;</li>
+          <li>нулевое значение может означать настоящий ноль или отсутствие поля — различие видно в <code>present_fields</code>.</li>
+        </ul>
+      </section>
+
+      <section>
+        <h2>Шаг 6. Постройте распределение по отдельным ответам</h2>
+        <p>Одних сумм недостаточно: один аномальный ответ и постепенный рост сессии дают одинаковый итог. Следующая команда читает готовый локальный отчёт и выводит строки с наибольшей суммой категорий:</p>
+
+        <pre><code>python3 - &lt;&lt;'PY'
+import json
+
+with open("claude-session-audit.json", encoding="utf-8") as source:
+    report = json.load(source)
+
+fields = (
+    "input_tokens",
+    "output_tokens",
+    "cache_creation_input_tokens",
+    "cache_read_input_tokens",
+)
+
+rows = report["usage"]["records"]
+
+for row in sorted(
+    rows,
+    key=lambda item: sum(item.get(field, 0) for field in fields),
+    reverse=True,
+)[:20]:
+    total = sum(row.get(field, 0) for field in fields)
+    print(
+        row["line"],
+        row["model"],
+        total,
+        *(row.get(field, 0) for field in fields),
+    )
+PY</code></pre>
+
+        <p>Порядок столбцов после модели: общая сумма, обычный ввод, вывод, создание кэша и чтение кэша. Это локальная сортировка отчётных категорий, а не расчёт денежной стоимости.</p>
+
+        <p>Для распределения по моделям выполните:</p>
+
+        <pre><code>python3 - &lt;&lt;'PY'
+import json
+
+with open("claude-session-audit.json", encoding="utf-8") as source:
+    report = json.load(source)
+
+for model, usage in report["usage"]["by_model"].items():
+    print(model)
+    for name, value in usage.items():
+        print(f"  {name}: {value}")
+PY</code></pre>
+      </section>
+
+      <section>
+        <h2>Шаг 7. Сопоставьте напоминания и usage по строкам</h2>
+        <p>Это исследовательская сверка, а не доказательство причинности. Она показывает ближайшую следующую запись <code>usage</code> после каждой строки с тегом:</p>
+
+        <pre><code>python3 - &lt;&lt;'PY'
+import json
+
+with open("claude-session-audit.json", encoding="utf-8") as source:
+    report = json.load(source)
+
+usage_rows = sorted(
+    report["usage"]["records"],
+    key=lambda row: row["line"],
+)
+
+for hit in report["ip_reminder"]["hits"]:
+    following = next(
+        (row for row in usage_rows if row["line"] &gt;= hit["line"]),
+        None,
+    )
+
+    print({
+        "reminder_line": hit["line"],
+        "reminder_path": hit["json_path"],
+        "following_usage": following,
+    })
+PY</code></pre>
+
+        <p>Близость строк позволяет сформулировать проверяемый вопрос: «После записи с маркером следует ответ с такими-то отчётными категориями». Она не позволяет утверждать: «Напоминание добавило ровно N токенов». В одном вызове одновременно могут измениться история, результаты инструментов, системные инструкции, модель и состояние кэша.</p>
+      </section>
+
+      <section>
+        <h2>Как оценивать возможное влияние на контекст</h2>
+        <p>Для оценки приращения нужен контрольный дизайн, а не разность двух соседних строк. Минимально разумная схема:</p>
+        <ol>
+          <li>выбрать несколько уже существующих ответов с тегом и без него;</li>
+          <li>сопоставлять вызовы одной модели и близкого этапа сессии;</li>
+          <li>отдельно сравнивать все четыре поля <code>usage</code>;</li>
+          <li>учитывать длину пользовательской реплики и объём результатов инструментов;</li>
+          <li>не смешивать вызовы до и после компактизации истории;</li>
+          <li>сообщать диапазон наблюдений, а не одно «точное влияние».</li>
+        </ol>
+
+        <p>Даже такой анализ останется наблюдательным. Транскрипт обычно не даёт контрфактического ответа на вопрос, сколько токенов потребил бы тот же запрос в том же состоянии, но без служебной вставки. Для строгого причинного измерения потребовался бы контролируемый интерфейс формирования запроса, которого обычный локальный журнал не предоставляет.</p>
+      </section>
+
+      <section>
+        <h2>Проверка корректности анализатора</h2>
+        <p>Не доверяйте скрипту только потому, что он завершился без ошибки. Проведите четыре независимые проверки.</p>
+
+        <h3>1. Сверьте хеш входного файла</h3>
+        <pre><code>sha256sum "$SESSION_FILE"
+python3 - &lt;&lt;'PY'
+import json
+
+with open("claude-session-audit.json", encoding="utf-8") as source:
+    print(json.load(source)["source"]["sha256"])
+PY</code></pre>
+
+        <p>На macOS вместо <code>sha256sum</code> используйте <code>shasum -a 256</code>. Значения должны совпасть, если файл не изменился между запуском и проверкой.</p>
+
+        <h3>2. Сверьте число тегов независимой командой</h3>
+        <pre><code>python3 - "$SESSION_FILE" &lt;&lt;'PY'
+import re
+import sys
+
+pattern = re.compile(r"&lt;ip_reminder(?:\s[^&gt;]*)?&gt;", re.I)
+count = 0
+
+with open(sys.argv[1], encoding="utf-8", errors="replace") as source:
+    for line in source:
+        count += len(pattern.findall(line))
+
+print(count)
+PY</code></pre>
+
+        <p>Число должно совпасть с <code>ip_reminder.occurrences</code>. Эта сверка не определяет происхождение тегов, но проверяет механику подсчёта.</p>
+
+        <h3>3. Вручную сложите небольшой фрагмент</h3>
+        <p>Выберите несколько последовательных элементов из <code>usage.records</code>, сложите каждую категорию отдельно и сравните с независимым коротким скриптом или таблицей. Не проверяйте только общую сумму: перестановка категорий тогда останется незаметной.</p>
+
+        <h3>4. Запустите анализ дважды</h3>
+        <pre><code>python3 audit_claude_session.py \
+  "$SESSION_FILE" \
+  --json-out ./audit-first.json &gt;./audit-first.txt
+
+python3 audit_claude_session.py \
+  "$SESSION_FILE" \
+  --json-out ./audit-second.json &gt;./audit-second.txt</code></pre>
+
+        <p>Поля <code>generated_at_utc</code> будут различаться. Остальные данные должны совпасть, если исходный файл не менялся. Для завершённой сессии сравните отчёты после исключения времени генерации:</p>
+
+        <pre><code>python3 - &lt;&lt;'PY'
+import json
+
+def load(path):
+    with open(path, encoding="utf-8") as source:
+        value = json.load(source)
+    value.pop("generated_at_utc", None)
+    return value
+
+assert load("audit-first.json") == load("audit-second.json")
+print("Проверка пройдена")
+PY</code></pre>
+      </section>
+
+      <section>
+        <h2>Типовые сбои и способы диагностики</h2>
+        <dl>
+          <dt>Каталог <code>~/.claude/projects</code> отсутствует</dt>
+          <dd>Проверьте, под тем ли пользователем запущен Claude Code, не переопределена ли домашняя директория и создавалась ли локальная сессия. Не ищите рекурсивно по всей файловой системе с повышенными правами без необходимости.</dd>
+
+          <dt>Выбран не тот JSONL</dt>
+          <dd>Сопоставьте время изменения, проектный каталог и идентификатор сессии. Файл дочернего агента или соседнего проекта может выглядеть правдоподобно, но отвечать на другой вопрос.</dd>
+
+          <dt>Последняя строка не разбирается</dt>
+          <dd>Активный процесс мог ещё дописывать запись. Завершите сессию, сделайте копию и повторите анализ. Не удаляйте и не исправляйте строку в оригинале.</dd>
+
+          <dt><code>ip_reminder</code> найден, но его написал пользователь</dt>
+          <dd>Проверьте роль, JSON-путь и окружение тега. Само совпадение не устанавливает автора вставки. Для отчёта разделите «совпадения в пользовательском тексте» и «совпадения в других сохранённых полях».</dd>
+
+          <dt>Поиск словом даёт больше результатов, чем анализатор</dt>
+          <dd>Обычный поиск находит название без тега, закрывающие теги и обсуждение термина. Анализатор намеренно считает только точный открывающий тег.</dd>
+
+          <dt>Все token-поля равны нулю</dt>
+          <dd>Откройте несколько строк с типом <code>assistant</code> и проверьте фактическую структуру. В вашей версии данные могли отсутствовать или переместиться. Посмотрите <code>record_types</code> и не переименовывайте поля наугад.</dd>
+
+          <dt>Число объектов <code>usage</code> больше числа ответов</dt>
+          <dd>Вероятны потоковые или повторные записи. Проверьте <code>ambiguous_message_versions</code> и одинаковые <code>message_id</code>. Не суммируйте кандидаты до определения правила дедупликации.</dd>
+
+          <dt>Много записей без <code>message.id</code></dt>
+          <dd>Их нельзя надёжно дедуплицировать по использованной эвристике. Сверьте несколько строк вручную и при необходимости добавьте составной ключ из полей, реально присутствующих в вашей версии.</dd>
+
+          <dt>Сумма не совпадает с интерфейсом или биллингом</dt>
+          <dd>Локальный транскрипт, индикатор контекста, лимит подписки и счёт поставщика — разные источники с разной семантикой. Кэш, округление, модель, повторные запросы и политика учёта могут различаться. Не объявляйте локальную сумму финансово точной без отдельной сверки.</dd>
+
+          <dt>Отчёт раскрывает чувствительный текст</dt>
+          <dd>По умолчанию храните его локально с ограниченными правами. Перед передачей удалите путь к файлу, фрагменты сообщений, идентификаторы и любые данные, которые не нужны для воспроизведения ошибки.</dd>
+        </dl>
+      </section>
+
+      <section>
+        <h2>Безопасное хранение отчёта</h2>
+        <p>Сам отчёт менее чувствителен, чем полный транскрипт, но всё ещё содержит абсолютный путь, идентификаторы сообщений, модели, время и короткие фрагменты вокруг тега. Ограничьте права:</p>
+
+        <pre><code>chmod 600 \
+  ./claude-session-audit.json \
+  ./claude-session-audit.txt</code></pre>
+
+        <p>Если отчёт должен попасть в репозиторий, сначала создайте отдельную отредактированную копию. Не добавляйте исходный JSONL и не маскируйте секреты простой заменой одного известного ключа: чувствительные данные могут находиться в сообщениях и результатах инструментов.</p>
+
+        <p>Для командной работы лучше публиковать агрегаты и методику:</p>
+        <ul>
+          <li>версию Claude Code;</li>
+          <li>хеш исходника без самого исходника;</li>
+          <li>число разобранных и повреждённых строк;</li>
+          <li>правило поиска тега;</li>
+          <li>правило дедупликации;</li>
+          <li>суммы категорий без текстов сообщений;</li>
+          <li>явные ограничения интерпретации.</li>
+        </ul>
+      </section>
+
+      <section>
+        <h2>Ограничения метода</h2>
+        <ul>
+          <li><strong>Локальный журнал не равен точному сетевому запросу.</strong> Некоторые служебные данные могут не сохраняться или сохраняться в преобразованном виде.</li>
+          <li><strong>Схема JSONL не считается стабильным аналитическим контрактом.</strong> После обновления Claude Code проверяйте типы записей и пути полей заново.</li>
+          <li><strong>Тег не раскрывает механизм срабатывания.</strong> По одному транскрипту нельзя надёжно восстановить классификатор или условие, которое привело к вставке.</li>
+          <li><strong>Корреляция не является влиянием.</strong> Соседство напоминания и большого <code>usage</code> не доказывает, что именно напоминание создало рост.</li>
+          <li><strong>Кэшированные токены не следует трактовать как новые уникальные данные.</strong> Это отдельные категории учёта повторно используемого входа.</li>
+          <li><strong>Сумма категорий не равна заполнению окна контекста.</strong> Компактизация, повторное использование префикса и внутренняя сборка запроса требуют отдельного анализа.</li>
+          <li><strong>Отчёт не рассчитывает стоимость.</strong> Для этого нужны актуальные правила тарификации конкретной модели и среды доступа.</li>
+          <li><strong>Нулевой результат не доказывает глобальное отсутствие механизма.</strong> Он относится только к выбранному файлу, регулярному выражению и моменту проверки.</li>
+        </ul>
+      </section>
+
+      <section>
+        <h2>Критерии завершённого аудита</h2>
+        <p>Работу можно считать повторяемой, если выполнены все пункты:</p>
+        <ul>
+          <li>выбран один явный JSONL-файл сессии;</li>
+          <li>записана версия Claude Code;</li>
+          <li>сохранён SHA-256 исходного файла;</li>
+          <li>исходник не изменялся анализатором;</li>
+          <li>отдельно посчитаны открывающие теги <code>ip_reminder</code> и записи с совпадениями;</li>
+          <li>для каждого совпадения известны строка, роль и JSON-путь;</li>
+          <li>четыре категории токенов не смешаны между собой;</li>
+          <li>описано правило дедупликации потоковых записей;</li>
+          <li>проверены отсутствующие ID и неоднозначные версии <code>usage</code>;</li>
+          <li>результат независимо сверен хотя бы двумя командами;</li>
+          <li>выводы не приписывают напоминанию причинное влияние без контрольного сравнения;</li>
+          <li>отчёт хранится локально и не раскрывает полный транскрипт.</li>
+        </ul>
+
+        <p>Главный результат такого аудита — не сенсационное число, а проверяемая граница знания. Вы сможете точно сказать, сколько маркеров обнаружено в конкретном сохранённом файле и как в нём распределены заявленные категории токенов. Всё, что касается причины вставки, фактического сетевого промпта и влияния на поведение модели, останется отдельной гипотезой до появления дополнительных данных.</p>
+      </section>
+
+      <section>
+        <h2>Что изучить дальше</h2>
+        <p>Другие воспроизводимые методы анализа агентов собраны в разделе <a href="guides.html">«Руководства»</a>. Определения контекста, токенов, промптов и наблюдаемости доступны в <a href="glossary.html">глоссарии Agent Lab Journal</a>.</p>
+      </section>
+    </article>
+  </main>
+
+  <footer>
+    <span>Agent Lab Journal</span>
+    <span><a href="guides.html">Руководства</a> · <a href="glossary.html">Глоссарий</a></span>
+  </footer>
+</body>
+</html>
