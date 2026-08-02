@@ -1,0 +1,1013 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+
+  <title>Как создать MCP-сервер с нуля: HTTP API, тестирование и агент — Agent Lab Journal</title>
+  <meta name="description" content="Пошагово создаём MCP-сервер над HTTP API, проверяем инструменты отдельным клиентом и подключаем их к LLM-агенту без адаптера под каждый фреймворк.">
+  <link rel="canonical" href="https://agentlabjournal.online/build-and-test-mcp-server.html">
+  <link rel="stylesheet" href="style.css">
+  <link rel="stylesheet" href="reading.css">
+
+  <meta name="reading-meta" content="Уровень: средний; время: 45 минут; результат: рабочий MCP-сервер над HTTP API, проверенный через клиент и подключённый к LLM-агенту">
+
+  <meta property="og:type" content="article">
+  <meta property="og:locale" content="ru_RU">
+  <meta property="og:site_name" content="Agent Lab Journal">
+  <meta property="og:title" content="MCP-сервер с нуля: инструмент, тестирование и подключение к агенту">
+  <meta property="og:description" content="Собираем воспроизводимую интеграцию: HTTP API, MCP-инструмент, проверочный клиент и цикл вызова инструмента LLM-агентом.">
+  <meta property="og:url" content="https://agentlabjournal.online/build-and-test-mcp-server.html">
+  <meta property="og:image" content="https://agentlabjournal.online/assets/covers/build-and-test-mcp-server.png">
+  <meta property="og:image:alt" content="Схема подключения LLM-агента к MCP-серверу и HTTP API с проверкой вызова">
+  <meta property="article:modified_time" content="2026-08-02">
+  <meta property="article:section" content="Инженерия агентов">
+  <meta property="article:tag" content="MCP">
+  <meta property="article:tag" content="HTTP API">
+  <meta property="article:tag" content="LLM-агенты">
+
+  <meta name="twitter:card" content="summary_large_image">
+  <meta name="twitter:title" content="MCP-сервер с нуля: инструмент, тестирование и агент">
+  <meta name="twitter:description" content="Практическая сборка MCP-сервера над HTTP API с отдельным клиентом и подключением к LLM-агенту.">
+  <meta name="twitter:image" content="https://agentlabjournal.online/assets/covers/build-and-test-mcp-server.png">
+  <meta name="twitter:image:alt" content="Схема подключения HTTP API к LLM-агенту через MCP-сервер">
+
+  <script type="application/ld+json">
+  {
+    "@context": "https://schema.org",
+    "@type": "Article",
+    "headline": "MCP-сервер с нуля: инструмент, тестирование и подключение к агенту",
+    "description": "Пошагово создаём MCP-сервер над HTTP API, проверяем инструменты отдельным клиентом и подключаем их к LLM-агенту без адаптера под каждый фреймворк.",
+    "image": ["https://agentlabjournal.online/assets/covers/build-and-test-mcp-server.png"],
+    "dateModified": "2026-08-02",
+    "inLanguage": "ru-RU",
+    "author": {
+      "@type": "Organization",
+      "name": "Agent Lab Journal",
+      "url": "https://agentlabjournal.online/"
+    },
+    "publisher": {
+      "@type": "Organization",
+      "name": "Agent Lab Journal",
+      "url": "https://agentlabjournal.online/",
+      "logo": {
+        "@type": "ImageObject",
+        "url": "https://agentlabjournal.online/podcast-cover.png"
+      }
+    },
+    "mainEntityOfPage": {
+      "@type": "WebPage",
+      "@id": "https://agentlabjournal.online/build-and-test-mcp-server.html"
+    },
+    "url": "https://agentlabjournal.online/build-and-test-mcp-server.html",
+    "articleSection": "Инженерия агентов",
+    "keywords": [
+      "как создать mcp сервер",
+      "тестирование mcp сервера",
+      "mcp сервер что это",
+      "Model Context Protocol",
+      "инструменты LLM-агента"
+    ],
+    "timeRequired": "PT45M",
+    "isAccessibleForFree": true
+  }
+  </script>
+</head>
+<body>
+  <header class="site-header">
+    <nav aria-label="Основная навигация">
+      <a href="index.html" rel="home">Agent Lab Journal</a>
+      <a href="guides.html">Руководства</a>
+      <a href="glossary.html">Глоссарий</a>
+    </nav>
+  </header>
+
+  <main>
+    <article class="reading">
+      <header class="article-header">
+        <p class="eyebrow">Практика · Инженерия агентов</p>
+        <h1>MCP-сервер с нуля: инструмент, тестирование и подключение к агенту</h1>
+        <figure class="article-cover" data-editorial-cover="build-and-test-mcp-server"><img src="assets/covers/build-and-test-mcp-server.svg" alt="Схема подключения LLM-агента к MCP-серверу и HTTP API с проверкой вызова" width="1280" height="720" fetchpriority="high"><figcaption>Схема составлена по утверждённому брифу и source_url будущей статьи</figcaption></figure>
+
+        <figure class="article-cover">
+          <img src="assets/covers/build-and-test-mcp-server.svg" alt="HTTP API подключается через MCP-сервер к проверочному клиенту и LLM-агенту" width="1280" height="720" fetchpriority="high">
+          <figcaption>Один протокольный слой отделяет прикладной API от конкретного агентского фреймворка.</figcaption>
+        </figure>
+
+        <p class="lead"><strong>Если каждую интеграцию приходится заново описывать для LangChain, собственного рантайма и очередного агента, проблема находится не в HTTP API, а в границе между API и моделью.</strong> В этом руководстве мы вынесем такую границу в MCP-сервер: он опубликует типизированный инструмент, безопасно обратится к прикладному API, пройдёт независимую проверку клиентом и затем станет источником инструментов для LLM-агента.</p>
+
+        <div class="reading-meta" aria-label="Параметры статьи">
+          <span>Уровень: средний</span>
+          <span>Время: 45 минут</span>
+          <span>Результат: сервер, клиент и агент</span>
+        </div>
+      </header>
+
+      <section aria-labelledby="result">
+        <h2 id="result">Что получится</h2>
+
+        <p>Мы реализуем небольшой сервис поддержки. Существующий HTTP API умеет искать заявки по тексту. Поверх него появится <a class="term-link" href="glossary.html#mcp">Model Context Protocol (MCP)</a>-сервер с инструментом <code>search_tickets</code>. Отдельный клиент проверит обнаружение и вызов инструмента, после чего тот же клиентский слой будет подключён к <a class="term-link" href="glossary.html#llm">LLM</a>-модели и станет частью <a class="term-link" href="glossary.html#ai-agent">AI-агента</a>.</p>
+
+        <pre><code>Пользователь
+    │
+    ▼
+LLM-агент ── tools/list ──► MCP-сервер
+    ▲                           │
+    └──── tools/call ◄──────────┤
+                                ▼
+                       Ticket HTTP API</code></pre>
+
+        <p>В результате прикладной API не знает о моделях, а агент не знает о его заголовках, маршрутах и формате ошибок. Новый агентский рантайм должен поддержать MCP-клиент один раз, а не получать отдельный адаптер для каждого сервиса.</p>
+
+        <aside class="callout">
+          <h2>Критерий готовности</h2>
+          <p>Работа закончена, когда проверочный клиент видит <code>search_tickets</code>, корректный вызов возвращает структурированный результат, ошибочный аргумент отклоняется схемой, недоступность API превращается в управляемую ошибку инструмента, а модель способна выбрать инструмент и получить его результат через тот же MCP-клиент.</p>
+        </aside>
+      </section>
+
+      <section aria-labelledby="definition">
+        <h2 id="definition">MCP сервер что это — короткий практический ответ</h2>
+
+        <p>MCP-сервер — программа, которая публикует для совместимого клиента инструменты, ресурсы или шаблоны запросов по общему протоколу. Сервер описывает возможности машинно-читаемыми схемами и обрабатывает вызовы, но не обязан содержать модель или самостоятельно принимать решения.</p>
+
+        <p>В нашей конструкции обязанности разделены так:</p>
+
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th scope="col">Компонент</th>
+                <th scope="col">За что отвечает</th>
+                <th scope="col">Чего не делает</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td>Ticket API</td>
+                <td>Хранит заявки и выполняет предметный поиск</td>
+                <td>Не описывает инструменты для модели</td>
+              </tr>
+              <tr>
+                <td>MCP-сервер</td>
+                <td>Публикует схему, валидирует аргументы, вызывает API, нормализует результат</td>
+                <td>Не выбирает, когда нужен поиск</td>
+              </tr>
+              <tr>
+                <td>MCP-клиент</td>
+                <td>Инициализирует соединение, получает список и вызывает инструменты</td>
+                <td>Не рассуждает над задачей пользователя</td>
+              </tr>
+              <tr>
+                <td>LLM-агент</td>
+                <td>Выбирает инструмент и продолжает диалог с учётом результата</td>
+                <td>Не получает секрет API и не собирает HTTP-запрос вручную</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+
+        <p>Главная выгода — стабильная граница. Схема <code>search_tickets</code> остаётся одинаковой, даже если внутри вы замените REST-маршрут, способ авторизации или саму систему заявок.</p>
+      </section>
+
+      <section aria-labelledby="prerequisites">
+        <h2 id="prerequisites">Перед началом</h2>
+
+        <p>Понадобятся Node.js 20 или новее, npm и терминал. Пример написан на TypeScript и использует современный транспорт Streamable HTTP. Версии зависимостей фиксируются lock-файлом; при обновлении MCP SDK сначала повторите клиентские проверки из этой статьи.</p>
+
+        <p>Мы не будем использовать реальные заявки или секреты. Локальный API вернёт синтетические записи. Позже его можно заменить вашим сервисом без изменения внешнего контракта MCP-инструмента.</p>
+
+        <pre><code>node --version
+npm --version
+
+mkdir ticket-mcp
+cd ticket-mcp
+npm init -y
+
+npm install @modelcontextprotocol/sdk express zod
+npm install --save-dev typescript tsx @types/node @types/express
+
+mkdir src</code></pre>
+
+        <p>Добавьте команды и режим модулей в <code>package.json</code>:</p>
+
+        <pre><code>{
+  "name": "ticket-mcp",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "api": "tsx src/mock-api.ts",
+    "server": "tsx src/server.ts",
+    "check": "tsx src/check.ts",
+    "agent": "tsx src/agent.ts",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.0.0",
+    "express": "^5.0.0",
+    "zod": "^3.0.0"
+  },
+  "devDependencies": {
+    "@types/express": "^5.0.0",
+    "@types/node": "^22.0.0",
+    "tsx": "^4.0.0",
+    "typescript": "^5.0.0"
+  }
+}</code></pre>
+
+        <p>Диапазоны выше позволяют npm выбрать совместимые выпуски внутри указанных основных версий. После установки сохраните <code>package-lock.json</code> и используйте <code>npm ci</code> в автоматических проверках.</p>
+
+        <p>Создайте <code>tsconfig.json</code>:</p>
+
+        <pre><code>{
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "NodeNext",
+    "moduleResolution": "NodeNext",
+    "strict": true,
+    "esModuleInterop": true,
+    "skipLibCheck": true,
+    "noUncheckedIndexedAccess": true
+  },
+  "include": ["src/**/*.ts"]
+}</code></pre>
+      </section>
+
+      <section aria-labelledby="api">
+        <h2 id="api">Шаг 1. Подготовьте воспроизводимый HTTP API</h2>
+
+        <p>Сначала создадим зависимость отдельно от MCP. Это важная инженерная граница: если прямой API-вызов не работает, отладка протокола только добавит шум.</p>
+
+        <p>Файл <code>src/mock-api.ts</code>:</p>
+
+        <pre><code>import express from "express";
+
+type Ticket = {
+  id: string;
+  title: string;
+  status: "open" | "closed";
+};
+
+const tickets: Ticket[] = [
+  { id: "T-101", title: "Не приходит письмо подтверждения", status: "open" },
+  { id: "T-102", title: "Ошибка при экспорте отчёта", status: "closed" },
+  { id: "T-103", title: "Не обновляется платёжный статус", status: "open" }
+];
+
+const app = express();
+
+app.get("/tickets", (req, res) =&gt; {
+  const query = String(req.query.query ?? "").trim().toLocaleLowerCase("ru");
+  const limit = Math.min(Number(req.query.limit ?? 5), 20);
+
+  if (!query) {
+    res.status(400).json({
+      error: "query_required"
+    });
+    return;
+  }
+
+  const items = tickets
+    .filter((ticket) =&gt;
+      `${ticket.id} ${ticket.title} ${ticket.status}`
+        .toLocaleLowerCase("ru")
+        .includes(query)
+    )
+    .slice(0, limit);
+
+  res.json({ items });
+});
+
+app.listen(4100, "127.0.0.1", () =&gt; {
+  console.log("Ticket API: http://127.0.0.1:4100");
+});</code></pre>
+
+        <p>Запустите API в первом терминале:</p>
+
+        <pre><code>npm run api</code></pre>
+
+        <p>Во втором терминале проверьте его напрямую:</p>
+
+        <pre><code>curl --fail --silent --show-error \
+  "http://127.0.0.1:4100/tickets?query=письмо&amp;limit=5"</code></pre>
+
+        <p>Ожидайте JSON с массивом <code>items</code>. Это не опубликованный результат эксперимента, а форма ответа, заложенная в приведённый код. Если запрос не проходит, сначала устраните ошибку запуска или порта и только затем переходите к MCP.</p>
+      </section>
+
+      <section aria-labelledby="contract">
+        <h2 id="contract">Шаг 2. Спроектируйте контракт инструмента</h2>
+
+        <p>Не переносите HTTP-маршрут в MCP буквально. Инструмент должен выражать намерение агента, а не устройство внутреннего API. Для поиска достаточно двух аргументов:</p>
+
+        <ul>
+          <li><code>query</code> — обязательная непустая строка длиной до 200 символов;</li>
+          <li><code>limit</code> — необязательное целое число от 1 до 20.</li>
+        </ul>
+
+        <p>Инструмент вернёт и текст для модели, и <code>structuredContent</code> для клиента, который хочет обработать данные без разбора текста:</p>
+
+        <pre><code>{
+  "items": [
+    {
+      "id": "T-101",
+      "title": "Не приходит письмо подтверждения",
+      "status": "open"
+    }
+  ]
+}</code></pre>
+
+        <p>Имя инструмента — часть публичного контракта. Не включайте в него название фреймворка или текущего поставщика API. <code>search_tickets</code> переживёт внутреннюю миграцию лучше, чем <code>call_vendor_v2_get_tickets</code>.</p>
+
+        <h3>Хорошее описание инструмента</h3>
+
+        <p>Описание должно отвечать модели на три вопроса: когда вызывать инструмент, что он ищет и чего он не делает. Например:</p>
+
+        <pre><code>Ищет заявки поддержки по идентификатору, словам из заголовка
+или статусу. Используй инструмент, когда для ответа нужны сведения
+о существующей заявке. Инструмент ничего не изменяет.</code></pre>
+
+        <p>Аннотация <code>readOnlyHint</code> помогает клиентам представить действие как читающее. Она не является механизмом безопасности: реальное отсутствие записи обеспечивается кодом, правами технической учётной записи и политикой целевого API.</p>
+      </section>
+
+      <section aria-labelledby="server">
+        <h2 id="server">Шаг 3. Реализуйте MCP-сервер</h2>
+
+        <p>Файл <code>src/server.ts</code> содержит три слоя: клиент прикладного API, фабрику MCP-сервера и HTTP-маршрут транспорта.</p>
+
+        <pre><code>import express, { type Request, type Response } from "express";
+import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
+import { StreamableHTTPServerTransport }
+  from "@modelcontextprotocol/sdk/server/streamableHttp.js";
+import { z } from "zod";
+
+const API_BASE_URL =
+  process.env.TICKET_API_URL ?? "http://127.0.0.1:4100";
+
+const upstreamTicketSchema = z.object({
+  id: z.string(),
+  title: z.string(),
+  status: z.enum(["open", "closed"])
+});
+
+const upstreamResponseSchema = z.object({
+  items: z.array(upstreamTicketSchema)
+});
+
+async function searchTickets(query: string, limit: number) {
+  const url = new URL("/tickets", API_BASE_URL);
+  url.searchParams.set("query", query);
+  url.searchParams.set("limit", String(limit));
+
+  const response = await fetch(url, {
+    method: "GET",
+    headers: {
+      accept: "application/json"
+    },
+    signal: AbortSignal.timeout(5000)
+  });
+
+  if (!response.ok) {
+    throw new Error(`Ticket API returned HTTP ${response.status}`);
+  }
+
+  return upstreamResponseSchema.parse(await response.json());
+}
+
+function createServer() {
+  const server = new McpServer({
+    name: "ticket-search",
+    version: "1.0.0"
+  });
+
+  server.registerTool(
+    "search_tickets",
+    {
+      title: "Поиск заявок",
+      description:
+        "Ищет заявки поддержки по идентификатору, словам из заголовка " +
+        "или статусу. Используй, когда для ответа нужны сведения " +
+        "о существующей заявке. Ничего не изменяет.",
+      inputSchema: {
+        query: z.string().trim().min(1).max(200)
+          .describe("Идентификатор, слова из заголовка или статус"),
+        limit: z.number().int().min(1).max(20).default(5)
+          .describe("Максимальное число результатов")
+      },
+      outputSchema: {
+        items: z.array(upstreamTicketSchema)
+      },
+      annotations: {
+        readOnlyHint: true,
+        destructiveHint: false,
+        idempotentHint: true,
+        openWorldHint: false
+      }
+    },
+    async ({ query, limit }) =&gt; {
+      try {
+        const result = await searchTickets(query, limit);
+
+        return {
+          content: [
+            {
+              type: "text",
+              text: result.items.length === 0
+                ? "Заявки не найдены."
+                : JSON.stringify(result, null, 2)
+            }
+          ],
+          structuredContent: result
+        };
+      } catch (error) {
+        const message =
+          error instanceof Error ? error.message : "Unknown error";
+
+        console.error("search_tickets failed", { message });
+
+        return {
+          content: [
+            {
+              type: "text",
+              text: "Не удалось получить заявки из внутреннего сервиса."
+            }
+          ],
+          isError: true
+        };
+      }
+    }
+  );
+
+  return server;
+}
+
+const app = express();
+app.use(express.json({ limit: "256kb" }));
+
+app.get("/health", (_req, res) =&gt; {
+  res.json({ status: "ok" });
+});
+
+app.all("/mcp", async (req: Request, res: Response) =&gt; {
+  const server = createServer();
+
+  const transport = new StreamableHTTPServerTransport({
+    sessionIdGenerator: undefined
+  });
+
+  res.on("close", () =&gt; {
+    void transport.close();
+    void server.close();
+  });
+
+  try {
+    await server.connect(transport);
+    await transport.handleRequest(req, res, req.body);
+  } catch (error) {
+    console.error("MCP request failed", error);
+
+    if (!res.headersSent) {
+      res.status(500).json({
+        jsonrpc: "2.0",
+        error: {
+          code: -32603,
+          message: "Internal server error"
+        },
+        id: null
+      });
+    }
+  }
+});
+
+app.listen(4200, "127.0.0.1", () =&gt; {
+  console.log("MCP endpoint: http://127.0.0.1:4200/mcp");
+});</code></pre>
+
+        <p>Запустите проверку типов, а затем сервер:</p>
+
+        <pre><code>npm run typecheck
+npm run server</code></pre>
+
+        <p>В примере используется stateless-режим: для каждого HTTP-запроса создаётся отдельная пара сервер–транспорт, а идентификатор сессии отсутствует. Для одного независимого инструмента это упрощает масштабирование. Уведомления, возобновление потока и серверное состояние потребуют сессионного транспорта и хранилища сессий.</p>
+
+        <h3>Почему обычного <code>curl</code> недостаточно</h3>
+
+        <p>Маршрут <code>/health</code> показывает только то, что процесс принимает HTTP-запросы. Он ничего не говорит об инициализации MCP, согласовании версии протокола, списке инструментов и выполнении вызова. Для этого нужен настоящий MCP-клиент.</p>
+      </section>
+
+      <section aria-labelledby="client">
+        <h2 id="client">Шаг 4. Проверьте сервер отдельным MCP-клиентом</h2>
+
+        <p>Файл <code>src/check.ts</code> подключается к серверу тем же способом, которым позже подключится агент. Он не обращается к Ticket API напрямую и поэтому проверяет всю цепочку.</p>
+
+        <pre><code>import assert from "node:assert/strict";
+import { Client } from "@modelcontextprotocol/sdk/client/index.js";
+import { StreamableHTTPClientTransport }
+  from "@modelcontextprotocol/sdk/client/streamableHttp.js";
+
+const client = new Client({
+  name: "ticket-mcp-check",
+  version: "1.0.0"
+});
+
+const transport = new StreamableHTTPClientTransport(
+  new URL("http://127.0.0.1:4200/mcp")
+);
+
+try {
+  await client.connect(transport);
+
+  const listed = await client.listTools();
+  const tool = listed.tools.find(
+    (candidate) =&gt; candidate.name === "search_tickets"
+  );
+
+  assert.ok(tool, "search_tickets отсутствует в tools/list");
+  assert.equal(tool.inputSchema.type, "object");
+  assert.ok(
+    tool.inputSchema.required?.includes("query"),
+    "query должен быть обязательным"
+  );
+
+  const success = await client.callTool({
+    name: "search_tickets",
+    arguments: {
+      query: "письмо",
+      limit: 3
+    }
+  });
+
+  assert.notEqual(success.isError, true, "Корректный вызов завершился ошибкой");
+  assert.ok(
+    Array.isArray(success.content) &amp;&amp; success.content.length &gt; 0,
+    "Инструмент вернул пустой content"
+  );
+
+  const empty = await client.callTool({
+    name: "search_tickets",
+    arguments: {
+      query: "несуществующее синтетическое значение",
+      limit: 3
+    }
+  });
+
+  assert.notEqual(empty.isError, true, "Пустая выдача не должна быть ошибкой");
+
+  let invalidRejected = false;
+
+  try {
+    await client.callTool({
+      name: "search_tickets",
+      arguments: {
+        query: "",
+        limit: 100
+      }
+    });
+  } catch {
+    invalidRejected = true;
+  }
+
+  assert.equal(
+    invalidRejected,
+    true,
+    "Некорректные аргументы должны быть отклонены"
+  );
+
+  console.log("MCP CHECK PASSED");
+} finally {
+  await transport.close();
+}</code></pre>
+
+        <p>При запущенных API и MCP-сервере выполните:</p>
+
+        <pre><code>npm run check</code></pre>
+
+        <p>Строка <code>MCP CHECK PASSED</code> печатается только после всех утверждений. Это локальный критерий из нашего скрипта, а не заранее заявленный результат запуска на вашей машине.</p>
+
+        <aside class="note">
+          <p><strong>Учитывайте версию SDK.</strong> Разные основные версии TypeScript SDK могут использовать разные пакеты и имена транспортов. Не смешивайте импорты из нескольких поколений документации. Установите зависимости, сохраните lock-файл и проверяйте обновления тем же клиентским сценарием.</p>
+        </aside>
+      </section>
+
+      <section aria-labelledby="testing">
+        <h2 id="testing">Тестирование MCP сервера: минимальная матрица</h2>
+
+        <p>Один успешный вызов подтверждает только счастливый путь. Перед подключением модели проверьте минимум пять классов поведения.</p>
+
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th scope="col">Сценарий</th>
+                <th scope="col">Как воспроизвести</th>
+                <th scope="col">Что должно быть доказано</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td>Обнаружение</td>
+                <td><code>listTools()</code></td>
+                <td>Имя, описание и входная схема доступны клиенту</td>
+              </tr>
+              <tr>
+                <td>Корректный вызов</td>
+                <td>Запрос с <code>query</code> и допустимым <code>limit</code></td>
+                <td>Есть контент, вызов не помечен ошибкой</td>
+              </tr>
+              <tr>
+                <td>Пустая выдача</td>
+                <td>Синтетический запрос без совпадений</td>
+                <td>Ноль результатов не считается неисправностью</td>
+              </tr>
+              <tr>
+                <td>Ошибка аргументов</td>
+                <td>Пустой <code>query</code>, <code>limit: 100</code></td>
+                <td>Схема не пропускает неверный вызов к API</td>
+              </tr>
+              <tr>
+                <td>Отказ зависимости</td>
+                <td>Остановить Ticket API и повторить вызов</td>
+                <td>Клиент получает <code>isError</code>, а не секрет или трассировку</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+
+        <h3>Проверка отказа API</h3>
+
+        <p>Остановите только процесс на порту <code>4100</code>, оставив MCP-сервер запущенным, и повторите <code>npm run check</code>. Полная проверка теперь должна завершиться отрицательно на успешном сценарии. Это ожидаемый исход контролируемой неисправности: он показывает, что тест действительно замечает отказ зависимости.</p>
+
+        <p>Для автоматизации лучше вынести этот случай в отдельный скрипт, который явно ожидает <code>isError: true</code>. Не делайте успешным тест, который принимает и корректный ответ, и ошибку: такой тест ничего не защищает.</p>
+
+        <h3>Что фиксировать в CI</h3>
+
+        <ul class="checklist">
+          <li>команда <code>npm ci</code> использует сохранённый lock-файл;</li>
+          <li><code>npm run typecheck</code> проходит до запуска процессов;</li>
+          <li>API и MCP-сервер запускаются в изолированном окружении;</li>
+          <li>проверка ждёт готовности обоих процессов, а не использует случайную задержку;</li>
+          <li>после теста процессы корректно останавливаются;</li>
+          <li>логи и артефакты не содержат токены и пользовательские данные;</li>
+          <li>обновление SDK не принимается при изменении схемы или семантики ошибок.</li>
+        </ul>
+      </section>
+
+      <section aria-labelledby="agent-adapter">
+        <h2 id="agent-adapter">Шаг 5. Превратите MCP-инструменты в формат модели</h2>
+
+        <p>MCP-клиент и API модели решают разные задачи. Клиент получает инструменты в MCP, а модель обычно ожидает массив функций с именем, описанием и JSON Schema. Нужен один небольшой адаптер на уровне агентского рантайма — общий для всех MCP-серверов.</p>
+
+        <p>Ниже используется HTTP-интерфейс модели, совместимый с форматом Chat Completions. Задайте адрес, имя модели и токен вашего провайдера через окружение. Секрет не передаётся MCP-серверу и не попадает в аргументы инструмента.</p>
+
+        <p>Файл <code>src/agent.ts</code>:</p>
+
+        <pre><code>import { Client } from "@modelcontextprotocol/sdk/client/index.js";
+import { StreamableHTTPClientTransport }
+  from "@modelcontextprotocol/sdk/client/streamableHttp.js";
+
+type ChatMessage =
+  | { role: "system" | "user" | "assistant"; content: string }
+  | {
+      role: "assistant";
+      content: string | null;
+      tool_calls: Array&lt;{
+        id: string;
+        type: "function";
+        function: { name: string; arguments: string };
+      }&gt;;
+    }
+  | {
+      role: "tool";
+      tool_call_id: string;
+      content: string;
+    };
+
+type ModelResponse = {
+  choices: Array&lt;{
+    message: {
+      role: "assistant";
+      content: string | null;
+      tool_calls?: Array&lt;{
+        id: string;
+        type: "function";
+        function: { name: string; arguments: string };
+      }&gt;;
+    };
+  }&gt;;
+};
+
+const MODEL_URL = process.env.MODEL_URL;
+const MODEL_NAME = process.env.MODEL_NAME;
+const MODEL_API_KEY = process.env.MODEL_API_KEY;
+
+if (!MODEL_URL || !MODEL_NAME || !MODEL_API_KEY) {
+  throw new Error(
+    "Задайте MODEL_URL, MODEL_NAME и MODEL_API_KEY"
+  );
+}
+
+const mcpClient = new Client({
+  name: "ticket-agent",
+  version: "1.0.0"
+});
+
+const mcpTransport = new StreamableHTTPClientTransport(
+  new URL("http://127.0.0.1:4200/mcp")
+);
+
+await mcpClient.connect(mcpTransport);
+
+try {
+  const { tools: mcpTools } = await mcpClient.listTools();
+
+  const modelTools = mcpTools.map((tool) =&gt; ({
+    type: "function" as const,
+    function: {
+      name: tool.name,
+      description: tool.description ?? "",
+      parameters: tool.inputSchema
+    }
+  }));
+
+  const messages: ChatMessage[] = [
+    {
+      role: "system",
+      content:
+        "Ты помощник службы поддержки. " +
+        "Если вопрос относится к существующим заявкам, " +
+        "используй доступный инструмент. " +
+        "Не придумывай идентификаторы и статусы."
+    },
+    {
+      role: "user",
+      content: "Есть ли открытая заявка про письмо подтверждения?"
+    }
+  ];
+
+  for (let step = 0; step &lt; 5; step += 1) {
+    const response = await fetch(MODEL_URL, {
+      method: "POST",
+      headers: {
+        authorization: `Bearer ${MODEL_API_KEY}`,
+        "content-type": "application/json"
+      },
+      body: JSON.stringify({
+        model: MODEL_NAME,
+        messages,
+        tools: modelTools,
+        tool_choice: "auto",
+        temperature: 0
+      }),
+      signal: AbortSignal.timeout(30000)
+    });
+
+    if (!response.ok) {
+      throw new Error(`Model API returned HTTP ${response.status}`);
+    }
+
+    const payload = (await response.json()) as ModelResponse;
+    const message = payload.choices[0]?.message;
+
+    if (!message) {
+      throw new Error("Model API returned no message");
+    }
+
+    if (!message.tool_calls || message.tool_calls.length === 0) {
+      console.log(message.content ?? "");
+      break;
+    }
+
+    messages.push({
+      role: "assistant",
+      content: message.content,
+      tool_calls: message.tool_calls
+    });
+
+    for (const call of message.tool_calls) {
+      const allowed = mcpTools.some(
+        (tool) =&gt; tool.name === call.function.name
+      );
+
+      if (!allowed) {
+        messages.push({
+          role: "tool",
+          tool_call_id: call.id,
+          content: JSON.stringify({
+            error: "unknown_tool"
+          })
+        });
+        continue;
+      }
+
+      let args: Record&lt;string, unknown&gt;;
+
+      try {
+        args = JSON.parse(call.function.arguments);
+      } catch {
+        messages.push({
+          role: "tool",
+          tool_call_id: call.id,
+          content: JSON.stringify({
+            error: "invalid_json_arguments"
+          })
+        });
+        continue;
+      }
+
+      const result = await mcpClient.callTool({
+        name: call.function.name,
+        arguments: args
+      });
+
+      messages.push({
+        role: "tool",
+        tool_call_id: call.id,
+        content: JSON.stringify({
+          isError: result.isError === true,
+          content: result.content,
+          structuredContent: result.structuredContent
+        })
+      });
+    }
+
+    if (step === 4) {
+      throw new Error("Agent exceeded the tool-step limit");
+    }
+  }
+} finally {
+  await mcpTransport.close();
+}</code></pre>
+
+        <p>Запуск зависит от API выбранной модели. Для совместимого адреса переменные могут выглядеть так:</p>
+
+        <pre><code>export MODEL_URL="https://model-provider.example/v1/chat/completions"
+export MODEL_NAME="tool-capable-model"
+export MODEL_API_KEY="replace-with-local-secret"
+
+npm run agent</code></pre>
+
+        <p>Адрес и значения выше — заполнители, а не действующие реквизиты. Если провайдер использует другой формат сообщений или ответов, меняется только функция обращения к модели. MCP-клиент, обнаружение инструментов и <code>callTool</code> остаются прежними.</p>
+
+        <h3>Что именно сделал агентский цикл</h3>
+
+        <ol>
+          <li>Подключился к MCP-серверу.</li>
+          <li>Получил список инструментов через <code>listTools()</code>.</li>
+          <li>Передал их схемы модели как функции.</li>
+          <li>Принял от модели имя инструмента и JSON-аргументы.</li>
+          <li>Проверил, что имя действительно опубликовано сервером.</li>
+          <li>Вызвал инструмент через MCP, а не прямым HTTP-запросом.</li>
+          <li>Вернул результат модели сообщением роли <code>tool</code>.</li>
+          <li>Остановил цикл после обычного ответа или пяти шагов.</li>
+        </ol>
+
+        <p>Именно этот адаптер стоит реализовать один раз в агентском рантайме. После этого новый MCP-сервер подключается обнаружением, а не отдельным кодом для каждого инструмента.</p>
+      </section>
+
+      <section aria-labelledby="verification">
+        <h2 id="verification">Финальная проверка всей цепочки</h2>
+
+        <p>Проверяйте слои по порядку. Так место отказа остаётся очевидным:</p>
+
+        <ol>
+          <li>Запустите <code>npm run api</code> и проверьте Ticket API через <code>curl</code>.</li>
+          <li>Запустите <code>npm run server</code> и проверьте <code>curl http://127.0.0.1:4200/health</code>.</li>
+          <li>Выполните <code>npm run check</code> и убедитесь, что контрактные утверждения проходят.</li>
+          <li>Задайте реквизиты совместимого API модели и выполните <code>npm run agent</code>.</li>
+          <li>Посмотрите в журнале MCP-сервера, что вызван именно <code>search_tickets</code>.</li>
+          <li>Замените вопрос на не связанный с заявками и проверьте, что модель не вызывает поиск без необходимости.</li>
+          <li>Остановите Ticket API и подтвердите, что агент получает контролируемую ошибку инструмента, а не внутреннюю трассировку.</li>
+        </ol>
+
+        <p>Рабочая интеграция должна выдерживать не только вопрос из примера. Добавьте собственный набор синтетических запросов:</p>
+
+        <ul>
+          <li>поиск по точному идентификатору;</li>
+          <li>поиск по словам заголовка;</li>
+          <li>поиск по статусу;</li>
+          <li>запрос без совпадений;</li>
+          <li>вопрос, для которого инструмент не нужен;</li>
+          <li>попытка заставить модель передать слишком большой <code>limit</code>;</li>
+          <li>недоступность API и превышение тайм-аута.</li>
+        </ul>
+
+        <p>Не оценивайте только красоту финального текста. Для агентской интеграции важнее наблюдаемые факты: какой инструмент был выбран, какие аргументы ушли на сервер, был ли результат ошибкой и сколько шагов занял цикл.</p>
+      </section>
+
+      <section aria-labelledby="failures">
+        <h2 id="failures">Типовые отказы и диагностика</h2>
+
+        <h3>Клиент получает 404 на <code>/mcp</code></h3>
+
+        <p>Проверьте URL и метод маршрута. Streamable HTTP использует один MCP endpoint, а не устаревшую пару произвольных маршрутов для отправки сообщений и SSE. Клиентский и серверный транспорты должны относиться к совместимому поколению SDK.</p>
+
+        <h3>Сервер виден, но список инструментов пуст</h3>
+
+        <p>Убедитесь, что <code>registerTool</code> вызывается до <code>server.connect(transport)</code>. Не создавайте сервер в одной фабрике, а транспорт не подключайте к другому экземпляру.</p>
+
+        <h3>Схема есть, но вызов всегда отклоняется</h3>
+
+        <p>Сравните фактические аргументы модели с <code>inputSchema</code>. Частая причина — число приходит строкой, поле называется иначе или модель добавляет неизвестные свойства. Не исправляйте это отключением валидации: уточните описание или нормализуйте только заранее разрешённые формы.</p>
+
+        <h3>Пустой результат считается ошибкой</h3>
+
+        <p>«Не найдено» — нормальный предметный исход поиска. Возвращайте пустой <code>items</code> и понятный текст без <code>isError</code>. Флаг ошибки оставьте для недоступности зависимости, некорректного ответа API и других сбоев выполнения.</p>
+
+        <h3>Агент вызывает выдуманный инструмент</h3>
+
+        <p>Проверяйте имя по фактическому результату <code>listTools()</code> перед <code>callTool</code>. Никогда не превращайте имя от модели в имя функции, путь к файлу или URL без таблицы разрешённых возможностей.</p>
+
+        <h3>Модель бесконечно повторяет вызов</h3>
+
+        <p>Ограничьте число шагов и сохраняйте полную последовательность сообщений. Повтор часто означает, что результат инструмента не отвечает заявленному контракту, ошибка скрыта в обычном тексте или модель не видит сообщение роли <code>tool</code>.</p>
+
+        <h3>После обновления SDK перестал работать транспорт</h3>
+
+        <p>Проверьте основную версию пакета, импорты сервера и клиента, затем восстановите зависимости через lock-файл. Не обновляйте одновременно SDK, схему инструмента и агентский адаптер: иначе источник несовместимости придётся искать сразу в трёх местах.</p>
+
+        <h3>HTTP API отвечает неожиданной структурой</h3>
+
+        <p>Внешний ответ валидируется через Zod до передачи модели. При несовместимости инструмент вернёт управляемую ошибку. Не передавайте непроверенный JSON как <code>structuredContent</code>: изменение upstream-контракта иначе незаметно попадёт в агента.</p>
+      </section>
+
+      <section aria-labelledby="security">
+        <h2 id="security">Что изменить перед публикацией сервера</h2>
+
+        <p>Локальный пример слушает только <code>127.0.0.1</code>. Для удалённого доступа недостаточно заменить адрес на <code>0.0.0.0</code>. Перед развёртыванием добавьте:</p>
+
+        <ul>
+          <li>аутентификацию клиента и проверку полномочий для каждого инструмента;</li>
+          <li>TLS на внешней границе;</li>
+          <li>проверку <code>Host</code> и разрешённых источников, если доступ идёт из браузерного окружения;</li>
+          <li>ограничение размера тела, частоты запросов и времени выполнения;</li>
+          <li>отдельную техническую учётную запись с правом только на чтение заявок;</li>
+          <li>фиксированный базовый URL API без возможности передать его из аргументов модели;</li>
+          <li>очистку логов от токенов, персональных данных и полного содержимого заявок;</li>
+          <li>идентификатор трассы, связывающий агентский шаг, MCP-вызов и upstream-запрос;</li>
+          <li>корректное завершение HTTP-сервера и активных транспортов при остановке процесса.</li>
+        </ul>
+
+        <p>Для инструментов записи добавьте отдельный контур подтверждения. Первый инструмент может подготовить операцию и вернуть её параметры, а второй — выполнить подтверждённую операцию по короткоживущему идентификатору. Системная инструкция модели не заменяет серверную авторизацию.</p>
+      </section>
+
+      <section aria-labelledby="limitations">
+        <h2 id="limitations">Ограничения решения</h2>
+
+        <p>MCP унифицирует обнаружение и вызов возможностей, но не делает разные API семантически одинаковыми. Контракт инструмента, нормализацию ошибок, права и предметную логику всё равно нужно спроектировать.</p>
+
+        <p>Stateless-режим подходит не всем сценариям. Серверные уведомления, продолжительные операции, возобновление потока и состояние между запросами требуют сессий или отдельного хранилища. При горизонтальном масштабировании состояние нельзя оставлять только в памяти случайного экземпляра.</p>
+
+        <p>Схема аргументов уменьшает число некорректных вызовов, но не доказывает безопасность значения. Строка может формально соответствовать схеме и всё равно содержать чужой идентификатор, запрещённый фильтр или инструкцию для уязвимого downstream-компонента.</p>
+
+        <p>Качество выбора инструмента зависит от модели, описания и контекста. Проверка MCP-клиентом доказывает технический контракт сервера, но не доказывает, что любая модель будет выбирать инструмент правильно. Для этого нужен отдельный набор агентских сценариев с проверкой выбранных действий.</p>
+
+        <p>Наконец, переносимость ограничена возможностями клиента. Если агентский фреймворк не умеет MCP напрямую, ему всё равно понадобится один клиентский адаптер. Выгода в том, что этот адаптер общий для серверов, а не пишется заново для каждого HTTP API.</p>
+      </section>
+
+      <section aria-labelledby="production-checklist">
+        <h2 id="production-checklist">Контрольный список перед передачей команде</h2>
+
+        <ul class="checklist">
+          <li>контракт инструмента описывает намерение, а не внутренний HTTP-маршрут;</li>
+          <li>входные аргументы ограничены типом, длиной, диапазоном и обязательностью;</li>
+          <li>ответ upstream API валидируется до передачи клиенту;</li>
+          <li>пустой предметный результат отделён от технической ошибки;</li>
+          <li>внутренние сообщения и секреты не возвращаются модели;</li>
+          <li>MCP-клиент проверяет обнаружение, вызов, валидацию и отказ зависимости;</li>
+          <li>агент разрешает только инструменты из текущего <code>tools/list</code>;</li>
+          <li>число шагов агента и тайм-ауты ограничены;</li>
+          <li>lock-файл сохранён, а обновление SDK проходит контрактную проверку;</li>
+          <li>удалённый сервер защищён аутентификацией, TLS и узкими правами;</li>
+          <li>трассировка позволяет связать решение модели с вызовом API;</li>
+          <li>синтетические проверки не используют реальные клиентские данные.</li>
+        </ul>
+      </section>
+
+      <section aria-labelledby="summary">
+        <h2 id="summary">Итог: как создать MCP сервер без привязки к одному агенту</h2>
+
+        <ol>
+          <li>Сначала проверьте прикладной HTTP API отдельно.</li>
+          <li>Спроектируйте инструмент как стабильное предметное действие.</li>
+          <li>Опишите аргументы строгой схемой и валидируйте upstream-ответ.</li>
+          <li>Опубликуйте инструмент через Streamable HTTP.</li>
+          <li>Проверьте сервер настоящим MCP-клиентом до подключения модели.</li>
+          <li>Преобразуйте результат <code>tools/list</code> в формат инструментов модели.</li>
+          <li>Маршрутизируйте вызов модели обратно через <code>callTool</code>.</li>
+          <li>Ограничьте имена, шаги, тайм-ауты, права и объём журналирования.</li>
+        </ol>
+
+        <p>Получившаяся граница решает исходную проблему: Ticket API адаптирован один раз — в MCP-сервере. Агентские рантаймы подключаются через общий клиентский слой, а совместимость проверяется без участия модели. При смене фреймворка предметная интеграция остаётся на месте.</p>
+      </section>
+
+      <footer class="article-footer">
+        <h2>Куда двигаться дальше</h2>
+        <p>Другие пошаговые материалы по инструментам, агентам и эксплуатационным проверкам собраны в разделе <a href="guides.html">«Руководства»</a>. Определения MCP, LLM, AI-агента, вызова инструментов и других специальных терминов доступны в <a href="glossary.html">глоссарии</a>.</p>
+      </footer>
+    </article>
+  </main>
+
+  <footer class="site-footer">
+    <p>Agent Lab Journal — практическая инженерия агентных систем.</p>
+  </footer>
+</body>
+</html>

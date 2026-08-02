@@ -1,0 +1,916 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Build and Test an MCP Server from Scratch | Agent Lab Journal</title>
+  <meta name="description" content="Build a working Model Context Protocol server over an HTTP API, test it with an MCP client, and connect it to an LLM agent using TypeScript.">
+  <link rel="canonical" href="https://agentlabjournal.online/en/build-and-test-mcp-server.html">
+  <link rel="stylesheet" href="../style.css">
+  <link rel="stylesheet" href="../reading.css">
+
+  <meta property="og:type" content="article">
+  <meta property="og:site_name" content="Agent Lab Journal">
+  <meta property="og:title" content="Build and Test an MCP Server from Scratch">
+  <meta property="og:description" content="Create a reusable MCP tool over an HTTP API, verify its protocol behavior, and connect it to an LLM agent.">
+  <meta property="og:url" content="https://agentlabjournal.online/en/build-and-test-mcp-server.html">
+  <meta property="og:image" content="https://agentlabjournal.online/assets/covers/build-and-test-mcp-server.png">
+  <meta property="og:image:alt" content="Схема подключения LLM-агента к MCP-серверу и HTTP API с проверкой вызова">
+
+  <meta name="twitter:card" content="summary_large_image">
+  <meta name="twitter:title" content="Build and Test an MCP Server from Scratch">
+  <meta name="twitter:description" content="A practical TypeScript guide to MCP tools, HTTP API integration, testing, and agent connection.">
+  <meta name="twitter:image" content="https://agentlabjournal.online/assets/covers/build-and-test-mcp-server.png">
+
+  <script type="application/ld+json">
+  {
+    "@context": "https://schema.org",
+    "@type": "Article",
+    "headline": "Build and Test an MCP Server from Scratch",
+    "description": "Build a working Model Context Protocol server over an HTTP API, test it with an MCP client, and connect it to an LLM agent using TypeScript.",
+    "image": ["https://agentlabjournal.online/assets/covers/build-and-test-mcp-server.png"],
+    "dateModified": "2026-08-02",
+    "author": {
+      "@type": "Organization",
+      "name": "Agent Lab Journal"
+    },
+    "publisher": {
+      "@type": "Organization",
+      "name": "Agent Lab Journal",
+      "url": "https://agentlabjournal.online/"
+    },
+    "mainEntityOfPage": {
+      "@type": "WebPage",
+      "@id": "https://agentlabjournal.online/en/build-and-test-mcp-server.html"
+    }
+  }
+  </script>
+</head>
+<body>
+  <header class="site-header">
+    <div class="container">
+      <a class="site-name" href="../index.html">Agent Lab Journal</a>
+      <nav aria-label="Primary navigation">
+        <a href="guides.html">Guides</a>
+        <a href="../glossary.html">Glossary</a>
+      </nav>
+    </div>
+  </header>
+
+  <main>
+    <article class="reading">
+      <header class="article-header">
+        <p class="eyebrow">Intermediate tutorial</p>
+        <h1>Build and Test an MCP Server from Scratch</h1>
+        <figure class="article-cover" data-editorial-cover="build-and-test-mcp-server"><img src="../assets/covers/build-and-test-mcp-server.svg" alt="Схема подключения LLM-агента к MCP-серверу и HTTP API с проверкой вызова" width="1280" height="720" fetchpriority="high"><figcaption>Схема составлена по утверждённому брифу и source_url будущей статьи</figcaption></figure>
+        <p class="lead">Tool integrations should not have to be rewritten for every agent framework. In this guide, you will place a stable protocol boundary in front of an ordinary HTTP API, expose one useful tool, test it without involving a model, and then connect it to an agent.</p>
+        <div class="reading-meta" aria-label="Article information">
+          <span>45 min read</span>
+          <span>Intermediate</span>
+          <time datetime="2026-08-02">Updated August 2, 2026</time>
+        </div>
+      </header>
+
+      <nav class="table-of-contents" aria-label="Table of contents">
+        <h2>Contents</h2>
+        <ol>
+          <li><a href="#outcome">What you will build</a></li>
+          <li><a href="#architecture">Architecture and protocol boundary</a></li>
+          <li><a href="#prepare">Prepare the project</a></li>
+          <li><a href="#api-client">Build the HTTP API client</a></li>
+          <li><a href="#server">Implement the MCP server</a></li>
+          <li><a href="#manual-test">Test the server with a client</a></li>
+          <li><a href="#agent">Connect it to an LLM agent</a></li>
+          <li><a href="#verification">Verify the complete path</a></li>
+          <li><a href="#failures">Failure cases and hardening</a></li>
+          <li><a href="#limitations">Limitations and next steps</a></li>
+        </ol>
+      </nav>
+
+      <section id="outcome">
+        <h2>What you will build</h2>
+
+        <p>The <a href="../glossary.html#model-context-protocol">Model Context Protocol</a>, usually shortened to MCP, gives applications a standard way to present tools and context to AI systems. Instead of writing one adapter for each <a href="../glossary.html#agent">agent</a> framework, you can implement the integration once as a server and let compatible clients consume it.</p>
+
+        <p>The concrete case is a small issue-tracker integration. An agent receives a project key and needs to find unresolved issues. The upstream service already provides an <a href="../glossary.html#http-api">HTTP API</a>:</p>
+
+        <pre><code>GET /v1/issues?project=OPS&amp;status=open&amp;limit=10</code></pre>
+
+        <p>You will wrap that endpoint in a tool named <code>search_open_issues</code>. The tool will validate its input, call the API, normalize the response, and return a compact result that a model can use. The same server can then be connected to different MCP-compatible hosts without changing its business logic.</p>
+
+        <aside class="callout">
+          <h3>Expected result</h3>
+          <p>By the end, you will have a working server over a real HTTP boundary, a deterministic client-side test, and an example agent loop that discovers and calls the tool.</p>
+        </aside>
+
+        <p>This tutorial uses TypeScript and Node.js. The API URL and token are supplied through environment variables, so no credentials are embedded in source code. The examples deliberately avoid assuming a particular issue-tracker vendor.</p>
+      </section>
+
+      <section id="architecture">
+        <h2>Architecture and protocol boundary</h2>
+
+        <p>An <a href="../glossary.html#llm">LLM</a> does not call the issue tracker directly. A host application runs the model and an MCP client. That client connects to your server, discovers its tools, and forwards approved calls.</p>
+
+        <pre><code>User
+  |
+  v
+Agent host ---- model
+  |
+  | MCP client session
+  v
+Issue MCP server
+  |
+  | HTTPS + bearer token
+  v
+Issue tracker API</code></pre>
+
+        <p>The separation matters:</p>
+
+        <ul>
+          <li>The API client owns authentication, timeouts, HTTP status handling, and response normalization.</li>
+          <li>The MCP server owns tool discovery, input validation, tool descriptions, and protocol-shaped results.</li>
+          <li>The agent host owns model prompts, tool-call approval, conversation state, and stopping conditions.</li>
+        </ul>
+
+        <p>This is the practical value of model context protocol servers: protocol compatibility stays separate from vendor-specific API behavior. If you later switch agent frameworks, the issue-tracker adapter remains unchanged as long as the new host supports MCP.</p>
+
+        <p>You will use the local standard-input/output transport first. Although the business integration calls an HTTP service, the host-to-server connection remains local and easy to debug. A remote transport can be introduced later without changing the tool implementation.</p>
+
+        <aside class="callout warning">
+          <h3>Keep protocol output clean</h3>
+          <p>When a server communicates over standard output, never write application logs there. A stray log line can corrupt protocol messages. Send diagnostics to standard error.</p>
+        </aside>
+      </section>
+
+      <section id="prepare">
+        <h2>Prepare the project</h2>
+
+        <p>Use a supported Node.js release and a recent version of the MCP TypeScript SDK. Package APIs can evolve, so pin dependency versions in your lockfile and treat the compiler as the final authority for the installed SDK.</p>
+
+        <pre><code>mkdir issue-mcp-server
+cd issue-mcp-server
+npm init -y
+npm install @modelcontextprotocol/sdk zod
+npm install --save-dev typescript tsx @types/node
+npx tsc --init</code></pre>
+
+        <p>Update <code>package.json</code> so Node treats compiled JavaScript as ES modules:</p>
+
+        <pre><code>{
+  "name": "issue-mcp-server",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "tsx src/server.ts",
+    "check": "tsc --noEmit",
+    "build": "tsc",
+    "test:client": "tsx test/client.ts",
+    "agent": "tsx examples/agent.ts"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "YOUR_INSTALLED_VERSION",
+    "zod": "YOUR_INSTALLED_VERSION"
+  },
+  "devDependencies": {
+    "@types/node": "YOUR_INSTALLED_VERSION",
+    "tsx": "YOUR_INSTALLED_VERSION",
+    "typescript": "YOUR_INSTALLED_VERSION"
+  }
+}</code></pre>
+
+        <p>Do not literally replace versions with arbitrary numbers. After installation, keep the exact versions npm recorded and commit the resulting lockfile.</p>
+
+        <p>A compact <code>tsconfig.json</code> is sufficient:</p>
+
+        <pre><code>{
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "NodeNext",
+    "moduleResolution": "NodeNext",
+    "rootDir": ".",
+    "outDir": "dist",
+    "strict": true,
+    "esModuleInterop": true,
+    "skipLibCheck": true,
+    "noUncheckedIndexedAccess": true
+  },
+  "include": ["src/**/*.ts", "test/**/*.ts", "examples/**/*.ts"]
+}</code></pre>
+
+        <p>Create the directories:</p>
+
+        <pre><code>mkdir -p src test examples</code></pre>
+
+        <p>The project will contain:</p>
+
+        <pre><code>issue-mcp-server/
+├── examples/
+│   └── agent.ts
+├── src/
+│   ├── api.ts
+│   └── server.ts
+├── test/
+│   └── client.ts
+├── package.json
+└── tsconfig.json</code></pre>
+      </section>
+
+      <section id="api-client">
+        <h2>Build the HTTP API client</h2>
+
+        <p>Start below the protocol layer. This makes API behavior independently testable and prevents transport details from leaking into tool handlers.</p>
+
+        <p>Create <code>src/api.ts</code>:</p>
+
+        <pre><code>export type Issue = {
+  id: string;
+  title: string;
+  status: string;
+  url: string;
+};
+
+type ApiIssue = {
+  id?: unknown;
+  title?: unknown;
+  status?: unknown;
+  url?: unknown;
+};
+
+type ApiResponse = {
+  issues?: unknown;
+};
+
+export class ApiError extends Error {
+  constructor(
+    message: string,
+    public readonly status?: number
+  ) {
+    super(message);
+    this.name = "ApiError";
+  }
+}
+
+function requireConfig() {
+  const baseUrl = process.env.ISSUES_API_URL;
+  const token = process.env.ISSUES_API_TOKEN;
+
+  if (!baseUrl) {
+    throw new ApiError("ISSUES_API_URL is not configured");
+  }
+  if (!token) {
+    throw new ApiError("ISSUES_API_TOKEN is not configured");
+  }
+
+  return {
+    baseUrl: baseUrl.replace(/\/$/, ""),
+    token
+  };
+}
+
+function normalizeIssue(value: ApiIssue): Issue | null {
+  if (
+    typeof value.id !== "string" ||
+    typeof value.title !== "string" ||
+    typeof value.status !== "string" ||
+    typeof value.url !== "string"
+  ) {
+    return null;
+  }
+
+  return {
+    id: value.id,
+    title: value.title,
+    status: value.status,
+    url: value.url
+  };
+}
+
+export async function searchOpenIssues(
+  project: string,
+  limit: number,
+  signal?: AbortSignal
+): Promise&lt;Issue[]&gt; {
+  const { baseUrl, token } = requireConfig();
+  const url = new URL("/v1/issues", baseUrl);
+
+  url.searchParams.set("project", project);
+  url.searchParams.set("status", "open");
+  url.searchParams.set("limit", String(limit));
+
+  const timeoutSignal = AbortSignal.timeout(10_000);
+  const combinedSignal = signal
+    ? AbortSignal.any([signal, timeoutSignal])
+    : timeoutSignal;
+
+  let response: Response;
+
+  try {
+    response = await fetch(url, {
+      method: "GET",
+      headers: {
+        "accept": "application/json",
+        "authorization": `Bearer ${token}`,
+        "user-agent": "issue-mcp-server/1.0"
+      },
+      signal: combinedSignal
+    });
+  } catch (error) {
+    if (error instanceof Error &amp;&amp; error.name === "TimeoutError") {
+      throw new ApiError("Issue API timed out");
+    }
+    throw new ApiError("Issue API could not be reached");
+  }
+
+  if (!response.ok) {
+    const retryAfter = response.headers.get("retry-after");
+    const suffix = retryAfter
+      ? `; retry after ${retryAfter} seconds`
+      : "";
+
+    throw new ApiError(
+      `Issue API returned HTTP ${response.status}${suffix}`,
+      response.status
+    );
+  }
+
+  let body: ApiResponse;
+
+  try {
+    body = await response.json() as ApiResponse;
+  } catch {
+    throw new ApiError("Issue API returned invalid JSON");
+  }
+
+  if (!Array.isArray(body.issues)) {
+    throw new ApiError("Issue API response has no issues array");
+  }
+
+  return body.issues
+    .map((item) =&gt; normalizeIssue(item as ApiIssue))
+    .filter((item): item is Issue =&gt; item !== null)
+    .slice(0, limit);
+}</code></pre>
+
+        <h3>Why normalize the response?</h3>
+
+        <p>A successful HTTP status does not prove that the body has the expected shape. Returning unverified upstream data creates two problems: the agent receives unstable fields, and malicious or accidental content can consume excessive context. Normalization creates a narrow data contract and drops malformed records.</p>
+
+        <p>The token is used only in the authorization header. It is never returned to the model, included in an error, or printed in a log. Preserve this property when adding diagnostics.</p>
+
+        <h3>Configure the API</h3>
+
+        <p>Set the variables in the shell that launches the server:</p>
+
+        <pre><code>export ISSUES_API_URL="https://issues.example.internal"
+export ISSUES_API_TOKEN="replace-with-a-real-token"</code></pre>
+
+        <p>Use your actual API origin. Do not commit the token or place it inside an agent configuration that might be shared. In production, use the secret-management facility of the process supervisor or deployment platform.</p>
+      </section>
+
+      <section id="server">
+        <h2>Implement the MCP server</h2>
+
+        <p>An MCP <a href="../glossary.html#tool">tool</a> combines a name, a model-facing description, an input schema, and an execution handler. Good descriptions are operational: they explain when to call the tool, what it returns, and what it does not do.</p>
+
+        <p>Create <code>src/server.ts</code>:</p>
+
+        <pre><code>import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
+import { StdioServerTransport } from
+  "@modelcontextprotocol/sdk/server/stdio.js";
+import { z } from "zod";
+import { ApiError, searchOpenIssues } from "./api.js";
+
+const server = new McpServer({
+  name: "issue-search",
+  version: "1.0.0"
+});
+
+server.registerTool(
+  "search_open_issues",
+  {
+    title: "Search open issues",
+    description:
+      "Find unresolved issues in one project. Use this when the user " +
+      "asks what is open, blocked, or awaiting work. This tool is " +
+      "read-only and returns issue IDs, titles, statuses, and URLs.",
+    inputSchema: {
+      project: z
+        .string()
+        .trim()
+        .min(1)
+        .max(40)
+        .regex(
+          /^[A-Za-z][A-Za-z0-9_-]*$/,
+          "Use a project key such as OPS or web-platform"
+        ),
+      limit: z
+        .number()
+        .int()
+        .min(1)
+        .max(25)
+        .default(10)
+    }
+  },
+  async ({ project, limit }) =&gt; {
+    try {
+      const issues = await searchOpenIssues(project, limit);
+
+      const summary = issues.length === 0
+        ? `No open issues found for ${project}.`
+        : issues
+            .map(
+              (issue) =&gt;
+                `${issue.id}: ${issue.title} ` +
+                `[${issue.status}] ${issue.url}`
+            )
+            .join("\n");
+
+      return {
+        content: [
+          {
+            type: "text",
+            text: summary
+          }
+        ],
+        structuredContent: {
+          project,
+          count: issues.length,
+          issues
+        }
+      };
+    } catch (error) {
+      const message = error instanceof ApiError
+        ? error.message
+        : "Unexpected server error";
+
+      console.error("search_open_issues failed:", message);
+
+      return {
+        isError: true,
+        content: [
+          {
+            type: "text",
+            text:
+              `Could not search issues for ${project}: ${message}. ` +
+              "Do not claim that no issues exist."
+          }
+        ]
+      };
+    }
+  }
+);
+
+const transport = new StdioServerTransport();
+await server.connect(transport);
+console.error("issue-search MCP server is ready");</code></pre>
+
+        <p>The text result remains useful to hosts that only pass textual tool output to a model. The structured result gives capable hosts a predictable object for rendering or downstream processing.</p>
+
+        <p>Notice the error wording. An unavailable API is not the same as an empty issue list. Explicitly telling the agent not to interpret failure as “no issues” prevents a subtle but damaging false conclusion.</p>
+
+        <h3>Validate before crossing the network</h3>
+
+        <p>The project key is constrained to 40 characters and a conservative character set. The limit cannot exceed 25. These are not merely cosmetic checks: they cap response size, reject ambiguous input early, and reduce the upstream service’s workload.</p>
+
+        <p>Type-check the project:</p>
+
+        <pre><code>npm run check</code></pre>
+
+        <p>If the SDK version you installed uses a slightly different registration signature, follow its compiler diagnostics and installed type definitions. Keep the architectural boundary intact: schema and protocol logic in <code>server.ts</code>, HTTP behavior in <code>api.ts</code>.</p>
+      </section>
+
+      <section id="manual-test">
+        <h2>Test the server with a client</h2>
+
+        <p>Do not introduce a model yet. A direct <a href="../glossary.html#mcp-client">MCP client</a> produces deterministic evidence that initialization, discovery, validation, execution, and shutdown work.</p>
+
+        <p>Create <code>test/client.ts</code>:</p>
+
+        <pre><code>import { Client } from
+  "@modelcontextprotocol/sdk/client/index.js";
+import { StdioClientTransport } from
+  "@modelcontextprotocol/sdk/client/stdio.js";
+
+const transport = new StdioClientTransport({
+  command: process.execPath,
+  args: [
+    "--import",
+    "tsx",
+    "src/server.ts"
+  ],
+  env: {
+    ...process.env,
+    ISSUES_API_URL:
+      process.env.ISSUES_API_URL ?? "",
+    ISSUES_API_TOKEN:
+      process.env.ISSUES_API_TOKEN ?? ""
+  }
+});
+
+const client = new Client({
+  name: "issue-search-test",
+  version: "1.0.0"
+});
+
+try {
+  await client.connect(transport);
+
+  const listed = await client.listTools();
+  const tool = listed.tools.find(
+    (candidate) =&gt; candidate.name === "search_open_issues"
+  );
+
+  if (!tool) {
+    throw new Error("search_open_issues was not discovered");
+  }
+
+  console.log("Discovered:", tool.name);
+
+  const result = await client.callTool({
+    name: "search_open_issues",
+    arguments: {
+      project: "OPS",
+      limit: 3
+    }
+  });
+
+  console.log(JSON.stringify(result, null, 2));
+
+  if (result.isError) {
+    process.exitCode = 1;
+  }
+} finally {
+  await client.close();
+}</code></pre>
+
+        <p>Run it only after configuring an endpoint you are authorized to access:</p>
+
+        <pre><code>npm run test:client</code></pre>
+
+        <p>This is an integration check, not a promise about a particular output. A successful run should demonstrate all of the following:</p>
+
+        <ol>
+          <li>The client completes the protocol handshake.</li>
+          <li><code>listTools</code> contains <code>search_open_issues</code>.</li>
+          <li>The call reaches the configured API.</li>
+          <li>The result contains text and, when supported, structured content.</li>
+          <li>The process closes without hanging.</li>
+        </ol>
+
+        <h3>Test without a production service</h3>
+
+        <p>For repeatable automated tests, point <code>ISSUES_API_URL</code> at a local test server that implements the same endpoint. Its fixture can return a deliberately small response:</p>
+
+        <pre><code>{
+  "issues": [
+    {
+      "id": "OPS-12",
+      "title": "Retry delayed synchronization jobs",
+      "status": "open",
+      "url": "https://tracker.invalid/issues/OPS-12"
+    }
+  ]
+}</code></pre>
+
+        <p>The domain ending in <code>.invalid</code> prevents the fixture from implying a real customer or live service. Your test should assert the shape and transformation, not merely print the result. Useful assertions include:</p>
+
+        <ul>
+          <li>The upstream request contains <code>status=open</code>.</li>
+          <li>The bearer header is present, but its value is never logged.</li>
+          <li>A limit of 3 produces no more than three normalized issues.</li>
+          <li>Malformed records are omitted.</li>
+          <li>HTTP 401, 429, and 500 responses produce <code>isError: true</code>.</li>
+          <li>Invalid input is rejected before an HTTP request is made.</li>
+        </ul>
+
+        <h3>Probe input validation</h3>
+
+        <p>Temporarily change the client arguments to each invalid case:</p>
+
+        <pre><code>{ "project": "", "limit": 3 }
+{ "project": "../admin", "limit": 3 }
+{ "project": "OPS", "limit": 0 }
+{ "project": "OPS", "limit": 1000 }</code></pre>
+
+        <p>Each call should fail validation rather than reach the API. Exact error formatting depends on the SDK and client, so assert the failure category instead of brittle prose.</p>
+      </section>
+
+      <section id="agent">
+        <h2>Connect the server to an LLM agent</h2>
+
+        <p>There are two practical connection patterns. A desktop or IDE host can launch the server from configuration. A custom application can open the client session itself and expose the discovered tools to its model SDK.</p>
+
+        <h3>Option A: configure an MCP-compatible host</h3>
+
+        <p>A typical local host configuration has this shape:</p>
+
+        <pre><code>{
+  "mcpServers": {
+    "issue-search": {
+      "command": "node",
+      "args": [
+        "/absolute/path/to/issue-mcp-server/dist/src/server.js"
+      ],
+      "env": {
+        "ISSUES_API_URL": "https://issues.example.internal",
+        "ISSUES_API_TOKEN": "supply-through-your-secret-manager"
+      }
+    }
+  }
+}</code></pre>
+
+        <p>Build before pointing a host at <code>dist</code>:</p>
+
+        <pre><code>npm run build</code></pre>
+
+        <p>Configuration filenames and nesting differ between hosts. Adapt the outer configuration to your host, but preserve the executable, arguments, and environment semantics. Restart or reload the host, inspect its tool list, and confirm that <code>search_open_issues</code> appears before sending a natural-language request.</p>
+
+        <p>The phrase claude model context protocol often appears in setup searches because Claude-compatible hosts helped popularize MCP. The server built here is not coupled to one model vendor: compatibility depends on the host’s protocol support and transport configuration.</p>
+
+        <h3>Option B: wire it into a custom agent</h3>
+
+        <p>A custom agent loop has four essential operations:</p>
+
+        <ol>
+          <li>Connect an MCP client and list tools.</li>
+          <li>Translate their schemas into the model provider’s tool format.</li>
+          <li>Send the user request and tool definitions to the model.</li>
+          <li>Execute requested calls through MCP and return their results to the model.</li>
+        </ol>
+
+        <p>The following provider-neutral skeleton shows the control flow. Replace the placeholder model adapter with the SDK you already use:</p>
+
+        <pre><code>import { Client } from
+  "@modelcontextprotocol/sdk/client/index.js";
+import { StdioClientTransport } from
+  "@modelcontextprotocol/sdk/client/stdio.js";
+
+type ModelToolCall = {
+  id: string;
+  name: string;
+  arguments: Record&lt;string, unknown&gt;;
+};
+
+type ModelResponse = {
+  text?: string;
+  toolCalls: ModelToolCall[];
+};
+
+async function callModel(input: {
+  messages: unknown[];
+  tools: unknown[];
+}): Promise&lt;ModelResponse&gt; {
+  throw new Error(
+    "Implement this adapter with your chosen model SDK"
+  );
+}
+
+const transport = new StdioClientTransport({
+  command: "node",
+  args: ["dist/src/server.js"],
+  env: {
+    ...process.env,
+    ISSUES_API_URL:
+      process.env.ISSUES_API_URL ?? "",
+    ISSUES_API_TOKEN:
+      process.env.ISSUES_API_TOKEN ?? ""
+  }
+});
+
+const mcp = new Client({
+  name: "issue-agent",
+  version: "1.0.0"
+});
+
+await mcp.connect(transport);
+
+try {
+  const { tools } = await mcp.listTools();
+
+  const modelTools = tools.map((tool) =&gt; ({
+    type: "function",
+    name: tool.name,
+    description: tool.description,
+    parameters: tool.inputSchema
+  }));
+
+  const messages: unknown[] = [
+    {
+      role: "system",
+      content:
+        "Use tools for current issue data. Never treat a tool " +
+        "error as an empty result. Do not invent issue details."
+    },
+    {
+      role: "user",
+      content:
+        "List up to three open issues in OPS and summarize them."
+    }
+  ];
+
+  for (let turn = 0; turn &lt; 6; turn += 1) {
+    const response = await callModel({
+      messages,
+      tools: modelTools
+    });
+
+    if (response.toolCalls.length === 0) {
+      console.log(response.text ?? "");
+      break;
+    }
+
+    messages.push({
+      role: "assistant",
+      content: response
+    });
+
+    for (const call of response.toolCalls) {
+      const result = await mcp.callTool({
+        name: call.name,
+        arguments: call.arguments
+      });
+
+      messages.push({
+        role: "tool",
+        toolCallId: call.id,
+        content: JSON.stringify(result)
+      });
+    }
+  }
+} finally {
+  await mcp.close();
+}</code></pre>
+
+        <p>This skeleton is intentionally incomplete at one boundary: model providers use different request, response, and tool-result types. Implementing <code>callModel</code> is a small adapter; the HTTP integration and MCP server remain reusable.</p>
+
+        <h3>Enforce calls in application code</h3>
+
+        <p>Never execute any arbitrary tool name emitted by a model. Build an allowlist from the MCP discovery response or from an explicit policy, validate arguments again at the server, cap the number of turns, and require approval for mutating operations.</p>
+
+        <pre><code>const allowed = new Set(
+  tools.map((tool) =&gt; tool.name)
+);
+
+if (!allowed.has(call.name)) {
+  throw new Error(`Tool is not allowed: ${call.name}`);
+}</code></pre>
+
+        <p>Our tool is read-only, but read access can still expose sensitive issue titles. Authorization must be enforced by the upstream API token and, for multi-user applications, by the host’s user-to-credential mapping.</p>
+      </section>
+
+      <section id="verification">
+        <h2>Verify the complete path</h2>
+
+        <p>Verification should proceed in layers. If the final answer is wrong, this sequence tells you which boundary failed.</p>
+
+        <h3>1. Static verification</h3>
+
+        <pre><code>npm run check
+npm run build</code></pre>
+
+        <p>Confirm that compilation succeeds and that the configured server entry point exists under <code>dist</code>.</p>
+
+        <h3>2. Protocol verification</h3>
+
+        <pre><code>npm run test:client</code></pre>
+
+        <p>Confirm discovery and a direct tool call before involving a model. Also test one invalid argument and one simulated upstream error.</p>
+
+        <h3>3. Host verification</h3>
+
+        <p>Start the chosen host and inspect its registered tools. If the tool is absent, debug process launch and transport configuration. Prompt changes will not repair a failed connection.</p>
+
+        <h3>4. Agent verification</h3>
+
+        <p>Use a request that unambiguously requires current tool data:</p>
+
+        <blockquote>
+          <p>Find at most three open issues in project OPS. Include each issue ID and URL. If the tool fails, report the failure instead of guessing.</p>
+        </blockquote>
+
+        <p>Inspect the run trace or application logs and answer these questions:</p>
+
+        <ul>
+          <li>Did the model select <code>search_open_issues</code>?</li>
+          <li>Were <code>project</code> and <code>limit</code> valid?</li>
+          <li>Did the server make exactly the expected API request?</li>
+          <li>Did the final answer use only records returned by the tool?</li>
+          <li>On an API error, did the agent avoid claiming that the list was empty?</li>
+        </ul>
+
+        <p>Do not record a successful result unless you actually observed it in your environment. The commands here define a repeatable verification procedure; they do not invent a passing test run.</p>
+
+        <h3>Definition of done</h3>
+
+        <table>
+          <thead>
+            <tr>
+              <th>Layer</th>
+              <th>Evidence</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td>Build</td>
+              <td>Type checking and compilation complete without errors.</td>
+            </tr>
+            <tr>
+              <td>Discovery</td>
+              <td>The client lists <code>search_open_issues</code>.</td>
+            </tr>
+            <tr>
+              <td>Validation</td>
+              <td>Invalid project keys and limits never reach the API.</td>
+            </tr>
+            <tr>
+              <td>HTTP</td>
+              <td>The expected path, query parameters, and authorization header are observed in a controlled test.</td>
+            </tr>
+            <tr>
+              <td>Errors</td>
+              <td>Timeouts and non-success statuses produce explicit tool errors.</td>
+            </tr>
+            <tr>
+              <td>Agent</td>
+              <td>The agent calls the tool and grounds its response in returned records.</td>
+            </tr>
+          </tbody>
+        </table>
+      </section>
+
+      <section id="failures">
+        <h2>Failure cases and hardening</h2>
+
+        <h3>The server starts and immediately disappears</h3>
+
+        <p>The parent host may be closing standard input, the entry-point path may be wrong, or the process may fail during module loading. Run the exact configured command in a terminal and inspect standard error. Confirm the build output path instead of assuming it.</p>
+
+        <h3>The host reports malformed protocol messages</h3>
+
+        <p>Application code probably wrote logs to standard output. Replace <code>console.log</code> in the server process with <code>console.error</code>. A client test may print to its own standard output; the spawned server must not.</p>
+
+        <h3>The tool is visible but calls fail</h3>
+
+        <p>Check whether environment variables are inherited by the spawned process. GUI applications often receive a different environment from interactive shells. Prefer explicit host configuration or a secure process-level secret provider.</p>
+
+        <h3>The API returns 401 or 403</h3>
+
+        <p>Verify the token’s presence, scope, audience, and expiration outside the model loop. Do not return the token, complete authorization header, or raw upstream response to the agent.</p>
+
+        <h3>The API returns 429</h3>
+
+        <p>Respect <code>Retry-After</code> when present. Retries should be bounded, use backoff, and apply only to operations safe to repeat. For an interactive agent, a clear temporary-failure result is often better than silently waiting through many retries.</p>
+
+        <h3>The model repeatedly calls the same tool</h3>
+
+        <p>Cap tool turns, preserve the previous tool result in conversation state, and tell the model not to repeat an identical call unless the user requests a refresh. The application can also detect a repeated name-and-arguments pair.</p>
+
+        <h3>The result is too large</h3>
+
+        <p>Apply limits at several levels: schema maximum, upstream page size, response normalization, and serialized byte size. Prefer adding a second detail tool such as <code>get_issue</code> rather than returning complete issue bodies in a search result.</p>
+
+        <h3>Untrusted issue text changes agent behavior</h3>
+
+        <p>Tool output is data, even when it contains instructions addressed to the model. Keep a strong system instruction, label external content clearly, omit unnecessary rich text, and prevent tool results from authorizing additional tools or privileged actions.</p>
+
+        <h3>Errors expose internal details</h3>
+
+        <p>Split operator diagnostics from model-visible errors. Logs may include a request ID and safe status metadata. Tool output should contain a stable, actionable message without stack traces, internal hostnames, query secrets, or raw response bodies.</p>
+
+        <h3>A write tool is added later</h3>
+
+        <p>Do not copy the read-tool policy unchanged. Mutating tools need narrow scopes, explicit descriptions, idempotency controls, confirmation in the host, audit records, and tests for duplicate execution. Separate read and write credentials where possible.</p>
+      </section>
+
+      <section id="limitations">
+        <h2>Limitations and next steps</h2>
+
+        <p>This implementation is intentionally small. It demonstrates the complete integration path, but it is not yet a universal production gateway.</p>
+
+        <ul>
+          <li><strong>Local transport:</strong> standard input/output is ideal for one host launching one server. Shared remote access requires an MCP-supported remote transport, authentication, session management, and deployment controls.</li>
+          <li><strong>One endpoint:</strong> production integrations usually need pagination, issue details, user lookup, and stable error codes.</li>
+          <li><strong>One credential context:</strong> a shared token cannot enforce per-user permissions. Multi-user systems should bind calls to user-specific authorization.</li>
+          <li><strong>No cache:</strong> repeated reads always reach the upstream API. Add short-lived caching only when its staleness semantics are acceptable.</li>
+          <li><strong>Basic observability:</strong> production servers should record safe request identifiers, latency, outcome categories, and rate-limit events without storing sensitive tool arguments by default.</li>
+          <li><strong>Provider-neutral agent adapter:</strong> the example leaves model-specific message conversion to your chosen SDK.</li>
+        </ul>
+
+        <p>A sensible expansion order is to add automated fixture tests, stable error codes, pagination, observability, and then remote deployment. Avoid adding many tools before the first one has clear semantics and reliable failure behavior.</p>
+
+        <h2>What you achieved</h2>
+
+        <p>You separated a vendor-specific HTTP integration from the agent framework, exposed it through the model context protocol, verified discovery and execution with a client, and defined the final model tool loop. That boundary is the main architectural win: the API adapter is implemented once, while compatible hosts can discover and invoke it without bespoke integration code.</p>
+
+        <p>Continue with the <a href="guides.html">Agent Lab Journal guides</a>, or review MCP, agents, tools, and related terminology in the <a href="../glossary.html">glossary</a>.</p>
+      </section>
+    </article>
+  </main>
+
+  <footer class="site-footer">
+    <div class="container">
+      <p>&copy; 2026 Agent Lab Journal</p>
+    </div>
+  </footer>
+</body>
+</html>
