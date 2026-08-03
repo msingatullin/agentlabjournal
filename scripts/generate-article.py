@@ -64,7 +64,14 @@ seo_brief = "\n".join(
 )
 glossary_href = "../glossary.html" if args.language == "en" else "glossary.html"
 
-prompt = f"""Create one complete {'English' if args.language == 'en' else 'Russian'} HTML article for Agent Lab Journal.
+prompt = f"""<role>
+You are the technical editor for Agent Lab Journal. Produce one reproducible,
+evidence-bounded article; do not claim to have run checks you did not run.
+</role>
+<goal>
+Create one complete {'English' if args.language == 'en' else 'Russian'} HTML article.
+</goal>
+<data>
 Topic: {args.title}
 Real problem: {args.problem}
 Level: {args.level}
@@ -73,32 +80,42 @@ Expected result: {args.result}
 SEO primary query: {seo_passport['primary_query']}
 Measured SEO queries (use each exact phrase naturally, without keyword stuffing):
 {seo_brief}
-
-Return ONLY one complete HTML document, with no Markdown fences and no explanation.
-Use the existing site style: style.css and reading.css. Add description, canonical URL
-https://agentlabjournal.online/{'en/' if args.language == 'en' else ''}{filename}, title, and an Article JSON-LD block with headline,
-description, image, dateModified, author, publisher and mainEntityOfPage. Add Open Graph and Twitter
-card metadata, reading-meta, a strong lead, a concrete
-case, practical steps, commands or configuration where useful, verification, failure cases,
-limitations, and a final link to guides.html and {glossary_href}. The first mention of each
-special term must link to {glossary_href} using an existing or appropriate anchor. Do not
-invent test results, credentials, customer facts, or external citations. The article must
-be useful to a reader who wants to repeat the work."""
+</data>
+<policy>
+Do not invent test results, credentials, customer facts, prices, or external citations.
+Distinguish examples from verified facts. Keep secrets and personal data out of the article.
+</policy>
+<workflow>
+Use the existing site style: style.css and reading.css. Include a strong lead, concrete
+case, reproducible steps, commands or configuration where useful, verification, failure
+cases, limitations, and a final link to guides.html and {glossary_href}.
+</workflow>
+<tone>Practical, precise and useful to a reader who wants to repeat the work.</tone>
+<output_contract>
+Return ONLY one complete HTML document, with no Markdown fences or explanation. Include
+description, canonical URL https://agentlabjournal.online/{'en/' if args.language == 'en' else ''}{filename},
+title, Article JSON-LD with headline/description/image/dateModified/author/publisher/mainEntityOfPage,
+Open Graph, Twitter card and reading-meta. The first mention of each special term must link
+to {glossary_href} using an existing or appropriate anchor.
+</output_contract>"""
 
 if args.language == "ru" and os.environ.get("AGENTLAB_BATCH_MODE") == "1":
-    prompt = f"""Напиши практическую русскоязычную статью для Agent Lab Journal.
+    prompt = f"""<role>Ты технический редактор Agent Lab Journal.</role>
+<goal>Напиши практическую русскоязычную статью.</goal>
+<data>
 Тема: {args.title}
 Проблема: {args.problem}
 Уровень: {args.level}; чтение: до {min(args.minutes, 12)} минут; результат: {args.result}.
 Основной SEO-запрос: {seo_passport['primary_query']}.
 Измеренные запросы — используй каждую точную фразу естественно, без переспама:
 {seo_brief}
-Верни только полный HTML-документ без Markdown и пояснений. Используй style.css и reading.css.
-Обязательно добавь title, description, canonical https://agentlabjournal.online/{filename}, Open Graph,
-Twitter card, reading-meta и Article JSON-LD. Дай введение, воспроизводимые шаги, безопасные команды или
-конфигурацию, проверку результата, типовые ошибки, ограничения и ссылки на guides.html и glossary.html.
-Не выдумывай тесты, клиентов, секреты или внешние источники; отличай пример от факта. Первый специальный
-термин свяжи с glossary.html. Верни только HTML."""
+</data>
+<policy>Не выдумывай тесты, клиентов, цены, секреты или внешние источники; отличай пример от факта.</policy>
+<workflow>Используй style.css и reading.css. Дай введение, воспроизводимые шаги, безопасные команды,
+проверку результата, типовые ошибки, ограничения и ссылки на guides.html и glossary.html.</workflow>
+<output_contract>Верни только полный HTML-документ без Markdown и пояснений. Обязательно добавь title,
+description, canonical https://agentlabjournal.online/{filename}, Open Graph, Twitter card, reading-meta
+и Article JSON-LD. Первый специальный термин свяжи с glossary.html.</output_contract>"""
 
 with tempfile.TemporaryDirectory() as tmp:
     output = Path(tmp) / "article.txt"
