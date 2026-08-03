@@ -29,16 +29,27 @@
   };
 
   var currentParams = new URLSearchParams(window.location.search);
-  var hasTelegramAttribution = currentParams.get('utm_source') === 'telegram';
+  var storedAttribution = JSON.parse(sessionStorage.getItem('agentlab_attribution') || '{}');
 
   function bridgeUrl(path, content) {
     var url = new URL(path, window.location.href);
-    if (!hasTelegramAttribution) return url.toString();
-    url.searchParams.set('utm_source', 'telegram');
-    url.searchParams.set('utm_medium', 'channel');
-    url.searchParams.set('utm_campaign', 'pelmeni');
-    url.searchParams.set('utm_content', content);
+    var hasAttribution = false;
+    ['utm_source', 'utm_medium', 'utm_campaign'].forEach(function (key) {
+      var value = currentParams.get(key) || storedAttribution[key];
+      if (value) { url.searchParams.set(key, value); hasAttribution = true; }
+    });
+    var contentValue = currentParams.get('utm_content') || storedAttribution.utm_content;
+    if (contentValue || hasAttribution) url.searchParams.set('utm_content', content || contentValue || 'internal');
     return url.toString();
+  }
+
+  function ctaTopic(link) {
+    var value = ((link.getAttribute('href') || '') + ' ' + (link.textContent || '')).toLowerCase();
+    if (value.indexOf('telegram') >= 0 || value.indexOf('тг') >= 0) return 'telegram';
+    if (value.indexOf('mail') >= 0 || value.indexOf('почт') >= 0 || value.indexOf('@') >= 0) return 'email';
+    if (value.indexOf('crm') >= 0) return 'crm';
+    if (value.indexOf('report') >= 0 || value.indexOf('отч') >= 0) return 'reports';
+    return 'general';
   }
 
   function reach(name, params) {
@@ -48,19 +59,33 @@
   document.addEventListener('DOMContentLoaded', function () {
     var currentSlug = window.location.pathname.split('/').pop() || 'index.html';
     sessionStorage.setItem('agentlab_landing_page', sessionStorage.getItem('agentlab_landing_page') || window.location.href);
-    sessionStorage.setItem('agentlab_article_slug', sessionStorage.getItem('agentlab_article_slug') || currentSlug.replace('.html', ''));
+    sessionStorage.setItem('agentlab_article_slug', currentSlug.replace('.html', ''));
+    if (currentParams.toString()) {
+      var nextAttribution = Object.assign({}, storedAttribution);
+      ['utm_source', 'utm_medium', 'utm_campaign', 'utm_content'].forEach(function (key) {
+        if (currentParams.get(key)) nextAttribution[key] = currentParams.get(key);
+      });
+      sessionStorage.setItem('agentlab_attribution', JSON.stringify(nextAttribution));
+    }
     document.querySelectorAll('a[href]').forEach(function (link) {
       var href = link.getAttribute('href') || '';
-      if (!hasTelegramAttribution) return;
       if (href.indexOf('https://agentlabjournal.online/') !== 0 && href.indexOf('./') !== 0) return;
-      if (href.indexOf('#') >= 0 || href.indexOf('utm_source=') >= 0) return;
+      if (href.indexOf('#') >= 0) return;
       var target = new URL(href, window.location.href);
       if (target.origin !== window.location.origin || !target.pathname.endsWith('.html')) return;
       var content = (target.pathname.split('/').pop() || 'internal').replace('.html', '');
       link.href = bridgeUrl(target.pathname + target.search, content);
+      if (target.pathname.indexOf('lead-intake.html') >= 0) {
+        link.dataset.ctaTopic = ctaTopic(link);
+        link.dataset.articleSlug = currentSlug.replace('.html', '');
+      }
       link.addEventListener('click', function () {
         reach('article_internal_click', { target: content, source: 'site' });
       });
+    });
+
+    document.querySelectorAll('a.service-action[href*="lead-intake.html"]').forEach(function (link) {
+      link.dataset.ctaTopic = link.dataset.ctaTopic || ctaTopic(link);
     });
 
     var current = currentSlug;
@@ -84,9 +109,11 @@
       links.appendChild(a);
     });
     var cta = document.createElement('div');
-    sessionStorage.setItem('agentlab_cta_topic', current.replace('.html', '') + '-cta');
+    sessionStorage.setItem('agentlab_cta_topic', 'general');
     cta.className = 'content-bridge-cta';
-    cta.innerHTML = '<strong>Хотите проверить такой процесс у себя?</strong><a class="service-action" href="' + bridgeUrl('lead-intake.html', current.replace('.html', '') + '-cta') + '">Показать мой процесс →</a>';
+    cta.dataset.ctaTopic = 'general';
+    cta.dataset.articleSlug = current.replace('.html', '');
+    cta.innerHTML = '<strong>Хотите проверить такой процесс у себя?</strong><a class="service-action" data-cta-topic="general" data-article-slug="' + current.replace('.html', '') + '" href="' + bridgeUrl('lead-intake.html', current.replace('.html', '') + '-cta') + '">Показать мой процесс →</a>';
     section.appendChild(cta);
     article.insertBefore(section, article.querySelector('.service-note') || null);
   });

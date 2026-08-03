@@ -30,6 +30,17 @@ document.addEventListener('DOMContentLoaded', function () {
 });
 
 document.addEventListener('DOMContentLoaded', function () {
+    var started = false;
+    document.querySelectorAll('#lead-form input, #lead-form select, #lead-form textarea').forEach(function (field) {
+        field.addEventListener('focus', function () {
+            if (started) return;
+            started = true;
+            if (typeof window.ym === 'function') window.ym(110942679, 'reachGoal', 'lead_form_start');
+        });
+    });
+});
+
+document.addEventListener('DOMContentLoaded', function () {
     document.querySelectorAll('audio[data-podcast-id]').forEach(function (audio) {
         var sent = {};
         var params = {
