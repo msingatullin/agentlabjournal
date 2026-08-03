@@ -20,15 +20,29 @@ filename = relative.name
 article = ROOT / relative
 if article.suffix != ".html" or not article.exists():
     raise SystemExit(f"Article not found in repository root: {filename}")
+language = "en" if relative.parts and relative.parts[0] == "en" else "ru"
 
 seo_gate = subprocess.run([
     sys.executable,
     str(ROOT / "scripts" / "seo-query-gate.py"),
     "--slug",
     article.stem,
+    "--language",
+    language,
 ], cwd=ROOT)
 if seo_gate.returncode:
     raise SystemExit("Publication blocked: SEO query passport is missing or invalid")
+
+evidence_gate = subprocess.run([
+    sys.executable,
+    str(ROOT / "scripts" / "evidence-gate.py"),
+    "--slug",
+    article.stem,
+    "--language",
+    language,
+], cwd=ROOT)
+if evidence_gate.returncode:
+    raise SystemExit("Publication blocked: evidence register is missing or unverifiable")
 
 text = article.read_text()
 if "reading-meta" not in text or "canonical" not in text:
