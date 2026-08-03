@@ -7,6 +7,7 @@ import datetime as dt
 import json
 import os
 import re
+import subprocess
 import sys
 import tempfile
 from pathlib import Path
@@ -104,8 +105,18 @@ def complete(args: argparse.Namespace) -> int:
             return fail("experiment requires completed evidence phase with references")
     if args.phase == "review" and not any(state["phases"][p]["evidence"] for p in PHASES[:3]):
         return fail("review requires at least one evidence reference")
-    if args.phase == "delivery" and state["review"]["status"] != "passed":
-        return fail("delivery requires review status passed")
+    if args.phase == "delivery":
+        if state["review"]["status"] != "passed":
+            return fail("delivery requires review status passed")
+        if not args.report or not args.runtime_evidence:
+            return fail("delivery requires --report and --runtime-evidence")
+        gate = subprocess.run(
+            [sys.executable, str(ROOT / "scripts" / "client-delivery-gate.py"),
+             "--report", str(args.report), "--runtime-evidence", str(args.runtime_evidence)],
+            cwd=ROOT, text=True,
+        )
+        if gate.returncode != 0:
+            return fail("client delivery evidence gate failed")
     phase["steps"] += 1
     phase["status"] = "completed"
     phase["evidence"].extend(args.evidence)
@@ -150,6 +161,8 @@ def main() -> int:
     finish.add_argument("--phase", choices=PHASES, required=True)
     finish.add_argument("--evidence", action="append", default=[])
     finish.add_argument("--note", default="")
+    finish.add_argument("--report", type=Path)
+    finish.add_argument("--runtime-evidence", type=Path)
     finish.set_defaults(func=complete)
     show = sub.add_parser("status")
     show.add_argument("--run-id", required=True)

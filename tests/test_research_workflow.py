@@ -21,6 +21,14 @@ def test_checkpoint_order_and_review(tmp_path):
     assert run("complete", "--run-id", run_id, "--phase", "evidence", "--evidence", "source.txt").returncode == 0
     assert run("complete", "--run-id", run_id, "--phase", "experiment", "--evidence", "result.json").returncode == 0
     assert run("complete", "--run-id", run_id, "--phase", "review", "--note", "reviewed").returncode == 0
-    assert run("complete", "--run-id", run_id, "--phase", "delivery").returncode == 0
+    report = tmp_path / "report.json"
+    report.write_text(json.dumps({
+        "question": "q", "hypothesis": "h", "method": "m", "acceptance_criteria": "a",
+        "evidence": [{"id": "e1", "source": "source.txt", "source_type": "runtime-log", "collected_at": "2026-08-03", "claim": "ok"}],
+        "results": "ok", "limitations": "none", "decision": "GO"
+    }))
+    runtime = tmp_path / "runtime.json"
+    runtime.write_text(json.dumps({"items": [{"status": "ok", "type": "file"}]}))
+    assert run("complete", "--run-id", run_id, "--phase", "delivery", "--report", str(report), "--runtime-evidence", str(runtime)).returncode == 0
     state = json.loads((ROOT / "research-runs" / run_id / "state.json").read_text())
     assert state["current_phase"] == "complete"

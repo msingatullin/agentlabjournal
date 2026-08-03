@@ -19,3 +19,17 @@ Phases are ordered: `discovery -> evidence -> experiment -> review -> delivery`.
 Evidence, a hypothesis, a method and acceptance criteria are required before an
 experiment. Review requires evidence; delivery requires a passed review. A run is resumed
 from its JSON checkpoint instead of being reconstructed from chat history.
+
+Перед delivery подготовьте JSON-отчёт по `report.schema.json` и runtime-артефакт:
+
+```bash
+python3 scripts/collect-runtime-evidence.py --run-id seo-audit-20260803 \
+  --file /path/to/result.json --url https://example.com
+python3 scripts/research-workflow.py complete --run-id seo-audit-20260803 \
+  --phase delivery --report /path/to/report.json \
+  --runtime-evidence research-runs/seo-audit-20260803/runtime-evidence.json
+```
+
+Delivery-gate проверяет обязательные поля, происхождение evidence и успешные
+runtime-проверки. Оценка качества источников выполняется `score-evidence.py`;
+оценка не заменяет доказательство и не повышает слабый источник до факта.
