@@ -13,10 +13,11 @@ def run(*args):
 
 def test_checkpoint_order_and_review(tmp_path):
     run_id = f"test-{tmp_path.name}"
-    created = run("init", "--run-id", run_id, "--topic", "test")
+    created = run("init", "--run-id", run_id, "--topic", "test", "--hypothesis", "h", "--method", "m", "--acceptance", "a")
     assert created.returncode == 0, created.stdout
     assert run("complete", "--run-id", run_id, "--phase", "evidence", "--evidence", "source.txt").returncode == 1
     assert run("complete", "--run-id", run_id, "--phase", "discovery", "--evidence", "source.txt").returncode == 0
+    assert run("complete", "--run-id", run_id, "--phase", "evidence").returncode == 1
     assert run("complete", "--run-id", run_id, "--phase", "evidence", "--evidence", "source.txt").returncode == 0
     assert run("complete", "--run-id", run_id, "--phase", "experiment", "--evidence", "result.json").returncode == 0
     assert run("complete", "--run-id", run_id, "--phase", "review", "--note", "reviewed").returncode == 0

@@ -69,6 +69,9 @@ def init(args: argparse.Namespace) -> int:
         "schema_version": "1.0",
         "run_id": safe_run_id(args.run_id),
         "topic": args.topic,
+        "hypothesis": args.hypothesis,
+        "method": args.method,
+        "acceptance_criteria": args.acceptance,
         "created_at": now(),
         "updated_at": now(),
         "current_phase": PHASES[0],
@@ -93,6 +96,12 @@ def complete(args: argparse.Namespace) -> int:
         return fail(f"phase is not in progress: {args.phase}")
     if phase["steps"] >= state["budgets"][args.phase]:
         return fail(f"step budget exhausted for phase: {args.phase}")
+    if args.phase == "evidence" and not args.evidence:
+        return fail("evidence phase requires at least one source/evidence reference")
+    if args.phase == "experiment":
+        evidence_phase = state["phases"]["evidence"]
+        if evidence_phase["status"] != "completed" or not evidence_phase["evidence"]:
+            return fail("experiment requires completed evidence phase with references")
     if args.phase == "review" and not any(state["phases"][p]["evidence"] for p in PHASES[:3]):
         return fail("review requires at least one evidence reference")
     if args.phase == "delivery" and state["review"]["status"] != "passed":
@@ -131,6 +140,9 @@ def main() -> int:
     create = sub.add_parser("init")
     create.add_argument("--run-id", required=True)
     create.add_argument("--topic", required=True)
+    create.add_argument("--hypothesis", required=True)
+    create.add_argument("--method", required=True)
+    create.add_argument("--acceptance", required=True)
     create.add_argument("--max-steps", type=int, default=1)
     create.set_defaults(func=init)
     finish = sub.add_parser("complete")
