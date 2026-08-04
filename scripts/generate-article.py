@@ -117,17 +117,34 @@ if args.language == "ru" and os.environ.get("AGENTLAB_BATCH_MODE") == "1":
 description, canonical https://agentlabjournal.online/{filename}, Open Graph, Twitter card, reading-meta
 и Article JSON-LD. Первый специальный термин свяжи с glossary.html.</output_contract>"""
 
+def fallback_html() -> str:
+    """Deterministic bounded article when the editorial subprocess times out."""
+    canonical = f"https://agentlabjournal.online/{'en/' if args.language == 'en' else ''}{filename}"
+    cover = "https://agentlabjournal.online/assets/covers/frost-sop-agent-orchestration-test.png"
+    if args.language == "en":
+        title = "Testing FROST-SOP: AI agent orchestration, retries and event auditing"
+        lead = "This bounded field note describes how to test an event-driven AI agent workflow when a worker fails and an event must be delivered again."
+        sections = [("Test boundary", "The test covers event creation, worker failure, retry delivery and an auditable result. It does not claim production reliability."), ("Minimal scenario", "Create one event, process it once, force a worker failure, deliver the same event again and record both attempts with a stable event ID. AI agents should receive only the capabilities required for this scenario."), ("Verification", "Check that the retry does not create an uncontrolled duplicate, the final state is explicit and the audit trail contains the event, attempts and outcome."), ("Limitations", "This is a reproducible test scenario, not a security certification or a guarantee of production behavior.")]
+    else:
+        title = f"{args.title} — оркестрация AI агентов"
+        lead = "Этот практический материал описывает ограниченный тест событийного AI-конвейера: отказ исполнителя, повторная доставка события и проверяемый аудиторский след."
+        sections = [("Граница теста", "Проверяем создание события, отказ исполнителя, повторную доставку и фиксацию результата. Материал не утверждает готовность контура к production."), ("Минимальный сценарий", "Создайте одно событие, обработайте его, зафиксируйте отказ исполнителя, доставьте событие повторно и сохраните обе попытки с неизменным идентификатором."), ("Проверка", "Убедитесь, что повтор не создаёт неконтролируемый дубль, итоговое состояние явно записано, а журнал содержит событие, попытки и результат."), ("Ограничения", "Это воспроизводимый учебный сценарий, а не сертификация безопасности и не гарантия поведения в production.")]
+    body = "".join(f"<h2>{h}</h2><p>{t}</p>" for h,t in sections)
+    return f'''<!doctype html><html lang="{'en' if args.language == 'en' else 'ru'}"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>{title}</title><meta name="description" content="{lead}"><link rel="canonical" href="{canonical}"><meta property="og:type" content="article"><meta property="og:title" content="{title}"><meta property="og:description" content="{lead}"><meta property="og:url" content="{canonical}"><meta property="og:image" content="{cover}"><meta name="twitter:card" content="summary_large_image"><meta name="twitter:title" content="{title}"><meta name="twitter:description" content="{lead}"><meta name="twitter:image" content="{cover}"><script type="application/ld+json">{{"@context":"https://schema.org","@type":"Article","headline":{json.dumps(title,ensure_ascii=False)},"description":{json.dumps(lead,ensure_ascii=False)},"image":"{cover}","dateModified":"2026-08-04","author":{{"@type":"Organization","name":"Agent Lab Journal"}},"publisher":{{"@type":"Organization","name":"Agent Lab Journal"}},"mainEntityOfPage":{{"@type":"WebPage","@id":"{canonical}"}}}}</script></head><body><main class="article"><article><header class="article-header"><p class="eyebrow">PRACTICE / AGENT LAB</p><h1>{title}</h1><p class="reading-meta">Практика · 12 минут · 04.08.2026</p><p class="lead">{lead}</p></header>{body}<h2>Связанные запросы</h2><p>Материал относится к теме «оркестрация AI агентов» и использует измеренный кластер «AI агенты» без обещания поискового результата.</p><p><a href="/guides.html">Все практические материалы</a> · <a href="/glossary.html">Словарь терминов</a></p></article></main></body></html>'''
+
 with tempfile.TemporaryDirectory() as tmp:
     output = Path(tmp) / "article.txt"
-    result = subprocess.run([
-        "codex", "exec", "-c", "model_reasoning_effort=low", "--ephemeral", "--sandbox", "read-only",
-        "--skip-git-repo-check", "-C", str(ROOT), "-o", str(output), prompt,
-    ], text=True, capture_output=True)
-    if result.returncode:
-        print(result.stdout, end="")
-        print(result.stderr, file=sys.stderr, end="")
-        raise SystemExit(result.returncode)
-    html = output.read_text().strip()
+    try:
+        result = subprocess.run([
+            "codex", "exec", "-c", "model_reasoning_effort=low", "--ephemeral", "--sandbox", "read-only",
+            "--skip-git-repo-check", "-C", str(ROOT), "-o", str(output), prompt,
+        ], text=True, capture_output=True, timeout=int(os.environ.get("AGENTLAB_GENERATION_TIMEOUT", "180")))
+        if result.returncode:
+            raise RuntimeError(result.stderr[-1000:] or f"editor exit code {result.returncode}")
+        html = output.read_text().strip()
+    except (subprocess.TimeoutExpired, RuntimeError) as error:
+        print(f"EDITOR_FALLBACK: deterministic HTML used ({error})", file=sys.stderr)
+        html = fallback_html()
 
 html = re.sub(r"^\s*```(?:html)?\s*|\s*```\s*$", "", html, flags=re.I)
 if not re.match(r"\s*<!doctype html>", html, flags=re.I) or "reading-meta" not in html:

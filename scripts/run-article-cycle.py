@@ -117,7 +117,10 @@ command = [sys.executable, str(ROOT / "scripts/generate-article.py")]
 for key in ("slug", "title", "problem", "level", "minutes", "result", "summary"):
     command.extend([f"--{key}", str(topic[key])])
 
-result = subprocess.run(command, cwd=ROOT)
+cycle_env = os.environ.copy()
+cycle_env.setdefault("AGENTLAB_BATCH_MODE", "1")
+cycle_env.setdefault("AGENTLAB_GENERATION_TIMEOUT", "180")
+result = subprocess.run(command, cwd=ROOT, env=cycle_env)
 if result.returncode:
     notify_error("генерация или publication gate", f"exit code {result.returncode}")
     raise SystemExit(result.returncode)
@@ -127,7 +130,7 @@ if cta.returncode:
     raise SystemExit(cta.returncode)
 
 english_command = command + ["--language", "en"]
-english_result = subprocess.run(english_command, cwd=ROOT)
+english_result = subprocess.run(english_command, cwd=ROOT, env=cycle_env)
 if english_result.returncode:
     notify_error("английская версия статьи", f"exit code {english_result.returncode}")
     raise SystemExit(english_result.returncode)
