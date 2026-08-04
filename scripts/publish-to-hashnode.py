@@ -26,14 +26,14 @@ class Markdown(HTMLParser):
     def handle_data(self, data):
         if not self.skip: self.out.append(data)
 
-parser = ArgumentParser(); parser.add_argument('--file', required=True); parser.add_argument('--country', default=os.environ.get('AGENTLAB_COUNTRY', 'global')); parser.add_argument('--region', default=os.environ.get('AGENTLAB_REGION', 'all')); parser.add_argument('--language', default='en'); args = parser.parse_args()
+parser = ArgumentParser(); parser.add_argument('--file', required=True); parser.add_argument('--country', default=os.environ.get('AGENTLAB_COUNTRY', 'global')); parser.add_argument('--region', default=os.environ.get('AGENTLAB_REGION', 'all')); parser.add_argument('--language', default='en'); parser.add_argument('--update', action='store_true'); args = parser.parse_args()
 token = os.environ.get('HASHNODE_PAT','').strip()
 publication = os.environ.get('HASHNODE_PUBLICATION_ID','').strip()
 if not token or not publication: raise SystemExit('HASHNODE_PAT or HASHNODE_PUBLICATION_ID is missing')
 path = ROOT / args.file
 registry_path = ROOT / 'hashnode-published.json'
 registry = json.loads(registry_path.read_text()) if registry_path.exists() else {}
-if args.file in registry:
+if args.file in registry and not args.update:
     print(json.dumps(registry[args.file], ensure_ascii=False)); raise SystemExit(0)
 text = path.read_text()
 match = re.search(r'<h1[^>]*>(.*?)</h1>', text, re.S | re.I)
@@ -45,6 +45,16 @@ body = re.sub(r'\n{3,}', '\n\n', ''.join(parser_html.out)).strip()
 canonical = f'https://agentlabjournal.online/{args.file}'
 tracked = tracked_url(canonical, 'hashnode', 'referral', path.stem, args.language, args.country, args.region, 'article')
 body += f'\n\n---\n\n**Original article:** {tracked}\n'
+if args.update and args.file in registry:
+    post_id = registry[args.file]['id']
+    query = 'mutation Update($input: UpdatePostInput!) { updatePost(input: $input) { post { id title slug url } } }'
+    variables = {'input': {'id': post_id, 'contentMarkdown': body, 'title': title}}
+    request = urllib.request.Request(os.environ.get('HASHNODE_GRAPHQL_ENDPOINT','https://gql-beta.hashnode.com/'), data=json.dumps({'query':query,'variables':variables}).encode(), headers={'Content-Type':'application/json','Authorization':'Bearer ' + token,'User-Agent':'AgentLabJournal/1.0'})
+    with urllib.request.urlopen(request, timeout=60) as response: updated = json.loads(response.read())
+    if updated.get('errors'): raise SystemExit(json.dumps(updated['errors'], ensure_ascii=False))
+    post = updated['data']['updatePost']['post']; registry[args.file] = post
+    registry_path.write_text(json.dumps(registry, ensure_ascii=False, indent=2) + '\n')
+    print(json.dumps(post, ensure_ascii=False)); raise SystemExit(0)
 lookup = 'query { publication(host: "agentlabjournal.hashnode.dev") { posts(first: 100) { edges { node { id title slug url content { markdown } } } } } }'
 lookup_request = urllib.request.Request(os.environ.get('HASHNODE_GRAPHQL_ENDPOINT','https://gql-beta.hashnode.com/'),
     data=json.dumps({'query':lookup}).encode(),
