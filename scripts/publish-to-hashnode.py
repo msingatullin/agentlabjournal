@@ -48,7 +48,7 @@ body += f'\n\n---\n\n**Original article:** {tracked}\n'
 lookup = 'query { publication(host: "agentlabjournal.hashnode.dev") { posts(first: 100) { edges { node { id title slug url content { markdown } } } } } }'
 lookup_request = urllib.request.Request(os.environ.get('HASHNODE_GRAPHQL_ENDPOINT','https://gql-beta.hashnode.com/'),
     data=json.dumps({'query':lookup}).encode(),
-    headers={'Content-Type':'application/json','Authorization':token,'User-Agent':'AgentLabJournal/1.0'})
+    headers={'Content-Type':'application/json','Authorization':'Bearer ' + token,'User-Agent':'AgentLabJournal/1.0'})
 with urllib.request.urlopen(lookup_request, timeout=60) as response: existing = json.loads(response.read())
 for edge in existing.get('data',{}).get('publication',{}).get('posts',{}).get('edges',[]):
     post = edge.get('node',{})
@@ -62,7 +62,7 @@ variables = {'input': {'publicationId': publication, 'title': title, 'contentMar
     'slug': path.stem, 'tags': [{'slug':'ai','name':'AI'}, {'slug':'automation','name':'Automation'}, {'slug':'agents','name':'Agents'}]}}
 request = urllib.request.Request(os.environ.get('HASHNODE_GRAPHQL_ENDPOINT','https://gql-beta.hashnode.com/'),
     data=json.dumps({'query':query,'variables':variables}).encode(),
-    headers={'Content-Type':'application/json','Authorization':token,'User-Agent':'AgentLabJournal/1.0'})
+    headers={'Content-Type':'application/json','Authorization':'Bearer ' + token,'User-Agent':'AgentLabJournal/1.0'})
 try:
     with urllib.request.urlopen(request, timeout=60) as response: result = json.loads(response.read())
 except HTTPError as error:
@@ -79,7 +79,7 @@ draft = result['data']['createDraft']['draft']
 publish_query = 'mutation Publish($input: PublishDraftInput!) { publishDraft(input: $input) { post { id title slug url } } }'
 publish_request = urllib.request.Request(os.environ.get('HASHNODE_GRAPHQL_ENDPOINT','https://gql-beta.hashnode.com/'),
     data=json.dumps({'query':publish_query,'variables':{'input':{'draftId':draft['id']}}}).encode(),
-    headers={'Content-Type':'application/json','Authorization':token,'User-Agent':'AgentLabJournal/1.0'})
+    headers={'Content-Type':'application/json','Authorization':'Bearer ' + token,'User-Agent':'AgentLabJournal/1.0'})
 with urllib.request.urlopen(publish_request, timeout=60) as response: published = json.loads(response.read())
 if published.get('errors'): raise SystemExit(json.dumps(published['errors'], ensure_ascii=False))
 post = published['data']['publishDraft']['post']; registry[args.file] = post
