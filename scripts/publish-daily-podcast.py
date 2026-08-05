@@ -54,8 +54,11 @@ def main() -> int:
     (ROOT / page_name).write_text(page, encoding='utf-8')
     rss = ROOT / 'podcast-rss.xml'
     rss_text = rss.read_text(encoding='utf-8')
+    build_date = dt.datetime.now(dt.timezone(dt.timedelta(hours=3))).strftime('%a, %d %b %Y %H:%M:%S +0300')
+    rss_text = re.sub(r'<lastBuildDate>.*?</lastBuildDate>', f'<lastBuildDate>{build_date}</lastBuildDate>', rss_text, count=1)
     if f'agentlabjournal-ru-{args.date}' not in rss_text:
-        rss.write_text(rss_text.replace('  <item>', item + '\n  <item>', 1), encoding='utf-8')
+        rss_text = rss_text.replace('  <item>', item + '\n  <item>', 1)
+    rss.write_text(rss_text, encoding='utf-8')
     sitemap = ROOT / 'sitemap.xml'
     sitemap_text = sitemap.read_text(encoding='utf-8')
     if public_page not in sitemap_text:
