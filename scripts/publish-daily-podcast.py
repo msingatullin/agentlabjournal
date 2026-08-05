@@ -24,14 +24,34 @@ def duration(path: Path) -> str:
     return f'{seconds // 3600:02d}:{(seconds % 3600) // 60:02d}:{seconds % 60:02d}'
 
 
+def schema_duration(value: str) -> str:
+    hours, minutes, seconds = (int(part) for part in value.split(':'))
+    parts = ['P', 'T']
+    if hours:
+        parts.append(f'{hours}H')
+    if minutes:
+        parts.append(f'{minutes}M')
+    parts.append(f'{seconds}S')
+    return ''.join(parts)
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument('--date', required=True)
     parser.add_argument('--audio', type=Path, required=True)
     parser.add_argument('--title', required=True)
     parser.add_argument('--summary', required=True)
+    parser.add_argument('--qa-manifest', type=Path, required=True)
     parser.add_argument('--dry-run', action='store_true')
     args = parser.parse_args()
+    qa = json.loads(args.qa_manifest.read_text(encoding='utf-8')) if args.qa_manifest.is_file() else {}
+    if qa.get('status') != 'passed':
+        raise SystemExit('TRANSCRIPT_QA_GATE: BLOCKED')
+    qa_audio = Path(qa.get('audio', ''))
+    if not qa_audio.is_absolute():
+        qa_audio = ROOT / qa_audio
+    if qa_audio.resolve() != args.audio.resolve():
+        raise SystemExit('TRANSCRIPT_QA_GATE: audio mismatch')
     if not args.audio.is_file() or args.audio.stat().st_size < 100_000:
         raise SystemExit('audio validation failed')
 
@@ -41,9 +61,10 @@ def main() -> int:
     public_audio = f'https://microsrv.online/podcasts/{filename}'
     public_page = f'{BASE}/{page_name}'
     length = duration(args.audio)
+    iso_duration = schema_duration(length)
     title_json = json.dumps(args.title, ensure_ascii=False)
     date_label = dt.date.fromisoformat(args.date).strftime('%-d %B %Y')
-    page = f'''<!doctype html><html lang="ru"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>{html.escape(args.title)} — Agent Lab Journal Podcast</title><meta name="description" content="{html.escape(args.summary)}"><link rel="canonical" href="{public_page}"><meta property="og:type" content="article"><meta property="og:title" content="{html.escape(args.title)}"><meta property="og:description" content="{html.escape(args.summary)}"><meta property="og:url" content="{public_page}"><meta property="og:image" content="{BASE}/podcast-cover.png"><link rel="stylesheet" href="style.css"><script type="application/ld+json">{{"@context":"https://schema.org","@type":"PodcastEpisode","name":{title_json},"url":"{public_page}","datePublished":"{args.date}T07:00:00+03:00","duration":"PT{length.replace(':','M',1).replace(':','S')}","inLanguage":"ru-RU","image":"{BASE}/podcast-cover.png","partOfSeries":{{"@type":"PodcastSeries","name":"Agent Lab Journal Podcast","url":"{BASE}/podcasts.html"}},"associatedMedia":{{"@type":"AudioObject","contentUrl":"{public_audio}","encodingFormat":"audio/mpeg"}}}}</script></head><body><header class="site-header"><a class="brand" href="./">Agent Lab Journal</a><nav><a href="podcasts.html">Подкасты</a><a href="contacts.html">Контакты</a></nav></header><main class="podcast-shell"><p class="eyebrow">AGENT LAB JOURNAL PODCAST · {html.escape(date_label.upper())}</p><h1>{html.escape(args.title)}</h1><p class="podcast-meta">Русский выпуск · {length} · {html.escape(date_label)}</p><p>{html.escape(args.summary)}</p><audio controls preload="metadata" src="{public_audio}"></audio><p><a class="primary" href="podcasts.html">Все выпуски →</a> <a class="text-link" href="podcast-rss.xml">Подписаться через RSS</a></p></main><footer><span>Agent Lab Journal</span></footer></body></html>'''
+    page = f'''<!doctype html><html lang="ru"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>{html.escape(args.title)} — Agent Lab Journal Podcast</title><meta name="description" content="{html.escape(args.summary)}"><link rel="canonical" href="{public_page}"><meta property="og:type" content="article"><meta property="og:title" content="{html.escape(args.title)}"><meta property="og:description" content="{html.escape(args.summary)}"><meta property="og:url" content="{public_page}"><meta property="og:image" content="{BASE}/podcast-cover.png"><link rel="stylesheet" href="style.css"><script type="application/ld+json">{{"@context":"https://schema.org","@type":"PodcastEpisode","name":{title_json},"url":"{public_page}","datePublished":"{args.date}T07:00:00+03:00","duration":"{iso_duration}","inLanguage":"ru-RU","image":"{BASE}/podcast-cover.png","partOfSeries":{{"@type":"PodcastSeries","name":"Agent Lab Journal Podcast","url":"{BASE}/podcasts.html"}},"associatedMedia":{{"@type":"AudioObject","contentUrl":"{public_audio}","encodingFormat":"audio/mpeg"}}}}</script></head><body><header class="site-header"><a class="brand" href="./">Agent Lab Journal</a><nav><a href="podcasts.html">Подкасты</a><a href="contacts.html">Контакты</a></nav></header><main class="podcast-shell"><p class="eyebrow">AGENT LAB JOURNAL PODCAST · {html.escape(date_label.upper())}</p><h1>{html.escape(args.title)}</h1><p class="podcast-meta">Русский выпуск · {length} · {html.escape(date_label)}</p><p>{html.escape(args.summary)}</p><audio controls preload="metadata" src="{public_audio}"></audio><p><a class="primary" href="podcasts.html">Все выпуски →</a> <a class="text-link" href="podcast-rss.xml">Подписаться через RSS</a></p></main><footer><span>Agent Lab Journal</span></footer></body></html>'''
     item = f'''  <item><title>{html.escape(args.title)}</title><description>{html.escape(args.summary)}</description><link>{public_page}?utm_source=podcast&amp;utm_medium=rss&amp;utm_campaign=daily-ai-news&amp;utm_content=ru-{args.date.replace("-", "")}</link><guid isPermaLink="false">agentlabjournal-ru-{args.date}</guid><pubDate>{dt.datetime.fromisoformat(args.date).replace(tzinfo=dt.timezone(dt.timedelta(hours=3))).strftime("%a, %d %b %Y %H:%M:%S +0300")}</pubDate><itunes:duration>{length}</itunes:duration><itunes:episodeType>full</itunes:episodeType><enclosure url="{public_audio}" type="audio/mpeg" length="{args.audio.stat().st_size}" /></item>'''
     if args.dry_run:
         print(f'PAGE={page_name}\nAUDIO={public_audio}\nRSS_ITEM_READY=1\nDURATION={length}')
@@ -56,8 +77,14 @@ def main() -> int:
     rss_text = rss.read_text(encoding='utf-8')
     build_date = dt.datetime.now(dt.timezone(dt.timedelta(hours=3))).strftime('%a, %d %b %Y %H:%M:%S +0300')
     rss_text = re.sub(r'<lastBuildDate>.*?</lastBuildDate>', f'<lastBuildDate>{build_date}</lastBuildDate>', rss_text, count=1)
-    if f'agentlabjournal-ru-{args.date}' not in rss_text:
+    guid = f'agentlabjournal-ru-{args.date}'
+    if guid not in rss_text:
         rss_text = rss_text.replace('  <item>', item + '\n  <item>', 1)
+    else:
+        pattern = re.compile(r'  <item>.*?<guid isPermaLink="false">' + re.escape(guid) + r'</guid>.*?</item>', re.S)
+        rss_text, replacements = pattern.subn(item, rss_text, count=1)
+        if replacements != 1:
+            raise RuntimeError(f'Could not replace RSS item: {guid}')
     rss.write_text(rss_text, encoding='utf-8')
     sitemap = ROOT / 'sitemap.xml'
     sitemap_text = sitemap.read_text(encoding='utf-8')

@@ -1,39 +1,82 @@
 #!/usr/bin/env python3
-"""Collect previous-24h research in NotebookLM and create a dated editorial brief."""
+"""Research agent: build a dated candidate package from recent primary sources."""
 from __future__ import annotations
-import argparse, datetime as dt, json, re, subprocess
+
+import argparse
+import datetime as dt
+import json
+import re
+import subprocess
 from pathlib import Path
+from urllib.parse import urlparse
 
-ROOT=Path('/root'); NB='fb0f2035-2378-47c1-9add-e7f27b223d56'; NLC='/root/.venvs/notebooklm/bin/notebooklm'
-RUBRICS=['Новости недели','AI в работу','Человек vs Машина','Под капот','AI в России','Будущее рядом','Вопрос слушателя']
+from podcast_contract import HOSTS, INTRO_EXACT, OUTRO_EXACT, expected_rubric, write_json
 
-def run(cmd): return subprocess.run(cmd, text=True, capture_output=True, check=True).stdout
+ROOT = Path("/root")
+PROJECT = Path("/root/agentlabjournal")
+NOTEBOOK = "fb0f2035-2378-47c1-9add-e7f27b223d56"
+NOTEBOOKLM = "/root/.venvs/notebooklm/bin/notebooklm"
+PRIMARY_DOMAINS = {
+    "news.microsoft.com", "blogs.nvidia.com", "github.blog", "nist.gov", "www.nist.gov",
+    "digital-strategy.ec.europa.eu", "ec.europa.eu", "duma.gov.ru", "aws.amazon.com",
+}
 
-def extract_selection(payload):
- answer=payload.get('answer') if isinstance(payload,dict) else None
- if not isinstance(answer,str): return payload
- match=re.search(r'```(?:json)?\s*(\{.*\})\s*```',answer,re.S)
- candidate=match.group(1) if match else answer.strip()
- parsed=json.loads(candidate)
- if not isinstance(parsed,dict): raise ValueError('NotebookLM selection is not an object')
- return parsed
 
-def main():
- p=argparse.ArgumentParser(); p.add_argument('--date',default=dt.date.today().isoformat()); p.add_argument('--notebook',default=NB); p.add_argument('--no-research',action='store_true'); a=p.parse_args()
- day=dt.date.fromisoformat(a.date); rubric=RUBRICS[day.weekday()]
- if not a.no_research:
-  q=(f'Найди и добавь в этот блокнот только проверяемые AI/IT новости за последние 24 часа на дату {a.date}. '
-     'Приоритет: официальные блоги компаний, регуляторы, научные публикации и первичные документы. Не импортируй дубли и рекламные пересказы.')
-  subprocess.run([NLC,'source','add-research','-n',a.notebook,'--from','web','--mode','fast','--import-all','--cited-only','--timeout','900',q],check=False)
- prompt=(f'Ты редактор Agent Lab Journal Podcast. Дата: {a.date}. Рубрика дня: {rubric}. '
-  'Выбери 2–3 самые важные новости строго за последние 24 часа из источников блокнота. '
-  'Для каждой укажи title, date, primary_source, claim, why_it_matters, confidence. '
-  'Если данных мало, укажи insufficient_data. Затем выбери одну тему дня и практический угол для предпринимателя. '
-  'Верни JSON с ключами news, daily_topic, listener_takeaway, source_ids. Не выдумывай.')
- raw=run([NLC,'ask','-n',a.notebook,'--new','--yes','--json',prompt])
- data=json.loads(raw); selection=extract_selection(data)
- required=('news','daily_topic','listener_takeaway','source_ids')
- if any(not selection.get(key) for key in required): raise ValueError('NotebookLM selection misses required fields')
- out={'date':a.date,'rubric':rubric,'generated_at':dt.datetime.now(dt.timezone.utc).isoformat(),'notebook':a.notebook,'selection':selection}
- path=ROOT/'wiki/system'/f'daily-podcast-plan-{a.date}.json'; path.write_text(json.dumps(out,ensure_ascii=False,indent=2)+'\n',encoding='utf-8'); print(path); return 0
-if __name__=='__main__': raise SystemExit(main())
+def run(command: list[str]) -> str:
+    result = subprocess.run(command, text=True, capture_output=True)
+    if result.returncode != 0:
+        raise RuntimeError((result.stderr or result.stdout)[-4000:])
+    return result.stdout
+
+
+def extract_object(payload: dict) -> dict:
+    answer = payload.get("answer", "")
+    match = re.search(r"```(?:json)?\s*(\{.*\})\s*```", answer, re.S)
+    return json.loads(match.group(1) if match else answer.strip())
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--date", default=dt.date.today().isoformat())
+    parser.add_argument("--notebook", default=NOTEBOOK)
+    parser.add_argument("--no-research", action="store_true")
+    args = parser.parse_args()
+    if not args.no_research:
+        query = (
+            f"Проверяемые AI/IT новости за предыдущие 24 часа к {args.date}. "
+            "Только официальные блоги компаний, регуляторы и первичные документы; без агрегаторов и пересказов."
+        )
+        run([NOTEBOOKLM, "source", "add-research", query, "--mode", "fast", "--notebook", args.notebook, "--import-all"])
+    sources = json.loads(run([NOTEBOOKLM, "source", "list", "--notebook", args.notebook, "--json"]))
+    target = dt.date.fromisoformat(args.date)
+    eligible = []
+    for source in sources.get("sources", []):
+        host = urlparse(source.get("url") or "").hostname
+        created = source.get("created_at", "")[:10]
+        if source.get("status") == "ready" and host in PRIMARY_DOMAINS and created in {args.date, (target - dt.timedelta(days=1)).isoformat()}:
+            eligible.append({key: source.get(key) for key in ("id", "title", "url", "created_at")})
+    if len(eligible) < 2:
+        raise RuntimeError("RESEARCH_GATE: fewer than two recent primary sources")
+    catalog = json.dumps(eligible[-20:], ensure_ascii=False)
+    prompt = f"""Ты Research Agent. Выбери 2-3 новости за предыдущие 24 часа к {args.date} только из каталога ниже.
+Верни только JSON с ключами news, daily_topic, listener_takeaway.
+Каждая news: title, date YYYY-MM-DD, source_id, source_url, claim, why_it_matters, evidence_terms (3-4 точные строки из источника), qa_terms (3 коротких термина для транскрипта).
+Не изменяй source_id/source_url. Не добавляй источники вне каталога. Не называй исследование одной компании универсальной статистикой.
+Каталог: {catalog}
+"""
+    answer = json.loads(run([NOTEBOOKLM, "ask", "--notebook", args.notebook, "--new", "--yes", "--json", prompt]))
+    selected = extract_object(answer)
+    package = {
+        "date": args.date, "language": "ru", "rubric": expected_rubric(args.date),
+        "hosts": HOSTS, "intro_exact": INTRO_EXACT, "news": selected.get("news", []),
+        "daily_topic": selected.get("daily_topic"), "listener_takeaway": selected.get("listener_takeaway"),
+        "outro_exact": OUTRO_EXACT,
+    }
+    output = PROJECT / "podcasts/packages" / f"{args.date}-ru.candidate.json"
+    write_json(output, package)
+    print(output)
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
