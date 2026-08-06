@@ -35,6 +35,30 @@ def extract_object(payload: dict) -> dict:
     return json.loads(match.group(1) if match else answer.strip())
 
 
+def select_news(notebook: str, catalog: str, target: dt.date) -> dict:
+    allowed_dates = {target.isoformat(), (target - dt.timedelta(days=1)).isoformat()}
+    rejected_ids: set[str] = set()
+    last_error = "no selection attempted"
+    for attempt in range(1, 4):
+        prompt = f"""Ты Research Agent. Выбери 2-3 новости, опубликованные или официально обновлённые строго {target.isoformat()} или {(target - dt.timedelta(days=1)).isoformat()}, только из каталога ниже.
+Верни только JSON с ключами news, daily_topic, listener_takeaway.
+Каждая news: title, date YYYY-MM-DD, source_id, source_url, claim, why_it_matters, evidence_terms (3-4 точные строки из источника), qa_terms (3 коротких термина для транскрипта).
+Дата news должна быть датой публикации/официального обновления внутри самого источника, а не датой добавления источника в NotebookLM.
+Не изменяй source_id/source_url. Не добавляй источники вне каталога. Не называй исследование одной компании универсальной статистикой.
+Не выбирай source_id из списка отклонённых: {sorted(rejected_ids)}.
+Каталог: {catalog}
+"""
+        answer = json.loads(run([NOTEBOOKLM, "ask", "--notebook", notebook, "--new", "--yes", "--json", prompt]))
+        selected = extract_object(answer)
+        news = selected.get("news", [])
+        invalid = [item for item in news if item.get("date") not in allowed_dates]
+        if len(news) >= 2 and not invalid:
+            return selected
+        rejected_ids.update(item.get("source_id", "") for item in invalid)
+        last_error = f"attempt {attempt}: {len(news)} news, invalid dates={[(x.get('source_id'), x.get('date')) for x in invalid]}"
+    raise RuntimeError(f"RESEARCH_DATE_GATE: unable to select two current items; {last_error}")
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--date", default=dt.date.today().isoformat())
@@ -58,14 +82,7 @@ def main() -> int:
     if len(eligible) < 2:
         raise RuntimeError("RESEARCH_GATE: fewer than two recent primary sources")
     catalog = json.dumps(eligible[-20:], ensure_ascii=False)
-    prompt = f"""Ты Research Agent. Выбери 2-3 новости за предыдущие 24 часа к {args.date} только из каталога ниже.
-Верни только JSON с ключами news, daily_topic, listener_takeaway.
-Каждая news: title, date YYYY-MM-DD, source_id, source_url, claim, why_it_matters, evidence_terms (3-4 точные строки из источника), qa_terms (3 коротких термина для транскрипта).
-Не изменяй source_id/source_url. Не добавляй источники вне каталога. Не называй исследование одной компании универсальной статистикой.
-Каталог: {catalog}
-"""
-    answer = json.loads(run([NOTEBOOKLM, "ask", "--notebook", args.notebook, "--new", "--yes", "--json", prompt]))
-    selected = extract_object(answer)
+    selected = select_news(args.notebook, catalog, target)
     package = {
         "date": args.date, "language": "ru", "rubric": expected_rubric(args.date),
         "hosts": HOSTS, "intro_exact": INTRO_EXACT, "news": selected.get("news", []),

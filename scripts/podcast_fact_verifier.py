@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import datetime as dt
 import json
+import re
 import subprocess
 from pathlib import Path
 from urllib.parse import urlparse
@@ -16,7 +17,18 @@ DEFAULT_NOTEBOOK = "fb0f2035-2378-47c1-9add-e7f27b223d56"
 PRIMARY_DOMAINS = {
     "news.microsoft.com", "blogs.nvidia.com", "github.blog", "nist.gov", "www.nist.gov",
     "digital-strategy.ec.europa.eu", "ec.europa.eu", "duma.gov.ru", "aws.amazon.com",
+    "nvd.nist.gov",
 }
+
+
+def source_contains_date(content: str, value: dt.date) -> bool:
+    month = value.strftime("%B")
+    patterns = (
+        rf"\b{re.escape(month)}\s+{value.day},\s+{value.year}\b",
+        rf"\b{value.month:02d}/{value.day:02d}/{value.year}\b",
+        rf"\b{value.isoformat()}\b",
+    )
+    return any(re.search(pattern, content, re.I) for pattern in patterns)
 
 
 def command_json(command: list[str]) -> dict:
@@ -49,7 +61,11 @@ def main() -> int:
         if dt.date.fromisoformat(item["date"]) not in allowed_dates:
             raise ValueError(f"News is outside previous-24h date window: {item['title']}")
         fulltext = command_json([NOTEBOOKLM, "source", "fulltext", item["source_id"], "--notebook", args.notebook, "--json"])
-        content = (fulltext.get("content") or "").casefold()
+        raw_content = fulltext.get("content") or ""
+        content = raw_content.casefold()
+        item_date = dt.date.fromisoformat(item["date"])
+        if not source_contains_date(raw_content, item_date):
+            raise ValueError(f"Claimed date is absent from source text: {item['title']} ({item_date})")
         missing = [term for term in item["evidence_terms"] if term.casefold() not in content]
         if missing:
             raise ValueError(f"Evidence terms missing for {item['title']}: {missing}")

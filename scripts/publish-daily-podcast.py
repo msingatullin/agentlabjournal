@@ -16,6 +16,10 @@ ROOT = Path('/root/agentlabjournal')
 MICRO = Path('/opt/microsaas-platform/podcasts')
 BASE = 'https://agentlabjournal.online'
 ALBUM = 'https://music.yandex.ru/album/43370492'
+RU_MONTHS = (
+    '', 'января', 'февраля', 'марта', 'апреля', 'мая', 'июня',
+    'июля', 'августа', 'сентября', 'октября', 'ноября', 'декабря',
+)
 
 
 def duration(path: Path) -> str:
@@ -63,7 +67,8 @@ def main() -> int:
     length = duration(args.audio)
     iso_duration = schema_duration(length)
     title_json = json.dumps(args.title, ensure_ascii=False)
-    date_label = dt.date.fromisoformat(args.date).strftime('%-d %B %Y')
+    episode_date = dt.date.fromisoformat(args.date)
+    date_label = f'{episode_date.day} {RU_MONTHS[episode_date.month]} {episode_date.year}'
     page = f'''<!doctype html><html lang="ru"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>{html.escape(args.title)} — Agent Lab Journal Podcast</title><meta name="description" content="{html.escape(args.summary)}"><link rel="canonical" href="{public_page}"><meta property="og:type" content="article"><meta property="og:title" content="{html.escape(args.title)}"><meta property="og:description" content="{html.escape(args.summary)}"><meta property="og:url" content="{public_page}"><meta property="og:image" content="{BASE}/podcast-cover.png"><link rel="stylesheet" href="style.css"><script type="application/ld+json">{{"@context":"https://schema.org","@type":"PodcastEpisode","name":{title_json},"url":"{public_page}","datePublished":"{args.date}T07:00:00+03:00","duration":"{iso_duration}","inLanguage":"ru-RU","image":"{BASE}/podcast-cover.png","partOfSeries":{{"@type":"PodcastSeries","name":"Agent Lab Journal Podcast","url":"{BASE}/podcasts.html"}},"associatedMedia":{{"@type":"AudioObject","contentUrl":"{public_audio}","encodingFormat":"audio/mpeg"}}}}</script></head><body><header class="site-header"><a class="brand" href="./">Agent Lab Journal</a><nav><a href="podcasts.html">Подкасты</a><a href="contacts.html">Контакты</a></nav></header><main class="podcast-shell"><p class="eyebrow">AGENT LAB JOURNAL PODCAST · {html.escape(date_label.upper())}</p><h1>{html.escape(args.title)}</h1><p class="podcast-meta">Русский выпуск · {length} · {html.escape(date_label)}</p><p>{html.escape(args.summary)}</p><audio controls preload="metadata" src="{public_audio}"></audio><p><a class="primary" href="podcasts.html">Все выпуски →</a> <a class="text-link" href="podcast-rss.xml">Подписаться через RSS</a></p></main><footer><span>Agent Lab Journal</span></footer></body></html>'''
     item = f'''  <item><title>{html.escape(args.title)}</title><description>{html.escape(args.summary)}</description><link>{public_page}?utm_source=podcast&amp;utm_medium=rss&amp;utm_campaign=daily-ai-news&amp;utm_content=ru-{args.date.replace("-", "")}</link><guid isPermaLink="false">agentlabjournal-ru-{args.date}</guid><pubDate>{dt.datetime.fromisoformat(args.date).replace(tzinfo=dt.timezone(dt.timedelta(hours=3))).strftime("%a, %d %b %Y %H:%M:%S +0300")}</pubDate><itunes:duration>{length}</itunes:duration><itunes:episodeType>full</itunes:episodeType><enclosure url="{public_audio}" type="audio/mpeg" length="{args.audio.stat().st_size}" /></item>'''
     if args.dry_run:

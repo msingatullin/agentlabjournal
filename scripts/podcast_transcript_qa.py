@@ -24,6 +24,35 @@ def contains_any(text: str, variants: list[str]) -> bool:
     return any(normalized(variant) in value for variant in variants)
 
 
+def term_present(text: str, term: str, window: int = 12) -> bool:
+    """Match ASR-safe terms while preserving token order and proximity."""
+    text_value = normalized(text)
+    term_value = normalized(term)
+    variants = {term_value}
+    if "api" in term_value.split():
+        variants.add(" ".join("апи" if word == "api" else word for word in term_value.split()))
+    for variant in variants:
+        if variant in text_value or variant.replace(" ", "") in text_value.replace(" ", ""):
+            return True
+        needles = variant.split()
+        if not needles:
+            continue
+        words = text_value.split()
+        stems = [word[: min(5, len(word))] for word in needles]
+        for start, word in enumerate(words):
+            if not word.startswith(stems[0]):
+                continue
+            position = start + 1
+            matched = 1
+            while position < min(len(words), start + window) and matched < len(stems):
+                if words[position].startswith(stems[matched]):
+                    matched += 1
+                position += 1
+            if matched == len(stems):
+                return True
+    return False
+
+
 def rubric_present(text: str, rubric: str) -> bool:
     variants = [rubric]
     if " vs " in f" {rubric.casefold()} ":
@@ -33,7 +62,7 @@ def rubric_present(text: str, rubric: str) -> bool:
                 re.sub(r"\bvs\b", "в эс", rubric, flags=re.IGNORECASE),
             ]
         )
-    return contains_any(text, variants)
+    return any(term_present(text, variant) for variant in variants)
 
 
 def main() -> int:
@@ -56,7 +85,10 @@ def main() -> int:
         ),
         "daily_news_block": contains_all(transcript, ["новости", "последние 24 часа"]),
         "rubric": rubric_present(transcript, package["rubric"]),
-        "all_news": all(contains_all(transcript, item["qa_terms"]) for item in package["news"]),
+        "all_news": all(
+            all(term_present(transcript, term) for term in item["qa_terms"])
+            for item in package["news"]
+        ),
         "practical_actions": contains_all(transcript, ["первое", "второе", "третье"]),
         "outro": contains_any(transcript[-3000:], ["AgentLab", "Агент Лаб"]) and contains_all(
             transcript[-3000:], ["автоматизировать процессы"]
