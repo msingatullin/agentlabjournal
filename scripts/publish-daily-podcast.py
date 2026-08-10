@@ -113,9 +113,6 @@ def main() -> int:
     if staged:
         subprocess.run(['git', 'commit', '-m', f'Publish daily podcast {args.date}'], cwd=ROOT, check=True)
     subprocess.run(['git', 'push', 'origin', 'HEAD'], cwd=ROOT, check=True)
-    if staged:
-        for url in (public_page, 'https://agentlabjournal.online/podcast-rss.xml'):
-            subprocess.run(['/usr/bin/python3', str(ROOT / 'scripts/submit-yandex-recrawl.py'), '--url', url], cwd=ROOT, check=False)
     with urlopen(Request(public_audio, method='HEAD'), timeout=30) as response:
         if response.status != 200:
             raise RuntimeError(f'audio public check failed: HTTP {response.status}')

@@ -21,13 +21,20 @@ def tokens(value: str) -> set[str]:
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--package", type=Path, required=True)
-    parser.add_argument("--project-root", type=Path, required=True)
+    parser.add_argument("--project-key", required=True)
+    parser.add_argument("--registry", type=Path, default=Path("/root/agentlabjournal/seo-project-agents.json"))
     parser.add_argument("--canonical", required=True)
     parser.add_argument("--output", type=Path, required=True)
     args = parser.parse_args()
     package = read_json(args.package)
-    universe_path = args.project_root / "seo-keyword-universe.json"
-    query_map_path = args.project_root / "seo-query-map.json"
+    registry = read_json(args.registry)
+    project = registry.get("projects", {}).get(args.project_key)
+    if not project:
+        raise RuntimeError(f"SEO_PROJECT_AGENT: BLOCKED: unknown project {args.project_key}")
+    if project.get("status") != "active":
+        raise RuntimeError(f"SEO_PROJECT_AGENT: BLOCKED: {args.project_key} status={project.get('status')}")
+    universe_path = Path(project["keyword_universe"])
+    query_map_path = Path(project["query_map"])
     universe = read_json(universe_path)
     query_map = read_json(query_map_path)
     rows = universe.get("keywords", [])
@@ -66,7 +73,7 @@ def main() -> int:
         if len(related) == 5:
             break
     passport = {
-        "agent": "project-seo-agent", "project": universe.get("project"), "status": "OK",
+        "agent": project["agent_id"], "project_key": args.project_key, "project": universe.get("project"), "status": "OK",
         "seo_query_gate": "OK", "created_at": dt.datetime.now(dt.timezone.utc).isoformat(),
         "primary_query": primary["query"], "frequency_class": primary["frequency_class"],
         "frequency_value": primary["frequency_value"], "intent": "informational",
@@ -77,6 +84,7 @@ def main() -> int:
         "internal_link_plan": ["https://agentlabjournal.online/podcasts.html"],
         "query_to_url_unique": True, "cannibalization_checked_against": str(query_map_path),
         "recommended_title": f"{primary['query'].capitalize().replace(' ai ', ' AI ')} — {package.get('daily_topic', '')}",
+        "wordstat_evidence_root": project["raw_wordstat_root"],
     }
     write_json(args.output, passport)
     print(args.output)

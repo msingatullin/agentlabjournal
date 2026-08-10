@@ -48,12 +48,12 @@ def run(command: list[str], stage: str, expected: list[Path] | None = None) -> N
     print(f"PODCAST_STAGE: {stage}", flush=True)
     write_state(stage, "RUNNING")
     agent = stage.lower().replace(" agent", "").replace(" ", "-")
-    step = {"Research Agent": "02", "Fact Verification Agent": "03", "Project SEO Agent": "04", "Episode Editor Agent": "05", "Audio Producer Agent": "06", "Transcript Agent": "07", "Transcript QA Agent": "08", "Publisher Agent": "09", "Release Verifier Agent": "10"}.get(stage, "99")
+    step = {"Research Agent": "02", "Fact Verification Agent": "03", "Project SEO Agent": "04", "Episode Editor Agent": "05", "Audio Producer Agent": "06", "Transcript Agent": "07", "Transcript QA Agent": "08", "Publisher Agent": "09", "Project Webmaster Agent": "10", "Release Verifier Agent": "11"}.get(stage, "99")
     previous = {"02": "01-dispatcher-output.json", "03": "02-research-output.json",
                 "04": "03-fact-verification-output.json", "05": "04-project-seo-output.json",
                 "06": "05-episode-editor-output.json", "07": "06-audio-producer-output.json",
                 "08": "07-transcript-output.json", "09": "08-transcript-qa-output.json",
-                "10": "09-publisher-output.json"}.get(step)
+                "10": "09-publisher-output.json", "11": "10-project-webmaster-output.json"}.get(step)
     worker = [PYTHON, str(SCRIPTS / "podcast-stage-worker.py"), "--stage", stage,
               "--step", step, "--agent", agent, "--handoff-dir", str(HANDOFF_DIR),
               "--previous", previous]
@@ -142,6 +142,7 @@ def main() -> int:
     qa = base / "qa" / f"{args.date}-ru.json"
     producer_state = base / "state" / f"{args.date}-ru-producer.json"
     seo_passport = base / "seo" / f"{args.date}-ru-query-passport.json"
+    webmaster_handoff = base / "state" / f"{args.date}-ru-webmaster.json"
     lock_path = base / "state" / "daily-podcast.lock"
     lock_path.parent.mkdir(parents=True, exist_ok=True)
     with lock_path.open("w", encoding="utf-8") as lock_file:
@@ -166,7 +167,7 @@ def main() -> int:
             stage = "Project SEO Agent"
             canonical = f"https://agentlabjournal.online/podcast-{args.date}-ru.html"
             run([PYTHON, str(SCRIPTS / "project-seo-agent.py"), "--package", str(verified),
-                 "--project-root", str(PROJECT), "--canonical", canonical, "--output", str(seo_passport)], stage, [seo_passport])
+                 "--project-key", "agentlabjournal", "--canonical", canonical, "--output", str(seo_passport)], stage, [seo_passport])
             stage = "Episode Editor Agent"
             run([PYTHON, str(SCRIPTS / "podcast_episode_editor.py"), "--input", str(verified), "--output", str(production)], stage, [production])
             stage = "Audio Producer Agent"
@@ -183,10 +184,15 @@ def main() -> int:
                 "--audio", str(audio), "--title", package["daily_topic"],
                 "--summary", package["listener_takeaway"], "--qa-manifest", str(qa), "--seo-passport", str(seo_passport),
             ], stage, [PROJECT / f"podcast-{args.date}-ru.html", PROJECT / "podcast-rss.xml"])
+            stage = "Project Webmaster Agent"
+            run([PYTHON, str(SCRIPTS / "project-webmaster-agent.py"), "--project-key", "agentlabjournal",
+                 "--seo-passport", str(seo_passport), "--url", canonical,
+                 "--url", "https://agentlabjournal.online/podcast-rss.xml", "--output", str(webmaster_handoff)],
+                stage, [webmaster_handoff])
             stage = "Release Verifier Agent"
             verifier = base / "state" / f"{args.date}-ru-release-verifier.json"
             run([PYTHON, str(SCRIPTS / "podcast-release-verifier.py"), "--date", args.date,
-                 "--handoff", str(verifier)], stage, [verifier])
+                 "--webmaster-handoff", str(webmaster_handoff), "--handoff", str(verifier)], stage, [verifier])
             verifier_data = json.loads(verifier.read_text(encoding="utf-8"))
             if verifier_data.get("status") != "OK":
                 write_state(stage, "RUNNING", verifier_data.get("status", "verification pending"))

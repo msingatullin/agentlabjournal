@@ -22,6 +22,7 @@ def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--date", required=True)
     parser.add_argument("--handoff", type=Path, required=True)
+    parser.add_argument("--webmaster-handoff", type=Path)
     parser.add_argument("--yandex-confirmed", action="store_true")
     args = parser.parse_args()
     root = ROOT
@@ -37,6 +38,7 @@ def main() -> int:
         "rss_guid_present": False,
         "yandex_feed_ready": False,
         "yandex_catalog_verified": bool(args.yandex_confirmed),
+        "webmaster_recrawl_accepted": False,
     }
     errors = []
     try:
@@ -59,7 +61,9 @@ def main() -> int:
     yandex = root / "podcasts/state" / f"{args.date}-ru-yandex.json"
     if yandex.is_file():
         checks["yandex_feed_ready"] = json.loads(yandex.read_text(encoding="utf-8")).get("status") == "feed_ready"
-    public_release_verified = all(checks[key] for key in ("mp3_exists", "mp3_valid", "page_http_200", "audio_http_200", "rss_guid_present"))
+    if args.webmaster_handoff and args.webmaster_handoff.is_file():
+        checks["webmaster_recrawl_accepted"] = json.loads(args.webmaster_handoff.read_text(encoding="utf-8")).get("status") == "OK"
+    public_release_verified = all(checks[key] for key in ("mp3_exists", "mp3_valid", "page_http_200", "audio_http_200", "rss_guid_present", "webmaster_recrawl_accepted"))
     if public_release_verified and checks["yandex_catalog_verified"]:
         status = "OK"
     elif public_release_verified:
