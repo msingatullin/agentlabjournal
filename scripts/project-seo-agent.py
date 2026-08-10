@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import argparse
-import datetime as dt
 import json
 import re
 from pathlib import Path
@@ -74,7 +73,7 @@ def main() -> int:
             break
     passport = {
         "agent": project["agent_id"], "project_key": args.project_key, "project": universe.get("project"), "status": "OK",
-        "seo_query_gate": "OK", "created_at": dt.datetime.now(dt.timezone.utc).isoformat(),
+        "seo_query_gate": "OK", "created_at": f"{package['date']}T00:00:00+00:00",
         "primary_query": primary["query"], "frequency_class": primary["frequency_class"],
         "frequency_value": primary["frequency_value"], "intent": "informational",
         "region": universe.get("region"), "language": "ru", "related_queries": related,
