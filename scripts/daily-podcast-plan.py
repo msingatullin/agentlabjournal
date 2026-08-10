@@ -82,9 +82,10 @@ def exact_evidence_terms(content: str, claim: str, title: str, limit: int = 3) -
     ranked = sorted(
         (
             chunk for chunk in chunks
-            if 40 <= len(chunk) <= 600
+            if 60 <= len(chunk) <= 600
             and not chunk.casefold().startswith(("http://", "https://"))
             and chunk.casefold() != title_value
+            and chunk.casefold() not in title_value
         ),
         key=lambda chunk: (-len(claim_tokens & set(re.findall(r"[a-zа-яё0-9]+", chunk.casefold()))), len(chunk)),
     )
