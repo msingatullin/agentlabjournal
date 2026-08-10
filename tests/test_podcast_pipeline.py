@@ -18,6 +18,7 @@ daily_podcast_plan = importlib.util.module_from_spec(PLAN_SPEC)
 assert PLAN_SPEC.loader is not None
 PLAN_SPEC.loader.exec_module(daily_podcast_plan)
 source_date = daily_podcast_plan.source_date
+exact_evidence_terms = daily_podcast_plan.exact_evidence_terms
 
 
 def package() -> dict:
@@ -78,6 +79,20 @@ class PodcastPipelineTests(unittest.TestCase):
     def test_source_date_rejects_unproven_date(self):
         allowed = [dt.date(2026, 8, 10), dt.date(2026, 8, 9), dt.date(2026, 8, 8)]
         self.assertEqual(source_date("no publication date", "https://example.invalid/a", allowed), (None, None))
+
+    def test_exact_evidence_uses_claim_content_not_title_or_url(self):
+        title = "AI Evaluation Framework"
+        content = "\n".join([
+            title,
+            "https://example.invalid/framework",
+            "The framework evaluates AI systems through repeatable testing and real-world impact assessment.",
+            "Organizations can adapt the evaluation process to the risks of each deployed system.",
+            "Independent validation records measurable evidence for governance decisions.",
+        ])
+        terms = exact_evidence_terms(content, "evaluation of AI systems and real-world impact", title)
+        self.assertEqual(len(terms), 3)
+        self.assertNotIn(title, terms)
+        self.assertFalse(any(term.startswith("http") for term in terms))
 
     def test_72_hour_prompt_is_explicit(self):
         value = package()

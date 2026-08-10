@@ -71,16 +71,22 @@ def source_date(content: str, url: str, allowed_dates: list[dt.date]) -> tuple[d
     return None, None
 
 
-def exact_evidence_terms(content: str, title: str, limit: int = 3) -> list[str]:
-    """Select exact, title-relevant source excerpts without asking an LLM to quote."""
-    title_tokens = {
-        token for token in re.findall(r"[a-zа-яё0-9]+", title.casefold())
+def exact_evidence_terms(content: str, claim: str, title: str, limit: int = 3) -> list[str]:
+    """Select exact, claim-relevant source excerpts without asking an LLM to quote."""
+    claim_tokens = {
+        token for token in re.findall(r"[a-zа-яё0-9]+", claim.casefold())
         if len(token) >= 4
     }
     chunks = [re.sub(r"\s+", " ", chunk).strip() for chunk in re.split(r"(?<=[.!?])\s+|\n+", content)]
+    title_value = re.sub(r"\s+", " ", title).strip().casefold()
     ranked = sorted(
-        (chunk for chunk in chunks if 20 <= len(chunk) <= 600),
-        key=lambda chunk: (-len(title_tokens & set(re.findall(r"[a-zа-яё0-9]+", chunk.casefold()))), len(chunk)),
+        (
+            chunk for chunk in chunks
+            if 40 <= len(chunk) <= 600
+            and not chunk.casefold().startswith(("http://", "https://"))
+            and chunk.casefold() != title_value
+        ),
+        key=lambda chunk: (-len(claim_tokens & set(re.findall(r"[a-zа-яё0-9]+", chunk.casefold()))), len(chunk)),
     )
     result = []
     for chunk in ranked:
@@ -120,6 +126,7 @@ evidence_terms сохраняй дословно на языке первичн�
         for item in news:
             item["evidence_terms"] = exact_evidence_terms(
                 evidence_by_id.get(item.get("source_id", ""), ""),
+                str(item.get("claim", "")),
                 str(item.get("title", "")),
             )
         invalid = [item for item in news if item.get("date") not in allowed_dates]
@@ -163,14 +170,12 @@ def main() -> int:
     target = dt.date.fromisoformat(args.date)
     maximum_window_days = 7
     allowed_date_values = [target - dt.timedelta(days=offset) for offset in range(maximum_window_days)]
-    screening_dates = {value.isoformat() for value in allowed_date_values}
     eligible = []
     for source in sources.get("sources", []):
         host = urlparse(source.get("url") or "").hostname
-        created = source.get("created_at", "")[:10]
         title = source.get("title") or ""
         topic_match = re.search(r"\b(AI|ИИ|LLM|language model|ChatGPT|Copilot|algorithm|neural|multimodal|agent|робот|quantum)\b", title, re.I)
-        if source.get("status") == "ready" and host in PRIMARY_DOMAINS and created in screening_dates and topic_match:
+        if source.get("status") == "ready" and host in PRIMARY_DOMAINS and topic_match:
             item = {key: source.get(key) for key in ("id", "title", "url", "created_at")}
             try:
                 fulltext = json.loads(run([NOTEBOOKLM, "source", "fulltext", item["id"], "--notebook", args.notebook, "--json"], timeout=60))
