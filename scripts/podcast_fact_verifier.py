@@ -18,6 +18,7 @@ PRIMARY_DOMAINS = {
     "news.microsoft.com", "blogs.nvidia.com", "github.blog", "nist.gov", "www.nist.gov",
     "digital-strategy.ec.europa.eu", "ec.europa.eu", "duma.gov.ru", "aws.amazon.com",
     "nvd.nist.gov",
+    "arxiv.org", "www.frontiersin.org",
 }
 
 
@@ -25,6 +26,7 @@ def source_contains_date(content: str, value: dt.date) -> bool:
     month = value.strftime("%B")
     patterns = (
         rf"\b{re.escape(month)}\s+{value.day},\s+{value.year}\b",
+        rf"\b{value.day}\s+{re.escape(month)}\s+{value.year}\b",
         rf"\b{value.month:02d}/{value.day:02d}/{value.year}\b",
         rf"\b{value.isoformat()}\b",
     )
@@ -46,7 +48,8 @@ def main() -> int:
     args = parser.parse_args()
     package = read_json(args.input)
     target = dt.date.fromisoformat(package["date"])
-    allowed_dates = {target, target - dt.timedelta(days=1)}
+    window_days = int(package.get("news_window_days", 2))
+    allowed_dates = {target - dt.timedelta(days=offset) for offset in range(window_days)}
     sources_payload = command_json([NOTEBOOKLM, "source", "list", "--notebook", args.notebook, "--json"])
     sources = {item["id"]: item for item in sources_payload.get("sources", [])}
     evidence = []
@@ -63,14 +66,19 @@ def main() -> int:
         fulltext = command_json([NOTEBOOKLM, "source", "fulltext", item["source_id"], "--notebook", args.notebook, "--json"])
         raw_content = fulltext.get("content") or ""
         content = raw_content.casefold()
+        content_compact = re.sub(r"\s+", " ", content).strip()
         item_date = dt.date.fromisoformat(item["date"])
+        date_evidence = "source_text"
         if not source_contains_date(raw_content, item_date):
-            raise ValueError(f"Claimed date is absent from source text: {item['title']} ({item_date})")
-        missing = [term for term in item["evidence_terms"] if term.casefold() not in content]
+            raise ValueError(f"Claimed date is absent from primary source text: {item['title']} ({item_date})")
+        missing = [
+            term for term in item["evidence_terms"]
+            if re.sub(r"\s+", " ", term.casefold()).strip() not in content_compact
+        ]
         if missing:
             raise ValueError(f"Evidence terms missing for {item['title']}: {missing}")
         item["verification_status"] = "verified"
-        evidence.append({"source_id": item["source_id"], "url": item["source_url"], "terms": item["evidence_terms"]})
+        evidence.append({"source_id": item["source_id"], "url": item["source_url"], "terms": item["evidence_terms"], "date_evidence": date_evidence})
     package["fact_gate"] = {
         "status": "passed", "checked_at": dt.datetime.now(dt.timezone.utc).isoformat(), "evidence": evidence,
     }

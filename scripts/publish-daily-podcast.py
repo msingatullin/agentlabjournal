@@ -80,31 +80,54 @@ def main() -> int:
     (ROOT / page_name).write_text(page, encoding='utf-8')
     rss = ROOT / 'podcast-rss.xml'
     rss_text = rss.read_text(encoding='utf-8')
-    build_date = dt.datetime.now(dt.timezone(dt.timedelta(hours=3))).strftime('%a, %d %b %Y %H:%M:%S +0300')
-    rss_text = re.sub(r'<lastBuildDate>.*?</lastBuildDate>', f'<lastBuildDate>{build_date}</lastBuildDate>', rss_text, count=1)
     guid = f'agentlabjournal-ru-{args.date}'
+    rss_changed = False
     if guid not in rss_text:
         rss_text = rss_text.replace('  <item>', item + '\n  <item>', 1)
+        rss_changed = True
     else:
         pattern = re.compile(r'  <item>.*?<guid isPermaLink="false">' + re.escape(guid) + r'</guid>.*?</item>', re.S)
-        rss_text, replacements = pattern.subn(item, rss_text, count=1)
+        existing = pattern.search(rss_text)
+        if existing and existing.group(0) != item:
+            rss_text, replacements = pattern.subn(item, rss_text, count=1)
+            rss_changed = replacements == 1
+        else:
+            replacements = 1 if existing else 0
         if replacements != 1:
             raise RuntimeError(f'Could not replace RSS item: {guid}')
-    rss.write_text(rss_text, encoding='utf-8')
+    if rss_changed:
+        build_date = dt.datetime.now(dt.timezone(dt.timedelta(hours=3))).strftime('%a, %d %b %Y %H:%M:%S +0300')
+        rss_text = re.sub(r'<lastBuildDate>.*?</lastBuildDate>', f'<lastBuildDate>{build_date}</lastBuildDate>', rss_text, count=1)
+        rss.write_text(rss_text, encoding='utf-8')
     sitemap = ROOT / 'sitemap.xml'
     sitemap_text = sitemap.read_text(encoding='utf-8')
     if public_page not in sitemap_text:
         sitemap.write_text(sitemap_text.replace('</urlset>', f'  <url><loc>{public_page}</loc><changefreq>weekly</changefreq><priority>0.7</priority></url>\n</urlset>', 1), encoding='utf-8')
     subprocess.run(['git', 'add', page_name, 'podcast-rss.xml', 'sitemap.xml'], cwd=ROOT, check=True)
-    subprocess.run(['git', 'commit', '-m', f'Publish daily podcast {args.date}'], cwd=ROOT, check=True)
+    staged = subprocess.run(['git', 'diff', '--cached', '--quiet'], cwd=ROOT).returncode != 0
+    if staged:
+        subprocess.run(['git', 'commit', '-m', f'Publish daily podcast {args.date}'], cwd=ROOT, check=True)
     subprocess.run(['git', 'push', 'origin', 'HEAD'], cwd=ROOT, check=True)
-    for url in (public_page, 'https://agentlabjournal.online/podcast-rss.xml'):
-        subprocess.run(['/usr/bin/python3', str(ROOT / 'scripts/submit-yandex-recrawl.py'), '--url', url], cwd=ROOT, check=False)
+    if staged:
+        for url in (public_page, 'https://agentlabjournal.online/podcast-rss.xml'):
+            subprocess.run(['/usr/bin/python3', str(ROOT / 'scripts/submit-yandex-recrawl.py'), '--url', url], cwd=ROOT, check=False)
     with urlopen(Request(public_audio, method='HEAD'), timeout=30) as response:
         if response.status != 200:
             raise RuntimeError(f'audio public check failed: HTTP {response.status}')
-    with urlopen(Request(ALBUM, method='GET'), timeout=30) as response:
-        print(f'YANDEX_MUSIC_ALBUM_HTTP={response.status}')
+    try:
+        with urlopen(Request(ALBUM, method='GET'), timeout=30) as response:
+            print(f'YANDEX_MUSIC_ALBUM_HTTP={response.status}')
+    except Exception as error:
+        print(f'YANDEX_MUSIC_ALBUM_CHECK=pending_owner_review:{type(error).__name__}', flush=True)
+    yandex_state = ROOT / 'podcasts' / 'state' / f'{args.date}-ru-yandex.json'
+    yandex_result = subprocess.run([
+        '/usr/bin/python3', str(ROOT / 'scripts' / 'yandex-podcast-agent.py'),
+        '--guid', f'agentlabjournal-ru-{args.date}', '--output', str(yandex_state),
+    ], cwd=ROOT, text=True, capture_output=True)
+    print(yandex_result.stdout.strip())
+    if yandex_result.returncode != 0:
+        print('YANDEX_MUSIC_GATE: FEED_BLOCKED', flush=True)
+        return yandex_result.returncode
     print(f'PUBLISHED={public_page}')
     return 0
 

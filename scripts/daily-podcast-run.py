@@ -8,6 +8,7 @@ import fcntl
 import json
 import os
 import subprocess
+import uuid
 import urllib.parse
 import urllib.request
 import xml.etree.ElementTree as ET
@@ -18,11 +19,52 @@ SCRIPTS = PROJECT / "scripts"
 PYTHON = "/usr/bin/python3"
 WHISPER = "/root/whisper.cpp/build/bin/whisper-cli"
 WHISPER_MODEL = "/root/whisper.cpp/models/ggml-small.bin"
+STATE_DIR = Path("/tmp/podcast-state")
+HANDOFF_ROOT = Path("/tmp/handoffs")
+HANDOFF_DIR: Path | None = None
 
 
-def run(command: list[str], stage: str) -> None:
+def handoff(step: str, agent: str, status: str, payload: dict | None = None) -> None:
+    if HANDOFF_DIR is None:
+        return
+    HANDOFF_DIR.mkdir(parents=True, exist_ok=True)
+    data = {"step": step, "agent": agent, "status": status, "updated_at": dt.datetime.now(dt.timezone.utc).isoformat()}
+    if payload:
+        data.update(payload)
+    (HANDOFF_DIR / f"{step}-{agent}-output.json").write_text(json.dumps(data, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+
+
+def write_state(stage: str, status: str, error: str = "") -> None:
+    STATE_DIR.mkdir(parents=True, exist_ok=True)
+    (STATE_DIR / "current-stage").write_text(stage + "\n", encoding="utf-8")
+    (STATE_DIR / "last-run-status").write_text(status + "\n", encoding="utf-8")
+    if error:
+        (STATE_DIR / "last-error").write_text(error[:4000] + "\n", encoding="utf-8")
+    elif (STATE_DIR / "last-error").exists():
+        (STATE_DIR / "last-error").unlink()
+
+
+def run(command: list[str], stage: str, expected: list[Path] | None = None) -> None:
     print(f"PODCAST_STAGE: {stage}", flush=True)
-    subprocess.run(command, cwd=PROJECT, check=True)
+    write_state(stage, "RUNNING")
+    agent = stage.lower().replace(" agent", "").replace(" ", "-")
+    step = {"Research Agent": "02", "Fact Verification Agent": "03", "Episode Editor Agent": "04", "Audio Producer Agent": "05", "Transcript Agent": "06", "Transcript QA Agent": "07", "Publisher Agent": "08", "Release Verifier Agent": "09"}.get(stage, "99")
+    previous = {"02": "01-dispatcher-output.json", "03": "02-research-output.json",
+                "04": "03-fact-verification-output.json", "05": "04-episode-editor-output.json",
+                "06": "05-audio-producer-output.json", "07": "06-transcript-output.json",
+                "08": "07-transcript-qa-output.json", "09": "08-publisher-output.json"}.get(step)
+    worker = [PYTHON, str(SCRIPTS / "podcast-stage-worker.py"), "--stage", stage,
+              "--step", step, "--agent", agent, "--handoff-dir", str(HANDOFF_DIR),
+              "--previous", previous]
+    for path in expected or []:
+        worker.extend(["--expect", str(path)])
+    worker.extend(["--", *command])
+    try:
+        subprocess.run(worker, cwd=PROJECT, check=True)
+    except Exception as error:
+        write_state(stage, "FAIL", str(error))
+        raise
+    write_state(stage, "OK")
 
 
 def notify_failure(stage: str, error: Exception) -> None:
@@ -73,6 +115,20 @@ def main() -> int:
     parser.add_argument("--candidate", type=Path)
     parser.add_argument("--replacement", action="store_true")
     args = parser.parse_args()
+    global HANDOFF_DIR
+    run_id = uuid.uuid4().hex[:12]
+    HANDOFF_DIR = HANDOFF_ROOT / f"podcast-{args.date}-{run_id}"
+    HANDOFF_DIR.mkdir(parents=True, exist_ok=True)
+    (HANDOFF_DIR / "00-input.json").write_text(json.dumps({"project": "agentlabjournal-podcast", "date": args.date, "requested_by": "owner", "status": "accepted", "run_id": run_id}, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    handoff("01", "dispatcher", "OK", {"scope": "single podcast episode", "date": args.date})
+    STATE_DIR.mkdir(parents=True, exist_ok=True)
+    reset = STATE_DIR / "reset"
+    if reset.exists():
+        reset.unlink()
+        write_state("reset", "RESET")
+    elif (STATE_DIR / "last-run-status").read_text(encoding="utf-8").strip() == "FAIL" if (STATE_DIR / "last-run-status").exists() else False:
+        print("PODCAST_STATE_LOCKED: create /tmp/podcast-state/reset", flush=True)
+        return 2
     base = PROJECT / "podcasts"
     candidate = args.candidate or base / "packages" / f"{args.date}-ru.candidate.json"
     verified = base / "packages" / f"{args.date}-ru.verified.json"
@@ -91,32 +147,47 @@ def main() -> int:
             print("PODCAST_ALREADY_RUNNING", flush=True)
             return 0
         if already_published(args.date, production, audio, qa):
-            return 0
+            verifier = base / "state" / f"{args.date}-ru-release-verifier.json"
+            verifier_data = json.loads(verifier.read_text(encoding="utf-8")) if verifier.is_file() else {}
+            if verifier_data.get("status") == "OK":
+                write_state("complete", "OK")
+                return 0
+            write_state("Release Verifier Agent", "RUNNING", verifier_data.get("status", "verification pending"))
+            return 3
         stage = "Research Agent"
         try:
-            if not candidate.is_file():
-                run([PYTHON, str(SCRIPTS / "daily-podcast-plan.py"), "--date", args.date], stage)
+            run([PYTHON, str(SCRIPTS / "daily-podcast-plan.py"), "--date", args.date], stage, [candidate])
             stage = "Fact Verification Agent"
-            run([PYTHON, str(SCRIPTS / "podcast_fact_verifier.py"), "--input", str(candidate), "--output", str(verified)], stage)
+            run([PYTHON, str(SCRIPTS / "podcast_fact_verifier.py"), "--input", str(candidate), "--output", str(verified)], stage, [verified])
             stage = "Episode Editor Agent"
-            run([PYTHON, str(SCRIPTS / "podcast_episode_editor.py"), "--input", str(verified), "--output", str(production)], stage)
+            run([PYTHON, str(SCRIPTS / "podcast_episode_editor.py"), "--input", str(verified), "--output", str(production)], stage, [production])
             stage = "Audio Producer Agent"
-            run([PYTHON, str(SCRIPTS / "podcast_audio_producer.py"), "--package", str(production), "--output", str(audio), "--state", str(producer_state)], stage)
+            run([PYTHON, str(SCRIPTS / "podcast_audio_producer.py"), "--package", str(production), "--output", str(audio), "--state", str(producer_state)], stage, [audio, producer_state])
             stage = "Transcript Agent"
             transcript.parent.mkdir(parents=True, exist_ok=True)
-            run([WHISPER, "-m", WHISPER_MODEL, "-f", str(audio), "-l", "ru", "-t", "4", "-otxt", "-of", str(transcript_base)], stage)
+            run([WHISPER, "-m", WHISPER_MODEL, "-f", str(audio), "-l", "ru", "-t", "4", "-otxt", "-of", str(transcript_base)], stage, [transcript])
             stage = "Transcript QA Agent"
-            run([PYTHON, str(SCRIPTS / "podcast_transcript_qa.py"), "--package", str(production), "--transcript", str(transcript), "--audio", str(audio), "--output", str(qa)], stage)
+            run([PYTHON, str(SCRIPTS / "podcast_transcript_qa.py"), "--package", str(production), "--transcript", str(transcript), "--audio", str(audio), "--output", str(qa)], stage, [qa])
             stage = "Publisher Agent"
             package = json.loads(production.read_text(encoding="utf-8"))
             run([
                 PYTHON, str(SCRIPTS / "publish-daily-podcast.py"), "--date", args.date,
                 "--audio", str(audio), "--title", package["daily_topic"],
                 "--summary", package["listener_takeaway"], "--qa-manifest", str(qa),
-            ], stage)
+            ], stage, [PROJECT / f"podcast-{args.date}-ru.html", PROJECT / "podcast-rss.xml"])
+            stage = "Release Verifier Agent"
+            verifier = base / "state" / f"{args.date}-ru-release-verifier.json"
+            run([PYTHON, str(SCRIPTS / "podcast-release-verifier.py"), "--date", args.date,
+                 "--handoff", str(verifier)], stage, [verifier])
+            verifier_data = json.loads(verifier.read_text(encoding="utf-8"))
+            if verifier_data.get("status") != "OK":
+                write_state(stage, "RUNNING", verifier_data.get("status", "verification pending"))
+                return 3
         except Exception as error:
+            write_state(stage, "FAIL", str(error))
             notify_failure(stage, error)
             raise
+        write_state("complete", "OK")
     return 0
 
 

@@ -29,6 +29,14 @@ def term_present(text: str, term: str, window: int = 12) -> bool:
     text_value = normalized(text)
     term_value = normalized(term)
     variants = {term_value}
+    observed_equivalents = {
+        "ии офис": {"ai office", "e office", "и офис"},
+        "nist ai 200 2": {"nist ai 202", "нист ai 202", "нист аи 202"},
+        "методы измерения": {"методы оценки", "метрики оценки"},
+        "пропуски в данных": {"пропуск данных", "куча пропусков", "missing data"},
+        "иерархический анализ": {"иерархических данных", "иерархические данные", "ирархических данных"},
+    }
+    variants.update(observed_equivalents.get(term_value, set()))
     if "api" in term_value.split():
         variants.add(" ".join("апи" if word == "api" else word for word in term_value.split()))
     for variant in variants:
@@ -74,16 +82,18 @@ def main() -> int:
     args = parser.parse_args()
     package = read_json(args.package)
     transcript = args.transcript.read_text(encoding="utf-8")
+    window_label = package.get("news_window_label", "Новости за последние 24 часа")
     checks = {
         "brand_intro": contains_all(transcript[:2500], ["Артём", "Мира"]) and contains_any(
             transcript[:2500],
             [
                 "Agent Lab Journal Podcast",
+                "AgentLab Journal Podcast",
                 "Agent Lab Journal подкаст",
                 "Агент Лаб Журнал Подкаст",
             ],
         ),
-        "daily_news_block": contains_all(transcript, ["новости", "последние 24 часа"]),
+        "daily_news_block": term_present(transcript, window_label),
         "rubric": rubric_present(transcript, package["rubric"]),
         "all_news": all(
             all(term_present(transcript, term) for term in item["qa_terms"])

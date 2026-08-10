@@ -28,6 +28,10 @@ def wait_for_artifact(notebook: str, artifact_id: str, timeout: int) -> None:
         artifact = next((item for item in payload.get("artifacts", []) if item.get("id") == artifact_id), None)
         if artifact and artifact.get("status") == "completed":
             return
+        if artifact and artifact.get("status") in {"failed", "cancelled", "canceled", "error"}:
+            raise RuntimeError(f"Artifact terminal failure: {artifact_id}: {artifact.get('status')}")
+        if artifact is None:
+            raise RuntimeError(f"Artifact missing: {artifact_id}")
         time.sleep(30)
     raise TimeoutError(f"Artifact timeout: {artifact_id}")
 

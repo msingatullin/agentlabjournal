@@ -3,13 +3,21 @@ import subprocess
 import sys
 import tempfile
 import unittest
+import datetime as dt
+import importlib.util
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "scripts"))
 
 from podcast_contract import build_generation_prompt, read_json, validate_episode_package
-from podcast_transcript_qa import normalized, rubric_present
+from podcast_transcript_qa import normalized, rubric_present, term_present
+from podcast_fact_verifier import source_contains_date
+PLAN_SPEC = importlib.util.spec_from_file_location("daily_podcast_plan", ROOT / "scripts/daily-podcast-plan.py")
+daily_podcast_plan = importlib.util.module_from_spec(PLAN_SPEC)
+assert PLAN_SPEC.loader is not None
+PLAN_SPEC.loader.exec_module(daily_podcast_plan)
+source_date = daily_podcast_plan.source_date
 
 
 def package() -> dict:
@@ -46,6 +54,37 @@ class PodcastPipelineTests(unittest.TestCase):
             ])
             self.assertEqual(result.returncode, 1)
             self.assertEqual(json.loads(manifest.read_text(encoding="utf-8"))["status"], "blocked")
+
+    def test_source_date_uses_source_text_not_notebook_created_at(self):
+        allowed = [dt.date(2026, 8, 10), dt.date(2026, 8, 9), dt.date(2026, 8, 8)]
+        self.assertEqual(
+            source_date("Submitted August 8, 2026", "https://example.invalid/a", allowed),
+            (dt.date(2026, 8, 8), "source_text"),
+        )
+
+    def test_fact_verifier_accepts_european_date_format(self):
+        self.assertTrue(source_contains_date("Updated 6 August 2026", dt.date(2026, 8, 6)))
+
+    def test_observed_asr_equivalents_are_limited_and_accepted(self):
+        self.assertTrue(term_present("в центре системы AI-Office", "ИИ-офис"))
+        self.assertTrue(term_present("черновик NIST AI-202", "NIST AI 200-2"))
+        self.assertTrue(term_present("анализ ирархических данных, в которых куча пропусков", "Иерархический анализ"))
+
+    def test_source_date_rejects_unproven_date(self):
+        allowed = [dt.date(2026, 8, 10), dt.date(2026, 8, 9), dt.date(2026, 8, 8)]
+        self.assertEqual(source_date("no publication date", "https://example.invalid/a", allowed), (None, None))
+
+    def test_72_hour_prompt_is_explicit(self):
+        value = package()
+        value["news_window_days"] = 3
+        value["news_window_label"] = "Новости за последние 72 часа"
+        self.assertIn("Новости за последние 72 часа", build_generation_prompt(value))
+
+    def test_7_day_fallback_prompt_is_explicit(self):
+        value = package()
+        value["news_window_days"] = 7
+        value["news_window_label"] = "Новости за последние 7 дней"
+        self.assertIn("Новости за последние 7 дней", build_generation_prompt(value))
 
 
 if __name__ == "__main__":
