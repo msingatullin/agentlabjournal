@@ -14,6 +14,8 @@ class ProjectSeoAgentTests(unittest.TestCase):
         self.assertEqual(set(registry), {"agentlabjournal", "grifun", "microsrv", "sitevisor"})
         self.assertEqual(len({item["agent_id"] for item in registry.values()}), 4)
         self.assertEqual(len({item["raw_wordstat_root"] for item in registry.values()}), 4)
+        self.assertTrue(all(item["status"] == "active" for item in registry.values()))
+        self.assertTrue(all(item.get("parent_pillar_page") for item in registry.values()))
 
     def test_podcast_receives_measured_project_query_passport(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -29,8 +31,11 @@ class ProjectSeoAgentTests(unittest.TestCase):
             passport = json.loads(output.read_text(encoding="utf-8"))
             self.assertEqual(passport["seo_query_gate"], "OK")
             self.assertEqual(passport["evidence_source"], "yandex-wordstat")
-            self.assertEqual(passport["primary_query"], "оценка ai агентов")
-            self.assertIn("Оценка AI агентов", passport["recommended_title"])
+            universe = json.loads((ROOT / "seo-keyword-universe.json").read_text(encoding="utf-8"))
+            measured = {row["query"]: row for row in universe["keywords"]}
+            self.assertIn(passport["primary_query"], measured)
+            self.assertEqual(passport["frequency_value"], measured[passport["primary_query"]]["frequency_value"])
+            self.assertTrue(passport["recommended_title"].startswith(passport["primary_query"].capitalize()))
 
 
 if __name__ == "__main__":

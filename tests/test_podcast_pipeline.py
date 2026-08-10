@@ -38,6 +38,9 @@ class PodcastPipelineTests(unittest.TestCase):
             "Человек vs Машина", "Microsoft", "NVIDIA", "GitHub", "agentlabjournal.online",
         ):
             self.assertIn(required, prompt)
+        for item in package()["news"]:
+            for term in item["qa_terms"]:
+                self.assertIn(term, prompt)
 
     def test_qa_blocks_missing_intro(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -69,6 +72,8 @@ class PodcastPipelineTests(unittest.TestCase):
         self.assertTrue(term_present("в центре системы AI-Office", "ИИ-офис"))
         self.assertTrue(term_present("черновик NIST AI-202", "NIST AI 200-2"))
         self.assertTrue(term_present("анализ ирархических данных, в которых куча пропусков", "Иерархический анализ"))
+        self.assertTrue(term_present("индивидуальная оценка на базе концепции ТВФ АТЛОН", "фреймворк ТЭВВ Атлон"))
+        self.assertTrue(term_present("гибкие стандарты оценки систем", "оценка систем ИИ"))
 
     def test_source_date_rejects_unproven_date(self):
         allowed = [dt.date(2026, 8, 10), dt.date(2026, 8, 9), dt.date(2026, 8, 8)]

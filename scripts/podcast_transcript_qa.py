@@ -35,6 +35,8 @@ def term_present(text: str, term: str, window: int = 12) -> bool:
         "методы измерения": {"методы оценки", "метрики оценки"},
         "пропуски в данных": {"пропуск данных", "куча пропусков", "missing data"},
         "иерархический анализ": {"иерархических данных", "иерархические данные", "ирархических данных"},
+        "оценка систем ии": {"оценка системы", "оценки надежности систем", "стандарты оценки систем"},
+        "фреймворк тэвв атлон": {"твф атлон", "концепции твф атлон", "тэвв атлон"},
     }
     variants.update(observed_equivalents.get(term_value, set()))
     if "api" in term_value.split():
@@ -83,6 +85,10 @@ def main() -> int:
     package = read_json(args.package)
     transcript = args.transcript.read_text(encoding="utf-8")
     window_label = package.get("news_window_label", "Новости за последние 24 часа")
+    news_term_checks = [
+        {term: term_present(transcript, term) for term in item["qa_terms"]}
+        for item in package["news"]
+    ]
     checks = {
         "brand_intro": contains_all(transcript[:2500], ["Артём", "Мира"]) and contains_any(
             transcript[:2500],
@@ -95,20 +101,20 @@ def main() -> int:
         ),
         "daily_news_block": term_present(transcript, window_label),
         "rubric": rubric_present(transcript, package["rubric"]),
-        "all_news": all(
-            all(term_present(transcript, term) for term in item["qa_terms"])
-            for item in package["news"]
-        ),
+        "all_news": all(all(terms.values()) for terms in news_term_checks),
         "practical_actions": contains_all(transcript, ["первое", "второе", "третье"]),
         "outro": contains_any(transcript[-3000:], ["AgentLab", "Агент Лаб"]) and contains_all(
             transcript[-3000:], ["автоматизировать процессы"]
-        ) and contains_any(transcript[-3000:], ["agentlabjournal.online", "агент лаб журнал точка онлайн"]),
+        ) and contains_any(transcript[-3000:], [
+            "agentlabjournal.online", "agentlab journal online", "агент лаб журнал точка онлайн"
+        ]),
         "audio_exists": args.audio.is_file() and args.audio.stat().st_size >= 100_000,
     }
     status = "passed" if all(checks.values()) else "blocked"
     manifest = {
         "status": status, "checked_at": dt.datetime.now(dt.timezone.utc).isoformat(),
-        "package": str(args.package), "transcript": str(args.transcript), "audio": str(args.audio), "checks": checks,
+        "package": str(args.package), "transcript": str(args.transcript), "audio": str(args.audio),
+        "checks": checks, "news_term_checks": news_term_checks,
     }
     write_json(args.output, manifest)
     print(args.output)

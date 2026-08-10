@@ -61,7 +61,9 @@ def build_generation_prompt(payload: dict) -> str:
     validate_episode_package(payload)
     news = "\n".join(
         f"{index}. {item['title']} ({item['date']}). Факт: {item['claim']} "
-        f"Практическое значение: {item['why_it_matters']}"
+        f"Практическое значение: {item['why_it_matters']} "
+        f"Обязательные контрольные формулировки, каждую произнести дословно хотя бы один раз: "
+        f"{'; '.join(item['qa_terms'])}."
         for index, item in enumerate(payload["news"], 1)
     )
     news_window_label = payload.get("news_window_label", "Новости за последние 24 часа")
@@ -73,6 +75,7 @@ def build_generation_prompt(payload: dict) -> str:
 - Ведущие: Артём — объясняет; Мира — проверяет факты и задаёт практические вопросы. Называй их по именам.
 - После приветствия произнеси дату {payload['date']} и заголовок «{news_window_label}».
 - Разбери ровно {len(payload['news'])} новости, перечисленные ниже.
+- В блоке каждой новости дословно произнеси все её контрольные формулировки.
 - Затем явно объяви рубрику «{payload['rubric']}» и разбери тему «{payload['daily_topic']}».
 - Отделяй факт источника от вывода ведущих. Не превращай исследование компании в универсальную статистику.
 - Заверши практическим чек-листом из трёх действий.

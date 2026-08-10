@@ -71,6 +71,27 @@ def source_date(content: str, url: str, allowed_dates: list[dt.date]) -> tuple[d
     return None, None
 
 
+def exact_evidence_terms(content: str, title: str, limit: int = 3) -> list[str]:
+    """Select exact, title-relevant source excerpts without asking an LLM to quote."""
+    title_tokens = {
+        token for token in re.findall(r"[a-zа-яё0-9]+", title.casefold())
+        if len(token) >= 4
+    }
+    chunks = [re.sub(r"\s+", " ", chunk).strip() for chunk in re.split(r"(?<=[.!?])\s+|\n+", content)]
+    ranked = sorted(
+        (chunk for chunk in chunks if 20 <= len(chunk) <= 600),
+        key=lambda chunk: (-len(title_tokens & set(re.findall(r"[a-zа-яё0-9]+", chunk.casefold()))), len(chunk)),
+    )
+    result = []
+    for chunk in ranked:
+        excerpt = " ".join(chunk.split()[:24]).strip()
+        if excerpt and excerpt not in result:
+            result.append(excerpt)
+        if len(result) == limit:
+            break
+    return result
+
+
 def select_news(notebook: str, catalog: str, target: dt.date, evidence_by_id: dict[str, str], window_days: int = 3) -> dict:
     allowed_dates = {(target - dt.timedelta(days=offset)).isoformat() for offset in range(window_days)}
     rejected_ids: set[str] = set()
@@ -79,6 +100,7 @@ def select_news(notebook: str, catalog: str, target: dt.date, evidence_by_id: di
         prompt = f"""Ты Research Agent. Выбери 2-3 новости, опубликованные или официально обновлённые строго в одну из дат {sorted(allowed_dates)}, только из каталога ниже.
 Верни только JSON с ключами news, daily_topic, listener_takeaway.
 Каждая news: title, date YYYY-MM-DD, source_id, source_url, claim, why_it_matters, evidence_terms (3-4 точные строки из источника), qa_terms (3 коротких термина для транскрипта).
+evidence_terms сохраняй дословно на языке первичного источника. qa_terms обязательно формулируй только кириллицей по-русски именно так, как ведущие должны произнести их в русскоязычном выпуске. Латиница, английские пояснения и скобки в qa_terms запрещены. Не копируй английские evidence_terms в qa_terms.
 Поле date обязано дословно совпадать с published_date из каталога. Источники уже прошли детерминированную проверку даты.
 Не изменяй source_id/source_url. Не добавляй источники вне каталога. Не называй исследование одной компании универсальной статистикой.
 Не выбирай source_id из списка отклонённых: {sorted(rejected_ids)}.
@@ -95,17 +117,27 @@ def select_news(notebook: str, catalog: str, target: dt.date, evidence_by_id: di
             continue
         selected = extract_object(answer)
         news = selected.get("news", [])
+        for item in news:
+            item["evidence_terms"] = exact_evidence_terms(
+                evidence_by_id.get(item.get("source_id", ""), ""),
+                str(item.get("title", "")),
+            )
         invalid = [item for item in news if item.get("date") not in allowed_dates]
+        invalid_qa = [
+            item for item in news
+            if not item.get("qa_terms")
+            or any(re.search(r"[a-z]", str(term), re.I) for term in item["qa_terms"])
+        ]
         unsupported = []
         for item in news:
             content = re.sub(r"\s+", " ", evidence_by_id.get(item.get("source_id", ""), "").casefold()).strip()
             terms = item.get("evidence_terms") or []
             if not terms or any(re.sub(r"\s+", " ", term.casefold()).strip() not in content for term in terms):
                 unsupported.append(item)
-        if len(news) >= 2 and not invalid and not unsupported:
+        if len(news) >= 2 and not invalid and not invalid_qa and not unsupported:
             return selected
         rejected_ids.update(item.get("source_id", "") for item in invalid + unsupported)
-        last_error = f"attempt {attempt}: {len(news)} news, invalid dates={[(x.get('source_id'), x.get('date')) for x in invalid]}, unsupported={[x.get('source_id') for x in unsupported]}"
+        last_error = f"attempt {attempt}: {len(news)} news, invalid dates={[(x.get('source_id'), x.get('date')) for x in invalid]}, invalid_qa={[x.get('source_id') for x in invalid_qa]}, unsupported={[x.get('source_id') for x in unsupported]}"
     raise RuntimeError(f"RESEARCH_DATE_GATE: unable to select two current items; {last_error}")
 
 

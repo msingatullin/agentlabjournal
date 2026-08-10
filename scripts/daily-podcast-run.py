@@ -7,6 +7,7 @@ import datetime as dt
 import fcntl
 import json
 import os
+import shutil
 import subprocess
 import uuid
 import urllib.parse
@@ -151,7 +152,7 @@ def main() -> int:
         except BlockingIOError:
             print("PODCAST_ALREADY_RUNNING", flush=True)
             return 0
-        if already_published(args.date, production, audio, qa, seo_passport):
+        if not args.replacement and already_published(args.date, production, audio, qa, seo_passport):
             verifier = base / "state" / f"{args.date}-ru-release-verifier.json"
             verifier_data = json.loads(verifier.read_text(encoding="utf-8")) if verifier.is_file() else {}
             if verifier_data.get("status") == "OK":
@@ -161,9 +162,25 @@ def main() -> int:
             return 3
         stage = "Research Agent"
         try:
-            run([PYTHON, str(SCRIPTS / "daily-podcast-plan.py"), "--date", args.date], stage, [candidate])
-            stage = "Fact Verification Agent"
-            run([PYTHON, str(SCRIPTS / "podcast_fact_verifier.py"), "--input", str(candidate), "--output", str(verified)], stage, [verified])
+            for attempt in range(1, 4):
+                try:
+                    stage = "Research Agent"
+                    run([PYTHON, str(SCRIPTS / "daily-podcast-plan.py"), "--date", args.date], stage, [candidate])
+                    stage = "Fact Verification Agent"
+                    run([PYTHON, str(SCRIPTS / "podcast_fact_verifier.py"), "--input", str(candidate), "--output", str(verified)], stage, [verified])
+                    break
+                except Exception:
+                    attempts_dir = HANDOFF_DIR / "attempts"
+                    attempts_dir.mkdir(exist_ok=True)
+                    for name in ("02-research-output.json", "03-fact-verification-output.json"):
+                        source = HANDOFF_DIR / name
+                        if source.is_file():
+                            shutil.copy2(source, attempts_dir / f"attempt-{attempt}-{name}")
+                    candidate.unlink(missing_ok=True)
+                    verified.unlink(missing_ok=True)
+                    if attempt == 3:
+                        raise
+                    write_state("Research Agent", "RESET", f"automatic full-research recovery attempt {attempt + 1}/3")
             stage = "Project SEO Agent"
             canonical = f"https://agentlabjournal.online/podcast-{args.date}-ru.html"
             run([PYTHON, str(SCRIPTS / "project-seo-agent.py"), "--package", str(verified),

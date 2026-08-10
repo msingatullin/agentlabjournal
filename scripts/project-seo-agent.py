@@ -43,6 +43,10 @@ def main() -> int:
         str(item.get("primary_query", "")).casefold(): item.get("target_url")
         for item in query_map.get("articles", {}).values() if isinstance(item, dict)
     }
+    owned.update({
+        str(item.get("primary_query", "")).casefold(): url
+        for url, item in query_map.get("pages", {}).items() if isinstance(item, dict)
+    })
     candidates = []
     for row in rows:
         query = str(row.get("query", "")).strip()
@@ -79,8 +83,8 @@ def main() -> int:
         "region": universe.get("region"), "language": "ru", "related_queries": related,
         "evidence_source": "yandex-wordstat", "evidence_ref": universe.get("source_evidence"),
         "evidence_collected_at": universe.get("collected_at"), "target_canonical_url": args.canonical,
-        "parent_pillar_page": "https://agentlabjournal.online/podcasts.html",
-        "internal_link_plan": ["https://agentlabjournal.online/podcasts.html"],
+        "parent_pillar_page": project["parent_pillar_page"],
+        "internal_link_plan": [project["parent_pillar_page"]],
         "query_to_url_unique": True, "cannibalization_checked_against": str(query_map_path),
         "recommended_title": f"{primary['query'].capitalize().replace(' ai ', ' AI ')} — {package.get('daily_topic', '')}",
         "wordstat_evidence_root": project["raw_wordstat_root"],
