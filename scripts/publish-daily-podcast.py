@@ -46,9 +46,14 @@ def main() -> int:
     parser.add_argument('--title', required=True)
     parser.add_argument('--summary', required=True)
     parser.add_argument('--qa-manifest', type=Path, required=True)
+    parser.add_argument('--seo-passport', type=Path, required=True)
     parser.add_argument('--dry-run', action='store_true')
     args = parser.parse_args()
     qa = json.loads(args.qa_manifest.read_text(encoding='utf-8')) if args.qa_manifest.is_file() else {}
+    seo = json.loads(args.seo_passport.read_text(encoding='utf-8')) if args.seo_passport.is_file() else {}
+    if seo.get('seo_query_gate') != 'OK' or seo.get('target_canonical_url') != f'{BASE}/podcast-{args.date}-ru.html':
+        raise SystemExit('SEO_QUERY_GATE: BLOCKED')
+    args.title = seo.get('recommended_title') or args.title
     if qa.get('status') != 'passed':
         raise SystemExit('TRANSCRIPT_QA_GATE: BLOCKED')
     qa_audio = Path(qa.get('audio', ''))

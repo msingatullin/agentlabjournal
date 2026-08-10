@@ -48,11 +48,12 @@ def run(command: list[str], stage: str, expected: list[Path] | None = None) -> N
     print(f"PODCAST_STAGE: {stage}", flush=True)
     write_state(stage, "RUNNING")
     agent = stage.lower().replace(" agent", "").replace(" ", "-")
-    step = {"Research Agent": "02", "Fact Verification Agent": "03", "Episode Editor Agent": "04", "Audio Producer Agent": "05", "Transcript Agent": "06", "Transcript QA Agent": "07", "Publisher Agent": "08", "Release Verifier Agent": "09"}.get(stage, "99")
+    step = {"Research Agent": "02", "Fact Verification Agent": "03", "Project SEO Agent": "04", "Episode Editor Agent": "05", "Audio Producer Agent": "06", "Transcript Agent": "07", "Transcript QA Agent": "08", "Publisher Agent": "09", "Release Verifier Agent": "10"}.get(stage, "99")
     previous = {"02": "01-dispatcher-output.json", "03": "02-research-output.json",
-                "04": "03-fact-verification-output.json", "05": "04-episode-editor-output.json",
-                "06": "05-audio-producer-output.json", "07": "06-transcript-output.json",
-                "08": "07-transcript-qa-output.json", "09": "08-publisher-output.json"}.get(step)
+                "04": "03-fact-verification-output.json", "05": "04-project-seo-output.json",
+                "06": "05-episode-editor-output.json", "07": "06-audio-producer-output.json",
+                "08": "07-transcript-output.json", "09": "08-transcript-qa-output.json",
+                "10": "09-publisher-output.json"}.get(step)
     worker = [PYTHON, str(SCRIPTS / "podcast-stage-worker.py"), "--stage", stage,
               "--step", step, "--agent", agent, "--handoff-dir", str(HANDOFF_DIR),
               "--previous", previous]
@@ -89,7 +90,7 @@ def notify_failure(stage: str, error: Exception) -> None:
         print(f"PODCAST_NOTIFY_FAILED: {notify_error}", flush=True)
 
 
-def already_published(date: str, production: Path, audio: Path, qa: Path) -> bool:
+def already_published(date: str, production: Path, audio: Path, qa: Path, seo_passport: Path) -> bool:
     if not all(path.is_file() for path in (production, audio, qa)):
         return False
     qa_data = json.loads(qa.read_text(encoding="utf-8"))
@@ -99,11 +100,13 @@ def already_published(date: str, production: Path, audio: Path, qa: Path) -> boo
     if qa_data.get("status") != "passed" or qa_audio.resolve() != audio.resolve():
         return False
     package = json.loads(production.read_text(encoding="utf-8"))
+    seo = json.loads(seo_passport.read_text(encoding="utf-8")) if seo_passport.is_file() else {}
+    expected_title = seo.get("recommended_title") or package["daily_topic"]
     root = ET.parse(PROJECT / "podcast-rss.xml").getroot()
     for item in root.findall("./channel/item"):
         guid = item.findtext("guid", default="")
         title = item.findtext("title", default="")
-        if guid == f"agentlabjournal-ru-{date}" and title == package["daily_topic"]:
+        if guid == f"agentlabjournal-ru-{date}" and title == expected_title:
             print(f"PODCAST_ALREADY_PUBLISHED: {date}", flush=True)
             return True
     return False
@@ -138,6 +141,7 @@ def main() -> int:
     transcript = Path(str(transcript_base) + ".txt")
     qa = base / "qa" / f"{args.date}-ru.json"
     producer_state = base / "state" / f"{args.date}-ru-producer.json"
+    seo_passport = base / "seo" / f"{args.date}-ru-query-passport.json"
     lock_path = base / "state" / "daily-podcast.lock"
     lock_path.parent.mkdir(parents=True, exist_ok=True)
     with lock_path.open("w", encoding="utf-8") as lock_file:
@@ -146,7 +150,7 @@ def main() -> int:
         except BlockingIOError:
             print("PODCAST_ALREADY_RUNNING", flush=True)
             return 0
-        if already_published(args.date, production, audio, qa):
+        if already_published(args.date, production, audio, qa, seo_passport):
             verifier = base / "state" / f"{args.date}-ru-release-verifier.json"
             verifier_data = json.loads(verifier.read_text(encoding="utf-8")) if verifier.is_file() else {}
             if verifier_data.get("status") == "OK":
@@ -159,6 +163,10 @@ def main() -> int:
             run([PYTHON, str(SCRIPTS / "daily-podcast-plan.py"), "--date", args.date], stage, [candidate])
             stage = "Fact Verification Agent"
             run([PYTHON, str(SCRIPTS / "podcast_fact_verifier.py"), "--input", str(candidate), "--output", str(verified)], stage, [verified])
+            stage = "Project SEO Agent"
+            canonical = f"https://agentlabjournal.online/podcast-{args.date}-ru.html"
+            run([PYTHON, str(SCRIPTS / "project-seo-agent.py"), "--package", str(verified),
+                 "--project-root", str(PROJECT), "--canonical", canonical, "--output", str(seo_passport)], stage, [seo_passport])
             stage = "Episode Editor Agent"
             run([PYTHON, str(SCRIPTS / "podcast_episode_editor.py"), "--input", str(verified), "--output", str(production)], stage, [production])
             stage = "Audio Producer Agent"
@@ -173,7 +181,7 @@ def main() -> int:
             run([
                 PYTHON, str(SCRIPTS / "publish-daily-podcast.py"), "--date", args.date,
                 "--audio", str(audio), "--title", package["daily_topic"],
-                "--summary", package["listener_takeaway"], "--qa-manifest", str(qa),
+                "--summary", package["listener_takeaway"], "--qa-manifest", str(qa), "--seo-passport", str(seo_passport),
             ], stage, [PROJECT / f"podcast-{args.date}-ru.html", PROJECT / "podcast-rss.xml"])
             stage = "Release Verifier Agent"
             verifier = base / "state" / f"{args.date}-ru-release-verifier.json"
