@@ -83,26 +83,52 @@ def wait_until_public(topic, attempts=40, delay=15):
 queue_path = ROOT / "article-topics.json"
 topics = json.loads(queue_path.read_text())
 
-for topic in topics:
-    if not (ROOT / f"{topic['slug']}.html").exists():
-        break
-else:
+unpublished = [topic for topic in topics if not (ROOT / f"{topic['slug']}.html").exists()]
+if not unpublished:
     print("ARTICLE_CYCLE: queue exhausted")
     raise SystemExit(0)
 
-topic = topics[next(i for i, item in enumerate(topics) if not (ROOT / f"{item['slug']}.html").exists())]
-for language in ("ru", "en"):
-    seo_gate = subprocess.run([
-        sys.executable,
-        str(ROOT / "scripts" / "seo-query-gate.py"),
-        "--slug",
-        topic["slug"],
-        "--language",
-        language,
-    ], cwd=ROOT)
-    if seo_gate.returncode:
-        notify_error("SEO НЧ/СЧ/ВЧ gate", f"{topic['slug']} ({language}): query passport or measured frequency is missing")
-        raise SystemExit(seo_gate.returncode)
+topic = None
+blocked = []
+for candidate in unpublished:
+    candidate_ready = True
+    for language in ("ru", "en"):
+        seo_gate = subprocess.run([
+            sys.executable,
+            str(ROOT / "scripts" / "seo-query-gate.py"),
+            "--slug",
+            candidate["slug"],
+            "--language",
+            language,
+        ], cwd=ROOT, capture_output=True, text=True)
+        if seo_gate.returncode:
+            candidate_ready = False
+            blocked.append(f"{candidate['slug']}:{language}")
+            break
+    if candidate_ready:
+        topic = candidate
+        break
+
+if topic is None:
+    print(f"ARTICLE_CYCLE: no publication-ready topics; awaiting_measurement={len(unpublished)}")
+    print("ARTICLE_CYCLE: blocked sample=" + ",".join(blocked[:10]))
+    raise SystemExit(0)
+
+print(f"ARTICLE_CYCLE: selected ready topic {topic['slug']}")
+if os.environ.get("AGENTLAB_PREFLIGHT_ONLY") == "1":
+    print(f"ARTICLE_CYCLE: preflight OK ({topic['slug']})")
+    raise SystemExit(0)
+
+worktree = subprocess.run(
+    ["git", "status", "--porcelain"],
+    cwd=ROOT,
+    capture_output=True,
+    text=True,
+    check=True,
+)
+if worktree.stdout.strip():
+    notify_error("git worktree safety gate", "uncommitted files exist; automatic git add is blocked")
+    raise SystemExit("ARTICLE_CYCLE: dirty worktree; refusing automatic generation and commit")
 
 graph_result = GraphRun(content_graph(), 'source').execute({
     'source': topic.get('summary', topic['title']),
@@ -144,7 +170,8 @@ try:
     review = subprocess.run([sys.executable, str(ROOT / 'scripts' / 'pre-push-review.py')], cwd=ROOT)
     if review.returncode:
         raise RuntimeError(f'pre-push review exit code {review.returncode}')
-    subprocess.run(["git", "add", "."], cwd=ROOT, check=True)
+    subprocess.run(["git", "add", "--update"], cwd=ROOT, check=True)
+    subprocess.run(["git", "add", f"{topic['slug']}.html", f"en/{topic['slug']}.html"], cwd=ROOT, check=True)
     subprocess.run(["git", "commit", "-m", f"Publish article: {topic['title']}"], cwd=ROOT, check=True)
 except Exception as error:
     notify_error("commit или push", error)

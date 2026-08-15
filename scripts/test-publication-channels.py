@@ -15,4 +15,11 @@ ast.parse(retry)
 assert 'channel_errors' in cycle
 assert "status': 'error'" in cycle
 assert '"status": "error"' in retry
+assert 'agentlabjournal-dev.env' in retry
+assert 'agentlabjournal-hashnode.env' in retry
+assert 'agentlabjournal-blogger.env' in retry
+assert 'capture_output=True' in cycle
+assert 'no publication-ready topics' in cycle
+assert 'dirty worktree; refusing automatic generation and commit' in cycle
+assert '["git", "add", "."]' not in cycle
 print('publication channel contract tests: OK')

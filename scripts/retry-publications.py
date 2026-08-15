@@ -14,7 +14,12 @@ COMMANDS = {
     "blogger": ["publish-to-blogger.py"],
 }
 
-for env_path in (Path('/root/.config/agentlabjournal-hashnode.env'), ROOT / '.env'):
+for env_path in (
+    Path('/root/.config/agentlabjournal-dev.env'),
+    Path('/root/.config/agentlabjournal-hashnode.env'),
+    Path('/root/.config/agentlabjournal-blogger.env'),
+    ROOT / '.env',
+):
     if not env_path.exists():
         continue
     for line in env_path.read_text().splitlines():

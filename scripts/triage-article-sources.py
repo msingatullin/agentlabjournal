@@ -82,7 +82,9 @@ added = 0
 for item in approved:
     if not item.get("slug") or item["slug"] in existing or item.get("source_url") in known_urls:
         continue
-    item["status"] = "approved"
+    # Editorial approval is not publication readiness. A separate measured
+    # RU/EN query passport must pass before the article runner may select it.
+    item["status"] = "awaiting_measurement"
     topics.append(item)
     existing.add(item["slug"])
     known_urls.add(item.get("source_url"))

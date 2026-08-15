@@ -14,4 +14,5 @@ exec(compile(prefix, str(path), 'exec'), namespace)
 assert namespace['source_quality']({'url': 'https://github.com/example/repo'}) == 'known_platform'
 assert namespace['source_quality']({'url': 'https://example.invalid/post'}) == 'unknown'
 assert namespace['normalized_title']('AI: Agents — Test!') == 'ai agents test'
+assert 'item["status"] = "awaiting_measurement"' in source
 print('source triage tests: OK')

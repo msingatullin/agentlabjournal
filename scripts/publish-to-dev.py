@@ -84,7 +84,15 @@ for attempt in range(3):
         if error.code != 429 or attempt == 2:
             raise
         time.sleep(65)
-record = {'id': result.get('id'), 'url': result.get('url'), 'published': result.get('published')}
+published = result.get('published')
+if published is None:
+    published = bool(result.get('published_at'))
+record = {
+    'id': result.get('id'),
+    'url': result.get('url'),
+    'published': bool(published),
+    'published_at': result.get('published_at'),
+}
 registry[args.file] = record
 registry_path.write_text(json.dumps(registry, ensure_ascii=False, indent=2) + '\n')
 print(json.dumps(record, ensure_ascii=False))
