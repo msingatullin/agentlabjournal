@@ -36,7 +36,12 @@ def term_present(text: str, term: str, window: int = 12) -> bool:
         "пропуски в данных": {"пропуск данных", "куча пропусков", "missing data"},
         "иерархический анализ": {"иерархических данных", "иерархические данные", "ирархических данных"},
         "оценка систем ии": {"оценка системы", "оценки надежности систем", "стандарты оценки систем"},
-        "фреймворк тэвв атлон": {"твф атлон", "концепции твф атлон", "тэвв атлон"},
+        "прозрачность ии": {"прозрачность иаи", "прозрачность и аи"},
+        "фреймворк тэвв атлон": {
+            "твф атлон", "концепции твф атлон", "тэвв атлон",
+            "tev atlon", "tvv aflan", "тев атлон", "твв атлон", "твв афлан",
+            "tvvatlon", "tvaflon", "тэвватлон", "тэв афлон",
+        },
     }
     variants.update(observed_equivalents.get(term_value, set()))
     if "api" in term_value.split():
@@ -70,6 +75,7 @@ def rubric_present(text: str, rubric: str) -> bool:
             [
                 re.sub(r"\bvs\b", "ви эс", rubric, flags=re.IGNORECASE),
                 re.sub(r"\bvs\b", "в эс", rubric, flags=re.IGNORECASE),
+                re.sub(r"\bvs\b", "вс", rubric, flags=re.IGNORECASE),
             ]
         )
     return any(term_present(text, variant) for variant in variants)
@@ -102,7 +108,10 @@ def main() -> int:
         "daily_news_block": term_present(transcript, window_label),
         "rubric": rubric_present(transcript, package["rubric"]),
         "all_news": all(all(terms.values()) for terms in news_term_checks),
-        "practical_actions": contains_all(transcript, ["первое", "второе", "третье"]),
+        "practical_actions": (
+            contains_all(transcript, ["первое", "второе", "третье"])
+            or contains_all(transcript, ["во первых", "во вторых", "в третьих"])
+        ),
         "outro": contains_any(transcript[-3000:], ["AgentLab", "Агент Лаб"]) and contains_all(
             transcript[-3000:], ["автоматизировать процессы"]
         ) and contains_any(transcript[-3000:], [
