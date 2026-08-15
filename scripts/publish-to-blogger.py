@@ -1,7 +1,7 @@
 """Publish an English article to Blogger."""
 from argparse import ArgumentParser
 from pathlib import Path
-import json, os, re, urllib.parse, urllib.request
+import json, os, re, time, urllib.parse, urllib.request
 from urllib.error import HTTPError
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -27,9 +27,25 @@ def access_token():
             detail = detail[-1000:]
         raise SystemExit(f'Blogger OAuth refresh HTTP {error.code}: {detail}')
 
-parser = ArgumentParser(); parser.add_argument('--file', required=True); parser.add_argument('--update', action='store_true'); parser.add_argument('--country', default=os.environ.get('AGENTLAB_COUNTRY', 'global')); parser.add_argument('--region', default=os.environ.get('AGENTLAB_REGION', 'all')); parser.add_argument('--language', default='en'); args = parser.parse_args()
+parser = ArgumentParser(); parser.add_argument('--file', required=True); parser.add_argument('--update', action='store_true'); parser.add_argument('--delete', action='store_true'); parser.add_argument('--country', default=os.environ.get('AGENTLAB_COUNTRY', 'global')); parser.add_argument('--region', default=os.environ.get('AGENTLAB_REGION', 'all')); parser.add_argument('--language', default='en'); args = parser.parse_args()
 path = ROOT / args.file; registry_path = ROOT / 'blogger-published.json'
 registry = json.loads(registry_path.read_text()) if registry_path.exists() else {}
+if args.delete:
+    if args.file not in registry or not registry[args.file].get('id'):
+        raise SystemExit('Blogger post is not present in the publication registry')
+    post_id = registry[args.file]['id']
+    url = f'https://www.googleapis.com/blogger/v3/blogs/{BLOG_ID}/posts/{post_id}'
+    req = urllib.request.Request(url, headers={'Authorization': 'Bearer ' + access_token()}, method='DELETE')
+    try:
+        with urllib.request.urlopen(req, timeout=60) as response:
+            response.read()
+    except HTTPError as error:
+        detail = error.read().decode('utf-8', 'replace')
+        raise SystemExit(f'Blogger delete HTTP {error.code}: {detail[-1000:]}')
+    registry[args.file]['deleted'] = True
+    registry_path.write_text(json.dumps(registry, ensure_ascii=False, indent=2) + '\n')
+    print(json.dumps({'id': post_id, 'deleted': True}, ensure_ascii=False))
+    raise SystemExit(0)
 if args.file in registry and not args.update:
     print(json.dumps(registry[args.file], ensure_ascii=False)); raise SystemExit(0)
 text = path.read_text(); title_match = re.search(r'<h1[^>]*>(.*?)</h1>', text, re.S | re.I)
@@ -52,10 +68,16 @@ method = 'PUT' if args.update else 'POST'
 post_id = f"/{registry[args.file]['id']}" if args.update else ''
 url = f'https://www.googleapis.com/blogger/v3/blogs/{BLOG_ID}/posts{post_id}?isDraft=false'
 req = urllib.request.Request(url, data=payload, headers={'Authorization': 'Bearer ' + access_token(), 'Content-Type': 'application/json'}, method=method)
-try:
-    with urllib.request.urlopen(req, timeout=60) as response: result = json.loads(response.read())
-except HTTPError as error:
-    detail = error.read().decode('utf-8', 'replace')
-    raise SystemExit(f'Blogger API HTTP {error.code}: {detail[-1000:]}')
+for attempt in range(3):
+    try:
+        with urllib.request.urlopen(req, timeout=60) as response: result = json.loads(response.read())
+        break
+    except HTTPError as error:
+        detail = error.read().decode('utf-8', 'replace')
+        if error.code != 429 or attempt == 2:
+            raise SystemExit(f'Blogger API HTTP {error.code}: {detail[-1000:]}')
+        retry_after = error.headers.get('Retry-After')
+        delay = int(retry_after) if retry_after and retry_after.isdigit() else 65 * (attempt + 1)
+        time.sleep(min(delay, 130))
 record = {k: result.get(k) for k in ('id', 'url', 'title')}; registry[args.file] = record
 registry_path.write_text(json.dumps(registry, ensure_ascii=False, indent=2) + '\n'); print(json.dumps(record, ensure_ascii=False))

@@ -30,4 +30,8 @@ assert "'published': False" in dev
 assert 'English-only Blogger gate blocked publication' in blogger
 assert 'Blogger OAuth refresh HTTP' in blogger
 assert 'Full version:' in blogger
+assert "--delete" in blogger
+assert "method='DELETE'" in blogger
+assert 'error.code != 429' in blogger
+assert "Retry-After" in blogger
 print('publication channel contract tests: OK')
