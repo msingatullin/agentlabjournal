@@ -167,7 +167,16 @@ def main() -> int:
             research_error = str(error)
     else:
         research_error = None
-    sources = json.loads(run([NOTEBOOKLM, "source", "list", "--notebook", args.notebook, "--json"]))
+    try:
+        sources = json.loads(run([NOTEBOOKLM, "source", "list", "--notebook", args.notebook, "--json"]))
+    except (RuntimeError, json.JSONDecodeError) as error:
+        output = PROJECT / "podcasts/packages" / f"{args.date}-ru.candidate.json"
+        print(f"NOTEBOOKLM_UNAVAILABLE: using direct fallback: {str(error)[-500:]}")
+        subprocess.run([
+            "python3", str(PROJECT / "scripts" / "podcast_direct_fallback.py"),
+            "--date", args.date, "--output", str(output),
+        ], check=True)
+        return 0
     target = dt.date.fromisoformat(args.date)
     maximum_window_days = 7
     allowed_date_values = [target - dt.timedelta(days=offset) for offset in range(maximum_window_days)]

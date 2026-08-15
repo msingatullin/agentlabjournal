@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import json
 import subprocess
+import tempfile
 import time
 from pathlib import Path
 
@@ -12,6 +13,7 @@ from podcast_contract import read_json, write_json
 
 NOTEBOOKLM = "/root/.venvs/notebooklm/bin/notebooklm"
 DEFAULT_NOTEBOOK = "fb0f2035-2378-47c1-9add-e7f27b223d56"
+EDGE_TTS = "/root/.venvs/notebooklm/bin/edge-tts"
 
 
 def run(command: list[str]) -> str:
@@ -45,6 +47,41 @@ def ensure_mp3(path: Path) -> None:
     converted.replace(path)
 
 
+def fallback_script(package: dict) -> str:
+    lines = [
+        package["intro_exact"],
+        f"Артём: Сегодня {package['date']}. {package.get('news_window_label', 'Новости за последние 7 дней')}.",
+    ]
+    for index, item in enumerate(package["news"], 1):
+        terms = ". ".join(item.get("qa_terms", []))
+        lines.extend([
+            f"Артём: Новость {index}. {item['title']}. Факт источника: {item['claim']}",
+            f"Мира: Практическое значение: {item['why_it_matters']}",
+            f"Артём: Контрольные формулировки. {terms}.",
+        ])
+    lines.extend([
+        f"Мира: Рубрика {package['rubric']}. Тема: {package['daily_topic']}.",
+        f"Артём: Практический вывод. {package['listener_takeaway']}",
+        "Мира: Чек-лист. Первое: проверьте первичный источник. Второе: отделите факт от вывода. Третье: зафиксируйте практическое действие.",
+        package["outro_exact"],
+    ])
+    return "\n\n".join(lines)
+
+
+def generate_edge_tts(package: dict, output: Path) -> None:
+    output.parent.mkdir(parents=True, exist_ok=True)
+    with tempfile.TemporaryDirectory(prefix="agentlab-podcast-") as directory:
+        temporary = Path(directory) / "fallback.mp3"
+        subprocess.run([
+            EDGE_TTS, "--voice", "ru-RU-SvetlanaNeural", "--rate=-5%",
+            "--text", fallback_script(package), "--write-media", str(temporary),
+        ], check=True, timeout=300)
+        temporary.replace(output)
+    ensure_mp3(output)
+    if output.stat().st_size < 100_000:
+        raise RuntimeError("Fallback audio is suspiciously small")
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--package", type=Path, required=True)
@@ -60,7 +97,18 @@ def main() -> int:
     for item in package["news"]:
         command.extend(["--source", item["source_id"]])
     command.extend(["--format", "deep-dive", "--length", "default", "--language", "ru", "--retry", "2", "--json"])
-    payload = json.loads(run(command))
+    try:
+        payload = json.loads(run(command))
+    except Exception as error:
+        print(f"NOTEBOOKLM_AUDIO_UNAVAILABLE: using edge-tts fallback: {str(error)[-500:]}")
+        generate_edge_tts(package, args.output)
+        write_json(args.state, {
+            "status": "audio_ready", "provider": "edge_tts_fallback",
+            "package": str(args.package), "audio": str(args.output),
+            "bytes": args.output.stat().st_size,
+        })
+        print(args.output)
+        return 0
     artifact_id = payload.get("task_id") or payload.get("artifact_id") or payload.get("id")
     if not artifact_id:
         raise RuntimeError(f"No artifact id: {payload}")

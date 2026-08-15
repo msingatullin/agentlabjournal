@@ -4,9 +4,11 @@ from __future__ import annotations
 
 import argparse
 import datetime as dt
+import html
 import json
 import re
 import subprocess
+import urllib.request
 from pathlib import Path
 from urllib.parse import urlparse
 
@@ -40,6 +42,14 @@ def command_json(command: list[str]) -> dict:
     return json.loads(result.stdout)
 
 
+def direct_source_text(url: str) -> str:
+    request = urllib.request.Request(url, headers={"User-Agent": "AgentLabJournalFactGate/1.0"})
+    with urllib.request.urlopen(request, timeout=25) as response:
+        raw = response.read(2_000_000).decode(response.headers.get_content_charset() or "utf-8", "replace")
+    raw = re.sub(r"<(script|style|svg)\b.*?</\1>", " ", raw, flags=re.I | re.S)
+    return re.sub(r"\s+", " ", html.unescape(re.sub(r"<[^>]+>", " ", raw))).strip()
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--input", type=Path, required=True)
@@ -50,21 +60,28 @@ def main() -> int:
     target = dt.date.fromisoformat(package["date"])
     window_days = int(package.get("news_window_days", 2))
     allowed_dates = {target - dt.timedelta(days=offset) for offset in range(window_days)}
-    sources_payload = command_json([NOTEBOOKLM, "source", "list", "--notebook", args.notebook, "--json"])
-    sources = {item["id"]: item for item in sources_payload.get("sources", [])}
+    direct_mode = all(str(item.get("source_id", "")).startswith("direct:") for item in package.get("news", []))
+    sources = {}
+    if not direct_mode:
+        sources_payload = command_json([NOTEBOOKLM, "source", "list", "--notebook", args.notebook, "--json"])
+        sources = {item["id"]: item for item in sources_payload.get("sources", [])}
     evidence = []
     for item in package.get("news", []):
         source = sources.get(item.get("source_id"))
-        if not source or source.get("status") != "ready":
-            raise ValueError(f"Source is missing or not ready: {item.get('source_id')}")
-        if source.get("url") != item.get("source_url"):
-            raise ValueError(f"Source URL mismatch: {item['title']}")
+        if not direct_mode:
+            if not source or source.get("status") != "ready":
+                raise ValueError(f"Source is missing or not ready: {item.get('source_id')}")
+            if source.get("url") != item.get("source_url"):
+                raise ValueError(f"Source URL mismatch: {item['title']}")
         if urlparse(item["source_url"]).hostname not in PRIMARY_DOMAINS:
             raise ValueError(f"Non-primary source rejected: {item['source_url']}")
         if dt.date.fromisoformat(item["date"]) not in allowed_dates:
             raise ValueError(f"News is outside previous-24h date window: {item['title']}")
-        fulltext = command_json([NOTEBOOKLM, "source", "fulltext", item["source_id"], "--notebook", args.notebook, "--json"])
-        raw_content = fulltext.get("content") or ""
+        if direct_mode:
+            raw_content = direct_source_text(item["source_url"])
+        else:
+            fulltext = command_json([NOTEBOOKLM, "source", "fulltext", item["source_id"], "--notebook", args.notebook, "--json"])
+            raw_content = fulltext.get("content") or ""
         content = raw_content.casefold()
         content_compact = re.sub(r"\s+", " ", content).strip()
         item_date = dt.date.fromisoformat(item["date"])
@@ -78,7 +95,7 @@ def main() -> int:
         if missing:
             raise ValueError(f"Evidence terms missing for {item['title']}: {missing}")
         item["verification_status"] = "verified"
-        evidence.append({"source_id": item["source_id"], "url": item["source_url"], "terms": item["evidence_terms"], "date_evidence": date_evidence})
+        evidence.append({"source_id": item["source_id"], "url": item["source_url"], "terms": item["evidence_terms"], "date_evidence": date_evidence, "provider": "direct" if direct_mode else "notebooklm"})
     package["fact_gate"] = {
         "status": "passed", "checked_at": dt.datetime.now(dt.timezone.utc).isoformat(), "evidence": evidence,
     }

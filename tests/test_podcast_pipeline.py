@@ -13,6 +13,7 @@ sys.path.insert(0, str(ROOT / "scripts"))
 from podcast_contract import build_generation_prompt, read_json, validate_episode_package
 from podcast_transcript_qa import normalized, rubric_present, term_present
 from podcast_fact_verifier import source_contains_date
+from podcast_audio_producer import fallback_script
 PLAN_SPEC = importlib.util.spec_from_file_location("daily_podcast_plan", ROOT / "scripts/daily-podcast-plan.py")
 daily_podcast_plan = importlib.util.module_from_spec(PLAN_SPEC)
 assert PLAN_SPEC.loader is not None
@@ -105,6 +106,14 @@ class PodcastPipelineTests(unittest.TestCase):
         value["news_window_days"] = 7
         value["news_window_label"] = "Новости за последние 7 дней"
         self.assertIn("Новости за последние 7 дней", build_generation_prompt(value))
+
+    def test_audio_fallback_script_preserves_contract(self):
+        text = fallback_script(package())
+        self.assertTrue(text.startswith(package()["intro_exact"]))
+        self.assertTrue(text.endswith(package()["outro_exact"]))
+        for item in package()["news"]:
+            for term in item["qa_terms"]:
+                self.assertIn(term, text)
 
 
 if __name__ == "__main__":

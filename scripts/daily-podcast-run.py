@@ -131,8 +131,9 @@ def main() -> int:
         reset.unlink()
         write_state("reset", "RESET")
     elif (STATE_DIR / "last-run-status").read_text(encoding="utf-8").strip() == "FAIL" if (STATE_DIR / "last-run-status").exists() else False:
-        print("PODCAST_STATE_LOCKED: create /tmp/podcast-state/reset", flush=True)
-        return 2
+        previous_error = (STATE_DIR / "last-error").read_text(encoding="utf-8").strip() if (STATE_DIR / "last-error").exists() else "unknown"
+        print(f"PODCAST_STALE_FAILURE_RECOVERED: {previous_error[:500]}", flush=True)
+        write_state("automatic-recovery", "RESET")
     base = PROJECT / "podcasts"
     candidate = args.candidate or base / "packages" / f"{args.date}-ru.candidate.json"
     verified = base / "packages" / f"{args.date}-ru.verified.json"
