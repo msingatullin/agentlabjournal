@@ -2,6 +2,7 @@
 from argparse import ArgumentParser
 from pathlib import Path
 import json, os, re, urllib.parse, urllib.request
+from urllib.error import HTTPError
 
 ROOT = Path(__file__).resolve().parent.parent
 import sys
@@ -14,8 +15,17 @@ def access_token():
     token = json.loads(TOKEN_FILE.read_text())
     data = urllib.parse.urlencode({'client_id': token['client_id'], 'client_secret': token['client_secret'], 'refresh_token': token['refresh_token'], 'grant_type': 'refresh_token'}).encode()
     req = urllib.request.Request(token['token_uri'], data=data, headers={'Content-Type': 'application/x-www-form-urlencoded'})
-    with urllib.request.urlopen(req, timeout=30) as response:
-        return json.loads(response.read())['access_token']
+    try:
+        with urllib.request.urlopen(req, timeout=30) as response:
+            return json.loads(response.read())['access_token']
+    except HTTPError as error:
+        detail = error.read().decode('utf-8', 'replace')
+        try:
+            parsed = json.loads(detail)
+            detail = f"{parsed.get('error', 'unknown')}: {parsed.get('error_description', '')}".strip()
+        except json.JSONDecodeError:
+            detail = detail[-1000:]
+        raise SystemExit(f'Blogger OAuth refresh HTTP {error.code}: {detail}')
 
 parser = ArgumentParser(); parser.add_argument('--file', required=True); parser.add_argument('--update', action='store_true'); parser.add_argument('--country', default=os.environ.get('AGENTLAB_COUNTRY', 'global')); parser.add_argument('--region', default=os.environ.get('AGENTLAB_REGION', 'all')); parser.add_argument('--language', default='en'); args = parser.parse_args()
 path = ROOT / args.file; registry_path = ROOT / 'blogger-published.json'
@@ -30,14 +40,22 @@ if not body_match: raise SystemExit('Article body not found')
 body = re.sub(r'<script\b.*?</script>', '', body_match.group(1), flags=re.S | re.I)
 paragraphs = re.findall(r'<(?:p|h2|h3)\b[^>]*>.*?</(?:p|h2|h3)>', body, flags=re.S | re.I)
 body = '\n'.join(paragraphs[:8])
+letters = re.findall(r'[A-Za-z\u0400-\u04ff]', title + '\n' + body)
+cyrillic = re.findall(r'[\u0400-\u04ff]', title + '\n' + body)
+if args.language == 'en' and letters and len(cyrillic) / len(letters) > 0.05:
+    raise SystemExit('English-only Blogger gate blocked publication: Cyrillic content detected')
 canonical = f'https://agentlabjournal.online/{args.file}'
 tracked = tracked_url(canonical, 'blogger', 'referral', path.stem, args.language, args.country, args.region, 'article')
-body += f'\n<p><strong>Полная версия:</strong> <a href="{tracked}">{tracked}</a></p>'
+body += f'\n<p><strong>Full version:</strong> <a href="{tracked}">{tracked}</a></p>'
 payload = json.dumps({'kind': 'blogger#post', 'title': title, 'content': body, 'labels': ['AI', 'Automation', 'Agents']}).encode()
 method = 'PUT' if args.update else 'POST'
 post_id = f"/{registry[args.file]['id']}" if args.update else ''
 url = f'https://www.googleapis.com/blogger/v3/blogs/{BLOG_ID}/posts{post_id}?isDraft=false'
 req = urllib.request.Request(url, data=payload, headers={'Authorization': 'Bearer ' + access_token(), 'Content-Type': 'application/json'}, method=method)
-with urllib.request.urlopen(req, timeout=60) as response: result = json.loads(response.read())
+try:
+    with urllib.request.urlopen(req, timeout=60) as response: result = json.loads(response.read())
+except HTTPError as error:
+    detail = error.read().decode('utf-8', 'replace')
+    raise SystemExit(f'Blogger API HTTP {error.code}: {detail[-1000:]}')
 record = {k: result.get(k) for k in ('id', 'url', 'title')}; registry[args.file] = record
 registry_path.write_text(json.dumps(registry, ensure_ascii=False, indent=2) + '\n'); print(json.dumps(record, ensure_ascii=False))

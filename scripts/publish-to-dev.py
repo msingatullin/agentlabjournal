@@ -46,6 +46,7 @@ parser = ArgumentParser()
 parser.add_argument('--file', required=True)
 parser.add_argument('--publish', action='store_true')
 parser.add_argument('--update', action='store_true')
+parser.add_argument('--unpublish', action='store_true')
 parser.add_argument('--country', default=os.environ.get('AGENTLAB_COUNTRY', 'global'))
 parser.add_argument('--region', default=os.environ.get('AGENTLAB_REGION', 'all'))
 parser.add_argument('--language', default='en')
@@ -56,6 +57,23 @@ if not key:
 path = ROOT / args.file
 registry_path = ROOT / "dev-published.json"
 registry = json.loads(registry_path.read_text()) if registry_path.exists() else {}
+if args.unpublish:
+    if args.file not in registry or not registry[args.file].get('id'):
+        raise SystemExit('DEV article is not present in the publication registry')
+    payload = {'article': {'published': False}}
+    endpoint = f"https://dev.to/api/articles/{registry[args.file]['id']}"
+    request = urllib.request.Request(endpoint, data=json.dumps(payload).encode(), headers={'api-key': key, 'Content-Type': 'application/json', 'Accept': 'application/vnd.forem.api-v1+json', 'User-Agent': 'Mozilla/5.0'}, method='PUT')
+    try:
+        with urllib.request.urlopen(request, timeout=30) as response:
+            result = json.loads(response.read())
+    except HTTPError as error:
+        detail = error.read().decode('utf-8', 'replace')
+        raise SystemExit(f'DEV API HTTP {error.code}: {detail[-1000:]}')
+    registry[args.file]['published'] = False
+    registry[args.file]['published_at'] = result.get('published_at')
+    registry_path.write_text(json.dumps(registry, ensure_ascii=False, indent=2) + '\n')
+    print(json.dumps(registry[args.file], ensure_ascii=False))
+    raise SystemExit(0)
 if args.file in registry and not args.update:
     print(json.dumps(registry[args.file], ensure_ascii=False))
     raise SystemExit(0)
@@ -68,6 +86,10 @@ description = re.search(r'<meta name="description" content="([^"]*)"', text, re.
 parser_html = Markdown()
 parser_html.feed(text)
 body = re.sub(r'\n{3,}', '\n\n', ''.join(parser_html.out)).strip()
+letters = re.findall(r'[A-Za-z\u0400-\u04ff]', title + '\n' + body)
+cyrillic = re.findall(r'[\u0400-\u04ff]', title + '\n' + body)
+if args.language == 'en' and letters and len(cyrillic) / len(letters) > 0.05:
+    raise SystemExit('English-only DEV gate blocked publication: Cyrillic content detected')
 canonical = f'https://agentlabjournal.online/{args.file}'
 tracked = tracked_url(canonical, 'devto', 'referral', path.stem, args.language, args.country, args.region, 'article')
 body += f'\n\n---\n\n**Original article:** {tracked}\n'

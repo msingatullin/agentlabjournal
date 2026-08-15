@@ -22,4 +22,12 @@ assert 'capture_output=True' in cycle
 assert 'no publication-ready topics' in cycle
 assert 'dirty worktree; refusing automatic generation and commit' in cycle
 assert '["git", "add", "."]' not in cycle
+dev = (ROOT / 'scripts' / 'publish-to-dev.py').read_text()
+blogger = (ROOT / 'scripts' / 'publish-to-blogger.py').read_text()
+assert 'English-only DEV gate blocked publication' in dev
+assert '--unpublish' in dev
+assert "'published': False" in dev
+assert 'English-only Blogger gate blocked publication' in blogger
+assert 'Blogger OAuth refresh HTTP' in blogger
+assert 'Full version:' in blogger
 print('publication channel contract tests: OK')
