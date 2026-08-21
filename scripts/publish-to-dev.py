@@ -21,7 +21,7 @@ class Markdown(HTMLParser):
         self.out = []
         self.skip = 0
     def handle_starttag(self, tag, attrs):
-        if tag in ('script', 'style', 'noscript'):
+        if tag in ('script', 'style', 'noscript') or tag == 'figure':
             self.skip += 1
         if self.skip:
             return
@@ -34,7 +34,7 @@ class Markdown(HTMLParser):
         elif tag == 'pre':
             self.out.append('\n```\n')
     def handle_endtag(self, tag):
-        if tag in ('script', 'style', 'noscript') and self.skip:
+        if (tag in ('script', 'style', 'noscript') or tag == 'figure') and self.skip:
             self.skip -= 1
         if not self.skip and tag == 'pre':
             self.out.append('\n```\n')

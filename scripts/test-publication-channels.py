@@ -29,6 +29,7 @@ assert 'en_summary' in cycle
 dev = (ROOT / 'scripts' / 'publish-to-dev.py').read_text()
 blogger = (ROOT / 'scripts' / 'publish-to-blogger.py').read_text()
 assert 'English-only DEV gate blocked publication' in dev
+assert "tag == 'figure'" in dev
 assert '--unpublish' in dev
 assert "'published': False" in dev
 assert 'English-only Blogger gate blocked publication' in blogger
