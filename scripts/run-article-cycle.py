@@ -146,6 +146,14 @@ for key in ("slug", "title", "problem", "level", "minutes", "result", "summary")
 cycle_env = os.environ.copy()
 cycle_env.setdefault("AGENTLAB_BATCH_MODE", "1")
 cycle_env.setdefault("AGENTLAB_GENERATION_TIMEOUT", "45")
+subprocess.run([
+    sys.executable,
+    str(ROOT / "scripts" / "refresh-homepage-editorial.py"),
+    "--file",
+    str(ROOT / "homepage-editorial.json"),
+    "--slug",
+    topic["slug"],
+], cwd=ROOT, check=True)
 result = subprocess.run(command, cwd=ROOT, env=cycle_env)
 if result.returncode:
     notify_error("генерация или publication gate", f"exit code {result.returncode}")
