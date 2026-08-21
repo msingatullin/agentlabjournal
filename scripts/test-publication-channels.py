@@ -22,6 +22,10 @@ assert 'capture_output=True' in cycle
 assert 'no publication-ready topics' in cycle
 assert 'dirty worktree; refusing automatic generation and commit' in cycle
 assert '["git", "add", "."]' not in cycle
+assert 'en_title' in cycle
+assert 'en_problem' in cycle
+assert 'en_result' in cycle
+assert 'en_summary' in cycle
 dev = (ROOT / 'scripts' / 'publish-to-dev.py').read_text()
 blogger = (ROOT / 'scripts' / 'publish-to-blogger.py').read_text()
 assert 'English-only DEV gate blocked publication' in dev

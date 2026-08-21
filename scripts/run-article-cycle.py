@@ -163,7 +163,19 @@ if cta.returncode:
     notify_error("CTA order gate", f"exit code {cta.returncode}")
     raise SystemExit(cta.returncode)
 
-english_command = command + ["--language", "en"]
+english_command = [sys.executable, str(ROOT / "scripts/generate-article.py")]
+english_values = {
+    "slug": topic["slug"],
+    "title": topic["en_title"],
+    "problem": topic["en_problem"],
+    "level": topic["level"],
+    "minutes": topic["minutes"],
+    "result": topic["en_result"],
+    "summary": topic["en_summary"],
+}
+for key, value in english_values.items():
+    english_command.extend([f"--{key}", str(value)])
+english_command.extend(["--language", "en"])
 english_result = subprocess.run(english_command, cwd=ROOT, env=cycle_env)
 if english_result.returncode:
     notify_error("английская версия статьи", f"exit code {english_result.returncode}")
