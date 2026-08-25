@@ -17,10 +17,28 @@ from podcast_contract import read_json, write_json
 NOTEBOOKLM = "/root/scripts/notebooklm-via-gcp"
 DEFAULT_NOTEBOOK = "3a91cab6-c483-4a8c-aadf-24afb78d8d8a"
 PRIMARY_DOMAINS = {
-    "news.microsoft.com", "blogs.nvidia.com", "github.blog", "nist.gov", "www.nist.gov",
-    "digital-strategy.ec.europa.eu", "ec.europa.eu", "duma.gov.ru", "aws.amazon.com",
-    "nvd.nist.gov",
+    "news.microsoft.com", "blogs.microsoft.com", "microsoft.com", "www.microsoft.com",
+    "blogs.nvidia.com", "nvidia.com", "www.nvidia.com",
+    "github.blog", "github.com",
+    "nist.gov", "www.nist.gov", "nvd.nist.gov",
+    "digital-strategy.ec.europa.eu", "ec.europa.eu", "europa.eu",
+    "duma.gov.ru", "www.duma.gov.ru",
+    "aws.amazon.com", "amazon.com", "www.amazon.com",
     "arxiv.org", "www.frontiersin.org",
+    "openai.com", "www.openai.com",
+    "anthropic.com", "www.anthropic.com",
+    "deepmind.google", "blog.google", "ai.google", "research.google", "googleblog.com",
+    "ai.meta.com", "meta.ai", "about.fb.com", "meta.com",
+    "mistral.ai", "www.mistral.ai",
+    "x.ai", "www.x.ai",
+    "stability.ai", "www.stability.ai",
+    "cohere.com", "www.cohere.com",
+    "apple.com", "www.apple.com",
+    "sec.gov", "www.sec.gov",
+    "cisa.gov", "www.cisa.gov",
+    "whitehouse.gov", "www.whitehouse.gov",
+    "gov.uk", "www.gov.uk",
+    "ftc.gov", "www.ftc.gov",
 }
 
 
