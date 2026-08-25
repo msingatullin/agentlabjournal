@@ -13,7 +13,7 @@ from pathlib import Path
 
 
 ROOT = Path(__file__).resolve().parents[1]
-DEFAULT_NOTEBOOK = "fb0f2035-2378-47c1-9add-e7f27b223d56"
+DEFAULT_NOTEBOOK = "3a91cab6-c483-4a8c-aadf-24afb78d8d8a"
 DEFAULT_POLL = 30
 DEFAULT_TIMEOUT = 1800
 

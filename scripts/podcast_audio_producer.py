@@ -11,8 +11,8 @@ from pathlib import Path
 
 from podcast_contract import read_json, write_json
 
-NOTEBOOKLM = "/root/.venvs/notebooklm/bin/notebooklm"
-DEFAULT_NOTEBOOK = "fb0f2035-2378-47c1-9add-e7f27b223d56"
+NOTEBOOKLM = "/root/scripts/notebooklm-via-gcp"
+DEFAULT_NOTEBOOK = "3a91cab6-c483-4a8c-aadf-24afb78d8d8a"
 EDGE_TTS = "/root/.venvs/notebooklm/bin/edge-tts"
 
 
@@ -71,11 +71,25 @@ def fallback_script(package: dict) -> str:
 def generate_edge_tts(package: dict, output: Path) -> None:
     output.parent.mkdir(parents=True, exist_ok=True)
     with tempfile.TemporaryDirectory(prefix="agentlab-podcast-") as directory:
-        temporary = Path(directory) / "fallback.mp3"
+        temp_root = Path(directory)
+        parts = []
+        # Synthesize contract blocks separately. A single long edge-tts request
+        # occasionally swallowed the first two checklist items and weakened the
+        # brand/URL boundaries, which the transcript gate correctly rejected.
+        for index, block in enumerate(fallback_script(package).split("\n\n")):
+            part = temp_root / f"part-{index:02d}.mp3"
+            subprocess.run([
+                EDGE_TTS, "--voice", "ru-RU-SvetlanaNeural", "--rate=-5%",
+                "--text", block, "--write-media", str(part),
+            ], check=True, timeout=120)
+            parts.append(part)
+        concat = temp_root / "concat.txt"
+        concat.write_text("".join(f"file '{part}'\n" for part in parts), encoding="utf-8")
+        temporary = temp_root / "fallback.mp3"
         subprocess.run([
-            EDGE_TTS, "--voice", "ru-RU-SvetlanaNeural", "--rate=-5%",
-            "--text", fallback_script(package), "--write-media", str(temporary),
-        ], check=True, timeout=300)
+            "ffmpeg", "-y", "-f", "concat", "-safe", "0", "-i", str(concat),
+            "-codec:a", "libmp3lame", "-b:a", "192k", str(temporary),
+        ], check=True, timeout=180, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         temporary.replace(output)
     ensure_mp3(output)
     if output.stat().st_size < 100_000:

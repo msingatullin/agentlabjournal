@@ -14,8 +14,8 @@ from urllib.parse import urlparse
 
 from podcast_contract import read_json, write_json
 
-NOTEBOOKLM = "/root/.venvs/notebooklm/bin/notebooklm"
-DEFAULT_NOTEBOOK = "fb0f2035-2378-47c1-9add-e7f27b223d56"
+NOTEBOOKLM = "/root/scripts/notebooklm-via-gcp"
+DEFAULT_NOTEBOOK = "3a91cab6-c483-4a8c-aadf-24afb78d8d8a"
 PRIMARY_DOMAINS = {
     "news.microsoft.com", "blogs.nvidia.com", "github.blog", "nist.gov", "www.nist.gov",
     "digital-strategy.ec.europa.eu", "ec.europa.eu", "duma.gov.ru", "aws.amazon.com",
