@@ -31,7 +31,9 @@ ADMITAD_WEBSITE_ID=your_ad_space_id
 3. Copy `client_id` and `client_secret`.
 4. Find your ad space ID (website ID) in the list of platforms.
 
-**Never commit `.env` to git.**
+**Never commit `.env` to git.** It is already ignored in `.gitignore` along with `venv/`.
+
+Your ad space ID for this project is `2989069`.
 
 ## Install
 
