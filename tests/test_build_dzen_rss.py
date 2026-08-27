@@ -122,6 +122,7 @@ def test_regular_rss_build_refreshes_dzen_feed() -> None:
         scripts.mkdir()
         shutil.copy2(ROOT / "scripts" / "build-rss.py", scripts / "build-rss.py")
         shutil.copy2(SCRIPT, scripts / SCRIPT.name)
+        (site / ".dzen-rss-connected").write_text("confirmed\n", encoding="utf-8")
         (site / "recent.html").write_text(
             article(slug="recent", published="2026-08-25T12:30:00+03:00", body="<p>Полный текст.</p>"),
             encoding="utf-8",
@@ -134,8 +135,70 @@ def test_regular_rss_build_refreshes_dzen_feed() -> None:
         assert ET.parse(site / "dzen-rss.xml").getroot().find("./channel/item") is not None
 
 
+def test_regular_build_waits_for_ten_items_before_first_dzen_feed() -> None:
+    """Catches publication automation that exposes a first feed before Dzen's initial gate passes."""
+    with tempfile.TemporaryDirectory() as directory:
+        site = Path(directory)
+        scripts = site / "scripts"
+        scripts.mkdir()
+        shutil.copy2(ROOT / "scripts" / "build-rss.py", scripts / "build-rss.py")
+        shutil.copy2(SCRIPT, scripts / SCRIPT.name)
+        for number in range(9):
+            slug = f"recent-{number}"
+            (site / f"{slug}.html").write_text(
+                article(slug=slug, published="2026-08-26T12:00:00+03:00", body="<p>Полный текст.</p>"),
+                encoding="utf-8",
+            )
+
+        result = subprocess.run(["python3", str(scripts / "build-rss.py")], text=True, capture_output=True)
+
+        assert result.returncode == 0, result.stderr
+        assert "DZEN_RSS: WAITING" in result.stdout
+        assert not (site / "dzen-rss.xml").exists()
+
+
+def test_excludes_materials_older_than_three_days() -> None:
+    """Catches Dzen feeds that submit material outside the documented freshness window."""
+    with tempfile.TemporaryDirectory() as directory:
+        site = Path(directory)
+        (site / "four-days-old.html").write_text(
+            article(slug="four-days-old", published="2026-08-23T12:00:00+03:00", body="<p>Полный текст.</p>"),
+            encoding="utf-8",
+        )
+        output = site / "dzen-rss.xml"
+        result = subprocess.run(
+            ["python3", str(SCRIPT), "--root", str(site), "--output", str(output), "--now", "2026-08-27T18:00:00+03:00"],
+            text=True,
+            capture_output=True,
+        )
+        assert result.returncode == 0, result.stderr
+        assert ET.parse(output).getroot().find("./channel/item") is None
+
+
+def test_initial_feed_requires_ten_recent_materials() -> None:
+    """Catches an initial Dzen submission that cannot pass the documented ten-item gate."""
+    with tempfile.TemporaryDirectory() as directory:
+        site = Path(directory)
+        for number in range(9):
+            slug = f"recent-{number}"
+            (site / f"{slug}.html").write_text(
+                article(slug=slug, published="2026-08-26T12:00:00+03:00", body="<p>Полный текст.</p>"),
+                encoding="utf-8",
+            )
+        result = subprocess.run(
+            ["python3", str(SCRIPT), "--root", str(site), "--output", str(site / "feed.xml"), "--now", "2026-08-27T18:00:00+03:00", "--initial"],
+            text=True,
+            capture_output=True,
+        )
+        assert result.returncode != 0
+        assert "requires at least 10 recent items" in result.stderr
+
+
 if __name__ == "__main__":
     test_builds_recent_full_text_feed_and_excludes_promotional_blocks()
     test_accepts_date_only_publication_metadata_as_moscow_time()
     test_regular_rss_build_refreshes_dzen_feed()
+    test_regular_build_waits_for_ten_items_before_first_dzen_feed()
+    test_excludes_materials_older_than_three_days()
+    test_initial_feed_requires_ten_recent_materials()
     print("TEST_BUILD_DZEN_RSS: OK")

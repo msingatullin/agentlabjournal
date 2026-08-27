@@ -57,6 +57,12 @@ english_feed = '''<?xml version="1.0" encoding="UTF-8"?>
 (ROOT / "rss-en-v2.xml").write_text(english_feed.replace("rss-en.xml", "rss-en-v2.xml"))
 print(f"RSS: built {len(items)} items")
 
-dzen = subprocess.run([sys.executable, str(ROOT / "scripts" / "build-dzen-rss.py")], cwd=ROOT)
-if dzen.returncode:
+dzen_connected = (ROOT / ".dzen-rss-connected").is_file()
+dzen_command = [sys.executable, str(ROOT / "scripts" / "build-dzen-rss.py")]
+if not dzen_connected:
+    dzen_command.append("--initial")
+dzen = subprocess.run(dzen_command, cwd=ROOT)
+if dzen.returncode and dzen_connected:
     raise SystemExit("RSS: Dzen feed build failed")
+if dzen.returncode:
+    print("DZEN_RSS: WAITING for 10 recent materials before first submission")

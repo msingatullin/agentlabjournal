@@ -19,7 +19,7 @@ YANDEX_NS = "http://news.yandex.ru"
 CONTENT_NS = "http://purl.org/rss/1.0/modules/content/"
 MEDIA_NS = "http://search.yahoo.com/mrss/"
 ATOM_NS = "http://www.w3.org/2005/Atom"
-MAX_AGE_DAYS = 8
+MAX_AGE_DAYS = 3
 MAX_FEED_BYTES = 10 * 1024 * 1024
 ALLOWED_CONTENT_TAGS = {"p", "h2", "h3", "h4", "ul", "ol", "li", "blockquote", "pre", "code"}
 SKIP_TAGS = {"script", "style", "nav", "footer", "form", "button", "svg"}
@@ -192,7 +192,7 @@ def build_item(root: Path, page: Path, now: dt.datetime) -> tuple[dt.datetime, E
     return published, item
 
 
-def build_feed(root: Path, output: Path, now: dt.datetime) -> int:
+def build_feed(root: Path, output: Path, now: dt.datetime, minimum_items: int = 0) -> int:
     rss = ET.Element("rss", {"version": "2.0"})
     channel = ET.SubElement(rss, "channel")
     add_text(channel, "title", "Agent Lab Journal")
@@ -211,6 +211,10 @@ def build_feed(root: Path, output: Path, now: dt.datetime) -> int:
         if built:
             candidates.append(built)
     candidates.sort(key=lambda row: row[0], reverse=True)
+    if len(candidates) < minimum_items:
+        raise SystemExit(
+            f"DZEN_RSS: initial feed requires at least {minimum_items} recent items; found {len(candidates)}"
+        )
     for _, item in candidates:
         channel.append(item)
 
@@ -227,11 +231,12 @@ def main() -> int:
     parser.add_argument("--root", type=Path, default=Path(__file__).resolve().parent.parent)
     parser.add_argument("--output", type=Path)
     parser.add_argument("--now", help="ISO-8601 clock override for deterministic tests")
+    parser.add_argument("--initial", action="store_true", help="Enforce Dzen's ten-item first-submission gate")
     args = parser.parse_args()
     root = args.root.resolve()
     output = args.output.resolve() if args.output else root / "dzen-rss.xml"
     now = parse_datetime(args.now) if args.now else dt.datetime.now(dt.timezone.utc)
-    count = build_feed(root, output, now)
+    count = build_feed(root, output, now, minimum_items=10 if args.initial else 0)
     print(f"DZEN_RSS: built {count} items at {output}")
     return 0
 
