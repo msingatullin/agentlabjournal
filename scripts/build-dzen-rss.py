@@ -12,6 +12,7 @@ import xml.etree.ElementTree as ET
 from email.utils import format_datetime
 from html.parser import HTMLParser
 from pathlib import Path
+from urllib.parse import urlparse
 
 
 BASE_URL = "https://agentlabjournal.online/"
@@ -48,6 +49,7 @@ class ArticleParser(HTMLParser):
         self.title_parts: list[str] = []
         self.text_parts: list[str] = []
         self.html_parts: list[str] = []
+        self.anchor_stack: list[bool] = []
 
     def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
         values = {key: value or "" for key, value in attrs}
@@ -72,6 +74,14 @@ class ArticleParser(HTMLParser):
         if tag == "h1":
             self.title_depth += 1
             return
+        if tag == "a":
+            href = values.get("href", "").strip()
+            parsed = urlparse(href)
+            safe = bool(href) and (parsed.scheme in {"http", "https"} or (not parsed.scheme and not parsed.netloc))
+            self.anchor_stack.append(safe)
+            if safe:
+                self.html_parts.append(f'<a href="{html.escape(href, quote=True)}">')
+            return
         if tag in ALLOWED_CONTENT_TAGS:
             self.html_parts.append(f"<{tag}>")
 
@@ -83,6 +93,10 @@ class ArticleParser(HTMLParser):
             return
         if tag == "h1" and self.title_depth:
             self.title_depth -= 1
+            return
+        if tag == "a":
+            if self.anchor_stack and self.anchor_stack.pop():
+                self.html_parts.append("</a>")
             return
         if tag in ALLOWED_CONTENT_TAGS:
             self.html_parts.append(f"</{tag}>")
@@ -182,8 +196,19 @@ def build_item(root: Path, page: Path, now: dt.datetime) -> tuple[dt.datetime, E
         add_text(item, "category", category)
     add_text(item, f"{{{YANDEX_NS}}}genre", "article")
     add_text(item, f"{{{YANDEX_NS}}}full-text", parser.full_text)
-    add_text(item, f"{{{CONTENT_NS}}}encoded", f"<h1>{html.escape(parser.title)}</h1>{parser.encoded_html}")
     image = parser.meta.get("og:image")
+    lead_figure = ""
+    if image:
+        safe_image = html.escape(image, quote=True)
+        lead_figure = (
+            f'<figure><img src="{safe_image}" alt="{html.escape(parser.title, quote=True)}">'
+            f"<figcaption>{html.escape(parser.title)}</figcaption></figure>"
+        )
+    add_text(
+        item,
+        f"{{{CONTENT_NS}}}encoded",
+        f"<h1>{html.escape(parser.title)}</h1>{lead_figure}{parser.encoded_html}",
+    )
     if image:
         extension = Path(image.split("?", 1)[0]).suffix.casefold()
         mime = {".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".gif": "image/gif", ".png": "image/png"}.get(extension)

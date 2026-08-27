@@ -43,7 +43,11 @@ def test_builds_recent_full_text_feed_and_excludes_promotional_blocks() -> None:
             article(
                 slug="recent",
                 published="2026-08-25T12:30:00+03:00",
-                body="<p>Первый полный абзац.</p><h2>Методика</h2><p>Второй полный абзац.</p>",
+                body=(
+                    '<p>Первый полный абзац.</p><h2>Методика</h2><p>Второй полный абзац.</p>'
+                    '<p><a href="https://agentlabjournal.online/guides.html">Перейти на сайт</a></p>'
+                    '<p><a href="javascript:alert(1)">Опасная ссылка</a></p>'
+                ),
             ),
             encoding="utf-8",
         )
@@ -88,6 +92,10 @@ def test_builds_recent_full_text_feed_and_excludes_promotional_blocks() -> None:
         assert "Рекламный блок" not in full_text
         assert "Читайте также" not in full_text
         assert encoded.startswith("<h1>Тестовая статья</h1>")
+        assert encoded.count("<figure>") == 1
+        assert '<img src="https://agentlabjournal.online/assets/covers/recent.png"' in encoded
+        assert '<a href="https://agentlabjournal.online/guides.html">Перейти на сайт</a>' in encoded
+        assert "javascript:" not in encoded
         assert "<h2>Методика</h2>" in encoded
         assert "<content:encoded><![CDATA[<h1>" in raw_feed
         assert thumbnail is not None
