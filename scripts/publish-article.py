@@ -124,7 +124,7 @@ if gate.returncode:
 catalogs = subprocess.run([sys.executable, str(ROOT / "scripts/build-section-catalogs.py")], cwd=ROOT)
 if catalogs.returncode:
     raise SystemExit("Publication blocked: section catalogs could not be built")
-homepage = subprocess.run([sys.executable, str(ROOT / "scripts/build-homepage.py")], cwd=ROOT)
+homepage = subprocess.run([sys.executable, str(ROOT / "scripts/refresh-homepage-latest.py")], cwd=ROOT)
 if homepage.returncode:
     raise SystemExit("Publication blocked: homepage could not be built")
 homepage_gate = subprocess.run([sys.executable, str(ROOT / "scripts/check-homepage-editorial.py")], cwd=ROOT)
