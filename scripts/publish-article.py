@@ -22,6 +22,14 @@ if article.suffix != ".html" or not article.exists():
     raise SystemExit(f"Article not found in repository root: {filename}")
 language = "en" if relative.parts and relative.parts[0] == "en" else "ru"
 
+layout_gate = subprocess.run([
+    sys.executable,
+    str(ROOT / "scripts" / "check-article-layout.py"),
+    "--file", str(article),
+], cwd=ROOT)
+if layout_gate.returncode:
+    raise SystemExit("Publication blocked: article must use the bounded reading column")
+
 seo_gate = subprocess.run([
     sys.executable,
     str(ROOT / "scripts" / "seo-query-gate.py"),

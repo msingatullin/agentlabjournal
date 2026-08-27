@@ -86,7 +86,8 @@ Do not invent test results, credentials, customer facts, prices, or external cit
 Distinguish examples from verified facts. Keep secrets and personal data out of the article.
 </policy>
 <workflow>
-Use the existing site style: style.css and reading.css. Include a strong lead, concrete
+Use the existing site style: style.css and reading.css. Wrap the article in
+<main class="article"> so the readable-width layout is mandatory. Include a strong lead, concrete
 case, reproducible steps, commands or configuration where useful, verification, failure
 cases, limitations, and a final link to guides.html and {glossary_href}.
 </workflow>
@@ -111,7 +112,8 @@ if args.language == "ru" and os.environ.get("AGENTLAB_BATCH_MODE") == "1":
 {seo_brief}
 </data>
 <policy>Не выдумывай тесты, клиентов, цены, секреты или внешние источники; отличай пример от факта.</policy>
-<workflow>Используй style.css и reading.css. Дай введение, воспроизводимые шаги, безопасные команды,
+<workflow>Используй style.css и reading.css. Обязательно оберни статью в <main class="article">.
+Дай введение, воспроизводимые шаги, безопасные команды,
 проверку результата, типовые ошибки, ограничения и ссылки на guides.html и glossary.html.</workflow>
 <output_contract>Верни только полный HTML-документ без Markdown и пояснений. Обязательно добавь title,
 description, canonical https://agentlabjournal.online/{filename}, Open Graph, Twitter card, reading-meta
