@@ -80,14 +80,25 @@ def test_builds_recent_full_text_feed_and_excludes_promotional_blocks() -> None:
         assert item.findtext("pubDate") == "Tue, 25 Aug 2026 12:30:00 +0300"
         full_text = item.findtext(f"{{{YANDEX_NS}}}full-text") or ""
         encoded = item.findtext(f"{{{CONTENT_NS}}}encoded") or ""
+        raw_feed = output.read_text(encoding="utf-8")
         thumbnail = item.find(f"{{{MEDIA_NS}}}thumbnail")
+        enclosure = item.find("enclosure")
         assert "Первый полный абзац" in full_text
         assert "Второй полный абзац" in full_text
         assert "Рекламный блок" not in full_text
         assert "Читайте также" not in full_text
+        assert encoded.startswith("<h1>Тестовая статья</h1>")
         assert "<h2>Методика</h2>" in encoded
+        assert "<content:encoded><![CDATA[<h1>" in raw_feed
         assert thumbnail is not None
         assert thumbnail.attrib["url"] == "https://agentlabjournal.online/assets/covers/recent.png"
+        assert enclosure is not None
+        assert enclosure.attrib == {
+            "url": "https://agentlabjournal.online/assets/covers/recent.png",
+            "type": "image/png",
+        }
+        assert [node.text for node in item.findall("category")] == ["format-article", "index", "comment-all"]
+        assert item.find("author") is None
 
 
 def test_accepts_date_only_publication_metadata_as_moscow_time() -> None:

@@ -176,17 +176,21 @@ def build_item(root: Path, page: Path, now: dt.datetime) -> tuple[dt.datetime, E
     guid = add_text(item, "guid", parser.canonical)
     guid.set("isPermaLink", "true")
     add_text(item, "pubDate", format_datetime(published))
-    add_text(item, "author", "Михаил")
     description = parser.meta.get("description") or parser.full_text[:300]
     add_text(item, "description", description)
-    section = parser.meta.get("article:section")
-    if section:
-        add_text(item, "category", section)
+    for category in ("format-article", "index", "comment-all"):
+        add_text(item, "category", category)
     add_text(item, f"{{{YANDEX_NS}}}genre", "article")
     add_text(item, f"{{{YANDEX_NS}}}full-text", parser.full_text)
-    add_text(item, f"{{{CONTENT_NS}}}encoded", parser.encoded_html)
+    add_text(item, f"{{{CONTENT_NS}}}encoded", f"<h1>{html.escape(parser.title)}</h1>{parser.encoded_html}")
     image = parser.meta.get("og:image")
     if image:
+        extension = Path(image.split("?", 1)[0]).suffix.casefold()
+        mime = {".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".gif": "image/gif", ".png": "image/png"}.get(extension)
+        if mime:
+            enclosure = ET.SubElement(item, "enclosure")
+            enclosure.set("url", image)
+            enclosure.set("type", mime)
         thumbnail = ET.SubElement(item, f"{{{MEDIA_NS}}}thumbnail")
         thumbnail.set("url", image)
     return published, item
@@ -220,6 +224,14 @@ def build_feed(root: Path, output: Path, now: dt.datetime, minimum_items: int = 
 
     ET.indent(rss, space="  ")
     payload = ET.tostring(rss, encoding="utf-8", xml_declaration=True)
+    pattern = re.compile(rb"(<content:encoded>)(.*?)(</content:encoded>)", re.S)
+
+    def as_cdata(match: re.Match[bytes]) -> bytes:
+        encoded = html.unescape(match.group(2).decode("utf-8"))
+        safe = encoded.replace("]]>", "]]><![CDATA[>")
+        return match.group(1) + b"<![CDATA[" + safe.encode("utf-8") + b"]]>" + match.group(3)
+
+    payload = pattern.sub(as_cdata, payload)
     if len(payload) > MAX_FEED_BYTES:
         raise SystemExit(f"DZEN_RSS: feed exceeds 10 MiB ({len(payload)} bytes)")
     output.write_bytes(payload + b"\n")
