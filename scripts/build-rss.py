@@ -2,6 +2,8 @@
 """Build the general RSS feed used by external publishing platforms."""
 import html
 import re
+import subprocess
+import sys
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -54,3 +56,7 @@ english_feed = '''<?xml version="1.0" encoding="UTF-8"?>
 (ROOT / "rss-en.xml").write_text(english_feed)
 (ROOT / "rss-en-v2.xml").write_text(english_feed.replace("rss-en.xml", "rss-en-v2.xml"))
 print(f"RSS: built {len(items)} items")
+
+dzen = subprocess.run([sys.executable, str(ROOT / "scripts" / "build-dzen-rss.py")], cwd=ROOT)
+if dzen.returncode:
+    raise SystemExit("RSS: Dzen feed build failed")
