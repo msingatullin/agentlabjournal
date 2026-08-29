@@ -116,6 +116,11 @@ class DzenArticlePipelineTest(unittest.TestCase):
         schema = json.loads((ROOT / "newsroom" / "dzen-autonomous-receipt.schema.json").read_text())
         self.assertFalse(schema["additionalProperties"])
         self.assertEqual(set(schema["required"]), set(schema["properties"]))
+        self.assertFalse(schema["properties"]["gates"]["additionalProperties"])
+        self.assertEqual(
+            set(schema["properties"]["gates"]["required"]),
+            set(schema["properties"]["gates"]["properties"]),
+        )
 
 
 if __name__ == "__main__":
