@@ -7,6 +7,7 @@ import datetime as dt
 import hashlib
 import json
 import subprocess
+import sys
 from pathlib import Path
 from typing import Any, Callable
 
@@ -14,6 +15,7 @@ from typing import Any, Callable
 NOTEBOOK_ID = "7bbafa88-a8c4-44bf-9a17-77851f87d459"
 MIN_SCORE = 80
 MAX_REVISIONS = 3
+CODEX = "/usr/bin/codex"
 
 
 def draft_sha256(value: str) -> str:
@@ -69,6 +71,74 @@ def can_publish_today(state: dict[str, Any], now: dt.datetime) -> bool:
         raise ValueError("publication clock requires timezone")
     moscow = now.astimezone(dt.timezone(dt.timedelta(hours=3))).date().isoformat()
     return moscow not in set(state.get("published_dates", []))
+
+
+def publication_slot_open(state: dict[str, Any], now: dt.datetime) -> bool:
+    """Allow at most one completed publication per Moscow calendar date."""
+    value = state.get("last_published_at")
+    if not value:
+        return True
+    if now.tzinfo is None:
+        raise ValueError("publication clock requires timezone")
+    previous = dt.datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+    moscow = dt.timezone(dt.timedelta(hours=3))
+    return previous.astimezone(moscow).date() < now.astimezone(moscow).date()
+
+
+def build_autonomous_prompt(dry_run: bool) -> str:
+    mode = "DRY RUN: do not push, publish, submit recrawl, or mutate external services." if dry_run else "RELEASE MODE."
+    return f"""You are the autonomous Dzen RSS newsroom operator for Agent Lab Journal.
+Work only inside this isolated checkout. {mode}
+
+Produce exactly one Russian news or analytical article package, or return BLOCKED. Never ask the owner questions.
+Mandatory gates, in order:
+1. Select one fresh, non-duplicate topic from current primary sources. Reject advertising, announcements, lists, schedules and non-news blog material.
+2. Create and validate a Wordstat query passport with measured demand, intent, canonical URL and cannibalization check. Unvalidated demand blocks release.
+3. Write an evidence-based article without invented tests, quotes, dates or results. Preserve source URLs and collection dates.
+4. Generate a new topic-specific unique image for this article. Never reuse an existing URL or SHA-256. Record prompt, path and hash; disclose AI use.
+5. Upload the immutable full draft to NotebookLM {NOTEBOOK_ID}, wait for indexing, and request strict JSON review. Require matching SHA-256, verdict APPROVE, score_0_100 >= 80, citations and zero blocking issues. Apply no more than three revisions; otherwise BLOCKED.
+6. Render HTML with title/H1 alignment, canonical, description, Article JSON-LD, datePublished, source links and the approved unique image. Update homepage-covers.json.
+7. Run repository publication gates and build dzen-rss.xml. Verify RSS canonical, full text and unique enclosure URL.
+8. Enforce one publication per Moscow calendar day. Missed four-hour runs never accumulate and never cause a burst.
+9. In RELEASE MODE only: commit only this cycle's files, git push origin main, wait for public HTTP 200, submit the canonical URL to Yandex.Webmaster recrawl, and store its accepted response/task ID.
+10. Write newsroom/dzen-autonomous-state.json and a package publication-receipt.json only from observed results.
+
+Fail closed on any missing credential, source evidence, SEO measurement, image, NotebookLM approval, validation, push, public HTTP check, RSS check or recrawl acceptance. Do not weaken authentication, repository rules or gates. Do not expose secrets.
+Return only JSON matching the supplied schema.
+"""
+
+
+def build_codex_command(checkout: Path, receipt: Path, dry_run: bool) -> list[str]:
+    return [
+        CODEX,
+        "exec",
+        "--ephemeral",
+        "--sandbox",
+        "danger-full-access",
+        "--cd",
+        str(checkout),
+        "--output-schema",
+        str(checkout / "newsroom" / "dzen-autonomous-receipt.schema.json"),
+        "--output-last-message",
+        str(receipt),
+        "-",
+    ]
+
+
+def run_autonomous(checkout: Path, receipt: Path, dry_run: bool) -> int:
+    state_path = checkout / "newsroom" / "dzen-autonomous-state.json"
+    state = json.loads(state_path.read_text(encoding="utf-8")) if state_path.exists() else {}
+    now = dt.datetime.now(dt.timezone.utc)
+    if not dry_run and not publication_slot_open(state, now):
+        save_json(receipt, {"status": "SKIPPED", "reason": "daily_limit", "published": False})
+        return 0
+    result = subprocess.run(
+        build_codex_command(checkout, receipt, dry_run),
+        input=build_autonomous_prompt(dry_run),
+        text=True,
+        timeout=3300,
+    )
+    return result.returncode
 
 
 def validate_unique_image(image_url: str, image_hash: str, registry: dict[str, Any]) -> list[str]:
@@ -167,7 +237,14 @@ def main() -> int:
     prepare_cmd = sub.add_parser("prepare")
     prepare_cmd.add_argument("--root", type=Path, required=True)
     prepare_cmd.add_argument("--no-publish", action="store_true", required=True)
+    autonomous_cmd = sub.add_parser("autonomous")
+    autonomous_cmd.add_argument("--root", type=Path, required=True)
+    autonomous_cmd.add_argument("--receipt", type=Path, required=True)
+    autonomous_cmd.add_argument("--dry-run", action="store_true")
     args = parser.parse_args()
+
+    if args.command == "autonomous":
+        return run_autonomous(args.root.resolve(), args.receipt.resolve(), args.dry_run)
 
     if args.command == "prepare":
         result = prepare(args.root.resolve(), no_publish=args.no_publish)

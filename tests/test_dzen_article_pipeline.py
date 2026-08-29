@@ -76,14 +76,41 @@ class DzenArticlePipelineTest(unittest.TestCase):
         service = (ROOT / "ops/systemd/agentlab-dzen-article-pipeline.service").read_text()
         self.assertIn("OnCalendar=*-*-* 00/4:00:00 Europe/Moscow", timer)
         self.assertIn("Persistent=false", timer)
-        self.assertIn("dzen-article-pipeline.py prepare", service)
-        self.assertIn("--no-publish", service)
+        self.assertIn("run-dzen-autonomous-isolated.py", service)
+        self.assertIn("/usr/bin/flock -n", service)
 
     def test_installer_requires_two_matching_dry_run_receipts(self):
         installer = (ROOT / "scripts/install-dzen-article-pipeline.sh").read_text()
         self.assertIn("DRY_RUN_RECEIPTS_REQUIRED=2", installer)
         self.assertIn("disable --now hermes-dzen-send.timer", installer)
         self.assertIn("systemd-analyze verify", installer)
+
+    def test_autonomous_command_uses_isolated_codex_and_machine_readable_receipt(self):
+        command = pipeline.build_codex_command(Path("/tmp/isolated"), Path("/tmp/receipt.json"), dry_run=True)
+        self.assertEqual(command[0:2], ["/usr/bin/codex", "exec"])
+        self.assertIn("--ephemeral", command)
+        self.assertIn("danger-full-access", command)
+        self.assertIn("--output-schema", command)
+        self.assertEqual(command[-1], "-")
+
+    def test_autonomous_prompt_requires_all_publication_gates(self):
+        prompt = pipeline.build_autonomous_prompt(dry_run=False)
+        for required in (
+            "Wordstat",
+            pipeline.NOTEBOOK_ID,
+            "score_0_100 >= 80",
+            "unique",
+            "dzen-rss.xml",
+            "git push",
+            "Yandex.Webmaster",
+            "one publication per Moscow calendar day",
+        ):
+            self.assertIn(required, prompt)
+
+    def test_publication_slot_is_fail_closed_until_next_moscow_day(self):
+        state = {"last_published_at": "2026-08-29T02:00:00+03:00"}
+        self.assertFalse(pipeline.publication_slot_open(state, datetime.fromisoformat("2026-08-29T23:59:00+03:00")))
+        self.assertTrue(pipeline.publication_slot_open(state, datetime.fromisoformat("2026-08-30T00:00:00+03:00")))
 
 
 if __name__ == "__main__":
