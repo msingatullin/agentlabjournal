@@ -155,6 +155,16 @@ class DzenArticlePipelineTest(unittest.TestCase):
             receipt["image_sha256"] = "0" * 64
             self.assertIn("image_hash_mismatch", pipeline.validate_prepared_candidate(root, receipt, set()))
 
+    def test_existing_rss_item_reserves_moscow_publication_day(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "dzen-rss.xml").write_text(
+                "<rss><channel><item><pubDate>Sat, 29 Aug 2026 16:00:00 +0300</pubDate></item></channel></rss>",
+                encoding="utf-8",
+            )
+            self.assertTrue(pipeline.rss_day_reserved(root, datetime.fromisoformat("2026-08-29T23:00:00+03:00")))
+            self.assertFalse(pipeline.rss_day_reserved(root, datetime.fromisoformat("2026-08-30T00:00:00+03:00")))
+
 
 if __name__ == "__main__":
     unittest.main()

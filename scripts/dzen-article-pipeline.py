@@ -10,6 +10,8 @@ import subprocess
 import sys
 import time
 import urllib.request
+import xml.etree.ElementTree as ET
+from email.utils import parsedate_to_datetime
 from pathlib import Path
 from typing import Any, Callable
 
@@ -95,8 +97,22 @@ def publication_slot_open(state: dict[str, Any], now: dt.datetime) -> bool:
     return previous.astimezone(moscow).date() < now.astimezone(moscow).date()
 
 
+def rss_day_reserved(root: Path, now: dt.datetime) -> bool:
+    feed = root / "dzen-rss.xml"
+    if not feed.exists():
+        return False
+    moscow = dt.timezone(dt.timedelta(hours=3))
+    today = now.astimezone(moscow).date()
+    try:
+        tree = ET.parse(feed)
+        dates = [parsedate_to_datetime(node.text) for node in tree.findall("./channel/item/pubDate") if node.text]
+    except (ET.ParseError, TypeError, ValueError):
+        return True
+    return any(value.astimezone(moscow).date() == today for value in dates)
+
+
 def build_autonomous_prompt(dry_run: bool) -> str:
-    mode = "DRY RUN." if dry_run else "RELEASE CANDIDATE PREPARATION."
+    mode = "DRY RUN: prepare the next eligible future article even if today's publication slot is already used; do not treat today's slot as a blocker." if dry_run else "RELEASE CANDIDATE PREPARATION."
     return f"""You are the autonomous Dzen RSS newsroom operator for Agent Lab Journal.
 Work only inside this isolated checkout. {mode}
 
@@ -275,7 +291,7 @@ def run_autonomous(checkout: Path, receipt: Path, dry_run: bool) -> int:
     state_path = checkout / "newsroom" / "dzen-autonomous-state.json"
     state = json.loads(state_path.read_text(encoding="utf-8")) if state_path.exists() else {}
     now = dt.datetime.now(dt.timezone.utc)
-    if not dry_run and not publication_slot_open(state, now):
+    if not dry_run and (not publication_slot_open(state, now) or rss_day_reserved(checkout, now)):
         save_json(receipt, {"status": "SKIPPED", "reason": "daily_limit", "published": False})
         return 0
     baseline_slugs = {page.stem for page in checkout.glob("*.html")}
