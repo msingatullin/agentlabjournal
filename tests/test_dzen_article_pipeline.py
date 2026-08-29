@@ -112,6 +112,11 @@ class DzenArticlePipelineTest(unittest.TestCase):
         self.assertFalse(pipeline.publication_slot_open(state, datetime.fromisoformat("2026-08-29T23:59:00+03:00")))
         self.assertTrue(pipeline.publication_slot_open(state, datetime.fromisoformat("2026-08-30T00:00:00+03:00")))
 
+    def test_receipt_schema_is_closed_for_codex_structured_output(self):
+        schema = json.loads((ROOT / "newsroom" / "dzen-autonomous-receipt.schema.json").read_text())
+        self.assertFalse(schema["additionalProperties"])
+        self.assertEqual(set(schema["required"]), set(schema["properties"]))
+
 
 if __name__ == "__main__":
     unittest.main()
