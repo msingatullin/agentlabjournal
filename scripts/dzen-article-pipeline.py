@@ -8,6 +8,8 @@ import hashlib
 import json
 import subprocess
 import sys
+import time
+import urllib.request
 from pathlib import Path
 from typing import Any, Callable
 
@@ -20,6 +22,14 @@ CODEX = "/usr/bin/codex"
 
 def draft_sha256(value: str) -> str:
     return hashlib.sha256(value.encode("utf-8")).hexdigest()
+
+
+def file_sha256(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for block in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(block)
+    return digest.hexdigest()
 
 
 def save_json(path: Path, value: dict[str, Any]) -> None:
@@ -86,13 +96,13 @@ def publication_slot_open(state: dict[str, Any], now: dt.datetime) -> bool:
 
 
 def build_autonomous_prompt(dry_run: bool) -> str:
-    mode = "DRY RUN: do not push, publish, submit recrawl, or mutate external services." if dry_run else "RELEASE MODE."
+    mode = "DRY RUN." if dry_run else "RELEASE CANDIDATE PREPARATION."
     return f"""You are the autonomous Dzen RSS newsroom operator for Agent Lab Journal.
 Work only inside this isolated checkout. {mode}
 
 Produce exactly one Russian news or analytical article package, or return BLOCKED. Never ask the owner questions.
 Mandatory gates, in order:
-1. Select one fresh, non-duplicate topic from current primary sources. Reject advertising, announcements, lists, schedules and non-news blog material.
+1. Select one fresh, non-duplicate topic from a current official/primary source. Start with unused official URLs in article-source-candidates.json, verify the event date and source directly, and derive a brand-new slug. Never edit, refresh, re-cover or reuse any existing HTML page, package, slug, title or canonical URL. Reject advertising, announcements, lists, schedules and non-news blog material.
 2. Create and validate a Wordstat query passport with measured demand, intent, canonical URL and cannibalization check. Unvalidated demand blocks release.
 3. Write an evidence-based article without invented tests, quotes, dates or results. Preserve source URLs and collection dates.
 4. Generate a new topic-specific unique image for this article. Never reuse an existing URL or SHA-256. Record prompt, path and hash; disclose AI use.
@@ -100,12 +110,148 @@ Mandatory gates, in order:
 6. Render HTML with title/H1 alignment, canonical, description, Article JSON-LD, datePublished, source links and the approved unique image. Update homepage-covers.json.
 7. Run repository publication gates and build dzen-rss.xml. Verify RSS canonical, full text and unique enclosure URL.
 8. Enforce one publication per Moscow calendar day. Missed four-hour runs never accumulate and never cause a burst.
-9. In RELEASE MODE only: commit only this cycle's files, git push origin main, wait for public HTTP 200, submit the canonical URL to Yandex.Webmaster recrawl, and store its accepted response/task ID.
+9. PREPARE ONLY: never commit, git push, publish, wait on the public URL, or submit Yandex.Webmaster recrawl. The deterministic outer controller owns all external release actions after validating your files.
 10. Write newsroom/dzen-autonomous-state.json and a package publication-receipt.json only from observed results.
 
 Fail closed on any missing credential, source evidence, SEO measurement, image, NotebookLM approval, validation, push, public HTTP check, RSS check or recrawl acceptance. Do not weaken authentication, repository rules or gates. Do not expose secrets.
 Return only JSON matching the supplied schema.
 """
+
+
+def validate_prepared_candidate(root: Path, receipt: dict[str, Any], baseline_slugs: set[str]) -> list[str]:
+    errors: list[str] = []
+    slug = receipt.get("slug")
+    if receipt.get("status") != "PREPARED":
+        errors.append("candidate_not_prepared")
+    if not isinstance(slug, str) or not slug:
+        return errors + ["slug_missing"]
+    if slug in baseline_slugs:
+        return errors + ["slug_preexisting"]
+    packages = sorted((root / "newsroom" / "packages").glob(f"*-{slug}"))
+    if len(packages) != 1:
+        return errors + ["package_missing_or_ambiguous"]
+    package = packages[0]
+    drafts = sorted(package.glob("draft-v*.md"))
+    reviews = sorted(package.glob("notebooklm-review-v*.json"))
+    if not drafts:
+        errors.append("draft_missing")
+    if not reviews:
+        errors.append("review_missing")
+    if drafts and reviews:
+        draft = drafts[-1].read_text(encoding="utf-8")
+        review = json.loads(reviews[-1].read_text(encoding="utf-8"))
+        errors.extend(validate_review(review, draft_sha256(draft)))
+        if review.get("verdict") != "APPROVE":
+            errors.append("review_not_approved")
+    brief_path = package / "image-brief.json"
+    if not brief_path.exists():
+        errors.append("image_brief_missing")
+    else:
+        brief = json.loads(brief_path.read_text(encoding="utf-8"))
+        relative = brief.get("asset_path")
+        image = root / relative if isinstance(relative, str) else None
+        if image is None or not image.is_file():
+            errors.append("image_missing")
+        else:
+            candidate_hash = file_sha256(image)
+            if candidate_hash != receipt.get("image_sha256"):
+                errors.append("image_hash_mismatch")
+            for existing in (root / "assets").rglob("*"):
+                if existing.is_file() and existing != image and existing.suffix.casefold() in {".png", ".jpg", ".jpeg", ".webp"}:
+                    if file_sha256(existing) == candidate_hash:
+                        errors.append("image_hash_reused")
+                        break
+    page = root / f"{slug}.html"
+    if not page.exists():
+        errors.append("html_missing")
+    else:
+        markup = page.read_text(encoding="utf-8")
+        canonical = f'https://agentlabjournal.online/{slug}.html'
+        if canonical not in markup:
+            errors.append("canonical_mismatch")
+    return errors
+
+
+def wait_public(url: str, attempts: int = 40, delay: int = 15) -> None:
+    for attempt in range(attempts):
+        try:
+            request = urllib.request.Request(url, headers={"User-Agent": "AgentLabDzenGate/1.0"})
+            with urllib.request.urlopen(request, timeout=20) as response:
+                if response.status == 200:
+                    return
+        except Exception:
+            pass
+        if attempt + 1 < attempts:
+            time.sleep(delay)
+    raise RuntimeError(f"public HTTP gate failed: {url}")
+
+
+def release_candidate(checkout: Path, receipt_path: Path, receipt: dict[str, Any], now: dt.datetime) -> dict[str, Any]:
+    slug = str(receipt["slug"])
+    package = next(iter(sorted((checkout / "newsroom" / "packages").glob(f"*-{slug}"))))
+    subprocess.run([sys.executable, "scripts/seo-query-gate.py", "--slug", slug, "--language", "ru"], cwd=checkout, check=True)
+    subprocess.run([sys.executable, "scripts/build-dzen-rss.py", "--root", str(checkout)], cwd=checkout, check=True)
+
+    brief = json.loads((package / "image-brief.json").read_text(encoding="utf-8"))
+    allowed = {
+        f"{slug}.html",
+        str(Path(brief["asset_path"])),
+        "homepage-covers.json",
+        "seo-query-map.json",
+        "dzen-rss.xml",
+    }
+    allowed_prefix = str(package.relative_to(checkout)) + "/"
+    status = subprocess.run(["git", "status", "--porcelain"], cwd=checkout, text=True, capture_output=True, check=True).stdout
+    changed = {line[3:] for line in status.splitlines() if len(line) > 3}
+    forbidden = sorted(path for path in changed if path not in allowed and not path.startswith(allowed_prefix))
+    if forbidden:
+        raise RuntimeError("candidate changed forbidden paths: " + ",".join(forbidden))
+
+    moscow = now.astimezone(dt.timezone(dt.timedelta(hours=3)))
+    state = {
+        "last_cycle_at": moscow.isoformat(),
+        "last_cycle_mode": "release",
+        "last_status": "RELEASE_PENDING",
+        "last_slug": slug,
+        "last_published_at": moscow.isoformat(),
+        "published_dates": [moscow.date().isoformat()],
+    }
+    state_path = checkout / "newsroom" / "dzen-autonomous-state.json"
+    save_json(state_path, state)
+    subprocess.run(["git", "add", *sorted(allowed), allowed_prefix, "newsroom/dzen-autonomous-state.json"], cwd=checkout, check=True)
+    subprocess.run(["git", "commit", "-m", f"Publish Dzen article: {slug}"], cwd=checkout, check=True)
+    commit = subprocess.run(["git", "rev-parse", "HEAD"], cwd=checkout, text=True, capture_output=True, check=True).stdout.strip()
+    subprocess.run(["git", "push", "origin", "main"], cwd=checkout, check=True)
+
+    canonical = f"https://agentlabjournal.online/{slug}.html"
+    wait_public(canonical)
+    recrawl_run = subprocess.run(
+        [sys.executable, "scripts/submit-yandex-recrawl.py", "--url", canonical],
+        cwd=checkout,
+        text=True,
+        capture_output=True,
+        check=True,
+    )
+    recrawl = json.loads(recrawl_run.stdout)
+    if recrawl.get("status") != "accepted" or not recrawl.get("task_id"):
+        raise RuntimeError("Yandex recrawl was not accepted")
+    receipt.update({
+        "status": "PUBLISHED",
+        "published": True,
+        "canonical_url": canonical,
+        "reason": None,
+        "commit": commit,
+        "recrawl_task_id": recrawl["task_id"],
+    })
+    receipt["gates"].update({"git": True, "public_http": True, "recrawl": True})
+    save_json(package / "publication-receipt.json", receipt)
+    state["last_status"] = "PUBLISHED"
+    save_json(state_path, state)
+    save_json(receipt_path, receipt)
+    subprocess.run(["git", "add", str((package / "publication-receipt.json").relative_to(checkout)), "newsroom/dzen-autonomous-state.json"], cwd=checkout, check=True)
+    subprocess.run(["git", "commit", "-m", f"Record Dzen publication receipt: {slug}"], cwd=checkout, check=True)
+    subprocess.run(["git", "push", "origin", "main"], cwd=checkout, check=True)
+    return receipt
 
 
 def build_codex_command(checkout: Path, receipt: Path, dry_run: bool) -> list[str]:
@@ -132,13 +278,47 @@ def run_autonomous(checkout: Path, receipt: Path, dry_run: bool) -> int:
     if not dry_run and not publication_slot_open(state, now):
         save_json(receipt, {"status": "SKIPPED", "reason": "daily_limit", "published": False})
         return 0
+    baseline_slugs = {page.stem for page in checkout.glob("*.html")}
     result = subprocess.run(
         build_codex_command(checkout, receipt, dry_run),
         input=build_autonomous_prompt(dry_run),
         text=True,
         timeout=3300,
     )
-    return result.returncode
+    if result.returncode:
+        return result.returncode
+    try:
+        payload = json.loads(receipt.read_text(encoding="utf-8"))
+        errors = validate_prepared_candidate(checkout, payload, baseline_slugs)
+    except (OSError, ValueError, json.JSONDecodeError) as error:
+        errors = [f"receipt_or_candidate_invalid:{error}"]
+        payload = {}
+    if errors:
+        blocked = {
+            "status": "BLOCKED",
+            "published": False,
+            "slug": payload.get("slug"),
+            "canonical_url": payload.get("canonical_url"),
+            "reason": ",".join(errors),
+            "gates": payload.get("gates", {key: False for key in ("topic", "seo", "sources", "image", "notebooklm", "html", "rss", "git", "public_http", "recrawl")}),
+            "notebooklm_score": payload.get("notebooklm_score"),
+            "image_sha256": payload.get("image_sha256"),
+            "commit": None,
+            "recrawl_task_id": None,
+        }
+        save_json(receipt, blocked)
+        return 2
+    if dry_run:
+        return 0
+    try:
+        release_candidate(checkout, receipt, payload, now)
+    except (OSError, RuntimeError, subprocess.CalledProcessError, json.JSONDecodeError) as error:
+        payload["status"] = "BLOCKED"
+        payload["published"] = False
+        payload["reason"] = f"release_failed:{error}"
+        save_json(receipt, payload)
+        return 3
+    return 0
 
 
 def validate_unique_image(image_url: str, image_hash: str, registry: dict[str, Any]) -> list[str]:

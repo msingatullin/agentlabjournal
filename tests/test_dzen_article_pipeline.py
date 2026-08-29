@@ -84,6 +84,8 @@ class DzenArticlePipelineTest(unittest.TestCase):
         self.assertIn("DRY_RUN_RECEIPTS_REQUIRED=2", installer)
         self.assertIn("disable --now hermes-dzen-send.timer", installer)
         self.assertIn("systemd-analyze verify", installer)
+        self.assertIn("/var/lib/agentlab-dzen", installer)
+        self.assertIn("dry-run-*.json", installer)
 
     def test_autonomous_command_uses_isolated_codex_and_machine_readable_receipt(self):
         command = pipeline.build_codex_command(Path("/tmp/isolated"), Path("/tmp/receipt.json"), dry_run=True)
@@ -121,6 +123,37 @@ class DzenArticlePipelineTest(unittest.TestCase):
             set(schema["properties"]["gates"]["required"]),
             set(schema["properties"]["gates"]["properties"]),
         )
+
+    def test_prepared_candidate_rejects_preexisting_slug(self):
+        receipt = {"status": "PREPARED", "slug": "already-live"}
+        self.assertIn("slug_preexisting", pipeline.validate_prepared_candidate(Path("/tmp"), receipt, {"already-live"}))
+
+    def test_prepared_candidate_requires_fresh_matching_notebook_review_and_image(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            slug = "fresh-analysis"
+            package = root / "newsroom" / "packages" / "2026-08-30-fresh-analysis"
+            package.mkdir(parents=True)
+            draft = "# Fresh analytical draft"
+            (package / "draft-v1.md").write_text(draft, encoding="utf-8")
+            (package / "image-brief.json").write_text(json.dumps({"asset_path": "assets/news/fresh.png"}), encoding="utf-8")
+            (root / "assets" / "news").mkdir(parents=True)
+            image = root / "assets" / "news" / "fresh.png"
+            image.write_bytes(b"new-image")
+            review = {
+                "reviewed_draft_sha256": pipeline.draft_sha256(draft),
+                "verdict": "APPROVE",
+                "score_0_100": 90,
+                "blocking_issues": [],
+                "revision_instructions": [],
+                "citations": [1],
+            }
+            (package / "notebooklm-review-v1.json").write_text(json.dumps(review), encoding="utf-8")
+            (root / f"{slug}.html").write_text(f'<link rel="canonical" href="https://agentlabjournal.online/{slug}.html"><meta property="og:image" content="https://agentlabjournal.online/assets/news/fresh.png">', encoding="utf-8")
+            receipt = {"status": "PREPARED", "slug": slug, "image_sha256": pipeline.file_sha256(image)}
+            self.assertEqual(pipeline.validate_prepared_candidate(root, receipt, set()), [])
+            receipt["image_sha256"] = "0" * 64
+            self.assertIn("image_hash_mismatch", pipeline.validate_prepared_candidate(root, receipt, set()))
 
 
 if __name__ == "__main__":

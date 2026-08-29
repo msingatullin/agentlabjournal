@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import datetime as dt
 import subprocess
 import tempfile
 from pathlib import Path
@@ -20,7 +21,11 @@ def main() -> int:
         clone = subprocess.run(["git", "clone", "--depth", "1", REMOTE, str(checkout)])
         if clone.returncode:
             return clone.returncode
-        receipt = Path("/var/lib/agentlab-dzen") / ("dry-run-receipt.json" if args.dry_run else "last-receipt.json")
+        if args.dry_run:
+            stamp = dt.datetime.now(dt.timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+            receipt = Path("/var/lib/agentlab-dzen") / f"dry-run-{stamp}.json"
+        else:
+            receipt = Path("/var/lib/agentlab-dzen/last-receipt.json")
         receipt.parent.mkdir(parents=True, exist_ok=True)
         command = [
             "/usr/bin/python3",

@@ -8,7 +8,7 @@ TIMER=agentlab-dzen-article-pipeline.timer
 
 systemd-analyze verify "$PROJECT_ROOT/ops/systemd/$SERVICE" "$PROJECT_ROOT/ops/systemd/$TIMER"
 
-receipt_count=$(find "$PROJECT_ROOT/newsroom/packages" -mindepth 2 -maxdepth 2 -name dry-run-receipt.json -type f 2>/dev/null | wc -l)
+receipt_count=$(find /var/lib/agentlab-dzen -maxdepth 1 -name 'dry-run-*.json' -type f -exec grep -l '"status": "PREPARED"\|"status":"PREPARED"' {} \; 2>/dev/null | wc -l)
 if [ "$receipt_count" -lt "$DRY_RUN_RECEIPTS_REQUIRED" ]; then
   echo "DZEN_TIMER_MIGRATION: BLOCKED dry-run receipts=$receipt_count required=$DRY_RUN_RECEIPTS_REQUIRED" >&2
   exit 2
