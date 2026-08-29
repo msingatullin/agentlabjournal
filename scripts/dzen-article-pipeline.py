@@ -216,9 +216,16 @@ def release_candidate(checkout: Path, receipt_path: Path, receipt: dict[str, Any
         "seo-query-map.json",
         "dzen-rss.xml",
     }
+    sources = json.loads((package / "sources-context.json").read_text(encoding="utf-8"))
+    for source in sources.get("sources", []):
+        value = source.get("path") if isinstance(source, dict) else None
+        if isinstance(value, str) and value.startswith("newsroom/wordstat-evidence/"):
+            allowed.add(value)
     allowed_prefix = str(package.relative_to(checkout)) + "/"
     status = subprocess.run(["git", "status", "--porcelain"], cwd=checkout, text=True, capture_output=True, check=True).stdout
     changed = {line[3:] for line in status.splitlines() if len(line) > 3}
+    allowed.update(path for path in changed if path.startswith("newsroom/seo-seeds-") and path.endswith(".json"))
+    allowed.update(path for path in changed if path.startswith("newsroom/wordstat-evidence/") and path.endswith(".json"))
     forbidden = sorted(path for path in changed if path not in allowed and not path.startswith(allowed_prefix))
     if forbidden:
         raise RuntimeError("candidate changed forbidden paths: " + ",".join(forbidden))
