@@ -16,7 +16,7 @@ ATOM_NS = "http://www.w3.org/2005/Atom"
 ITUNES_NS = "http://www.itunes.apple.com/dtds/podcast-1.0.dtd"
 PUBLIC_URL = "https://agentlabjournal.online/youtube-podcast-rss.xml"
 IMAGE_URL = "https://agentlabjournal.online/podcast-cover.png"
-OWNER_EMAIL = "journal@agentlabjournal.online"
+OWNER_EMAIL = "mmsingatullin@gmail.com"
 
 ET.register_namespace("atom", ATOM_NS)
 ET.register_namespace("itunes", ITUNES_NS)

@@ -32,7 +32,7 @@ def test_build_youtube_feed_is_separate_and_uses_audio_enclosures(tmp_path):
     assert image.findtext("url") == "https://agentlabjournal.online/podcast-cover.png"
     owner = channel.find("{http://www.itunes.apple.com/dtds/podcast-1.0.dtd}owner")
     assert owner is not None
-    assert owner.findtext("{http://www.itunes.apple.com/dtds/podcast-1.0.dtd}email") == "journal@agentlabjournal.online"
+    assert owner.findtext("{http://www.itunes.apple.com/dtds/podcast-1.0.dtd}email") == "mmsingatullin@gmail.com"
     self_link = channel.find("{http://www.w3.org/2005/Atom}link")
     assert self_link is not None
     assert self_link.get("href") == "https://agentlabjournal.online/youtube-podcast-rss.xml"
