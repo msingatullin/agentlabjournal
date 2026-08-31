@@ -13,7 +13,7 @@ import xml.etree.ElementTree as ET
 from pathlib import Path
 
 ATOM_NS = "http://www.w3.org/2005/Atom"
-ITUNES_NS = "http://www.itunes.apple.com/dtds/podcast-1.0.dtd"
+ITUNES_NS = "http://www.itunes.com/dtds/podcast-1.0.dtd"
 PUBLIC_URL = "https://agentlabjournal.online/youtube-podcast-rss.xml"
 IMAGE_URL = "https://agentlabjournal.online/podcast-cover.png"
 OWNER_EMAIL = "mmsingatullin@gmail.com"
