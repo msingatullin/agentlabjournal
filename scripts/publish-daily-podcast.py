@@ -9,6 +9,7 @@ import json
 import re
 import shutil
 import subprocess
+import sys
 from pathlib import Path
 from urllib.request import Request, urlopen
 
@@ -74,7 +75,7 @@ def main() -> int:
     title_json = json.dumps(args.title, ensure_ascii=False)
     episode_date = dt.date.fromisoformat(args.date)
     date_label = f'{episode_date.day} {RU_MONTHS[episode_date.month]} {episode_date.year}'
-    page = f'''<!doctype html><html lang="ru"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>{html.escape(args.title)} — Agent Lab Journal Podcast</title><meta name="description" content="{html.escape(args.summary)}"><link rel="canonical" href="{public_page}"><meta property="og:type" content="article"><meta property="og:title" content="{html.escape(args.title)}"><meta property="og:description" content="{html.escape(args.summary)}"><meta property="og:url" content="{public_page}"><meta property="og:image" content="{BASE}/podcast-cover.png"><link rel="stylesheet" href="style.css"><script type="application/ld+json">{{"@context":"https://schema.org","@type":"PodcastEpisode","name":{title_json},"url":"{public_page}","datePublished":"{args.date}T07:00:00+03:00","duration":"{iso_duration}","inLanguage":"ru-RU","image":"{BASE}/podcast-cover.png","partOfSeries":{{"@type":"PodcastSeries","name":"Agent Lab Journal Podcast","url":"{BASE}/podcasts.html"}},"associatedMedia":{{"@type":"AudioObject","contentUrl":"{public_audio}","encodingFormat":"audio/mpeg"}}}}</script></head><body><header class="site-header"><a class="brand" href="./">Agent Lab Journal</a><nav><a href="podcasts.html">Подкасты</a><a href="contacts.html">Контакты</a></nav></header><main class="podcast-shell"><p class="eyebrow">AGENT LAB JOURNAL PODCAST · {html.escape(date_label.upper())}</p><h1>{html.escape(args.title)}</h1><p class="podcast-meta">Русский выпуск · {length} · {html.escape(date_label)}</p><p>{html.escape(args.summary)}</p><audio controls preload="metadata" src="{public_audio}"></audio><p><a class="primary" href="podcasts.html">Все выпуски →</a> <a class="text-link" href="podcast-rss.xml">Подписаться через RSS</a></p></main><footer><span>Agent Lab Journal</span></footer></body></html>'''
+    page = f'''<!doctype html><html lang="ru"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>{html.escape(args.title)} — Agent Lab Journal Podcast</title><meta name="description" content="{html.escape(args.summary)}"><link rel="canonical" href="{public_page}"><meta property="og:type" content="article"><meta property="og:title" content="{html.escape(args.title)}"><meta property="og:description" content="{html.escape(args.summary)}"><meta property="og:url" content="{public_page}"><meta property="og:image" content="{BASE}/podcast-cover.png"><link rel="stylesheet" href="style.css"><script type="application/ld+json">{{"@context":"https://schema.org","@type":"PodcastEpisode","name":{title_json},"url":"{public_page}","datePublished":"{args.date}T07:00:00+03:00","duration":"{iso_duration}","inLanguage":"ru-RU","image":"{BASE}/podcast-cover.png","partOfSeries":{{"@type":"PodcastSeries","name":"Agent Lab Journal Podcast","url":"{BASE}/podcasts.html"}},"associatedMedia":{{"@type":"AudioObject","contentUrl":"{public_audio}","encodingFormat":"audio/mpeg"}}}}</script></head><body><header class="site-header"><a class="brand" href="./">Agent Lab Journal</a><nav><a href="podcasts.html">Подкасты</a><a href="contacts.html">Контакты</a></nav></header><main class="podcast-shell"><p class="eyebrow">AGENT LAB JOURNAL PODCAST · {html.escape(date_label.upper())}</p><h1>{html.escape(args.title)}</h1><p class="podcast-meta">Русский выпуск · {length} · {html.escape(date_label)}</p><p>{html.escape(args.summary)}</p><audio controls preload="metadata" src="{public_audio}"></audio><p><a class="primary" href="podcasts.html">Все выпуски →</a> <a class="text-link" href="podcast-rss.xml">RSS Яндекс</a> <a class="text-link" href="youtube-podcast-rss.xml">RSS YouTube Music</a></p></main><footer><span>Agent Lab Journal</span></footer></body></html>'''
     item = f'''  <item><title>{html.escape(args.title)}</title><description>{html.escape(args.summary)}</description><link>{public_page}?utm_source=podcast&amp;utm_medium=rss&amp;utm_campaign=daily-ai-news&amp;utm_content=ru-{args.date.replace("-", "")}</link><guid isPermaLink="false">agentlabjournal-ru-{args.date}</guid><pubDate>{dt.datetime.fromisoformat(args.date).replace(tzinfo=dt.timezone(dt.timedelta(hours=3))).strftime("%a, %d %b %Y %H:%M:%S +0300")}</pubDate><itunes:duration>{length}</itunes:duration><itunes:episodeType>full</itunes:episodeType><enclosure url="{public_audio}" type="audio/mpeg" length="{args.audio.stat().st_size}" /></item>'''
     if args.dry_run:
         print(f'PAGE={page_name}\nAUDIO={public_audio}\nRSS_ITEM_READY=1\nDURATION={length}')
@@ -104,11 +105,18 @@ def main() -> int:
         build_date = dt.datetime.now(dt.timezone(dt.timedelta(hours=3))).strftime('%a, %d %b %Y %H:%M:%S +0300')
         rss_text = re.sub(r'<lastBuildDate>.*?</lastBuildDate>', f'<lastBuildDate>{build_date}</lastBuildDate>', rss_text, count=1)
         rss.write_text(rss_text, encoding='utf-8')
+    youtube_rss = ROOT / 'youtube-podcast-rss.xml'
+    subprocess.run([
+        sys.executable,
+        str(ROOT / 'scripts' / 'build-youtube-podcast-rss.py'),
+        '--source', str(rss),
+        '--output', str(youtube_rss),
+    ], cwd=ROOT, check=True)
     sitemap = ROOT / 'sitemap.xml'
     sitemap_text = sitemap.read_text(encoding='utf-8')
     if public_page not in sitemap_text:
         sitemap.write_text(sitemap_text.replace('</urlset>', f'  <url><loc>{public_page}</loc><changefreq>weekly</changefreq><priority>0.7</priority></url>\n</urlset>', 1), encoding='utf-8')
-    subprocess.run(['git', 'add', page_name, 'podcast-rss.xml', 'sitemap.xml'], cwd=ROOT, check=True)
+    subprocess.run(['git', 'add', page_name, 'podcast-rss.xml', 'youtube-podcast-rss.xml', 'sitemap.xml'], cwd=ROOT, check=True)
     staged = subprocess.run(['git', 'diff', '--cached', '--quiet'], cwd=ROOT).returncode != 0
     if staged:
         subprocess.run(['git', 'commit', '-m', f'Publish daily podcast {args.date}'], cwd=ROOT, check=True)
