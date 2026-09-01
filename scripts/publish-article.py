@@ -127,6 +127,9 @@ if catalogs.returncode:
 homepage = subprocess.run([sys.executable, str(ROOT / "scripts/refresh-homepage-latest.py")], cwd=ROOT)
 if homepage.returncode:
     raise SystemExit("Publication blocked: homepage could not be built")
+curated_homepage = subprocess.run([sys.executable, str(ROOT / "scripts/build-homepage.py")], cwd=ROOT)
+if curated_homepage.returncode:
+    raise SystemExit("Publication blocked: curated homepage could not be built")
 homepage_gate = subprocess.run([sys.executable, str(ROOT / "scripts/check-homepage-editorial.py")], cwd=ROOT)
 if homepage_gate.returncode:
     raise SystemExit("Publication blocked: homepage editorial/mobile gate failed")
