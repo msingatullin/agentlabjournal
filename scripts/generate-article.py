@@ -20,6 +20,7 @@ parser.add_argument("--minutes", type=int, default=8)
 parser.add_argument("--result", required=True)
 parser.add_argument("--summary", required=True)
 parser.add_argument("--news", action="store_true")
+parser.add_argument("--allow-unvalidated-seo", action="store_true")
 parser.add_argument("--language", choices=["ru", "en"], default="ru")
 args = parser.parse_args()
 
@@ -48,15 +49,18 @@ seo_gate = subprocess.run([
     "--language",
     args.language,
 ], cwd=ROOT)
-if seo_gate.returncode:
+if seo_gate.returncode and not args.allow_unvalidated_seo:
     raise SystemExit("Generation blocked: SEO query passport is missing or invalid")
 
-query_map = json.loads((ROOT / "seo-query-map.json").read_text(encoding="utf-8"))
-base_passport = query_map["articles"][target.stem]
-if base_passport.get("language") == args.language:
-    seo_passport = base_passport
+if args.allow_unvalidated_seo and seo_gate.returncode:
+    seo_passport = {"primary_query": args.title, "measurements": [], "frequency_class": "unvalidated"}
 else:
-    seo_passport = {**base_passport, **base_passport["localizations"][args.language]}
+    query_map = json.loads((ROOT / "seo-query-map.json").read_text(encoding="utf-8"))
+    base_passport = query_map["articles"][target.stem]
+    if base_passport.get("language") == args.language:
+        seo_passport = base_passport
+    else:
+        seo_passport = {**base_passport, **base_passport["localizations"][args.language]}
 seo_queries = [row["query"] for row in seo_passport["measurements"]]
 seo_brief = "\n".join(
     f"- {row['frequency_class']}: {row['query']} ({row['frequency_value']})"
@@ -194,4 +198,6 @@ if cover_apply.returncode:
 publish = [sys.executable, str(ROOT / "scripts/publish-article.py"), "--file", str(target.relative_to(ROOT)), "--summary", args.summary]
 if args.news:
     publish.append("--news")
+if args.allow_unvalidated_seo:
+    publish.append("--allow-unvalidated-seo")
 raise SystemExit(subprocess.run(publish, cwd=ROOT).returncode)
