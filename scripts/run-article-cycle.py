@@ -165,6 +165,9 @@ if graph_result['status'] != 'awaiting_verification':
 command = [sys.executable, str(ROOT / "scripts/generate-article.py")]
 for key in ("slug", "title", "problem", "level", "minutes", "result", "summary"):
     command.extend([f"--{key}", str(topic[key])])
+# Feed every Russian publication into the Yandex News RSS. The feed itself
+# remains deduplicated and keeps the newest entries first.
+command.append('--news')
 if any(item.startswith(topic['slug'] + ':') for item in blocked):
     command.append('--allow-unvalidated-seo')
 
