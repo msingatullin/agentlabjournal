@@ -82,6 +82,11 @@ def wait_until_public(topic, attempts=40, delay=15):
     raise RuntimeError(f"canonical URL is not publicly available after {attempts * delay}s: {url}")
 queue_path = ROOT / "article-topics.json"
 topics = json.loads(queue_path.read_text())
+cover_map = json.loads((ROOT / "homepage-covers.json").read_text())
+
+def has_approved_cover(candidate):
+    row = cover_map.get(candidate["slug"], {})
+    return all(row.get(key) for key in ("path", "social_path", "alt", "evidence", "type"))
 
 unpublished = [topic for topic in topics if not (ROOT / f"{topic['slug']}.html").exists()]
 if not unpublished:
@@ -91,7 +96,10 @@ if not unpublished:
 topic = None
 blocked = []
 for candidate in unpublished:
-    candidate_ready = True
+    candidate_ready = has_approved_cover(candidate)
+    if not candidate_ready:
+        blocked.append(f"{candidate['slug']}:cover")
+        continue
     for language in ("ru", "en"):
         seo_gate = subprocess.run([
             sys.executable,
@@ -110,7 +118,10 @@ for candidate in unpublished:
         break
 
 if topic is None:
-    topic = unpublished[0]
+    topic = next((candidate for candidate in unpublished if has_approved_cover(candidate)), None)
+    if topic is None:
+        print("ARTICLE_CYCLE: no unpublished topic has approved cover metadata")
+        raise SystemExit(1)
     print(f"ARTICLE_CYCLE: no publication-ready topics; SEO unvalidated; continuing with {topic['slug']}")
     print("ARTICLE_CYCLE: deferred SEO=" + ",".join(blocked[:10]))
 
