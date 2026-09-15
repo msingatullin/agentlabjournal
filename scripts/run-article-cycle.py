@@ -137,7 +137,6 @@ if topic is None:
     print("ARTICLE_CYCLE: deferred SEO=" + ",".join(blocked[:10]))
 
 print(f"ARTICLE_CYCLE: selected ready topic {topic['slug']}")
-queue_path.parent.joinpath("homepage-covers.json").write_text(json.dumps(cover_map, ensure_ascii=False, indent=2) + "\n")
 if os.environ.get("AGENTLAB_PREFLIGHT_ONLY") == "1":
     print(f"ARTICLE_CYCLE: preflight OK ({topic['slug']})")
     raise SystemExit(0)
@@ -152,6 +151,7 @@ worktree = subprocess.run(
 if worktree.stdout.strip():
     notify_error("git worktree safety gate", "uncommitted files exist; automatic git add is blocked")
     raise SystemExit("ARTICLE_CYCLE: dirty worktree; refusing automatic generation and commit")
+queue_path.parent.joinpath("homepage-covers.json").write_text(json.dumps(cover_map, ensure_ascii=False, indent=2) + "\n")
 
 graph_result = GraphRun(content_graph(), 'source').execute({
     'source': topic.get('summary', topic['title']),
