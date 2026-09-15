@@ -191,12 +191,12 @@ if cta.returncode:
 english_command = [sys.executable, str(ROOT / "scripts/generate-article.py")]
 english_values = {
     "slug": topic["slug"],
-    "title": topic["en_title"],
-    "problem": topic["en_problem"],
+    "title": topic.get("en_title", topic["title"]),
+    "problem": topic.get("en_problem", topic["problem"]),
     "level": topic["level"],
     "minutes": topic["minutes"],
-    "result": topic["en_result"],
-    "summary": topic["en_summary"],
+    "result": topic.get("en_result", topic["result"]),
+    "summary": topic.get("en_summary", topic["summary"]),
 }
 for key, value in english_values.items():
     english_command.extend([f"--{key}", str(value)])
