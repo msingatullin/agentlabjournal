@@ -120,6 +120,7 @@ def main() -> int:
     staged = subprocess.run(['git', 'diff', '--cached', '--quiet'], cwd=ROOT).returncode != 0
     if staged:
         subprocess.run(['git', 'commit', '-m', f'Publish daily podcast {args.date}'], cwd=ROOT, check=True)
+    subprocess.run(['git', 'pull', '--rebase', 'origin', 'main'], cwd=ROOT, check=True)
     subprocess.run(['git', 'push', 'origin', 'HEAD'], cwd=ROOT, check=True)
     with urlopen(Request(public_audio, method='HEAD'), timeout=30) as response:
         if response.status != 200:
