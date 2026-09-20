@@ -1,3 +1,4 @@
+
 #!/usr/bin/env python3
 """Build the curated RU homepage as an editorial ecosystem index."""
 from __future__ import annotations
@@ -13,6 +14,17 @@ ROOT = Path(__file__).resolve().parent.parent
 BASE = "https://agentlabjournal.online/"
 CONFIG = ROOT / "homepage-editorial.json"
 COVERS = ROOT / "homepage-covers.json"
+
+def render_live_strip() -> str:
+    import importlib.util
+    ticker_file = ROOT / "scripts" / "build-live-ticker.py"
+    if ticker_file.is_file():
+        spec = importlib.util.spec_from_file_location("build_live_ticker", ticker_file)
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        return module.render_live_strip()
+    return ""
+
 
 
 def plain(value: str) -> str:
@@ -171,7 +183,7 @@ def build() -> None:
   <script type="application/ld+json">{{"@context":"https://schema.org","@type":"WebSite","name":"Agent Lab Journal","url":"{BASE}","inLanguage":"ru-RU"}}</script>
   <script src="metrika.js"></script>
 </head>
-<body class="home-page"><noscript><div><img src="https://mc.yandex.ru/watch/110942679" class="metrika-pixel" alt=""></div></noscript>
+<body class="home-page"><noscript><div><img src="https://mc.yandex.ru/watch/110942679" class="metrika-pixel" alt=""></div></noscript>\n  " + render_live_strip() + "
   <header class="masthead">
     <div class="issue-line"><time datetime="{now.date().isoformat()}">{date_ru(now)}</time><span>Практический журнал об AI-системах</span><a href="en/">EN</a></div>
     <div class="masthead__name"><a href="./" aria-label="Agent Lab Journal, главная">Agent Lab Journal</a></div>
