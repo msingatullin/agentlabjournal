@@ -7,7 +7,7 @@ from html import escape
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
-FEED_PATH = ROOT / 'ai-live-feed.json'
+FEED_PATH = ROOT / "ai-live-feed.json"
 
 
 def render_live_strip(lang: str = "ru", prefix: str = "") -> str:
@@ -18,42 +18,75 @@ def render_live_strip(lang: str = "ru", prefix: str = "") -> str:
     if not feed_path.is_file():
         return ""
     data = json.loads(feed_path.read_text(encoding="utf-8"))
-    if not FEED_PATH.is_file():
-        return ''
-    data = json.loads(FEED_PATH.read_text(encoding='utf-8'))
-    status = data.get('status', {})
-    benchmark = data.get('benchmark', {})
-    signals = data.get('signals', [])
+    status = data.get("status", {})
+    rates = data.get("rates", [])
+    benchmark = data.get("benchmark", {})
+    signals = data.get("signals", [])
 
     items_html = []
 
     # 1. Operational status
-    s_label = escape(status.get('label', 'AI STATUS'))
-    s_msg = escape(status.get('message', 'OPERATIONAL'))
+    s_label = escape(status.get("label", "AI STATUS"))
+    s_msg = escape(status.get("message", "OPERATIONAL"))
     items_html.append(
         f'<div class="live-strip__item live-strip__status"><span class="live-strip__pulse-dot"></span><span class="live-strip__badge">[ {s_label} ]</span><span class="live-strip__text">{s_msg}</span></div>'
     )
 
-    # 2. Benchmark top
+    # 2. First rate (USD)
+    if rates:
+        r = rates[0]
+        r_change_class = "live-strip__rate--up" if "+" in r.get("change", "") else "live-strip__rate--down"
+        items_html.append(
+            f'<div class="live-strip__item live-strip__rate"><span class="live-strip__icon">{escape(r.get("icon", ""))}</span><span class="live-strip__symbol">{escape(r.get("symbol", ""))}</span><span class="live-strip__val">{escape(r.get("value", ""))}</span><span class="{r_change_class}">{escape(r.get("change", ""))}</span></div>'
+        )
+
+    # 3. Benchmark
     if benchmark:
-        b_label = escape(benchmark.get('label', 'ARENA'))
-        b_val = escape(benchmark.get('value', ''))
+        b_label = escape(benchmark.get("label", "ARENA"))
+        b_val = escape(benchmark.get("value", ""))
         items_html.append(
             f'<div class="live-strip__item live-strip__benchmark"><span class="live-strip__badge live-strip__badge--metric">[ {b_label} ]</span><span class="live-strip__text">{b_val}</span></div>'
         )
 
-    # 3. Dynamic breaking signals
-    for sig in signals:
-        tag = escape(sig.get('tag', 'LIVE'))
-        t = escape(sig.get('time', ''))
-        title = escape(sig.get('title', ''))
-        raw_link = sig.get('link', '#')
-        link = escape(prefix + raw_link if not raw_link.startswith(('http', '/')) else raw_link)
+    # 4. Crypto rate (BTC)
+    if len(rates) > 1:
+        r = rates[1]
+        r_change_class = "live-strip__rate--up" if "+" in r.get("change", "") else "live-strip__rate--down"
         items_html.append(
-            f'<div class="live-strip__item"><span class="live-strip__badge">[ {tag} ]</span><span class="live-strip__time">{t}</span><a class="live-strip__link" href="{link}">{title}</a></div>'
+            f'<div class="live-strip__item live-strip__rate"><span class="live-strip__icon">{escape(r.get("icon", ""))}</span><span class="live-strip__symbol">{escape(r.get("symbol", ""))}</span><span class="live-strip__val">{escape(r.get("value", ""))}</span><span class="{r_change_class}">{escape(r.get("change", ""))}</span></div>'
         )
 
-    full_inner = ' '.join(items_html)
+    # 5. Signals interleaved with remaining rates
+    rate_idx = 2
+    for sig in signals:
+        tag = escape(sig.get("tag", "LIVE"))
+        t = escape(sig.get("time", ""))
+        title = escape(sig.get("title", ""))
+        raw_link = sig.get("link", "#")
+        is_ext = sig.get("external", False)
+
+        if is_ext:
+            link_target = ' target="_blank" rel="noopener noreferrer"'
+            ext_icon = ' <span class="live-strip__ext-icon">↗</span>'
+            link = escape(raw_link)
+        else:
+            link_target = ""
+            ext_icon = ""
+            link = escape(prefix + raw_link if not raw_link.startswith(("http", "/")) else raw_link)
+
+        items_html.append(
+            f'<div class="live-strip__item"><span class="live-strip__badge">[ {tag} ]</span><span class="live-strip__time">{t}</span><a class="live-strip__link" href="{link}"{link_target}>{title}{ext_icon}</a></div>'
+        )
+
+        if rate_idx < len(rates):
+            r = rates[rate_idx]
+            r_change_class = "live-strip__rate--up" if "+" in r.get("change", "") else "live-strip__rate--down"
+            items_html.append(
+                f'<div class="live-strip__item live-strip__rate"><span class="live-strip__icon">{escape(r.get("icon", ""))}</span><span class="live-strip__symbol">{escape(r.get("symbol", ""))}</span><span class="live-strip__val">{escape(r.get("value", ""))}</span><span class="{r_change_class}">{escape(r.get("change", ""))}</span></div>'
+            )
+            rate_idx += 1
+
+    full_inner = " ".join(items_html)
 
     return (
         '<div class="live-strip" role="region" aria-label="AI Live Radar">\n'
@@ -72,5 +105,5 @@ def render_live_strip(lang: str = "ru", prefix: str = "") -> str:
     )
 
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     print(render_live_strip())
