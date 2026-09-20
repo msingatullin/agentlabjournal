@@ -10,7 +10,14 @@ ROOT = Path(__file__).resolve().parents[1]
 FEED_PATH = ROOT / 'ai-live-feed.json'
 
 
-def render_live_strip() -> str:
+def render_live_strip(lang: str = "ru", prefix: str = "") -> str:
+    feed_filename = "ai-live-feed-en.json" if lang == "en" else "ai-live-feed.json"
+    feed_path = ROOT / feed_filename
+    if not feed_path.is_file():
+        feed_path = FEED_PATH
+    if not feed_path.is_file():
+        return ""
+    data = json.loads(feed_path.read_text(encoding="utf-8"))
     if not FEED_PATH.is_file():
         return ''
     data = json.loads(FEED_PATH.read_text(encoding='utf-8'))
@@ -40,7 +47,8 @@ def render_live_strip() -> str:
         tag = escape(sig.get('tag', 'LIVE'))
         t = escape(sig.get('time', ''))
         title = escape(sig.get('title', ''))
-        link = escape(sig.get('link', '#'))
+        raw_link = sig.get('link', '#')
+        link = escape(prefix + raw_link if not raw_link.startswith(('http', '/')) else raw_link)
         items_html.append(
             f'<div class="live-strip__item"><span class="live-strip__badge">[ {tag} ]</span><span class="live-strip__time">{t}</span><a class="live-strip__link" href="{link}">{title}</a></div>'
         )
