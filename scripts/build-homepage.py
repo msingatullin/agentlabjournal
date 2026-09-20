@@ -183,7 +183,8 @@ def build() -> None:
   <script type="application/ld+json">{{"@context":"https://schema.org","@type":"WebSite","name":"Agent Lab Journal","url":"{BASE}","inLanguage":"ru-RU"}}</script>
   <script src="metrika.js"></script>
 </head>
-<body class="home-page"><noscript><div><img src="https://mc.yandex.ru/watch/110942679" class="metrika-pixel" alt=""></div></noscript>\n  " + render_live_strip() + "
+<body class="home-page"><noscript><div><img src="https://mc.yandex.ru/watch/110942679" class="metrika-pixel" alt=""></div></noscript>
+  {render_live_strip()}
   <header class="masthead">
     <div class="issue-line"><time datetime="{now.date().isoformat()}">{date_ru(now)}</time><span>Практический журнал об AI-системах</span><a href="en/">EN</a></div>
     <div class="masthead__name"><a href="./" aria-label="Agent Lab Journal, главная">Agent Lab Journal</a></div>
