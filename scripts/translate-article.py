@@ -3,7 +3,6 @@
 from argparse import ArgumentParser
 from pathlib import Path
 import subprocess
-import tempfile
 
 ROOT = Path(__file__).resolve().parent.parent
 parser = ArgumentParser()
@@ -23,12 +22,10 @@ Return only one complete HTML document.
 
 SOURCE HTML:
 {source.read_text()}'''
-with tempfile.TemporaryDirectory() as tmp:
-    output = Path(tmp) / "translation.html"
-    result = subprocess.run(["codex", "exec", "--ephemeral", "--sandbox", "read-only", "--skip-git-repo-check", "-C", str(ROOT), "-o", str(output), prompt], text=True, capture_output=True)
-    if result.returncode:
-        raise SystemExit(result.stderr or result.stdout)
-    translated = output.read_text().strip()
+result = subprocess.run(["claude", "-p", "--output-format", "text", "--no-session-persistence", "--tools", ""], input=prompt, cwd=ROOT, text=True, capture_output=True)
+if result.returncode:
+    raise SystemExit(result.stderr or result.stdout)
+translated = result.stdout.strip()
 if not translated.startswith("<!doctype html>") or 'lang="en"' not in translated:
     raise SystemExit("Translation failed structural checks")
 target.write_text(translated + "\n")

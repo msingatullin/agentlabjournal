@@ -56,7 +56,8 @@ def main() -> None:
     builder = runpy.run_path(str(ROOT / "scripts" / "build-homepage.py"))
     item_map = builder["articles"]()
     config = json.loads((ROOT / "homepage-editorial.json").read_text(encoding="utf-8"))
-    excluded = {config["lead"], *config["editors_choice"], *config["deep_reads"]}
+    # The lead stays in «Новое»: the cycle makes each new article the lead.
+    excluded = {*config["editors_choice"], *config["deep_reads"]}
     latest = sorted(
         (row for row in item_map.values() if row["slug"] not in excluded),
         key=lambda row: row["created"],

@@ -135,7 +135,8 @@ def build() -> None:
     lead = require(item_map, config["lead"])
     choices = [require(item_map, slug) for slug in config["editors_choice"]]
     deep = [require(item_map, slug) for slug in config["deep_reads"]]
-    excluded = {lead["slug"], *(row["slug"] for row in choices), *(row["slug"] for row in deep)}
+    # The lead stays in «Новое»: the cycle makes each new article the lead.
+    excluded = {*(row["slug"] for row in choices), *(row["slug"] for row in deep)}
     latest = sorted((row for row in item_map.values() if row["slug"] not in excluded), key=lambda row: row["created"], reverse=True)[:6]
 
     latest_html = "\n".join(

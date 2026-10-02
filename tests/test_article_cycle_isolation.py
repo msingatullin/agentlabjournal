@@ -25,7 +25,7 @@ class ArticleCycleIsolationTests(unittest.TestCase):
 
         self.assertEqual(0, result)
         self.assertEqual(
-            ["git", "clone", "--depth", "1", module.REMOTE, str(Path(directory) / "repo")],
+            ["git", "clone", module.REMOTE, str(Path(directory) / "repo")],
             calls[0][0],
         )
         self.assertEqual(

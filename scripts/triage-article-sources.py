@@ -4,7 +4,6 @@ import json
 import re
 import subprocess
 import sys
-import tempfile
 from urllib.parse import urlparse
 from pathlib import Path
 
@@ -61,14 +60,12 @@ category. Return [] when none qualify.
 CANDIDATES:
 """ + json.dumps(pending, ensure_ascii=False)
 
-with tempfile.TemporaryDirectory() as tmp:
-    output = Path(tmp) / "triage.json"
-    run = subprocess.run(["codex", "exec", "--ephemeral", "--sandbox", "read-only", "--skip-git-repo-check", "-C", str(ROOT), "-o", str(output), prompt], capture_output=True, text=True, timeout=600)
-    if run.returncode:
-        state_path.write_text(json.dumps({'status': 'blocked', 'reason': 'codex_triage_failed'}, ensure_ascii=False) + '\n')
-        print(run.stderr, file=sys.stderr)
-        raise SystemExit(run.returncode)
-    raw = output.read_text().strip()
+run = subprocess.run(["claude", "-p", "--output-format", "text", "--no-session-persistence", "--tools", ""], input=prompt, cwd=ROOT, capture_output=True, text=True, timeout=600)
+if run.returncode:
+    state_path.write_text(json.dumps({'status': 'blocked', 'reason': 'claude_triage_failed'}, ensure_ascii=False) + '\n')
+    print(run.stderr or run.stdout, file=sys.stderr)
+    raise SystemExit(run.returncode)
+raw = run.stdout.strip()
 
 try:
     approved = json.loads(re.sub(r"^```(?:json)?\s*|\s*```$", "", raw, flags=re.I))

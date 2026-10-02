@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Generate an article draft with Codex, then pass it through publication checks."""
+"""Generate an article draft with Claude Code, then pass it through publication checks."""
 from argparse import ArgumentParser
 from html import unescape
 import json
@@ -8,7 +8,6 @@ from pathlib import Path
 import re
 import subprocess
 import sys
-import tempfile
 
 ROOT = Path(__file__).resolve().parent.parent
 parser = ArgumentParser(description="Generate and register a practical Agent Lab Journal article")
@@ -101,7 +100,8 @@ Return ONLY one complete HTML document, with no Markdown fences or explanation. 
 description, canonical URL https://agentlabjournal.online/{'en/' if args.language == 'en' else ''}{filename},
 title, Article JSON-LD with headline/description/image/dateModified/author/publisher/mainEntityOfPage,
 Open Graph, Twitter card and reading-meta. The first mention of each special term must link
-to {glossary_href} using an existing or appropriate anchor.
+to {glossary_href} using an existing or appropriate anchor. The exact phrase
+"{seo_passport['primary_query']}" must appear verbatim in <title>, the meta description and <h1>.
 </output_contract>"""
 
 if args.language == "ru" and os.environ.get("AGENTLAB_BATCH_MODE") == "1":
@@ -121,7 +121,8 @@ if args.language == "ru" and os.environ.get("AGENTLAB_BATCH_MODE") == "1":
 проверку результата, типовые ошибки, ограничения и ссылки на guides.html и glossary.html.</workflow>
 <output_contract>Верни только полный HTML-документ без Markdown и пояснений. Обязательно добавь title,
 description, canonical https://agentlabjournal.online/{filename}, Open Graph, Twitter card, reading-meta
-и Article JSON-LD. Первый специальный термин свяжи с glossary.html.</output_contract>"""
+и Article JSON-LD. Первый специальный термин свяжи с glossary.html. Точная фраза
+«{seo_passport['primary_query']}» обязана дословно стоять в <title>, meta description и <h1>.</output_contract>"""
 
 def fallback_html() -> str:
     """Deterministic bounded article when the editorial subprocess times out."""
@@ -129,7 +130,7 @@ def fallback_html() -> str:
     cover = f"https://agentlabjournal.online/assets/covers/{args.slug}.png"
     stylesheet_prefix = "../" if args.language == "en" else ""
     stylesheets = f'<link rel="stylesheet" href="{stylesheet_prefix}style.css"><link rel="stylesheet" href="{stylesheet_prefix}reading.css"><link rel="stylesheet" href="{stylesheet_prefix}homepage.css">'
-    site_header = get_live_strip(lang, stylesheet_prefix) + f'''<header class="masthead"><div class="issue-line"><a href="{stylesheet_prefix}" aria-label="Agent Lab Journal, home">Agent Lab Journal</a><a href="{stylesheet_prefix}en/">EN</a></div><nav class="masthead__nav" aria-label="Primary navigation"><a href="{stylesheet_prefix}section-practice.html">Practice</a><a href="{stylesheet_prefix}section-tools.html">Tools</a><a href="{stylesheet_prefix}section-security.html">Security</a><a href="{stylesheet_prefix}section-experiments.html">Experiments</a><a href="{stylesheet_prefix}podcasts.html">Podcasts</a></nav><details class="mobile-menu"><summary>Menu</summary><nav aria-label="Mobile navigation"><a href="{stylesheet_prefix}guides.html">All guides</a><a href="{stylesheet_prefix}sections.html">Sections</a><a href="{stylesheet_prefix}podcasts.html">Podcasts</a><a href="{stylesheet_prefix}en/">English</a></nav></details></header>'''
+    site_header = f'''<header class="masthead"><div class="issue-line"><a href="{stylesheet_prefix}" aria-label="Agent Lab Journal, home">Agent Lab Journal</a><a href="{stylesheet_prefix}en/">EN</a></div><nav class="masthead__nav" aria-label="Primary navigation"><a href="{stylesheet_prefix}section-practice.html">Practice</a><a href="{stylesheet_prefix}section-tools.html">Tools</a><a href="{stylesheet_prefix}section-security.html">Security</a><a href="{stylesheet_prefix}section-experiments.html">Experiments</a><a href="{stylesheet_prefix}podcasts.html">Podcasts</a></nav><details class="mobile-menu"><summary>Menu</summary><nav aria-label="Mobile navigation"><a href="{stylesheet_prefix}guides.html">All guides</a><a href="{stylesheet_prefix}sections.html">Sections</a><a href="{stylesheet_prefix}podcasts.html">Podcasts</a><a href="{stylesheet_prefix}en/">English</a></nav></details></header>'''
     if args.language == "en":
         title = f"{args.title}: {seo_passport['primary_query']}"
         lead = f"This bounded field note explains {args.problem.lower()} and defines a reproducible evaluation of {seo_passport['primary_query']} without claiming unverified production results."
@@ -145,47 +146,60 @@ def fallback_html() -> str:
     glossary_label = "Open the glossary" if args.language == "en" else "Глоссарий"
     return f'''<!doctype html><html lang="{'en' if args.language == 'en' else 'ru'}"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">{stylesheets}<title>{title}</title><meta name="description" content="{lead}"><link rel="canonical" href="{canonical}"><meta property="og:type" content="article"><meta property="og:title" content="{title}"><meta property="og:description" content="{lead}"><meta property="og:url" content="{canonical}"><meta property="og:image" content="{cover}"><meta name="twitter:card" content="summary_large_image"><meta name="twitter:title" content="{title}"><meta name="twitter:description" content="{lead}"><meta name="twitter:image" content="{cover}"><script type="application/ld+json">{{"@context":"https://schema.org","@type":"Article","headline":{json.dumps(title,ensure_ascii=False)},"description":{json.dumps(lead,ensure_ascii=False)},"image":"{cover}","dateModified":"2026-08-04","author":{{"@type":"Organization","name":"Agent Lab Journal"}},"publisher":{{"@type":"Organization","name":"Agent Lab Journal"}},"mainEntityOfPage":{{"@type":"WebPage","@id":"{canonical}"}}}}</script></head><body>{site_header}<main class="article"><article><header class="article-header"><p class="eyebrow">PRACTICE / AGENT LAB</p><h1>{title}</h1><p class="reading-meta">Practice · 12 minutes · 4 August 2026</p><p class="lead">{lead}</p></header>{body}<h2>{related_heading}</h2><p>{related}</p><p><a href="{stylesheet_prefix}guides.html">{guides_label}</a> · <a href="{stylesheet_prefix}glossary.html">{glossary_label}</a></p></article></main></body></html>'''
 
-with tempfile.TemporaryDirectory() as tmp:
-    output = Path(tmp) / "article.txt"
-    try:
-        result = subprocess.run([
-            "codex", "exec", "-c", "model_reasoning_effort=low", "--ephemeral", "--sandbox", "read-only",
-            "--skip-git-repo-check", "-C", str(ROOT), "-o", str(output), prompt,
-        ], text=True, capture_output=True, timeout=int(os.environ.get("AGENTLAB_GENERATION_TIMEOUT", "180")))
-        if result.returncode:
-            raise RuntimeError(result.stderr[-1000:] or f"editor exit code {result.returncode}")
-        html = output.read_text().strip()
-    except (subprocess.TimeoutExpired, RuntimeError) as error:
-        print(f"EDITOR_FALLBACK: deterministic HTML used ({error})", file=sys.stderr)
-        html = fallback_html()
-
-html = re.sub(r"^\s*```(?:html)?\s*|\s*```\s*$", "", html, flags=re.I)
-stylesheet_prefix = "../" if args.language == "en" else ""
-if "rel=\"stylesheet\"" not in html:
-    html = html.replace("</head>", f'<link rel="stylesheet" href="{stylesheet_prefix}style.css"><link rel="stylesheet" href="{stylesheet_prefix}reading.css"><link rel="stylesheet" href="{stylesheet_prefix}homepage.css"></head>', 1)
-elif "homepage.css" not in html:
-    html = html.replace("</head>", f'<link rel="stylesheet" href="{stylesheet_prefix}homepage.css"></head>', 1)
-if not re.match(r"\s*<!doctype html>", html, flags=re.I) or "reading-meta" not in html:
-    raise SystemExit("Generated output is not a valid article document")
+try:
+    result = subprocess.run(
+        ["claude", "-p", "--output-format", "text", "--no-session-persistence", "--tools", ""],
+        input=prompt, cwd=ROOT, text=True, capture_output=True,
+        timeout=int(os.environ.get("AGENTLAB_GENERATION_TIMEOUT", "300")),
+    )
+    if result.returncode:
+        raise RuntimeError((result.stderr or result.stdout)[-1000:] or f"editor exit code {result.returncode}")
+    html = result.stdout.strip()
+    if not html:
+        raise RuntimeError("editor returned empty output")
+except (subprocess.TimeoutExpired, RuntimeError, OSError) as error:
+    print(f"EDITOR_FALLBACK: deterministic HTML used ({error})", file=sys.stderr)
+    html = fallback_html()
 
 def normalized(value: str) -> str:
     return " ".join(re.findall(r"[a-zа-яё0-9]+", unescape(value).casefold()))
 
-visible_text = normalized(re.sub(r"<[^>]+>", " ", html))
-title_match = re.search(r"<title[^>]*>(.*?)</title>", html, flags=re.I | re.S)
-description_match = re.search(
-    r'<meta[^>]+name=["\']description["\'][^>]+content=["\']([^"\']+)', html, flags=re.I
-)
-h1_match = re.search(r"<h1[^>]*>(.*?)</h1>", html, flags=re.I | re.S)
-seo_surface = normalized(
-    " ".join(match.group(1) if match else "" for match in (title_match, description_match, h1_match))
-)
-primary = normalized(seo_passport["primary_query"])
-if primary not in seo_surface:
-    raise SystemExit("Generated output failed SEO use gate: primary query missing from title/description/H1")
-missing_queries = [query for query in seo_queries if normalized(query) not in visible_text]
-if missing_queries:
-    raise SystemExit(f"Generated output failed SEO use gate: missing measured queries {missing_queries}")
+
+def prepare(html: str) -> tuple[str, str | None]:
+    """Normalize generated HTML; return it with the first failed gate, if any."""
+    html = re.sub(r"^\s*```(?:html)?\s*|\s*```\s*$", "", html, flags=re.I)
+    stylesheet_prefix = "../" if args.language == "en" else ""
+    if "rel=\"stylesheet\"" not in html:
+        html = html.replace("</head>", f'<link rel="stylesheet" href="{stylesheet_prefix}style.css"><link rel="stylesheet" href="{stylesheet_prefix}reading.css"><link rel="stylesheet" href="{stylesheet_prefix}homepage.css"></head>', 1)
+    elif "homepage.css" not in html:
+        html = html.replace("</head>", f'<link rel="stylesheet" href="{stylesheet_prefix}homepage.css"></head>', 1)
+    if not re.match(r"\s*<!doctype html>", html, flags=re.I) or "reading-meta" not in html:
+        return html, "Generated output is not a valid article document"
+    visible_text = normalized(re.sub(r"<[^>]+>", " ", html))
+    title_match = re.search(r"<title[^>]*>(.*?)</title>", html, flags=re.I | re.S)
+    description_match = re.search(
+        r'<meta[^>]+name=["\']description["\'][^>]+content=["\']([^"\']+)', html, flags=re.I
+    )
+    h1_match = re.search(r"<h1[^>]*>(.*?)</h1>", html, flags=re.I | re.S)
+    seo_surface = normalized(
+        " ".join(match.group(1) if match else "" for match in (title_match, description_match, h1_match))
+    )
+    primary = normalized(seo_passport["primary_query"])
+    if primary not in seo_surface:
+        return html, "Generated output failed SEO use gate: primary query missing from title/description/H1"
+    missing_queries = [query for query in seo_queries if normalized(query) not in visible_text]
+    if missing_queries:
+        return html, f"Generated output failed SEO use gate: missing measured queries {missing_queries}"
+    return html, None
+
+
+html, gate_error = prepare(html)
+if gate_error:
+    # An editor draft that misses a gate must not stop the publication cycle.
+    print(f"EDITOR_FALLBACK: deterministic HTML used ({gate_error})", file=sys.stderr)
+    html, gate_error = prepare(fallback_html())
+    if gate_error:
+        raise SystemExit(gate_error)
 target.write_text(html + "\n")
 
 cover_apply = subprocess.run([

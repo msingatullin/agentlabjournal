@@ -173,7 +173,8 @@ if any(item.startswith(topic['slug'] + ':') for item in blocked):
 
 cycle_env = os.environ.copy()
 cycle_env.setdefault("AGENTLAB_BATCH_MODE", "1")
-cycle_env.setdefault("AGENTLAB_GENERATION_TIMEOUT", "45")
+# Claude needs ~45-120s per full article; 45s forced the deterministic fallback.
+cycle_env.setdefault("AGENTLAB_GENERATION_TIMEOUT", "300")
 subprocess.run([
     sys.executable,
     str(ROOT / "scripts" / "refresh-homepage-editorial.py"),
@@ -220,6 +221,10 @@ try:
     review = subprocess.run([sys.executable, str(ROOT / 'scripts' / 'pre-push-review.py')], cwd=ROOT)
     if review.returncode:
         raise RuntimeError(f'pre-push review exit code {review.returncode}')
+    # Rebuild the homepage once both language versions exist so the «Новое»
+    # rail in index.html always lists the article being committed.
+    subprocess.run([sys.executable, str(ROOT / 'scripts' / 'build-homepage.py')], cwd=ROOT, check=True)
+    subprocess.run([sys.executable, str(ROOT / 'scripts' / 'refresh-homepage-latest.py')], cwd=ROOT, check=True)
     subprocess.run(["git", "add", "--update"], cwd=ROOT, check=True)
     subprocess.run(["git", "add", "homepage-covers.json", f"{topic['slug']}.html", f"en/{topic['slug']}.html"], cwd=ROOT, check=True)
     subprocess.run(["git", "commit", "-m", f"Publish article: {topic['title']}"], cwd=ROOT, check=True)

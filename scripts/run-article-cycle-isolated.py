@@ -10,7 +10,9 @@ REMOTE = "git@github.com:msingatullin/agentlabjournal.git"
 
 def run_isolated(base: Path, run=subprocess.run) -> int:
     checkout = base / "repo"
-    clone = run(["git", "clone", "--depth", "1", REMOTE, str(checkout)])
+    # Full history: build-homepage.py dates articles via `git log --diff-filter=A`;
+    # in a shallow clone every article gets one date and the «Новое» rail breaks.
+    clone = run(["git", "clone", REMOTE, str(checkout)])
     if clone.returncode:
         return clone.returncode
     cycle = run(
