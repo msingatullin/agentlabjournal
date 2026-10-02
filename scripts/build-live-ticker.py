@@ -11,6 +11,9 @@ FEED_PATH = ROOT / "ai-live-feed.json"
 
 
 def render_live_strip(lang: str = "ru", prefix: str = "") -> str:
+    # Disabled 2026-10-02: the strip was a static snapshot (hardcoded rates, stale
+    # benchmark, fixed date) presented as live data. Re-enable only with a real feed.
+    return ""
     feed_filename = "ai-live-feed-en.json" if lang == "en" else "ai-live-feed.json"
     feed_path = ROOT / feed_filename
     if not feed_path.is_file():
