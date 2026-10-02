@@ -9,6 +9,11 @@ import re
 import subprocess
 import sys
 
+from article_skeleton import (
+    EN_SERVICE_NOTE, EN_SITE_FOOTER, EN_SITE_HEADER, MAX_PROMO, MAX_PROMO_CSS,
+    RU_SITE_FOOTER, RU_SITE_HEADER, SERVICE_NOTES, TELEGRAM_PROMO,
+)
+
 ROOT = Path(__file__).resolve().parent.parent
 parser = ArgumentParser(description="Generate and register a practical Agent Lab Journal article")
 parser.add_argument("--slug", required=True, help="HTML filename without .html")
@@ -89,8 +94,9 @@ Do not invent test results, credentials, customer facts, prices, or external cit
 Distinguish examples from verified facts. Keep secrets and personal data out of the article.
 </policy>
 <workflow>
-Use the existing site style: style.css and reading.css. Wrap the article in
-<main class="article"> so the readable-width layout is mandatory. Include a strong lead, concrete
+Use the existing site style: style.css and reading.css. Use the page skeleton
+<header class="site-header"> + <main><article class="reading"> + <footer class="site-footer">
+so the readable-width layout is mandatory. Include a strong lead, concrete
 case, reproducible steps, commands or configuration where useful, verification, failure
 cases, limitations, and a final link to guides.html and {glossary_href}.
 </workflow>
@@ -116,7 +122,7 @@ if args.language == "ru" and os.environ.get("AGENTLAB_BATCH_MODE") == "1":
 {seo_brief}
 </data>
 <policy>Не выдумывай тесты, клиентов, цены, секреты или внешние источники; отличай пример от факта.</policy>
-<workflow>Используй style.css и reading.css. Обязательно оберни статью в <main class="article">.
+<workflow>Используй style.css и reading.css. Обязательный каркас: <header class="site-header">, <main><article class="reading">, <footer class="site-footer">.
 Дай введение, воспроизводимые шаги, безопасные команды,
 проверку результата, типовые ошибки, ограничения и ссылки на guides.html и glossary.html.</workflow>
 <output_contract>Верни только полный HTML-документ без Markdown и пояснений. Обязательно добавь title,
@@ -130,7 +136,7 @@ def fallback_html() -> str:
     cover = f"https://agentlabjournal.online/assets/covers/{args.slug}.png"
     stylesheet_prefix = "../" if args.language == "en" else ""
     stylesheets = f'<link rel="stylesheet" href="{stylesheet_prefix}style.css"><link rel="stylesheet" href="{stylesheet_prefix}reading.css"><link rel="stylesheet" href="{stylesheet_prefix}homepage.css">'
-    site_header = f'''<header class="masthead"><div class="issue-line"><a href="{stylesheet_prefix}" aria-label="Agent Lab Journal, home">Agent Lab Journal</a><a href="{stylesheet_prefix}en/">EN</a></div><nav class="masthead__nav" aria-label="Primary navigation"><a href="{stylesheet_prefix}section-practice.html">Practice</a><a href="{stylesheet_prefix}section-tools.html">Tools</a><a href="{stylesheet_prefix}section-security.html">Security</a><a href="{stylesheet_prefix}section-experiments.html">Experiments</a><a href="{stylesheet_prefix}podcasts.html">Podcasts</a></nav><details class="mobile-menu"><summary>Menu</summary><nav aria-label="Mobile navigation"><a href="{stylesheet_prefix}guides.html">All guides</a><a href="{stylesheet_prefix}sections.html">Sections</a><a href="{stylesheet_prefix}podcasts.html">Podcasts</a><a href="{stylesheet_prefix}en/">English</a></nav></details></header>'''
+    stylesheets += MAX_PROMO_CSS.format(prefix=stylesheet_prefix)
     if args.language == "en":
         title = f"{args.title}: {seo_passport['primary_query']}"
         lead = f"This bounded field note explains {args.problem.lower()} and defines a reproducible evaluation of {seo_passport['primary_query']} without claiming unverified production results."
@@ -144,7 +150,7 @@ def fallback_html() -> str:
     related_heading = "Related measurements" if args.language == "en" else "Связанные измерения"
     guides_label = "Browse practical guides" if args.language == "en" else "Практические руководства"
     glossary_label = "Open the glossary" if args.language == "en" else "Глоссарий"
-    return f'''<!doctype html><html lang="{'en' if args.language == 'en' else 'ru'}"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">{stylesheets}<title>{title}</title><meta name="description" content="{lead}"><link rel="canonical" href="{canonical}"><meta property="og:type" content="article"><meta property="og:title" content="{title}"><meta property="og:description" content="{lead}"><meta property="og:url" content="{canonical}"><meta property="og:image" content="{cover}"><meta name="twitter:card" content="summary_large_image"><meta name="twitter:title" content="{title}"><meta name="twitter:description" content="{lead}"><meta name="twitter:image" content="{cover}"><script type="application/ld+json">{{"@context":"https://schema.org","@type":"Article","headline":{json.dumps(title,ensure_ascii=False)},"description":{json.dumps(lead,ensure_ascii=False)},"image":"{cover}","dateModified":"2026-08-04","author":{{"@type":"Organization","name":"Agent Lab Journal"}},"publisher":{{"@type":"Organization","name":"Agent Lab Journal"}},"mainEntityOfPage":{{"@type":"WebPage","@id":"{canonical}"}}}}</script></head><body>{site_header}<main class="article"><article><header class="article-header"><p class="eyebrow">PRACTICE / AGENT LAB</p><h1>{title}</h1><p class="reading-meta">Practice · 12 minutes · 4 August 2026</p><p class="lead">{lead}</p></header>{body}<h2>{related_heading}</h2><p>{related}</p><p><a href="{stylesheet_prefix}guides.html">{guides_label}</a> · <a href="{stylesheet_prefix}glossary.html">{glossary_label}</a></p></article></main></body></html>'''
+    return f'''<!doctype html><html lang="{'en' if args.language == 'en' else 'ru'}"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">{stylesheets}<title>{title}</title><meta name="description" content="{lead}"><link rel="canonical" href="{canonical}"><meta property="og:type" content="article"><meta property="og:title" content="{title}"><meta property="og:description" content="{lead}"><meta property="og:url" content="{canonical}"><meta property="og:image" content="{cover}"><meta name="twitter:card" content="summary_large_image"><meta name="twitter:title" content="{title}"><meta name="twitter:description" content="{lead}"><meta name="twitter:image" content="{cover}"><script type="application/ld+json">{{"@context":"https://schema.org","@type":"Article","headline":{json.dumps(title,ensure_ascii=False)},"description":{json.dumps(lead,ensure_ascii=False)},"image":"{cover}","dateModified":"2026-08-04","author":{{"@type":"Organization","name":"Agent Lab Journal"}},"publisher":{{"@type":"Organization","name":"Agent Lab Journal"}},"mainEntityOfPage":{{"@type":"WebPage","@id":"{canonical}"}}}}</script></head><body>{EN_SITE_HEADER if args.language == 'en' else RU_SITE_HEADER}<main><article class="reading"><header class="article-header"><p class="eyebrow">PRACTICE / AGENT LAB</p><h1>{title}</h1><p class="reading-meta">Practice · 12 minutes · 4 August 2026</p><p class="lead">{lead}</p></header>{'' if args.language == 'en' else MAX_PROMO + TELEGRAM_PROMO}{body}<h2>{related_heading}</h2><p>{related}</p><p><a href="{stylesheet_prefix}guides.html">{guides_label}</a> · <a href="{stylesheet_prefix}glossary.html">{glossary_label}</a></p>{EN_SERVICE_NOTE if args.language == 'en' else SERVICE_NOTES}</article></main>{EN_SITE_FOOTER if args.language == 'en' else RU_SITE_FOOTER}</body></html>'''
 
 try:
     result = subprocess.run(
@@ -165,6 +171,42 @@ def normalized(value: str) -> str:
     return " ".join(re.findall(r"[a-zа-яё0-9]+", unescape(value).casefold()))
 
 
+def has_class(html: str, name: str) -> bool:
+    return re.search(rf'class="(?:[^"]*\s)?{re.escape(name)}(?:\s[^"]*)?"', html) is not None
+
+
+def ensure_skeleton(html: str) -> str:
+    """Insert any missing canonical page-skeleton parts into editor output."""
+    english = args.language == "en"
+    if "max-promo.css" not in html:
+        html = html.replace("</head>", MAX_PROMO_CSS.format(prefix="../" if english else "") + "</head>", 1)
+    if not (has_class(html, "site-header") or has_class(html, "masthead")):
+        html = re.sub(r"(<body[^>]*>)", lambda m: m.group(1) + "\n" + (EN_SITE_HEADER if english else RU_SITE_HEADER), html, count=1)
+    if not (has_class(html, "reading") or re.search(r'<main[^>]*class="(?:[^"]*\s)?article(?:\s[^"]*)?"', html)):
+        def add_reading(match: re.Match) -> str:
+            attrs = match.group(1)
+            if 'class="' in attrs:
+                return "<article" + attrs.replace('class="', 'class="reading ', 1) + ">"
+            return f'<article class="reading"{attrs}>'
+        html = re.sub(r"<article\b([^>]*)>", add_reading, html, count=1)
+    if english:
+        if not has_class(html, "service-note"):
+            html = html.replace("</article>", EN_SERVICE_NOTE + "</article>", 1)
+    else:
+        header = re.search(r'<header[^>]*class="article-header".*?</header>|<article\b[^>]*>.*?</header>', html, flags=re.S)
+        promos = ("" if "max-promo-block" in html else MAX_PROMO) + ("" if "telegram-promo-block" in html else TELEGRAM_PROMO)
+        if promos and header:
+            html = html[:header.end()] + "\n" + promos + html[header.end():]
+        if not has_class(html, "service-note"):
+            html = html.replace("</article>", SERVICE_NOTES + "</article>", 1)
+        elif "service-note--sitevisor" not in html:
+            sitevisor_note = SERVICE_NOTES[SERVICE_NOTES.index('<aside class="service-note service-note--sitevisor"'):]
+            html = html.replace("</article>", sitevisor_note + "</article>", 1)
+    if not re.search(r"</article>.*?<footer", html, flags=re.S):
+        html = html.replace("</body>", (EN_SITE_FOOTER if english else RU_SITE_FOOTER) + "</body>", 1)
+    return html
+
+
 def prepare(html: str) -> tuple[str, str | None]:
     """Normalize generated HTML; return it with the first failed gate, if any."""
     html = re.sub(r"^\s*```(?:html)?\s*|\s*```\s*$", "", html, flags=re.I)
@@ -173,8 +215,9 @@ def prepare(html: str) -> tuple[str, str | None]:
         html = html.replace("</head>", f'<link rel="stylesheet" href="{stylesheet_prefix}style.css"><link rel="stylesheet" href="{stylesheet_prefix}reading.css"><link rel="stylesheet" href="{stylesheet_prefix}homepage.css"></head>', 1)
     elif "homepage.css" not in html:
         html = html.replace("</head>", f'<link rel="stylesheet" href="{stylesheet_prefix}homepage.css"></head>', 1)
-    if not re.match(r"\s*<!doctype html>", html, flags=re.I) or "reading-meta" not in html:
+    if not re.match(r"\s*<!doctype html>", html, flags=re.I) or "reading-meta" not in html or "<article" not in html:
         return html, "Generated output is not a valid article document"
+    html = ensure_skeleton(html)
     visible_text = normalized(re.sub(r"<[^>]+>", " ", html))
     title_match = re.search(r"<title[^>]*>(.*?)</title>", html, flags=re.I | re.S)
     description_match = re.search(
