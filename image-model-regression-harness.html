@@ -1,0 +1,304 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Как отличить регресс image-модели от смены конфигурации — Agent Lab Journal</title>
+<meta name="description" content="Как отличить регресс image-модели от смены конфигурации: собираем regression harness с фиксированными входами, журналом конфигурации и отдельными метриками для лица, референса, инструкции, safety-отказов и ошибок.">
+<link rel="canonical" href="https://agentlabjournal.online/image-model-regression-harness.html">
+<meta property="og:type" content="article">
+<meta property="og:locale" content="ru_RU">
+<meta property="og:site_name" content="Agent Lab Journal">
+<meta property="og:title" content="Как отличить регресс image-модели от смены конфигурации">
+<meta property="og:description" content="Regression harness для генерации изображений: фиксированные входы, журнал конфигурации и раздельные метрики вместо разовых жалоб.">
+<meta property="og:url" content="https://agentlabjournal.online/image-model-regression-harness.html">
+<meta name="twitter:card" content="summary_large_image">
+<meta name="twitter:title" content="Как отличить регресс image-модели от смены конфигурации">
+<meta name="twitter:description" content="Фиксированные входы, журнал конфигурации и раздельные метрики: лицо, референс, инструкция, safety-отказы, технические ошибки.">
+<link rel="stylesheet" href="style.css">
+<link rel="stylesheet" href="reading.css">
+<script type="application/ld+json">
+{
+  "@context": "https://schema.org",
+  "@type": "Article",
+  "headline": "Как отличить регресс image-модели от смены конфигурации",
+  "description": "Regression harness с фиксированными входами, журналом конфигурации и раздельными метриками для лица, референса, инструкции, safety-отказов и технических ошибок.",
+  "inLanguage": "ru",
+  "datePublished": "2026-10-03",
+  "dateModified": "2026-10-03",
+  "mainEntityOfPage": "https://agentlabjournal.online/image-model-regression-harness.html",
+  "url": "https://agentlabjournal.online/image-model-regression-harness.html",
+  "author": {"@type": "Organization", "name": "Agent Lab Journal"},
+  "publisher": {"@type": "Organization", "name": "Agent Lab Journal"}
+}
+</script>
+<link rel="stylesheet" href="homepage.css"><link rel="stylesheet" href="max-promo.css">  <meta property="og:image" content="https://agentlabjournal.online/assets/covers/llm-context-window-budget-social.png">
+  <meta property="og:image:alt" content="Как отличить регресс image-модели от смены конфигурации">
+  <meta name="twitter:image" content="https://agentlabjournal.online/assets/covers/llm-context-window-budget-social.png">
+</head>
+<body>
+<header class="site-header">
+  <a class="site-logo" href="index.html">Agent Lab Journal</a>
+  <nav class="site-nav" aria-label="Основная навигация">
+    <a href="index.html">Главная</a>
+    <a href="guides.html">Гайды</a>
+    <a href="glossary.html">Глоссарий</a>
+  </nav>
+</header>
+<main>
+<article class="reading">
+<a href="https://max.ru/channel_AgentLab?utm_source=agentlabjournal&utm_medium=article&utm_campaign=max_channel&utm_content=article_footer" class="max-promo-block" target="_blank" rel="noopener noreferrer" aria-label="Самое важное из мира AI в канале MAX AgentLab">
+  <span class="max-promo-block__icon" aria-hidden="true"></span>
+  <span class="max-promo-block__content"><span class="max-promo-block__title">Самое важное из мира AI — в канале MAX AgentLab</span><span class="max-promo-block__desc">Отдельные разборы, инструменты и практические схемы</span></span>
+  <span class="max-promo-block__arrow" aria-hidden="true">→</span>
+</a>
+<a href="https://t.me/pelmenews?utm_source=agentlabjournal&utm_medium=article&utm_campaign=telegram_channel&utm_content=article_intro" class="telegram-promo-block" target="_blank" rel="noopener noreferrer" aria-label="Читайте Agent Lab в Telegram">
+  <span class="telegram-promo-block__icon" aria-hidden="true"></span>
+  <span class="telegram-promo-block__content">
+    <span class="telegram-promo-block__title">Читайте Agent Lab в Telegram</span>
+    <span class="telegram-promo-block__desc">Разборы, кейсы и новости о практических AI-агентах без лишней воды.</span>
+  </span>
+  <span class="telegram-promo-block__arrow" aria-hidden="true">→</span>
+</a>
+  <h1>Как отличить регресс image-модели от смены конфигурации</h1>
+        <figure class="article-cover" data-editorial-cover="image-model-regression-harness"><img src="assets/covers/llm-context-window-budget.png" alt="Как отличить регресс image-модели от смены конфигурации" width="1280" height="720" fetchpriority="high"><figcaption>Temporary fallback cover; replace in editorial pass.</figcaption></figure>
+  <p class="reading-meta">Уровень: продвинутый · Время чтения: до 12 минут · Обновлено: <time datetime="2026-10-03">3 октября 2026</time></p>
+
+  <p>Типичная ситуация: кто-то пишет «вчера лица получались похожими, а сегодня — нет» или «модель перестала слушаться промпта». По одной такой жалобе нельзя понять, что изменилось. Это может быть сама модель, интерфейс запуска (другие параметры по умолчанию, автоматическое переписывание промпта), аккаунт (тариф, уровень модерации, квоты) или исходный запрос — его могли «чуть-чуть поправить».</p>
+  <p>В статье разберём, как собрать <a href="glossary.html">regression harness</a> — небольшой стенд, который прогоняет фиксированный набор входов, записывает полный отпечаток конфигурации и считает метрики по отдельности: лицо, референс, инструкция, safety-отказы и технические ошибки. Тогда вопрос «регресс или смена конфигурации?» превращается в сравнение двух журналов.</p>
+
+  <aside class="note">
+    <p><strong>Про примеры.</strong> Код и структура файлов ниже — шаблон, а не результат реальных замеров. Конкретного провайдера мы не называем: функцию вызова генерации вы подключаете к своему клиенту сами. Все цифры в примерах условные.</p>
+  </aside>
+
+  <h2>Почему разовые жалобы ничего не доказывают</h2>
+  <p>Генерация изображений стохастична: даже с одними и теми же входами результат разбросан. Если сравнить одну картинку «до» с одной «после», вы сравниваете два случайных образца. Кроме того, сигналы смешиваются: если модерация отклоняет часть запросов, а интерфейс отдаёт заглушку или пустой ответ, пользователь видит это как «качество упало».</p>
+  <p>Значит, нужны три вещи:</p>
+  <ol>
+    <li><strong>Фиксированные входы</strong> — чтобы исключить изменение запроса.</li>
+    <li><strong>Журнал конфигурации</strong> — чтобы увидеть изменение модели, параметров или аккаунта.</li>
+    <li><strong>Раздельные метрики с повторениями</strong> — чтобы отделить качество от отказов и сбоев и не принимать шум за тренд.</li>
+  </ol>
+
+  <h2>Четыре слоя, которые могут измениться</h2>
+  <table>
+    <thead>
+      <tr><th>Слой</th><th>Что меняется</th><th>Как это заметить</th></tr>
+    </thead>
+    <tbody>
+      <tr><td>Модель</td><td>версия, снапшот, алиас вида «latest»</td><td>идентификатор модели в ответе API, если он там есть; дата прогона</td></tr>
+      <tr><td>Интерфейс запуска</td><td>параметры по умолчанию, размер, качество, переписывание промпта, версия SDK или UI</td><td>полный набор отправленных параметров, версия клиента</td></tr>
+      <tr><td>Аккаунт</td><td>тариф, проект, ключ, регион, настройки модерации</td><td>хеш идентификатора проекта или ключа (не сам ключ), заголовки ответа</td></tr>
+      <tr><td>Запрос</td><td>текст промпта, референсы, их сжатие и разрешение</td><td>SHA-256 промпта и каждого файла референса</td></tr>
+    </tbody>
+  </table>
+  <p>Главное правило: <strong>метрики сравнивают только после того, как сравнили конфигурацию</strong>. Если отпечаток конфигурации отличается, падение метрик сначала объясняют конфигурацией.</p>
+
+  <h2>Шаг 1. Зафиксируйте набор входов</h2>
+  <p>Соберите небольшой «золотой» набор — кейсы, которые покрывают ваши реальные сценарии. Для каждого кейса нужны промпт, референсы (если есть) и список проверяемых требований инструкции. Набор должен быть небольшим, чтобы прогон был дешёвым, и неизменным: новый кейс добавляют как новую версию набора, а старые не правят.</p>
+  <pre><code>harness/
+  cases/
+    v1/
+      cases.jsonl          # один кейс на строку
+      refs/
+        face_01.png
+        product_02.png
+  runs/                    # результаты прогонов, только дозапись
+  manifest.sha256          # хеши всех входов
+</code></pre>
+  <p>Пример строки <code>cases.jsonl</code>:</p>
+  <pre><code>{"id": "face-portrait-01", "prompt": "Студийный портрет человека с референса, нейтральный серый фон, мягкий свет слева", "refs": ["refs/face_01.png"], "checks": ["серый фон", "свет слева", "один человек в кадре"], "metrics": ["face", "instruction"]}
+{"id": "product-02", "prompt": "Товар с референса на деревянном столе, вид сверху", "refs": ["refs/product_02.png"], "checks": ["деревянный стол", "вид сверху"], "metrics": ["reference", "instruction"]}
+</code></pre>
+  <p>Зафиксируйте хеши входов — это безопасная операция, она только читает файлы:</p>
+  <pre><code>cd harness/cases/v1
+find . -type f | sort | xargs sha256sum &gt; ../../manifest.sha256
+# перед каждым прогоном:
+sha256sum -c ../../manifest.sha256 --quiet &amp;&amp; echo "входы не менялись"
+</code></pre>
+  <p>Если проверка упала, дальше не идём: изменился запрос, и сравнение с прошлым прогоном некорректно.</p>
+
+  <h2>Шаг 2. Ведите журнал конфигурации</h2>
+  <p>Каждый вызов генерации записывает, кроме результата, <strong>отпечаток конфигурации</strong>. Это всё, что могло повлиять на выход, кроме случайности. Секреты в журнал не попадают: вместо ключа — короткий хеш, по которому можно понять «ключ тот же или другой», но восстановить ключ нельзя.</p>
+  <pre><code>{
+  "run_id": "2026-10-03T09-00-00Z",
+  "case_set": "v1",
+  "inputs_manifest_sha256": "…",
+  "model_requested": "имя-модели-как-в-запросе",
+  "model_reported": "идентификатор из ответа, если API его возвращает",
+  "params": {"size": "1024x1024", "quality": "…", "n": 1, "seed": null},
+  "client": {"sdk": "имя@версия", "harness_git_sha": "…"},
+  "account": {"project_hash": "a1b2c3d4", "key_hash": "e5f6a7b8"},
+  "prompt_rewrite": "unknown"
+}
+</code></pre>
+  <p>Пара практических замечаний:</p>
+  <ul>
+    <li>Записывайте <em>все</em> параметры, включая те, что вы не меняли: значения по умолчанию на стороне интерфейса как раз и меняются незаметно.</li>
+    <li>Если API возвращает переписанный промпт или идентификатор снапшота, сохраняйте их. Если не возвращает, пишите <code>unknown</code>, а не пропускайте поле: так видно, что этот слой не наблюдается.</li>
+    <li>Хеш для отпечатка считайте по каноническому JSON (с отсортированными ключами), иначе одинаковые конфигурации будут давать разные хеши.</li>
+  </ul>
+
+  <h2>Шаг 3. Прогон с повторениями</h2>
+  <p>Ниже — каркас прогона на Python. Функцию <code>generate</code> вы реализуете под своего провайдера; harness ничего не знает о конкретном API. Каждый вызов повторяется <code>N</code> раз, и каждый исход классифицируется в одну из корзин: <code>ok</code>, <code>refusal</code>, <code>error</code>.</p>
+  <pre><code>import hashlib, json, time, pathlib
+
+N_REPEATS = 5  # подберите под бюджет; один образец ничего не доказывает
+
+def sha(s: bytes) -&gt; str:
+    return hashlib.sha256(s).hexdigest()
+
+def fingerprint(cfg: dict) -&gt; str:
+    return sha(json.dumps(cfg, sort_keys=True, ensure_ascii=False).encode())[:16]
+
+def generate(prompt, ref_paths, params):
+    """Подключите своего провайдера. Верните dict:
+    {"status": "ok"|"refusal"|"error", "image_bytes": ..., "meta": {...}, "error": "..."}"""
+    raise NotImplementedError
+
+def run(case_file, cfg, out_dir):
+    fp = fingerprint(cfg)
+    out = pathlib.Path(out_dir) / f"{cfg['run_id']}.jsonl"
+    out.parent.mkdir(parents=True, exist_ok=True)
+    with open(case_file, encoding="utf-8") as f, open(out, "a", encoding="utf-8") as log:
+        for line in f:
+            case = json.loads(line)
+            for i in range(N_REPEATS):
+                t0 = time.time()
+                try:
+                    r = generate(case["prompt"], case["refs"], cfg["params"])
+                except Exception as e:  # сбой клиента или сети — тоже данные
+                    r = {"status": "error", "error": type(e).__name__}
+                rec = {"case": case["id"], "rep": i, "fp": fp, "cfg": cfg,
+                       "status": r["status"], "error": r.get("error"),
+                       "meta": r.get("meta", {}), "latency_s": round(time.time() - t0, 2)}
+                if r.get("image_bytes"):
+                    img = out.parent / f"{cfg['run_id']}_{case['id']}_{i}.png"
+                    img.write_bytes(r["image_bytes"])
+                    rec["image"] = img.name
+                    rec["image_sha256"] = sha(r["image_bytes"])
+                log.write(json.dumps(rec, ensure_ascii=False) + "\n")
+</code></pre>
+  <p>Различайте отказ и ошибку на уровне кода. Отказ — это явный ответ модерации (специальный код, флаг или текст отказа от провайдера). Ошибка — всё остальное: тайм-ауты, 5xx, лимиты, пустой или повреждённый файл. Если смешать их, рост лимитов из-за смены тарифа будет выглядеть как «модель стала строже».</p>
+
+  <h2>Шаг 4. Раздельные метрики</h2>
+  <p>Пять метрик считаются независимо, и каждая — только на тех кейсах, где она осмысленна (поле <code>metrics</code> в кейсе).</p>
+  <table>
+    <thead>
+      <tr><th>Метрика</th><th>Что измеряет</th><th>Как считать</th><th>Знаменатель</th></tr>
+    </thead>
+    <tbody>
+      <tr><td>Лицо</td><td>сохранение идентичности человека с референса</td><td>косинусное сходство эмбеддингов лица (модель распознавания лиц, которую вы уже используете) между референсом и результатом; отдельно — доля кадров, где лицо не найдено</td><td>успешные генерации</td></tr>
+      <tr><td>Референс</td><td>сохранение объекта, стиля, композиции</td><td>перцептивное сходство или эмбеддинги изображений; при спорных случаях — ручная разметка</td><td>успешные генерации</td></tr>
+      <tr><td>Инструкция</td><td>выполнение явных требований промпта</td><td>доля выполненных пунктов <code>checks</code>; проверяет человек или мультимодальная модель-оценщик с фиксированной версией и промптом</td><td>успешные генерации</td></tr>
+      <tr><td>Safety-отказы</td><td>доля запросов, отклонённых модерацией</td><td>count(refusal) / все попытки</td><td>все попытки</td></tr>
+      <tr><td>Технические ошибки</td><td>сбои, не связанные с содержанием</td><td>count(error) / все попытки, с разбивкой по типу</td><td>все попытки</td></tr>
+    </tbody>
+  </table>
+  <p>Обратите внимание на знаменатели. Метрики качества считаются только по успешным генерациям, иначе отказы и ошибки «утягивают» качество вниз и маскируют свою истинную причину.</p>
+  <p>Оценщик сам является частью конфигурации. Если инструкцию проверяет модель, её версия и промпт оценщика тоже входят в журнал. Иначе вы получите регресс оценщика, а не генератора.</p>
+  <p>Каркас агрегации по корзинам:</p>
+  <pre><code>import json, sys
+from collections import Counter, defaultdict
+
+def summarize(path):
+    by_fp = defaultdict(Counter)
+    for line in open(path, encoding="utf-8"):
+        r = json.loads(line)
+        by_fp[r["fp"]][r["status"]] += 1
+        if r["status"] == "error":
+            by_fp[r["fp"]]["error:" + str(r.get("error"))] += 1
+    for fp, c in by_fp.items():
+        total = c["ok"] + c["refusal"] + c["error"]
+        print(fp, f"n={total}",
+              f"refusal={c['refusal']/total:.2%}",
+              f"error={c['error']/total:.2%}",
+              {k: v for k, v in c.items() if k.startswith("error:")})
+
+summarize(sys.argv[1])
+</code></pre>
+  <p>Метрики лица, референса и инструкции добавляются отдельным скриптом, который читает сохранённые изображения и дописывает оценки в отдельный файл. Сырые результаты при этом не перезаписываются.</p>
+
+  <h2>Шаг 5. Сначала дифф конфигурации, потом метрики</h2>
+  <p>Чтобы сравнить два прогона, начните с отпечатков:</p>
+  <pre><code>jq -c '.cfg | del(.run_id)' runs/A.jsonl | sort -u &gt; /tmp/cfg_a.json
+jq -c '.cfg | del(.run_id)' runs/B.jsonl | sort -u &gt; /tmp/cfg_b.json
+diff &lt;(jq -S . /tmp/cfg_a.json) &lt;(jq -S . /tmp/cfg_b.json) || echo "конфигурация различается"
+</code></pre>
+  <p>Дальше разбор идёт по таблице решений:</p>
+  <table>
+    <thead>
+      <tr><th>Наблюдение</th><th>Вероятная причина</th><th>Следующее действие</th></tr>
+    </thead>
+    <tbody>
+      <tr><td>Хеши входов не совпадают</td><td>изменился запрос</td><td>вернуть исходные входы и прогнать заново</td></tr>
+      <tr><td>Отпечаток различается в <code>params</code> или <code>client</code></td><td>смена интерфейса запуска</td><td>прогнать новую модель со старыми параметрами явно</td></tr>
+      <tr><td>Отпечаток различается в <code>account</code></td><td>смена аккаунта или проекта</td><td>прогнать на обоих аккаунтах одновременно</td></tr>
+      <tr><td>Конфигурация та же, растут только ошибки</td><td>инфраструктура, лимиты</td><td>смотреть разбивку по типам ошибок и время прогона</td></tr>
+      <tr><td>Конфигурация та же, растут только отказы</td><td>изменение модерации</td><td>сравнить, на каких кейсах появились отказы</td></tr>
+      <tr><td>Конфигурация та же, падают метрики качества на нескольких прогонах</td><td>кандидат в регресс модели</td><td>повторить прогон в другое время, проверить стабильность оценщика</td></tr>
+    </tbody>
+  </table>
+  <p>Если <code>model_reported</code> отличается при одинаковом <code>model_requested</code>, это сильный сигнал смены модели за алиасом. Но учтите, что не все API такой идентификатор возвращают.</p>
+
+  <h2>Проверка результата</h2>
+  <p>Перед тем как доверять стенду, проверьте сам стенд:</p>
+  <ul>
+    <li><strong>A/A-прогон.</strong> Два прогона подряд с одинаковой конфигурацией. Разница метрик между ними — это ваш уровень шума. Изменения меньше этого уровня регрессом считать нельзя.</li>
+    <li><strong>Намеренное изменение.</strong> Поменяйте один параметр (например, размер) и убедитесь, что дифф конфигурации его ловит, а отпечаток меняется.</li>
+    <li><strong>Проверка корзин.</strong> Найдите кейс, который гарантированно отклоняется по вашей политике, и убедитесь, что он попадает в <code>refusal</code>, а не в <code>error</code>.</li>
+    <li><strong>Воспроизводимость отчёта.</strong> Сводку можно перестроить из <code>runs/*.jsonl</code> без повторных вызовов модели.</li>
+  </ul>
+
+  <h2>Типовые ошибки</h2>
+  <ul>
+    <li><strong>Одна картинка на кейс.</strong> Без повторений шум не отличить от изменения.</li>
+    <li><strong>Общий балл «качество».</strong> Одно число смешивает лицо, инструкцию и отказы, и причину уже не восстановить.</li>
+    <li><strong>Правка кейсов «на месте».</strong> После этого старые прогоны несравнимы с новыми. Нужен новый <code>case_set</code>.</li>
+    <li><strong>Пропуск значений по умолчанию.</strong> Не записали параметр, потому что «не меняли», а он изменился на стороне интерфейса.</li>
+    <li><strong>Секреты в журнале.</strong> Ключи, токены и персональные данные в JSONL. Храните только хеши, а референсы с лицами — с тем же уровнем доступа, что и исходники.</li>
+    <li><strong>Неверсионированный оценщик.</strong> Меняется модель-оценщик, а вывод делают о генераторе.</li>
+  </ul>
+
+  <h2>Ограничения</h2>
+  <ul>
+    <li>Harness не видит то, что провайдер не раскрывает: скрытое переписывание промпта или серверную смену снапшота можно заподозрить по метрикам, но не доказать без поля в ответе.</li>
+    <li>Если seed не поддерживается или не гарантирует детерминизм, сравнение возможно только статистически, по распределениям.</li>
+    <li>Автоматические метрики лица и референса — приближения. Сходство эмбеддингов не равно субъективному «похоже», поэтому спорные случаи нужно размечать вручную.</li>
+    <li>Небольшой набор кейсов ловит заметные изменения, но может пропустить регресс в сценарии, которого в наборе нет.</li>
+    <li>Каждый прогон стоит денег и квот, поэтому размер набора и <code>N_REPEATS</code> — это компромисс, а не константа.</li>
+  </ul>
+
+  <h2>Что дальше</h2>
+  <p>Когда стенд готов, на жалобу «стало хуже» вы отвечаете не догадкой, а двумя журналами: совпадают ли входы, совпадает ли конфигурация и какая из пяти метрик изменилась сильнее уровня шума. Другие практические разборы собраны в <a href="guides.html">гайдах</a>, а термины из статьи — в <a href="glossary.html">глоссарии</a>.</p>
+<aside class="service-note" aria-label="Связаться по проекту">
+  <div class="service-note__copy">
+    <p class="service-note__label">Связь с Agent Lab</p>
+    <p class="service-note__title">Внедрим такой контур в ваш процесс</p>
+    <p class="service-note__text">Напишите инженеру Agent Lab в Telegram: опишите задачу, бота или интеграцию — предложим пилот с проверками и понятными границами.</p>
+  </div>
+  <a class="service-note__link" href="https://t.me/msrzn007?utm_source=journal&amp;utm_medium=article&amp;utm_campaign=service_note" target="_blank" rel="noopener">Написать в Telegram
+    <svg viewBox="0 0 16 16" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"><path d="M3 13 13 3M6 3h7v7"/></svg>
+  </a>
+</aside>
+<aside class="service-note service-note--sitevisor" aria-label="Экспресс-аудит сайта">
+  <div class="service-note__copy">
+    <p class="service-note__label">SiteVisor</p>
+    <p class="service-note__title">Проверьте техническое состояние и готовность вашего сайта к рекламе</p>
+    <p class="service-note__text">Экспресс-аудит на SiteVisor.pro: индексация, скорость, разметка, аналитика и точки конверсии.</p>
+  </div>
+  <a class="service-note__link" href="https://sitevisor.pro/?utm_source=journal&amp;utm_medium=article&amp;utm_campaign=leadmagnet" target="_blank" rel="noopener">Экспресс-аудит на SiteVisor.pro
+    <svg viewBox="0 0 16 16" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"><path d="M3 13 13 3M6 3h7v7"/></svg>
+  </a>
+</aside>
+</article>
+</main>
+<footer class="site-footer">
+  <p>© Agent Lab Journal</p>
+  <nav aria-label="Ссылки в подвале">
+    <a href="guides.html">Гайды</a>
+    <a href="glossary.html">Глоссарий</a>
+  </nav>
+</footer>
+</body>
+</html>
