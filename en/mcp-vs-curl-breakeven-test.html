@@ -1,0 +1,499 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>MCP или curl в AGENTS.md: считаем точку окупаемости на своём API — MCP vs curl break-even test | Agent Lab Journal</title>
+<meta name="description" content="MCP или curl в AGENTS.md: считаем точку окупаемости на своём API. A reproducible test for comparing the fixed and per-call cost of an MCP server and a curl recipe, with prompt caching, response size and domain-calculation errors included.">
+<link rel="canonical" href="https://agentlabjournal.online/en/mcp-vs-curl-breakeven-test.html">
+<link rel="stylesheet" href="../style.css">
+<link rel="stylesheet" href="../reading.css">
+
+<meta property="og:type" content="article">
+<meta property="og:site_name" content="Agent Lab Journal">
+<meta property="og:title" content="MCP или curl в AGENTS.md: считаем точку окупаемости на своём API">
+<meta property="og:description" content="Measure the fixed and per-call cost of an MCP integration and a curl recipe on your own API, calculate the break-even point, and find out which transformations belong in code.">
+<meta property="og:url" content="https://agentlabjournal.online/en/mcp-vs-curl-breakeven-test.html">
+<meta property="og:image" content="https://agentlabjournal.online/assets/covers/llm-context-window-budget-social.png">
+<meta property="og:locale" content="en_US">
+
+<meta name="twitter:card" content="summary_large_image">
+<meta name="twitter:title" content="MCP или curl в AGENTS.md: считаем точку окупаемости на своём API">
+<meta name="twitter:description" content="A reproducible break-even test for MCP and curl recipes. It counts schemas, API responses, caching and the cost of errors.">
+<meta name="twitter:image" content="https://agentlabjournal.online/assets/covers/llm-context-window-budget-social.png">
+
+<script type="application/ld+json">
+{
+  "@context": "https://schema.org",
+  "@type": "Article",
+  "headline": "MCP или curl в AGENTS.md: считаем точку окупаемости на своём API",
+  "description": "A reproducible test for comparing the fixed and per-call cost of an MCP server and a curl recipe in AGENTS.md, with prompt caching, response size and domain-calculation errors included.",
+  "image": ["https://agentlabjournal.online/assets/covers/llm-context-window-budget-social.png"],
+  "datePublished": "2026-10-03",
+  "dateModified": "2026-10-03",
+  "inLanguage": "en",
+  "author": {
+    "@type": "Organization",
+    "name": "Agent Lab Journal",
+    "url": "https://agentlabjournal.online/"
+  },
+  "publisher": {
+    "@type": "Organization",
+    "name": "Agent Lab Journal",
+    "url": "https://agentlabjournal.online/",
+    "logo": {
+      "@type": "ImageObject",
+      "url": "https://agentlabjournal.online/og-image.png"
+    }
+  },
+  "mainEntityOfPage": {
+    "@type": "WebPage",
+    "@id": "https://agentlabjournal.online/en/mcp-vs-curl-breakeven-test.html"
+  }
+}
+</script>
+<link rel="stylesheet" href="../homepage.css"><link rel="stylesheet" href="../max-promo.css">  <meta property="og:image:alt" content="MCP или curl в AGENTS.md: считаем точку окупаемости на своём API">
+</head>
+<body>
+
+<header class="site-header">
+  <a class="site-logo" href="index.html">Agent Lab Journal</a>
+  <nav class="site-nav" aria-label="Main navigation">
+    <a href="index.html">Home</a>
+    <a href="guides.html">Guides</a>
+    <a href="../glossary.html">Glossary</a>
+  </nav>
+</header>
+
+<main>
+<article class="reading">
+
+<h1>MCP или curl в AGENTS.md: считаем точку окупаемости на своём API</h1>
+        <figure class="article-cover" data-editorial-cover="mcp-vs-curl-breakeven-test"><img src="../assets/covers/llm-context-window-budget.png" alt="MCP или curl в AGENTS.md: считаем точку окупаемости на своём API" width="1280" height="720" fetchpriority="high"><figcaption>Temporary fallback cover; replace in editorial pass.</figcaption></figure>
+
+<p class="reading-meta">Level: advanced · Reading and practice time: about 60 minutes · Updated: 3 October 2026</p>
+
+<p class="lead">Most "MCP vs curl" arguments come down to one number: how many tokens the tool schemas take. That number is real, but it is often not the one that decides the bill. API responses that stay in context, cache hits on the stable part of the prompt, and the cost of an agent getting a currency total wrong can all matter more. This guide gives you a harness to measure both integrations on your own API. You fit a simple cost line for each one, calculate the break-even number of calls, and use the error log to decide which calculations should move out of the prompt and into code.</p>
+
+<aside class="note">
+<p><strong>What this article is and is not.</strong> It is a method with working code. It contains no measured results from our side: every number in the worked example is labelled <em>illustrative</em>, so you should not reuse it as a benchmark. Prices, cache multipliers and model names are left as variables because they change and depend on your provider and plan. Take them from your own price sheet.</p>
+</aside>
+
+<h2 id="problem">1. Why the usual comparison is incomplete</h2>
+
+<p>An <a href="../glossary.html#mcp">MCP</a> server shows its tools to the model as a list of names, descriptions and JSON input schemas (a <a href="../glossary.html#tool-schema">tool schema</a> for each tool). In most clients that list is part of every model request in a session. A curl recipe in <a href="../glossary.html#agents-md">AGENTS.md</a> is a block of prose and commands that also sits in the context on every turn. So both integrations have a <strong>fixed cost</strong> that is paid on every model turn, not once per session.</p>
+
+<p>The common mistake is to stop there. A full comparison has four parts:</p>
+
+<ol>
+  <li><strong>Fixed context:</strong> schema tokens compared with recipe tokens, on every turn.</li>
+  <li><strong>Per-call cost:</strong> the <a href="../glossary.html#token">tokens</a> the model generates to build the call (a JSON argument object or a shell command), plus the tokens of the result. The result then stays in the <a href="../glossary.html#context-window">context window</a> for every later turn. A raw <code>curl</code> response with 200 fields is paid for again on each turn after it arrives.</li>
+  <li><strong>Caching:</strong> with <a href="../glossary.html#prompt-caching">prompt caching</a>, a stable prefix (system prompt, tools, AGENTS.md) costs a write once and cheaper reads after that. A large fixed block can end up costing very little. Tool results that arrive later in the conversation usually do not get the same discount at first.</li>
+  <li><strong>Error risk:</strong> if the model sums amounts, converts minor units, handles pagination or filters out credit notes in its head, some answers will be wrong. A wrong answer costs a retry at best and a bad business decision at worst.</li>
+</ol>
+
+<p>The fourth part shows that the real question is often <em>"prompt or code?"</em>, not <em>"MCP or curl?"</em>. A curl recipe can call a script that does the arithmetic, and an MCP tool can return raw JSON and leave the arithmetic to the model. The harness below measures both questions separately.</p>
+
+<h2 id="case">2. The example case</h2>
+
+<p>To keep things concrete, we use an <em>example</em> internal invoices API. Replace it with your own API. The structure of the test does not depend on the domain.</p>
+
+<pre><code>GET $API_BASE/v1/invoices?status=overdue&amp;page=1&amp;per_page=50
+Authorization: Bearer $API_TOKEN
+
+{
+  "data": [
+    {"id": "inv_…", "type": "invoice" | "credit_note",
+     "amount_minor": 125000, "currency": "EUR",
+     "due_date": "2026-08-14", "customer": {…20 fields…},
+     "lines": [ …… ], "audit": { …… } }
+  ],
+  "next_page": 2 | null
+}</code></pre>
+
+<p>Typical agent tasks look like this: "total overdue amount per currency", "top 5 customers by overdue amount", "how many invoices are overdue by more than 30 days". These tasks contain the traps that cause domain errors: amounts in minor units, credit notes that must be subtracted, pagination, and dates that have to be compared against "today".</p>
+
+<h2 id="setup">3. Prepare the two integrations</h2>
+
+<h3>3.1. Variant A: a minimal MCP server</h3>
+
+<p>Uses the official Python SDK (<code>pip install mcp httpx</code>). Start with a <em>thin</em> tool that returns raw API data. You will add a thick tool later, in step 8.</p>
+
+<pre><code># server_thin.py — variant A: thin MCP tool, returns raw pages
+import os
+import httpx
+from mcp.server.fastmcp import FastMCP
+
+API = os.environ["API_BASE"]
+HDR = {"Authorization": f"Bearer {os.environ['API_TOKEN']}"}
+mcp = FastMCP("invoices")
+
+@mcp.tool()
+def list_invoices(status: str = "overdue", page: int = 1, per_page: int = 50) -&gt; str:
+    """List invoices from the billing API. Returns the raw JSON page."""
+    r = httpx.get(f"{API}/v1/invoices",
+                  params={"status": status, "page": page, "per_page": per_page},
+                  headers=HDR, timeout=30)
+    r.raise_for_status()
+    return r.text
+
+if __name__ == "__main__":
+    mcp.run()</code></pre>
+
+<h3>3.2. Variant B: a curl recipe in AGENTS.md</h3>
+
+<pre><code>## Billing API (read-only)
+
+Base URL is in $API_BASE, token in $API_TOKEN. Never print the token.
+
+List overdue invoices (paginate until next_page is null):
+
+    curl -sS -H "Authorization: Bearer $API_TOKEN" \
+      "$API_BASE/v1/invoices?status=overdue&amp;page=1&amp;per_page=50" \
+      | jq '{next_page, data: [.data[] | {id, type, amount_minor, currency, due_date, customer: .customer.name}]}'
+
+Rules:
+- amount_minor is in minor units (cents). Divide by 100 for display.
+- type == "credit_note" must be subtracted, not added.
+- Group totals by currency; never mix currencies.</code></pre>
+
+<p>Note that the recipe already uses <code>jq</code> to drop fields. That is a fair choice. If you compare a trimmed curl recipe against an MCP tool that returns raw data, you are measuring response size, not the protocol. In step 5 you run the comparison <em>both</em> with and without trimming, so you can see how much of the difference comes from the response size alone.</p>
+
+<h3>3.3. Task set and ground truth</h3>
+
+<p>Write 10–20 tasks that reflect real use. For each one, calculate the correct answer <strong>in code</strong> from the same API data. This reference is what makes the error rate measurable.</p>
+
+<pre><code># reference.py — ground truth computed in code, not by the model
+import os, httpx, json, datetime as dt
+from collections import defaultdict
+
+API, HDR = os.environ["API_BASE"], {"Authorization": f"Bearer {os.environ['API_TOKEN']}"}
+
+def all_overdue():
+    page, out = 1, []
+    while page:
+        j = httpx.get(f"{API}/v1/invoices", headers=HDR,
+                      params={"status": "overdue", "page": page, "per_page": 50}).json()
+        out += j["data"]; page = j["next_page"]
+    return out
+
+def totals_by_currency(rows):
+    t = defaultdict(int)
+    for r in rows:
+        sign = -1 if r["type"] == "credit_note" else 1
+        t[r["currency"]] += sign * r["amount_minor"]
+    return {c: v / 100 for c, v in sorted(t.items())}
+
+if __name__ == "__main__":
+    rows = all_overdue()
+    print(json.dumps({"overdue_totals": totals_by_currency(rows),
+                      "as_of": dt.date.today().isoformat()}, indent=2))</code></pre>
+
+<p>Save the tasks to <code>tasks.jsonl</code>, one task per line: <code>{"id": "t01", "prompt": "…", "expected": {...}}</code>. Freeze the data (use a test tenant or a snapshot) while the test runs. If the API data changes between runs, the expected answers and the response sizes change with it.</p>
+
+<h2 id="fixed">4. Measure the fixed cost</h2>
+
+<p>Count the tokens with the model you will actually use, not with a generic tokenizer: tokenization differs between models. Anthropic's API has a token-counting endpoint, <code>POST /v1/messages/count_tokens</code>, which accepts the same <code>system</code>, <code>tools</code> and <code>messages</code> as a normal request. If you use another provider, use its equivalent or read the <code>usage</code> field of a real request.</p>
+
+<h3>4.1. Export MCP tool definitions</h3>
+
+<pre><code># dump_tools.py — read tools/list from the MCP server and convert to API tool format
+import asyncio, json, sys
+from mcp import ClientSession, StdioServerParameters
+from mcp.client.stdio import stdio_client
+
+async def main(server_py):
+    params = StdioServerParameters(command="python", args=[server_py])
+    async with stdio_client(params) as (r, w):
+        async with ClientSession(r, w) as s:
+            await s.initialize()
+            tools = (await s.list_tools()).tools
+            print(json.dumps([{"name": t.name, "description": t.description or "",
+                               "input_schema": t.inputSchema} for t in tools], indent=2))
+
+asyncio.run(main(sys.argv[1]))</code></pre>
+
+<pre><code>python dump_tools.py server_thin.py &gt; tools_thin.json</code></pre>
+
+<h3>4.2. Count three baselines</h3>
+
+<pre><code># count_fixed.sh — requires ANTHROPIC_API_KEY and MODEL in env
+set -euo pipefail
+count () {
+  curl -sS https://api.anthropic.com/v1/messages/count_tokens \
+    -H "x-api-key: $ANTHROPIC_API_KEY" \
+    -H "anthropic-version: 2023-06-01" \
+    -H "content-type: application/json" \
+    -d "$1" | jq .input_tokens
+}
+MSG='[{"role":"user","content":"ping"}]'
+BASE=$(count "$(jq -n --arg m "$MODEL" --argjson msg "$MSG" '{model:$m, messages:$msg}')")
+MCP=$(count "$(jq -n --arg m "$MODEL" --argjson msg "$MSG" --slurpfile t tools_thin.json \
+      '{model:$m, messages:$msg, tools:$t[0]}')")
+CURL=$(count "$(jq -n --arg m "$MODEL" --argjson msg "$MSG" --rawfile s agents_billing.md \
+      '{model:$m, messages:$msg, system:$s}')")
+echo "baseline=$BASE  mcp_fixed=$((MCP-BASE))  curl_fixed=$((CURL-BASE))"</code></pre>
+
+<p>Here <code>agents_billing.md</code> contains only the billing section of AGENTS.md. Two caveats. First, when you pass tools, the provider may add its own system text for tool use, so the MCP difference includes that overhead. That is what you want to measure, but keep it in mind. Second, in variant B the agent still needs <em>some</em> tool to run commands. If that shell tool is present in both setups, it cancels out. If it exists only in variant B, count its definition as part of curl's fixed cost.</p>
+
+<h2 id="variable">5. Measure the real cost of sessions</h2>
+
+<p>Counting tokens per call by hand misses the fact that each result stays in context. It is simpler and more honest to run whole sessions, record <code>usage</code> on every turn, and fit a line. The harness below runs the same tasks in two modes with the same model and the same system prompt.</p>
+
+<pre><code># harness.py — run tasks in "mcp" or "curl" mode, log usage per model turn
+import asyncio, json, os, shlex, subprocess, sys
+from anthropic import AsyncAnthropic
+from mcp import ClientSession, StdioServerParameters
+from mcp.client.stdio import stdio_client
+
+MODEL = os.environ["MODEL"]
+MODE, SERVER, OUT = sys.argv[1], sys.argv[2], sys.argv[3]   # mode, server_py or agents.md, log path
+client = AsyncAnthropic()
+
+SHELL_TOOL = {"name": "shell", "description": "Run a read-only curl/jq pipeline.",
+              "input_schema": {"type": "object", "properties": {"cmd": {"type": "string"}},
+                               "required": ["cmd"]}}
+
+def run_shell(cmd: str) -&gt; str:
+    # Test harness guard only: allow curl/jq pipelines, nothing else.
+    for part in cmd.split("|"):
+        head = shlex.split(part.strip())[0]
+        if head not in ("curl", "jq"):
+            return f"refused: {head} not allowed"
+    p = subprocess.run(["bash", "-c", cmd], capture_output=True, text=True, timeout=60)
+    return (p.stdout + p.stderr)[-200_000:]
+
+async def session(task, tools, system, call_tool, log):
+    msgs = [{"role": "user", "content": task["prompt"]}]
+    api_calls = 0
+    while True:
+        r = await client.messages.create(
+            model=MODEL, max_tokens=2048, tools=tools, messages=msgs,
+            system=[{"type": "text", "text": system, "cache_control": {"type": "ephemeral"}}])
+        u = r.usage
+        log.write(json.dumps({"task": task["id"], "mode": MODE,
+            "input": u.input_tokens, "output": u.output_tokens,
+            "cache_write": u.cache_creation_input_tokens or 0,
+            "cache_read": u.cache_read_input_tokens or 0}) + "\n")
+        msgs.append({"role": "assistant", "content": r.content})
+        if r.stop_reason != "tool_use":
+            answer = "".join(b.text for b in r.content if b.type == "text")
+            return answer, api_calls
+        results = []
+        for b in r.content:
+            if b.type == "tool_use":
+                api_calls += 1
+                results.append({"type": "tool_result", "tool_use_id": b.id,
+                                "content": await call_tool(b.name, b.input)})
+        msgs.append({"role": "user", "content": results})
+
+async def main():
+    tasks = [json.loads(l) for l in open("tasks.jsonl")]
+    base_system = "You answer questions about billing data. Final answer as JSON."
+    with open(OUT, "a") as log, open(OUT + ".answers", "a") as ans:
+        if MODE == "mcp":
+            params = StdioServerParameters(command="python", args=[SERVER])
+            async with stdio_client(params) as (rd, wr):
+                async with ClientSession(rd, wr) as s:
+                    await s.initialize()
+                    tools = [{"name": t.name, "description": t.description or "",
+                              "input_schema": t.inputSchema} for t in (await s.list_tools()).tools]
+                    async def call(name, args):
+                        res = await s.call_tool(name, args)
+                        return "".join(c.text for c in res.content if c.type == "text")
+                    for t in tasks:
+                        a, n = await session(t, tools, base_system, call, log)
+                        ans.write(json.dumps({"task": t["id"], "mode": MODE, "calls": n, "answer": a}) + "\n")
+        else:
+            system = base_system + "\n\n" + open(SERVER).read()
+            async def call(name, args):
+                return run_shell(args["cmd"])
+            for t in tasks:
+                a, n = await session(t, [SHELL_TOOL], system, call, log)
+                ans.write(json.dumps({"task": t["id"], "mode": MODE, "calls": n, "answer": a}) + "\n")
+
+asyncio.run(main())</code></pre>
+
+<p>Run each mode at least 3 times per task. Model behaviour varies between runs, and a single run tells you little about the error rate.</p>
+
+<pre><code>for i in 1 2 3; do
+  python harness.py mcp  server_thin.py     runs/mcp_thin.jsonl
+  python harness.py curl agents_billing.md  runs/curl_jq.jsonl
+  python harness.py curl agents_raw.md      runs/curl_raw.jsonl   # same recipe without the jq projection
+done</code></pre>
+
+<p>A note on security: the <code>run_shell</code> guard is a check for a test bench, not a sandbox. <code>curl</code> can write files and send data anywhere. Run the harness in a container with no secrets except a <strong>read-only</strong> token for a test tenant.</p>
+
+<h2 id="price">6. Turn usage into one cost number</h2>
+
+<p>Input, output, cache write and cache read tokens are priced differently. Put them on a common scale, "input-token equivalents", using ratios from <em>your</em> price sheet:</p>
+
+<pre><code>cost_turn = input + w · cache_write + r · cache_read + k · output
+
+w = cache write price / base input price
+r = cache read price  / base input price
+k = output price      / base input price</code></pre>
+
+<p>Look up <code>w</code>, <code>r</code> and <code>k</code> for your model and enter them once. Do not copy them from articles, including this one. Then add the error term. For each session, compare the answer with <code>expected</code>. If it is wrong, add a penalty <code>E</code>, which is your estimate of what a wrong answer costs, also in token equivalents. It can be "the cost of one retry session" or something much larger if a person might act on the answer. The penalty is a business decision, so state it explicitly in your report.</p>
+
+<pre><code># score.py — session cost, correctness, and linear fit cost = a + b·N
+import json, sys
+from collections import defaultdict
+
+W, R, K, E = map(float, sys.argv[2:6])          # ratios and error penalty
+expected = {json.loads(l)["id"]: json.loads(l)["expected"] for l in open("tasks.jsonl")}
+log = sys.argv[1]
+
+cost = defaultdict(float)
+for l in open(log):
+    u = json.loads(l)
+    cost[u["task"]] += u["input"] + W*u["cache_write"] + R*u["cache_read"] + K*u["output"]
+# note: cost[] aggregates all runs of a task; answers below are per run
+
+def correct(answer, exp):
+    try:
+        got = json.loads(answer[answer.index("{"): answer.rindex("}")+1])
+    except ValueError:
+        return False
+    return all(abs(float(got.get(k, 1e18)) - float(v)) &lt; 0.005 if isinstance(v, (int, float))
+               else got.get(k) == v for k, v in exp.items())
+
+pts, wrong, total = [], 0, 0
+runs = defaultdict(int)
+for l in open(log + ".answers"):
+    a = json.loads(l); runs[a["task"]] += 1
+for l in open(log + ".answers"):
+    a = json.loads(l); total += 1
+    ok = correct(a["answer"], expected[a["task"]])
+    wrong += (not ok)
+    c = cost[a["task"]] / runs[a["task"]] + (0 if ok else E)
+    pts.append((a["calls"], c))
+
+n = len(pts); mx = sum(p[0] for p in pts)/n; my = sum(p[1] for p in pts)/n
+b = sum((x-mx)*(y-my) for x, y in pts) / max(1e-9, sum((x-mx)**2 for x, _ in pts))
+a = my - b*mx
+print(json.dumps({"log": log, "a_fixed": round(a), "b_per_call": round(b),
+                  "error_rate": round(wrong/total, 3), "sessions": total}))</code></pre>
+
+<p>The script uses the average cost per task across runs. That is a simplification: if you want per-run costs, write a <code>run</code> field into the usage log and group by it. The line <code>cost = a + b·N</code> needs a spread of <code>N</code> values (the number of API calls in a session). If all your tasks take one call, the slope cannot be estimated. Include tasks that need several pages or several endpoints.</p>
+
+<h2 id="breakeven">7. Calculate the break-even point</h2>
+
+<p>With the fitted lines <code>cost_mcp = a_m + b_m·N</code> and <code>cost_curl = a_c + b_c·N</code>, the lines cross at:</p>
+
+<pre><code>N* = (a_m − a_c) / (b_c − b_m)</code></pre>
+
+<p>Read the result like this:</p>
+
+<ul>
+  <li>If <code>a_m &gt; a_c</code> and <code>b_m &lt; b_c</code>, MCP costs more to keep in context but less per call. It pays off for sessions with more than <code>N*</code> calls.</li>
+  <li>If both <code>a</code> and <code>b</code> are higher for one variant, there is no break-even point. One variant is simply better on your workload.</li>
+  <li>If <code>b_c − b_m</code> is close to zero, or smaller than the variation between runs, the per-call difference is noise. Decide on other grounds: auth, auditing, reuse across clients.</li>
+</ul>
+
+<h3>Illustrative example (not a measurement)</h3>
+
+<p>Suppose the fits come out as <code>a_m = 9 000</code>, <code>b_m = 2 500</code> for MCP with a thick tool, and <code>a_c = 4 000</code>, <code>b_c = 4 200</code> for curl with jq. Then <code>N* = (9 000 − 4 000) / (4 200 − 2 500) ≈ 2.9</code>: in sessions with three or more API calls, the MCP variant is cheaper. These numbers were made up to show the arithmetic. Your values may come out in either direction.</p>
+
+<p>Now compare <code>curl_raw</code> with <code>curl_jq</code>. If the difference in <code>b</code> between them is about the same as the difference between curl and MCP, the "protocol" effect was really a response-size effect. You can get it in either variant by trimming the response.</p>
+
+<h2 id="code">8. Decide what moves from the prompt to code</h2>
+
+<p>Open the <code>.answers</code> files and sort the errors by type. In the example domain, typical errors are a sum in cents shown as euros, a credit note added instead of subtracted, a missing second page, or currencies mixed in one total. Every error type that appears <strong>more than once</strong> in your runs is a candidate for code. Instructions in AGENTS.md lower the probability of such an error, but they do not remove it.</p>
+
+<p>Move the calculation into a deterministic function and call that function from both variants:</p>
+
+<pre><code># billing_ops.py — shared code; reuse reference.py logic
+from reference import all_overdue, totals_by_currency
+
+def overdue_totals():
+    return totals_by_currency(all_overdue())</code></pre>
+
+<pre><code># server_thick.py — variant A': tool returns the computed result, not raw pages
+import json
+from mcp.server.fastmcp import FastMCP
+from billing_ops import overdue_totals
+
+mcp = FastMCP("invoices")
+
+@mcp.tool()
+def overdue_totals_by_currency() -&gt; str:
+    """Overdue totals per currency in major units, credit notes subtracted, all pages."""
+    return json.dumps(overdue_totals())
+
+if __name__ == "__main__":
+    mcp.run()</code></pre>
+
+<pre><code>## Billing API — variant B'
+Overdue totals per currency (all pages, credit notes subtracted, major units):
+
+    python -c 'import json,billing_ops; print(json.dumps(billing_ops.overdue_totals()))'</code></pre>
+
+<p>Run the harness again for <code>server_thick.py</code> and the B' recipe. Usually both <code>b</code> (smaller results) and <code>error_rate</code> go down, and the difference between MCP and curl gets smaller. That is the point: the main saving came from moving work out of the prompt, not from the choice of transport.</p>
+
+<p>A practical rule for the decision: move a transformation into code if <em>any</em> of these is true:</p>
+<ul>
+  <li>its error rate in your runs is above zero, and a wrong answer costs more than a retry;</li>
+  <li>it needs all pages or a complete set (sums, counts, top-N);</li>
+  <li>the raw input is much larger than the result, and it stays in context for later turns;</li>
+  <li>the same transformation appears in several tasks.</li>
+</ul>
+<p>Leave it to the model when the task needs judgement (reading descriptions, choosing between ambiguous records) and the data is small.</p>
+
+<h2 id="verify">9. Verification</h2>
+
+<ol>
+  <li><strong>Reference check:</strong> run <code>reference.py</code> twice on the frozen data. The output must be identical. If it is not, the data is not frozen and the error rates mean nothing.</li>
+  <li><strong>Cache check:</strong> in the usage log, the second and later turns of a session should show <code>cache_read &gt; 0</code>. If they show zero, either the prefix is below the provider's minimum cacheable length or something changes in the prefix between turns, such as a timestamp in the system prompt. Then your fixed cost is counted without the cache discount.</li>
+  <li><strong>Fit check:</strong> compare the fitted <code>a</code> with the fixed cost from step 4, multiplied by the average number of turns and adjusted for the cache. They should be the same order of magnitude. A large gap usually means the slope is driven by a few unusually long sessions.</li>
+  <li><strong>Stability:</strong> calculate <code>N*</code> separately for each of the three runs. If the sign changes between runs, report "no stable difference", not a number.</li>
+  <li><strong>Secret check:</strong> <code>grep -r "$API_TOKEN" runs/</code> must return nothing. If the model printed the token in a command, the logs contain it.</li>
+</ol>
+
+<h2 id="failures">10. Typical failure cases</h2>
+
+<ul>
+  <li><strong>Unequal comparison.</strong> MCP returns raw JSON while curl uses jq, or the other way round. Always include the <code>raw</code> and <code>jq</code> pair.</li>
+  <li><strong>Client-specific tool loading.</strong> Some agent clients load tool definitions lazily, or search tools on demand instead of putting the whole list in context. In that case the fixed cost of MCP in your production client differs from this harness. Measure in the real client too, through its usage logs, if it has them.</li>
+  <li><strong>Many servers at once.</strong> The fixed cost of one MCP server is small, but ten connected servers add up on every turn. Measure the full set of tools your agent actually sees, not one server on its own.</li>
+  <li><strong>Lenient checker.</strong> A <code>correct()</code> function that accepts "close enough" hides exactly the errors this test is meant to catch. Compare in minor units or with an explicit tolerance.</li>
+  <li><strong>Penalty E is zero.</strong> Then errors only cost tokens, and a cheap but unreliable variant wins. Decide on <code>E</code> before you look at the results.</li>
+  <li><strong>Pagination never triggers.</strong> If the test tenant has fewer records than one page, the pagination error never shows up. Load enough test data for at least three pages.</li>
+</ul>
+
+<h2 id="limits">11. Limitations</h2>
+
+<ul>
+  <li>The method compares <em>token cost and correctness</em>. Latency, the cost of maintaining an MCP server, access control, auditing, and reuse across clients are not in the formula. Weigh them separately.</li>
+  <li>A linear model is an approximation. Each result stays in context, so cost grows faster than linearly in long sessions. If the residuals grow with <code>N</code>, fit separate lines for short and long sessions.</li>
+  <li>The results apply to one model, one prompt and one data set. A change of model, or even of the tool description wording, requires a new run.</li>
+  <li>Three runs per task give a rough error rate, not a confident one. Treat an error rate of 1 in 30 as "errors happen", not as a precise 3.3%.</li>
+</ul>
+
+<h2 id="summary">12. Summary checklist</h2>
+
+<ol>
+  <li>Freeze the data and calculate the ground truth in code.</li>
+  <li>Count the fixed context of both variants with the token counter of your model.</li>
+  <li>Run sessions in three modes (MCP, curl+jq, raw curl) and log usage per turn.</li>
+  <li>Convert usage to token equivalents with your own price ratios and an explicit error penalty.</li>
+  <li>Fit <code>a + b·N</code> and calculate <code>N*</code> for each run.</li>
+  <li>Move any calculation that produced repeated errors into code, then measure again.</li>
+</ol>
+
+<p>Related material: the full list of practical guides is on the <a href="guides.html">guides page</a>, and the terms used here are explained in the <a href="../glossary.html">glossary</a>.</p>
+
+<section class="service-note">
+  <b>We publish what works for us—and implement the same solutions for your business.</b>
+  We design AI automation, Telegram bots, chats, and AI agents for real-world processes.
+  <a href="../contacts-en.html">Discuss your project →</a>
+</section>
+</article>
+</main>
+
+<footer class="site-footer">
+  <p>© 2026 Agent Lab Journal · <a href="guides.html">Guides</a> · <a href="../glossary.html">Glossary</a></p>
+</footer>
+
+</body>
+</html>

@@ -1,0 +1,438 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>MCP или curl в AGENTS.md: считаем точку окупаемости на своём API — Agent Lab Journal</title>
+  <meta name="description" content="MCP или curl в AGENTS.md: считаем точку окупаемости на своём API. Как измерить постоянные и переменные затраты двух интеграций, учесть кэширование и ошибки и решить, что вынести из промпта в код.">
+  <link rel="canonical" href="https://agentlabjournal.online/mcp-vs-curl-breakeven-test.html">
+  <link rel="stylesheet" href="style.css">
+  <link rel="stylesheet" href="reading.css">
+
+  <meta property="og:type" content="article">
+  <meta property="og:site_name" content="Agent Lab Journal">
+  <meta property="og:locale" content="ru_RU">
+  <meta property="og:title" content="MCP или curl в AGENTS.md: считаем точку окупаемости на своём API">
+  <meta property="og:description" content="Методика измерения постоянных и переменных затрат MCP-сервера и curl-рецептов, формула точки окупаемости и критерии, по которым вычисления переносят из промпта в код.">
+  <meta property="og:url" content="https://agentlabjournal.online/mcp-vs-curl-breakeven-test.html">
+
+  <meta name="twitter:card" content="summary">
+  <meta name="twitter:title" content="MCP или curl в AGENTS.md: считаем точку окупаемости на своём API">
+  <meta name="twitter:description" content="Измеряем схемы, ответы API, кэширование и цену ошибок, затем вычисляем, с какого числа вызовов MCP выгоднее curl.">
+
+  <script type="application/ld+json">
+  {
+    "@context": "https://schema.org",
+    "@type": "Article",
+    "headline": "MCP или curl в AGENTS.md: считаем точку окупаемости на своём API",
+    "description": "Как измерить постоянные и переменные затраты MCP-сервера и curl-рецептов в AGENTS.md, вычислить точку окупаемости и решить, какие преобразования вынести из промпта в код.",
+    "inLanguage": "ru",
+    "datePublished": "2026-10-03",
+    "dateModified": "2026-10-03",
+    "mainEntityOfPage": "https://agentlabjournal.online/mcp-vs-curl-breakeven-test.html",
+    "author": { "@type": "Organization", "name": "Agent Lab Journal" },
+    "publisher": { "@type": "Organization", "name": "Agent Lab Journal" },
+    "proficiencyLevel": "Expert",
+    "timeRequired": "PT12M"
+  }
+  </script>
+<link rel="stylesheet" href="homepage.css"><link rel="stylesheet" href="max-promo.css">  <meta property="og:image" content="https://agentlabjournal.online/assets/covers/llm-context-window-budget-social.png">
+  <meta property="og:image:alt" content="MCP или curl в AGENTS.md: считаем точку окупаемости на своём API">
+  <meta name="twitter:image" content="https://agentlabjournal.online/assets/covers/llm-context-window-budget-social.png">
+</head>
+<body>
+  <header class="site-header">
+    <a class="site-logo" href="index.html">Agent Lab Journal</a>
+    <nav class="site-nav" aria-label="Основная навигация">
+      <a href="index.html">Главная</a>
+      <a href="guides.html">Гайды</a>
+      <a href="glossary.html">Глоссарий</a>
+    </nav>
+  </header>
+
+  <main>
+    <article class="reading">
+<a href="https://max.ru/channel_AgentLab?utm_source=agentlabjournal&utm_medium=article&utm_campaign=max_channel&utm_content=article_footer" class="max-promo-block" target="_blank" rel="noopener noreferrer" aria-label="Самое важное из мира AI в канале MAX AgentLab">
+  <span class="max-promo-block__icon" aria-hidden="true"></span>
+  <span class="max-promo-block__content"><span class="max-promo-block__title">Самое важное из мира AI — в канале MAX AgentLab</span><span class="max-promo-block__desc">Отдельные разборы, инструменты и практические схемы</span></span>
+  <span class="max-promo-block__arrow" aria-hidden="true">→</span>
+</a>
+<a href="https://t.me/pelmenews?utm_source=agentlabjournal&utm_medium=article&utm_campaign=telegram_channel&utm_content=article_intro" class="telegram-promo-block" target="_blank" rel="noopener noreferrer" aria-label="Читайте Agent Lab в Telegram">
+  <span class="telegram-promo-block__icon" aria-hidden="true"></span>
+  <span class="telegram-promo-block__content">
+    <span class="telegram-promo-block__title">Читайте Agent Lab в Telegram</span>
+    <span class="telegram-promo-block__desc">Разборы, кейсы и новости о практических AI-агентах без лишней воды.</span>
+  </span>
+  <span class="telegram-promo-block__arrow" aria-hidden="true">→</span>
+</a>
+      <h1>MCP или curl в AGENTS.md: считаем точку окупаемости на своём API</h1>
+        <figure class="article-cover" data-editorial-cover="mcp-vs-curl-breakeven-test"><img src="assets/covers/llm-context-window-budget.png" alt="MCP или curl в AGENTS.md: считаем точку окупаемости на своём API" width="1280" height="720" fetchpriority="high"><figcaption>Temporary fallback cover; replace in editorial pass.</figcaption></figure>
+
+      <div class="reading-meta">
+        <span>Уровень: продвинутый</span> ·
+        <span>Чтение: до 12 минут</span> ·
+        <time datetime="2026-10-03">3 октября 2026</time>
+      </div>
+
+      <p class="lead">
+        Спор «подключить <a href="glossary.html">MCP</a>-сервер или описать пару curl-команд в AGENTS.md» обычно сводят к одному числу:
+        сколько токенов занимают схемы инструментов. Но схемы — только постоянная часть расходов. Каждый вызов приносит ответ API,
+        который попадает в контекст; часть префикса кэшируется, часть нет; а если агент сам считает суммы, даты и пагинацию,
+        ошибка в одном вызове может стоить дороже, чем все сэкономленные токены. Ниже — методика, по которой вы измерите обе
+        интеграции на своём API, вычислите точку окупаемости и поймёте, какие преобразования пора переносить из промпта в код.
+      </p>
+
+      <p>
+        Важно: все числа в статье — иллюстрация формул, а не результаты наших замеров. Подставляйте собственные измерения.
+      </p>
+
+      <h2 id="model">1. Модель затрат: что именно сравниваем</h2>
+
+      <p>Для каждой интеграции разложим стоимость одной рабочей сессии на три слагаемых:</p>
+
+      <ul>
+        <li>
+          <strong>F — постоянная часть.</strong> Для MCP это описания и JSON-схемы всех инструментов, которые клиент кладёт
+          в контекст. Для curl — раздел AGENTS.md с рецептами: адреса, заголовки, примеры, правила разбора ответа.
+          Платится один раз на сессию (или реже, если префикс кэшируется).
+        </li>
+        <li>
+          <strong>v — переменная часть на вызов.</strong> Токены, которые модель генерирует, чтобы сформировать вызов, плюс
+          токены результата, которые возвращаются в контекст. Для curl результат — это то, что напечатала команда:
+          сырой JSON, если вы его не фильтруете. Для MCP — то, что вернул сервер, и его можно заранее сократить.
+        </li>
+        <li>
+          <strong>E — ожидаемая цена ошибок.</strong> Вероятность ошибки на вызов, умноженная на стоимость её исправления:
+          повторные вызовы, лишние раунды рассуждений, а в худшем случае — неверный результат, ушедший пользователю.
+        </li>
+      </ul>
+
+      <p>Для <em>n</em> вызовов в сессии:</p>
+
+      <pre><code>C_mcp(n)  = F_mcp  + n · (v_mcp  + p_mcp  · K)
+C_curl(n) = F_curl + n · (v_curl + p_curl · K)</code></pre>
+
+      <p>
+        Здесь <code>p</code> — доля вызовов с ошибкой, <code>K</code> — средняя стоимость исправления в тех же единицах (токенах
+        или деньгах). Обычно <code>F_mcp &gt; F_curl</code>: схемы занимают больше места, чем три строки curl. Если при этом
+        MCP дешевле на вызов, существует точка окупаемости:
+      </p>
+
+      <pre><code>n* = (F_mcp − F_curl) / ((v_curl + p_curl·K) − (v_mcp + p_mcp·K))</code></pre>
+
+      <p>
+        Если знаменатель отрицателен или равен нулю, MCP не окупается никогда — при текущих схемах и ответах. Если
+        <code>n*</code> меньше типичного числа вызовов в вашей сессии, MCP выгоднее. Всё остальное — измерение этих пяти величин.
+      </p>
+
+      <h2 id="prepare">2. Подготовка стенда</h2>
+
+      <p>Нужно:</p>
+      <ul>
+        <li>доступ к вашему API в режиме только чтения (тестовый ключ или стенд);</li>
+        <li>MCP-сервер, оборачивающий те же эндпоинты, и текущий раздел AGENTS.md с curl-рецептами;</li>
+        <li><code>jq</code>, Python 3 и, по возможности, способ точного подсчёта токенов для вашей модели;</li>
+        <li>фиксированный набор из 10–20 задач, типичных для вашего агента (одинаковый для обеих интеграций).</li>
+      </ul>
+
+      <p>Ключ держите в переменной окружения и не пишите его в файлы, которые попадут в репозиторий или в логи:</p>
+
+      <pre><code>export API_BASE="https://staging.example.internal"   # пример адреса, замените своим
+read -rs API_TOKEN && export API_TOKEN               # ввод без эха в терминал
+mkdir -p bench/raw bench/filtered</code></pre>
+
+      <p>
+        О точности подсчёта. Байты / 4 — грубая оценка для английского текста и JSON; для кириллицы и плотного JSON она
+        ошибается заметно. Для решения «на границе» используйте токенизатор вашей модели или эндпоинт подсчёта токенов,
+        если провайдер его предоставляет (например, <code>count_tokens</code> в Anthropic API). Ниже везде
+        используется функция <code>tokens()</code> — замените её реализацию на точную.
+      </p>
+
+      <h2 id="fixed">3. Измеряем постоянные затраты F</h2>
+
+      <h3>3.1. Схемы MCP</h3>
+
+      <p>
+        Получите ровно то, что клиент отдаст модели, — ответ на <code>tools/list</code>. Для stdio-сервера это можно сделать
+        без клиента агента, передав три JSON-RPC-сообщения (команду запуска сервера замените своей):
+      </p>
+
+      <pre><code>printf '%s\n' \
+ '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"bench","version":"0"}}}' \
+ '{"jsonrpc":"2.0","method":"notifications/initialized"}' \
+ '{"jsonrpc":"2.0","id":2,"method":"tools/list"}' \
+| timeout 10 ./your-mcp-server \
+| jq -c 'select(.id==2) | .result.tools' &gt; bench/tools.json
+
+wc -c bench/tools.json
+jq 'length' bench/tools.json</code></pre>
+
+      <p>
+        Если сервер поддерживает другую версию протокола, он вернёт её в ответе на <code>initialize</code> — поправьте поле.
+        Альтернатива — MCP Inspector (<code>npx @modelcontextprotocol/inspector</code>), где список инструментов виден в интерфейсе.
+      </p>
+
+      <p>
+        Учтите, что клиенты оборачивают схемы в собственный системный текст. Самый честный способ — сравнить счётчик входных
+        токенов в логах клиента для пустой сессии с подключённым сервером и без него. Разница и есть <code>F_mcp</code>.
+      </p>
+
+      <h3>3.2. Рецепты в AGENTS.md</h3>
+
+      <p>Вырежьте раздел с рецептами в отдельный файл и посчитайте его так же:</p>
+
+      <pre><code>awk '/^## API/{f=1} /^## /&amp;&amp;!/^## API/{f=0} f' AGENTS.md &gt; bench/recipes.md
+wc -c bench/recipes.md</code></pre>
+
+      <p>
+        Заголовок раздела <code>## API</code> — пример; используйте свой. Если рецепты разбросаны по файлу, честнее считать
+        тем же способом, что и для MCP: разница входных токенов пустой сессии с полным и с урезанным AGENTS.md.
+      </p>
+
+      <h3>3.3. Поправка на кэширование</h3>
+
+      <p>
+        И схемы, и AGENTS.md обычно стоят в начале контекста и не меняются между сессиями, поэтому попадают в кэшируемый
+        префикс, если ваш провайдер и клиент поддерживают кэширование промпта. Тогда эффективная постоянная часть:
+      </p>
+
+      <pre><code>F_eff = F · (h · r + (1 − h))</code></pre>
+
+      <p>
+        где <code>h</code> — доля сессий с попаданием в кэш, <code>r</code> — относительная цена кэшированного токена по
+        тарифу вашего провайдера. Обе величины берите из логов использования и прайса, а не из предположений. Два практических
+        следствия: во-первых, если клиент меняет порядок или состав инструментов между сессиями, кэш промахивается и
+        <code>h</code> падает; во-вторых, кэширование уменьшает именно разницу в <code>F</code>, а значит, сдвигает
+        <code>n*</code> в пользу MCP.
+      </p>
+
+      <p>
+        Результаты вызовов кэшу помогают меньше: они попадают в середину диалога и переиспользуются только как часть префикса
+        последующих ходов той же сессии. Зато они платятся заново на каждом следующем ходе, пока остаются в контексте, — об
+        этом в следующем разделе.
+      </p>
+
+      <h2 id="variable">4. Измеряем переменные затраты v</h2>
+
+      <p>
+        Главный источник разницы — размер результата. Сначала зафиксируйте, что агент видит при curl-рецепте, затем — что
+        возвращает MCP-инструмент на тот же запрос.
+      </p>
+
+      <pre><code># Сырой ответ, как его напечатает curl без фильтра
+curl -sS --fail-with-body \
+  -H "Authorization: Bearer $API_TOKEN" \
+  "$API_BASE/v1/orders?status=open&amp;limit=50" &gt; bench/raw/orders.json
+wc -c bench/raw/orders.json
+
+# Тот же ответ после проекции на нужные поля
+jq '[.items[] | {id, status, total, currency, updated_at}]' \
+  bench/raw/orders.json &gt; bench/filtered/orders.json
+wc -c bench/filtered/orders.json</code></pre>
+
+      <p>
+        Путь и поля — пример; подставьте эндпоинты из своих задач. Используйте только GET-запросы: бенчмарк не должен ничего
+        менять в системе.
+      </p>
+
+      <p>
+        Теперь соберите для каждой задачи из набора:
+      </p>
+      <ul>
+        <li><code>out</code> — токены, которые модель потратила на формирование вызова (видно в логах как выходные токены хода);</li>
+        <li><code>res</code> — токены результата;</li>
+        <li><code>stay</code> — сколько последующих ходов результат оставался в контексте.</li>
+      </ul>
+
+      <p>
+        Последний пункт часто забывают. Результат в 3000 токенов, который висит в контексте ещё пять ходов, стоит не 3000, а
+        около 18 000 входных токенов (с поправкой на кэш). Поэтому:
+      </p>
+
+      <pre><code>v ≈ out + res · (1 + stay · c)</code></pre>
+
+      <p>
+        где <code>c</code> — средняя относительная цена повторно прочитанного токена (1 без кэша, меньше единицы — с ним).
+        Удобно положить замеры в CSV и посчитать всё скриптом:
+      </p>
+
+      <pre><code># bench/calls.csv: variant,task,out,res,stay,error
+# variant ∈ {mcp,curl}; error ∈ {0,1}
+import csv, statistics as st
+from collections import defaultdict
+
+C_REREAD = 1.0   # замените на долю цены кэшированного токена, если кэш работает
+K = 4000         # средняя стоимость исправления ошибки в токенах — из ваших логов
+F = {"mcp": 0, "curl": 0}  # подставьте F_eff из раздела 3
+
+rows = defaultdict(list)
+for r in csv.DictReader(open("bench/calls.csv")):
+    v = int(r["out"]) + int(r["res"]) * (1 + int(r["stay"]) * C_REREAD)
+    rows[r["variant"]].append((v, int(r["error"])))
+
+per_call = {}
+for k, xs in rows.items():
+    v = st.mean(x[0] for x in xs)
+    p = st.mean(x[1] for x in xs)
+    per_call[k] = v + p * K
+    print(f"{k}: v={v:.0f}  p_err={p:.2%}  per_call={per_call[k]:.0f}")
+
+d = per_call["curl"] - per_call["mcp"]
+if d &lt;= 0:
+    print("MCP не окупается при текущих замерах")
+else:
+    print(f"n* = {(F['mcp'] - F['curl']) / d:.1f} вызовов на сессию")</code></pre>
+
+      <p>
+        Значение <code>K = 4000</code> в скрипте — заглушка, а не рекомендация. Оцените его по логам: возьмите сессии с ошибкой
+        и посчитайте токены от ошибочного вызова до момента, когда агент вернулся на верный путь.
+      </p>
+
+      <h2 id="errors">5. Измеряем ошибки: где агент считает сам</h2>
+
+      <p>
+        Ошибки делятся на два класса, и их полезно размечать отдельно.
+      </p>
+
+      <p><strong>Ошибки вызова.</strong> Неверный флаг curl, забытый заголовок, неправильное экранирование query-параметров,
+        несуществующее поле в аргументах. MCP со схемой снижает их частоту, потому что клиент проверяет аргументы до вызова.
+        Curl-рецепт может быть точным, но модель всё равно собирает строку руками.</p>
+
+      <p><strong>Ошибки доменных вычислений.</strong> Агент получил верные данные, но:</p>
+      <ul>
+        <li>сложил суммы в разных валютах или в минорных единицах вперемешку с основными;</li>
+        <li>сравнил даты без учёта часового пояса;</li>
+        <li>прочитал первую страницу и решил, что это весь список;</li>
+        <li>округлил там, где бизнес-правило требует отбрасывать дробную часть;</li>
+        <li>пересчитал статус по своим правилам вместо того, что вернул API.</li>
+      </ul>
+
+      <p>
+        Такие ошибки не зависят от транспорта: агент может ошибиться и с MCP, если инструмент возвращает сырые данные. Разница
+        в том, что в MCP-сервер (или в скрипт, который вызывается из AGENTS.md) естественно положить код, который делает
+        вычисление детерминированно. Поэтому при разметке для каждой ошибки отмечайте, могла ли её предотвратить серверная
+        функция.
+      </p>
+
+      <p>
+        Как получить разметку: прогоните набор задач на каждой интеграции хотя бы несколько раз (вывод моделей недетерминирован),
+        для задач с проверяемым ответом сравните результат с эталоном, посчитанным кодом. Число прогонов и задач определяет,
+        насколько можно доверять <code>p</code>: при 15 задачах разница в одну ошибку — это почти 7 процентных пунктов.
+      </p>
+
+      <h2 id="move-to-code">6. Что выносить из промпта в код</h2>
+
+      <p>Переносите преобразование в код (в MCP-инструмент или в скрипт-обёртку), если выполняется хотя бы одно условие:</p>
+
+      <ol>
+        <li><strong>Есть однозначно правильный ответ.</strong> Суммы, конвертации, интервалы дат, агрегаты по списку. Модели
+          тут нечего решать, но есть где ошибиться.</li>
+        <li><strong>Данных больше, чем нужно для решения.</strong> Если агент читает 50 объектов, чтобы найти три просроченных,
+          фильтр на стороне кода сокращает <code>res</code> и одновременно убирает риск пропуска.</li>
+        <li><strong>Нужна пагинация или повторы.</strong> Цикл по курсору и обработку 429/5xx с паузами код делает надёжнее,
+          а агенту достаточно итогового результата.</li>
+        <li><strong>Правило уже описано в AGENTS.md абзацем текста.</strong> Если рецепт содержит «не забудь разделить на 100»
+          или «учитывай UTC», это кандидат на функцию. Текст правила — постоянная стоимость в каждой сессии и всё равно не
+          гарантирует исполнения.</li>
+      </ol>
+
+      <p>Оставляйте в промпте то, что требует суждения: выбор, какую сущность запрашивать, интерпретацию неоднозначного
+        запроса пользователя, решение, что делать при конфликте данных.</p>
+
+      <p>
+        Обратите внимание: перенос в код не обязательно означает MCP. Скрипт <code>scripts/open_orders.sh</code>, который
+        вызывает API, фильтрует через <code>jq</code> и печатает компактный результат, тоже снижает <code>v</code> и
+        <code>p</code>, а его описание в AGENTS.md занимает одну строку. Поэтому в бенчмарк стоит включить третий вариант —
+        «curl + скрипт» — иначе вы сравниваете MCP с намеренно слабым соперником.
+      </p>
+
+      <h2 id="verify">7. Проверка результата</h2>
+
+      <p>Прежде чем принимать решение, убедитесь, что расчёт не обманывает вас:</p>
+
+      <ul>
+        <li><strong>Пересчёт вручную.</strong> Возьмите одну сессию из логов и сверьте фактические входные и выходные токены
+          с тем, что даёт формула <code>F + n · v</code>. Расхождение больше 10–15% значит, что вы что-то не учли
+          (системный текст клиента, повторные чтения, ретраи).</li>
+        <li><strong>Чувствительность.</strong> Пересчитайте <code>n*</code> с <code>K</code>, уменьшенным и увеличенным вдвое,
+          и с <code>h = 0</code> (кэш не сработал). Если вывод меняется, решение «на границе» — смотрите на
+          распределение числа вызовов в реальных сессиях, а не на среднее.</li>
+        <li><strong>Распределение n.</strong> Посчитайте по логам, сколько вызовов API бывает в сессии: медиану и 90-й перцентиль.
+          Если медиана ниже <code>n*</code>, а хвост выше, возможно, нужен MCP-сервер, подключаемый только для определённых задач.</li>
+        <li><strong>Повторяемость.</strong> Повторите замер ответов API через неделю: размеры ответов меняются вместе с данными.</li>
+      </ul>
+
+      <h2 id="pitfalls">8. Типовые ошибки методики</h2>
+
+      <ul>
+        <li><strong>Сравнивать только размеры схем.</strong> Это <code>F</code> без <code>v</code> и <code>E</code> — половина
+          уравнения в лучшем случае.</li>
+        <li><strong>Сравнивать MCP с фильтрацией и curl без фильтрации.</strong> Разница в <code>res</code> тогда объясняется
+          проекцией полей, а не протоколом. Сравнивайте одинаковую проекцию либо явно включайте вариант «curl + jq».</li>
+        <li><strong>Игнорировать «время жизни» результата в контексте.</strong> Большой ответ, полученный в начале длинной сессии,
+          может стоить больше всех схем вместе.</li>
+        <li><strong>Считать один прогон.</strong> Частота ошибок по одному прогону — шум.</li>
+        <li><strong>Подключать все инструменты сервера.</strong> Если агенту нужны три из двадцати, <code>F_mcp</code> завышен;
+          многие клиенты позволяют ограничить набор инструментов.</li>
+        <li><strong>Гонять бенчмарк на боевом API с правами записи.</strong> Только GET, только тестовый ключ, никаких токенов в
+          <code>bench/</code>.</li>
+      </ul>
+
+      <h2 id="limits">9. Ограничения</h2>
+
+      <ul>
+        <li>Модель затрат линейная. На практике рост контекста может менять поведение модели и частоту ошибок в длинных сессиях.</li>
+        <li>Цена исправления <code>K</code> плохо оценивается для ошибок, которые никто не заметил. Если неверный результат может
+          уйти пользователю, считайте эту стоимость отдельно — она редко выражается в токенах.</li>
+        <li>Методика не учитывает стоимость сопровождения: MCP-сервер нужно обновлять вместе с API, рецепты в AGENTS.md
+          устаревают тише, но тоже устаревают.</li>
+        <li>Результат привязан к модели, клиенту и тарифу. Смена любого из них — повод пересчитать.</li>
+        <li>Безопасность и права доступа (кто может вызывать что) — отдельный критерий, который в эту формулу не входит.</li>
+      </ul>
+
+      <h2 id="summary">Итог</h2>
+
+      <p>
+        Ответ на вопрос «MCP или curl в AGENTS.md: считаем точку окупаемости на своём API» складывается из пяти измерений:
+        постоянной части обеих интеграций с поправкой на кэш, размера и времени жизни ответов, частоты ошибок и цены их
+        исправления. Почти всегда самая большая экономия получается не от выбора транспорта, а от того, что детерминированные
+        преобразования — фильтры, суммы, даты, пагинация — уходят из промпта в код. Сначала сделайте это, затем пересчитайте
+        <code>n*</code>.
+      </p>
+
+      <p>
+        Больше практических методик — в разделе <a href="guides.html">гайдов</a>, определения терминов — в
+        <a href="glossary.html">глоссарии</a>.
+      </p>
+<aside class="service-note" aria-label="Связаться по проекту">
+  <div class="service-note__copy">
+    <p class="service-note__label">Связь с Agent Lab</p>
+    <p class="service-note__title">Внедрим такой контур в ваш процесс</p>
+    <p class="service-note__text">Напишите инженеру Agent Lab в Telegram: опишите задачу, бота или интеграцию — предложим пилот с проверками и понятными границами.</p>
+  </div>
+  <a class="service-note__link" href="https://t.me/msrzn007?utm_source=journal&amp;utm_medium=article&amp;utm_campaign=service_note" target="_blank" rel="noopener">Написать в Telegram
+    <svg viewBox="0 0 16 16" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"><path d="M3 13 13 3M6 3h7v7"/></svg>
+  </a>
+</aside>
+<aside class="service-note service-note--sitevisor" aria-label="Экспресс-аудит сайта">
+  <div class="service-note__copy">
+    <p class="service-note__label">SiteVisor</p>
+    <p class="service-note__title">Проверьте техническое состояние и готовность вашего сайта к рекламе</p>
+    <p class="service-note__text">Экспресс-аудит на SiteVisor.pro: индексация, скорость, разметка, аналитика и точки конверсии.</p>
+  </div>
+  <a class="service-note__link" href="https://sitevisor.pro/?utm_source=journal&amp;utm_medium=article&amp;utm_campaign=leadmagnet" target="_blank" rel="noopener">Экспресс-аудит на SiteVisor.pro
+    <svg viewBox="0 0 16 16" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"><path d="M3 13 13 3M6 3h7v7"/></svg>
+  </a>
+</aside>
+</article>
+  </main>
+
+  <footer class="site-footer">
+    <p>© 2026 Agent Lab Journal</p>
+    <nav aria-label="Ссылки в подвале">
+      <a href="guides.html">Гайды</a>
+      <a href="glossary.html">Глоссарий</a>
+    </nav>
+  </footer>
+</body>
+</html>
