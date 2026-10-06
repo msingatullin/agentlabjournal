@@ -1,0 +1,767 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Строгость или исправление: тестируем парсер аргументов LLM-инструментов — Strict or repair? | Agent Lab Journal</title>
+<meta name="description" content="Строгость или исправление: тестируем парсер аргументов LLM-инструментов. A reproducible Python gate for tool-call arguments that repairs unambiguous representation errors, rejects ambiguous values and logs every repair.">
+<link rel="canonical" href="https://agentlabjournal.online/en/llm-tool-argument-coercion.html">
+<link rel="alternate" hreflang="en" href="https://agentlabjournal.online/en/llm-tool-argument-coercion.html">
+<link rel="alternate" hreflang="ru" href="https://agentlabjournal.online/llm-tool-argument-coercion.html">
+<link rel="stylesheet" href="../style.css">
+<link rel="stylesheet" href="../reading.css">
+
+<meta property="og:type" content="article">
+<meta property="og:site_name" content="Agent Lab Journal">
+<meta property="og:locale" content="en_US">
+<meta property="og:title" content="Строгость или исправление: тестируем парсер аргументов LLM-инструментов">
+<meta property="og:description" content="Repair what is unambiguous, reject what is not: a tested argument layer for LLM tool calls, with a repair log you can replay.">
+<meta property="og:url" content="https://agentlabjournal.online/en/llm-tool-argument-coercion.html">
+<meta property="og:image" content="https://agentlabjournal.online/assets/covers/llm-context-window-budget-social.png">
+<meta property="article:modified_time" content="2026-10-06">
+
+<meta name="twitter:card" content="summary_large_image">
+<meta name="twitter:title" content="Строгость или исправление: тестируем парсер аргументов LLM-инструментов">
+<meta name="twitter:description" content="Repair what is unambiguous, reject what is not: a tested argument layer for LLM tool calls.">
+<meta name="twitter:image" content="https://agentlabjournal.online/assets/covers/llm-context-window-budget-social.png">
+
+<script type="application/ld+json">
+{
+  "@context": "https://schema.org",
+  "@type": "Article",
+  "headline": "Строгость или исправление: тестируем парсер аргументов LLM-инструментов",
+  "alternativeHeadline": "Strict or repair: testing an argument parser for LLM tools",
+  "description": "Строгость или исправление: тестируем парсер аргументов LLM-инструментов. A reproducible Python gate for tool-call arguments that repairs unambiguous representation errors, rejects ambiguous values and logs every repair.",
+  "image": ["https://agentlabjournal.online/assets/covers/llm-context-window-budget-social.png"],
+  "inLanguage": "en",
+  "datePublished": "2026-10-06",
+  "dateModified": "2026-10-06",
+  "author": {
+    "@type": "Organization",
+    "name": "Agent Lab Journal",
+    "url": "https://agentlabjournal.online/"
+  },
+  "publisher": {
+    "@type": "Organization",
+    "name": "Agent Lab Journal",
+    "url": "https://agentlabjournal.online/"
+  },
+  "mainEntityOfPage": {
+    "@type": "WebPage",
+    "@id": "https://agentlabjournal.online/en/llm-tool-argument-coercion.html"
+  }
+}
+</script>
+<link rel="stylesheet" href="../homepage.css"><link rel="stylesheet" href="../max-promo.css">  <meta property="og:image:alt" content="Строгость или исправление: тестируем парсер аргументов LLM-инструментов">
+</head>
+<body>
+
+<header class="site-header">
+  <a class="site-logo" href="index.html">Agent Lab Journal</a>
+  <nav class="site-nav" aria-label="Main">
+    <a href="index.html">Home</a>
+    <a href="guides.html">Guides</a>
+    <a href="../glossary.html">Glossary</a>
+    <a href="../llm-tool-argument-coercion.html" hreflang="ru">RU</a>
+  </nav>
+</header>
+
+<main>
+<article class="reading">
+
+<h1>Строгость или исправление: тестируем парсер аргументов LLM-инструментов</h1>
+        <figure class="article-cover" data-editorial-cover="llm-tool-argument-coercion"><img src="../assets/covers/llm-context-window-budget.png" alt="Строгость или исправление: тестируем парсер аргументов LLM-инструментов" width="1280" height="720" fetchpriority="high"><figcaption>Temporary fallback cover; replace in editorial pass.</figcaption></figure>
+<p class="lead"><em>Strict or repair: testing an argument parser for LLM tools.</em></p>
+
+<div class="reading-meta">
+  <span>Level: intermediate</span> ·
+  <span>Reading time: 60 minutes</span> ·
+  <span>Updated: 6 October 2026</span>
+</div>
+
+<p class="lead">A model asked to refund $19.99 sends <code>"amount_cents": "1999"</code>. The data is right; the envelope is wrong — a string where the schema says integer. A strict parser rejects it and burns a round trip. A "helpful" parser that runs <code>int(float(x))</code> on everything accepts it, and on the next call it also accepts <code>"19.99"</code> as 19 cents, silently. This article builds the layer in between: a small, tested gate that repairs representation errors with exactly one possible meaning, rejects everything with two or more, and records every repair so you can see how often your model needs help.</p>
+
+<p>By the end you will have four files — a parser, a tool spec, a pytest suite and a replay script — that you can run locally in a few minutes and then adapt to your own tools. Nothing here depends on a particular model provider.</p>
+
+<h2 id="scope">What this article does and does not claim</h2>
+<ul>
+  <li><strong>Verified by you, not by us:</strong> the code and tests below are complete and intended to pass on Python 3.10+. We do not publish a pass count or timings; run them and trust your own output.</li>
+  <li><strong>Examples, not incidents:</strong> the refund tool, order IDs and recorded calls are illustrative. There is no customer data here, and no measured error rates for any specific model.</li>
+  <li><strong>No external benchmarks:</strong> where we say a pattern is common, read that as "a pattern you should test for", not as a statistic.</li>
+</ul>
+
+<h2 id="problem">The problem: right data, wrong envelope</h2>
+<p>In <a href="../glossary.html#tool-calling">tool calling</a>, an <a href="../glossary.html#llm">LLM</a> emits a tool name and a JSON object of arguments, and your code executes the tool. Even with a <a href="../glossary.html#json-schema">JSON Schema</a> attached to the tool definition, what arrives at your server is not guaranteed to conform. Unless your provider enforces <a href="../glossary.html#structured-output">structured output</a> with constrained decoding — and even then, if you accept calls from more than one model or from replayed logs — you will see things like:</p>
+<ul>
+  <li>numbers as strings: <code>"1999"</code>;</li>
+  <li>integral floats: <code>1999.0</code>;</li>
+  <li>booleans as strings: <code>"true"</code>, <code>"False"</code>;</li>
+  <li>enum values in the wrong case: <code>"Damaged"</code>;</li>
+  <li>a single string where an array is expected: <code>"fragile"</code> instead of <code>["fragile"]</code>;</li>
+  <li>the whole payload wrapped in a Markdown code fence, or JSON-encoded twice;</li>
+  <li><code>null</code> for an optional field instead of omitting it.</li>
+</ul>
+<p>And next to those, values that only <em>look</em> like the same kind of mistake:</p>
+<ul>
+  <li><code>"19.99"</code> for a field in cents — dollars or a typo?</li>
+  <li><code>"1,999"</code> — one thousand nine hundred ninety-nine, or a European decimal?</li>
+  <li><code>"03/04/2026"</code> — March 4 or April 3?</li>
+  <li><code>"yes"</code> or <code>1</code> for a boolean that triggers a customer email;</li>
+  <li><code>"fragile, gift"</code> — one tag or two?</li>
+  <li><code>"amount": 1999</code> instead of <code>"amount_cents"</code> — a typo with an obvious fix that you should still not apply automatically.</li>
+</ul>
+<p>The difference between the two lists is the whole design: <strong>repair when the value has exactly one reasonable interpretation; reject when it has more than one, even if one of them is very likely.</strong> A rejection costs one round trip in the <a href="../glossary.html#agent-loop">agent loop</a>. A wrong repair costs whatever the tool does — here, money.</p>
+
+<h2 id="case">The concrete case: <code>issue_refund</code></h2>
+<p>We use one tool throughout. It has the field types that cause most trouble in practice: an ID with a format, an integer with bounds, a boolean with side effects, an enum, a list and a date.</p>
+
+<table>
+  <thead><tr><th>Field</th><th>Type</th><th>Rule</th></tr></thead>
+  <tbody>
+    <tr><td><code>order_id</code></td><td>string</td><td>required, matches <code>ord_[A-Za-z0-9]{8}</code></td></tr>
+    <tr><td><code>amount_cents</code></td><td>integer</td><td>required, 1 to 50000</td></tr>
+    <tr><td><code>notify_customer</code></td><td>boolean</td><td>optional, default <code>false</code></td></tr>
+    <tr><td><code>reason</code></td><td>enum</td><td>required: <code>damaged</code>, <code>late</code>, <code>duplicate</code>, <code>other</code></td></tr>
+    <tr><td><code>tags</code></td><td>array of strings</td><td>optional, default <code>[]</code></td></tr>
+    <tr><td><code>effective_date</code></td><td>date</td><td>optional, ISO <code>YYYY-MM-DD</code> only</td></tr>
+  </tbody>
+</table>
+
+<h2 id="policy">The policy, written down before the code</h2>
+<p>Write the policy as a table first. If you cannot justify a repair in one sentence, it is not unambiguous.</p>
+
+<table>
+  <thead><tr><th>Input</th><th>Decision</th><th>Why</th></tr></thead>
+  <tbody>
+    <tr><td>Payload in a <code>```json</code> fence</td><td>Repair: <code>strip_code_fence</code></td><td>The fence is formatting; content is unchanged.</td></tr>
+    <tr><td>Payload JSON-encoded twice</td><td>Repair once: <code>unwrap_double_encoded</code></td><td>One level is a known serialization slip. Three levels is a bug elsewhere — reject.</td></tr>
+    <tr><td>Prose around JSON</td><td>Reject: <code>invalid_json</code></td><td>Extracting "the JSON part" means guessing which part.</td></tr>
+    <tr><td>Duplicate keys</td><td>Reject: <code>duplicate_key</code></td><td>Standard parsers keep the last value silently. Which one did the model mean?</td></tr>
+    <tr><td><code>NaN</code>, <code>Infinity</code></td><td>Reject: <code>non_finite_number</code></td><td>Not valid JSON; Python's parser accepts them by default.</td></tr>
+    <tr><td><code>"1999"</code> for an integer</td><td>Repair: <code>numeric_string_to_int</code></td><td>Plain base-10 digits have one meaning.</td></tr>
+    <tr><td><code>1999.0</code> for an integer</td><td>Repair: <code>integral_float_to_int</code></td><td>No fractional part; no information lost.</td></tr>
+    <tr><td><code>19.99</code>, <code>"19.99"</code>, <code>"1,999"</code>, <code>"1e3"</code>, <code>"01999"</code>, <code>" 1999"</code></td><td>Reject</td><td>Unit confusion, locale, notation or truncation — more than one reading.</td></tr>
+    <tr><td><code>true</code> for an integer</td><td>Reject: <code>type</code></td><td>In Python <code>bool</code> is a subclass of <code>int</code>; an unguarded check lets <code>true</code> become 1.</td></tr>
+    <tr><td><code>"true"</code> / <code>"FALSE"</code> for a boolean</td><td>Repair: <code>string_to_bool</code></td><td>The literal words, case-insensitively, have one meaning.</td></tr>
+    <tr><td><code>"yes"</code>, <code>1</code>, <code>"0"</code> for a boolean</td><td>Reject</td><td>Each is a convention, not a value.</td></tr>
+    <tr><td><code>"Damaged"</code> for an enum</td><td>Repair if exactly one case-insensitive match</td><td>Unique match is unambiguous; two matches are not.</td></tr>
+    <tr><td><code>"fragile"</code> for an array</td><td>Repair: <code>scalar_to_list</code></td><td>One item, one list.</td></tr>
+    <tr><td><code>"fragile, gift"</code> or <code>'["fragile"]'</code> for an array</td><td>Reject: <code>ambiguous_list</code></td><td>Splitting or parsing a string is a guess.</td></tr>
+    <tr><td><code>12345678</code> for a string ID</td><td>Reject: <code>type</code></td><td>Converting numbers to IDs loses leading zeros and invites confusion with amounts.</td></tr>
+    <tr><td><code>null</code> for an optional field</td><td>Repair: <code>null_to_absent</code></td><td>Treated as "not provided"; the default applies.</td></tr>
+    <tr><td><code>null</code> or missing for a required field</td><td>Reject: <code>missing</code></td><td>Never invent required values.</td></tr>
+    <tr><td>Unknown field <code>amount</code></td><td>Reject with a hint</td><td>Suggest <code>amount_cents</code> to the model; do not rename silently.</td></tr>
+    <tr><td><code>"03/04/2026"</code> for a date</td><td>Reject: <code>ambiguous_date</code></td><td>Day/month order depends on locale.</td></tr>
+  </tbody>
+</table>
+
+<p>Two extra rules make the policy operable:</p>
+<ol>
+  <li><strong>Every repair is recorded</strong> with path, rule, before and after values. A repair you cannot see is the same as a silent coercion.</li>
+  <li><strong>Any field can opt out of repairs</strong> with <code>"strict": True</code>. For a high-risk field you may prefer "the model must get it exactly right" even for <code>"1999"</code>.</li>
+</ol>
+
+<h2 id="setup">Step 1. Set up the project</h2>
+<pre><code>mkdir toolargs-lab &amp;&amp; cd toolargs-lab
+python3 -m venv .venv
+. .venv/bin/activate
+python -m pip install pytest
+python --version   # expect 3.10 or newer</code></pre>
+<p>The parser uses only the standard library. pytest is needed for the tests only. The module is named <code>toolargs.py</code> rather than anything with "argparse" in it, to avoid shadowing the standard library module.</p>
+
+<h2 id="parser">Step 2. The parser: <code>toolargs.py</code></h2>
+<p>The structure is simple: decode the payload into a dict, reject unknown fields, then run each declared field through a type-specific coercer that either returns a clean value (optionally appending a <code>Repair</code>) or raises <code>ArgumentError</code> with a stable machine-readable code.</p>
+
+<pre><code>"""Argument gate for LLM tool calls: repair unambiguous representation errors, reject the rest."""
+from __future__ import annotations
+
+import copy
+import difflib
+import json
+import re
+from dataclasses import dataclass, field
+from datetime import date
+from typing import Any
+
+
+class ArgumentError(ValueError):
+    def __init__(self, path: str, code: str, message: str):
+        super().__init__(f"{path}: {code}: {message}")
+        self.path = path
+        self.code = code
+        self.message = message
+
+
+@dataclass(frozen=True)
+class Repair:
+    path: str
+    rule: str
+    before: Any
+    after: Any
+
+
+@dataclass
+class Parsed:
+    args: dict[str, Any]
+    repairs: list[Repair] = field(default_factory=list)
+
+
+FENCE_RE = re.compile(r"\A```(?:json)?[ \t]*\n(.*)\n```\s*\Z", re.DOTALL)
+INT_RE = re.compile(r"-?(?:0|[1-9][0-9]*)")
+ISO_DATE_RE = re.compile(r"[0-9]{4}-[0-9]{2}-[0-9]{2}")
+LIST_SEPARATORS = (",", ";", "\n")
+
+
+# --- payload decoding -------------------------------------------------------
+
+def _no_duplicates(pairs):
+    obj = {}
+    for key, value in pairs:
+        if key in obj:
+            raise ArgumentError(f"$.{key}", "duplicate_key", "key appears more than once")
+        obj[key] = value
+    return obj
+
+
+def _reject_constant(name):
+    raise ArgumentError("$", "non_finite_number", f"{name} is not allowed")
+
+
+def _loads(text: str) -&gt; Any:
+    return json.loads(text, object_pairs_hook=_no_duplicates, parse_constant=_reject_constant)
+
+
+def decode_payload(raw: Any, repairs: list[Repair]) -&gt; dict[str, Any]:
+    if isinstance(raw, dict):
+        return raw
+    if not isinstance(raw, str):
+        raise ArgumentError("$", "not_object", f"expected JSON object, got {type(raw).__name__}")
+
+    text = raw.strip()
+    fence = FENCE_RE.match(text)
+    if fence:
+        repairs.append(Repair("$", "strip_code_fence", raw, fence.group(1)))
+        text = fence.group(1)
+
+    try:
+        value = _loads(text)
+    except json.JSONDecodeError as err:
+        raise ArgumentError("$", "invalid_json", err.msg) from None
+
+    if isinstance(value, str):
+        # Exactly one level of double encoding is repaired; deeper nesting is rejected below.
+        try:
+            inner = _loads(value)
+        except json.JSONDecodeError:
+            raise ArgumentError("$", "not_object", "payload is a JSON string") from None
+        if isinstance(inner, dict):
+            repairs.append(Repair("$", "unwrap_double_encoded", value, inner))
+        value = inner
+
+    if not isinstance(value, dict):
+        raise ArgumentError("$", "not_object", f"expected JSON object, got {type(value).__name__}")
+    return value
+
+
+# --- field coercers -----------------------------------------------------------
+
+def _type_error(path: str, expected: str, value: Any) -&gt; ArgumentError:
+    return ArgumentError(path, "type", f"expected {expected}, got {type(value).__name__}")
+
+
+def coerce_string(path, value, spec, repairs):
+    if not isinstance(value, str):
+        raise _type_error(path, "string", value)
+    pattern = spec.get("pattern")
+    if pattern and not re.fullmatch(pattern, value):
+        raise ArgumentError(path, "pattern", f"{value!r} does not match {pattern}")
+    return value
+
+
+def coerce_integer(path, value, spec, repairs):
+    if isinstance(value, bool):
+        raise _type_error(path, "integer", value)
+    if isinstance(value, int):
+        out = value
+    elif isinstance(value, float):
+        if not value.is_integer():
+            raise ArgumentError(path, "lossy_number", f"{value!r} has a fractional part")
+        out = int(value)
+        repairs.append(Repair(path, "integral_float_to_int", value, out))
+    elif isinstance(value, str):
+        if not INT_RE.fullmatch(value):
+            raise ArgumentError(path, "ambiguous_integer", f"{value!r} is not a plain base-10 integer")
+        out = int(value)
+        repairs.append(Repair(path, "numeric_string_to_int", value, out))
+    else:
+        raise _type_error(path, "integer", value)
+
+    low, high = spec.get("minimum"), spec.get("maximum")
+    if (low is not None and out &lt; low) or (high is not None and out &gt; high):
+        raise ArgumentError(path, "out_of_range", f"{out} is outside [{low}, {high}]")
+    return out
+
+
+def coerce_boolean(path, value, spec, repairs):
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        lowered = value.lower()
+        if lowered in ("true", "false"):
+            out = lowered == "true"
+            repairs.append(Repair(path, "string_to_bool", value, out))
+            return out
+        raise ArgumentError(path, "ambiguous_boolean", f"{value!r} is not 'true' or 'false'")
+    raise _type_error(path, "boolean", value)
+
+
+def coerce_enum(path, value, spec, repairs):
+    if not isinstance(value, str):
+        raise _type_error(path, "string enum", value)
+    values = spec["values"]
+    if value in values:
+        return value
+    matches = [v for v in values if v.casefold() == value.casefold()]
+    if len(matches) == 1:
+        repairs.append(Repair(path, "enum_casefold", value, matches[0]))
+        return matches[0]
+    raise ArgumentError(path, "enum", f"{value!r} is not one of {values}")
+
+
+def coerce_string_list(path, value, spec, repairs):
+    if isinstance(value, list):
+        for i, item in enumerate(value):
+            if not isinstance(item, str):
+                raise _type_error(f"{path}[{i}]", "string", item)
+        return list(value)
+    if isinstance(value, str):
+        if (not value.strip()
+                or any(sep in value for sep in LIST_SEPARATORS)
+                or value.lstrip().startswith("[")):
+            raise ArgumentError(path, "ambiguous_list", f"{value!r} cannot be turned into a list safely")
+        repairs.append(Repair(path, "scalar_to_list", value, [value]))
+        return [value]
+    raise _type_error(path, "array of strings", value)
+
+
+def coerce_date(path, value, spec, repairs):
+    if not isinstance(value, str):
+        raise _type_error(path, "date string", value)
+    if not ISO_DATE_RE.fullmatch(value):
+        raise ArgumentError(path, "ambiguous_date", f"{value!r} is not YYYY-MM-DD")
+    try:
+        return date.fromisoformat(value).isoformat()
+    except ValueError:
+        raise ArgumentError(path, "invalid_date", f"{value!r} is not a real calendar date") from None
+
+
+COERCERS = {
+    "string": coerce_string,
+    "integer": coerce_integer,
+    "boolean": coerce_boolean,
+    "enum": coerce_enum,
+    "array_string": coerce_string_list,
+    "date": coerce_date,
+}
+
+
+# --- entry points -------------------------------------------------------------
+
+def parse_arguments(raw: Any, spec: dict[str, dict[str, Any]]) -&gt; Parsed:
+    repairs: list[Repair] = []
+    data = decode_payload(raw, repairs)
+
+    unknown = sorted(set(data) - set(spec))
+    if unknown:
+        name = unknown[0]
+        hint = difflib.get_close_matches(name, list(spec), n=1)
+        message = "unknown field" + (f"; did you mean {hint[0]!r}?" if hint else "")
+        raise ArgumentError(f"$.{name}", "unknown_field", message)
+
+    out: dict[str, Any] = {}
+    for name, fspec in spec.items():
+        path = f"$.{name}"
+        if name not in data or data[name] is None:
+            if fspec.get("required"):
+                raise ArgumentError(path, "missing", "required field is absent or null")
+            if name in data:
+                repairs.append(Repair(path, "null_to_absent", None, fspec.get("default")))
+            if "default" in fspec:
+                out[name] = copy.deepcopy(fspec["default"])
+            continue
+
+        before = len(repairs)
+        out[name] = COERCERS[fspec["type"]](path, data[name], fspec, repairs)
+        if fspec.get("strict") and len(repairs) &gt; before:
+            rule = repairs[before].rule
+            raise ArgumentError(path, "repair_forbidden", f"{rule} is not allowed for this field")
+
+    return Parsed(out, repairs)
+
+
+def error_for_model(err: ArgumentError) -&gt; str:
+    """Tool result to send back to the model so it can correct the call."""
+    return json.dumps(
+        {"ok": False, "error": err.code, "path": err.path, "message": err.message},
+        ensure_ascii=False,
+    )</code></pre>
+
+<p>Points worth reading twice:</p>
+<ul>
+  <li><code>object_pairs_hook=_no_duplicates</code> — without it, <code>{"amount_cents": 1999, "amount_cents": 199999}</code> parses to the larger value with no warning.</li>
+  <li><code>parse_constant=_reject_constant</code> — Python's <code>json</code> accepts <code>NaN</code> and <code>Infinity</code> by default; this turns them into a rejection.</li>
+  <li>The <code>isinstance(value, bool)</code> check comes <em>before</em> <code>isinstance(value, int)</code>. Swap them and <code>true</code> becomes a 1-cent refund.</li>
+  <li>The unknown-field hint goes back to the model. The parser itself never renames <code>amount</code> to <code>amount_cents</code>.</li>
+  <li>Error codes are stable strings. Tests, dashboards and the model's correction prompt all depend on them; treat renaming a code as a breaking change.</li>
+</ul>
+
+<h2 id="spec">Step 3. The tool spec: <code>refund_spec.py</code></h2>
+<pre><code>SPEC = {
+    "order_id": {"type": "string", "required": True, "pattern": r"ord_[A-Za-z0-9]{8}"},
+    "amount_cents": {"type": "integer", "required": True, "minimum": 1, "maximum": 50000},
+    "notify_customer": {"type": "boolean", "default": False},
+    "reason": {"type": "enum", "required": True,
+               "values": ["damaged", "late", "duplicate", "other"]},
+    "tags": {"type": "array_string", "default": []},
+    "effective_date": {"type": "date"},
+}</code></pre>
+<p>This spec is deliberately smaller than full JSON Schema. If you already publish a JSON Schema to the model, generate this dict from it (or extend the parser to read your schema directly) so that the model's contract and the server's gate cannot drift apart. Keeping two hand-written copies is how fields get renamed in one place only.</p>
+
+<h2 id="tests">Step 4. The tests: <code>test_toolargs.py</code></h2>
+<p>The suite has four groups: a clean call, repairs that must happen, rejections that must happen, and properties that must hold across all repairs. The last group is the one that catches regressions when someone "just adds one more coercion".</p>
+
+<pre><code>import json
+
+import pytest
+
+from refund_spec import SPEC
+from toolargs import ArgumentError, Repair, error_for_model, parse_arguments
+
+BASE = {"order_id": "ord_A1b2C3d4", "amount_cents": 1999, "reason": "damaged"}
+
+
+def payload(**overrides):
+    return json.dumps({**BASE, **overrides})
+
+
+def rejects(raw, spec=SPEC):
+    with pytest.raises(ArgumentError) as exc:
+        parse_arguments(raw, spec)
+    return exc.value
+
+
+# --- clean call ---------------------------------------------------------------
+
+def test_clean_call_has_no_repairs():
+    result = parse_arguments(payload(), SPEC)
+    assert result.args == {
+        "order_id": "ord_A1b2C3d4",
+        "amount_cents": 1999,
+        "notify_customer": False,
+        "reason": "damaged",
+        "tags": [],
+    }
+    assert result.repairs == []
+
+
+def test_defaults_are_not_shared_between_calls():
+    first = parse_arguments(payload(), SPEC)
+    first.args["tags"].append("mutated")
+    second = parse_arguments(payload(), SPEC)
+    assert second.args["tags"] == []
+
+
+# --- repairs ------------------------------------------------------------------
+
+REPAIR_CASES = [
+    ("amount_cents", "1999", 1999, "numeric_string_to_int"),
+    ("amount_cents", 1999.0, 1999, "integral_float_to_int"),
+    ("notify_customer", "true", True, "string_to_bool"),
+    ("notify_customer", "FALSE", False, "string_to_bool"),
+    ("reason", "Damaged", "damaged", "enum_casefold"),
+    ("tags", "fragile", ["fragile"], "scalar_to_list"),
+    ("notify_customer", None, False, "null_to_absent"),
+]
+
+
+@pytest.mark.parametrize("field,value,expected,rule", REPAIR_CASES)
+def test_unambiguous_values_are_repaired(field, value, expected, rule):
+    result = parse_arguments(payload(**{field: value}), SPEC)
+    assert result.args[field] == expected
+    assert type(result.args[field]) is type(expected)
+    assert [r.rule for r in result.repairs] == [rule]
+    assert result.repairs[0].path == f"$.{field}"
+
+
+def test_repair_records_before_and_after():
+    result = parse_arguments(payload(amount_cents="1999"), SPEC)
+    assert result.repairs == [Repair("$.amount_cents", "numeric_string_to_int", "1999", 1999)]
+
+
+def test_code_fence_is_stripped():
+    raw = "```json\n" + json.dumps(BASE) + "\n```"
+    result = parse_arguments(raw, SPEC)
+    assert result.args["amount_cents"] == 1999
+    assert [r.rule for r in result.repairs] == ["strip_code_fence"]
+
+
+def test_double_encoding_is_unwrapped_once():
+    result = parse_arguments(json.dumps(json.dumps(BASE)), SPEC)
+    assert result.args["order_id"] == "ord_A1b2C3d4"
+    assert [r.rule for r in result.repairs] == ["unwrap_double_encoded"]
+
+
+def test_triple_encoding_is_rejected():
+    raw = json.dumps(json.dumps(json.dumps(BASE)))
+    assert rejects(raw).code == "not_object"
+
+
+def test_null_optional_without_default_is_dropped():
+    result = parse_arguments(payload(effective_date=None), SPEC)
+    assert "effective_date" not in result.args
+    assert [r.rule for r in result.repairs] == ["null_to_absent"]
+
+
+# --- rejections ---------------------------------------------------------------
+
+@pytest.mark.parametrize("field,value,code", [
+    ("amount_cents", "19.99", "ambiguous_integer"),
+    ("amount_cents", "1,999", "ambiguous_integer"),
+    ("amount_cents", "1e3", "ambiguous_integer"),
+    ("amount_cents", " 1999", "ambiguous_integer"),
+    ("amount_cents", "01999", "ambiguous_integer"),
+    ("amount_cents", 19.99, "lossy_number"),
+    ("amount_cents", True, "type"),
+    ("amount_cents", 0, "out_of_range"),
+    ("amount_cents", 50001, "out_of_range"),
+    ("notify_customer", "yes", "ambiguous_boolean"),
+    ("notify_customer", 1, "type"),
+    ("order_id", 12345678, "type"),
+    ("order_id", "ORD_A1b2C3d4", "pattern"),
+    ("reason", "broken", "enum"),
+    ("reason", None, "missing"),
+    ("tags", "fragile, gift", "ambiguous_list"),
+    ("tags", '["fragile"]', "ambiguous_list"),
+    ("effective_date", "03/04/2026", "ambiguous_date"),
+    ("effective_date", "2026-02-30", "invalid_date"),
+])
+def test_ambiguous_values_are_rejected(field, value, code):
+    err = rejects(payload(**{field: value}))
+    assert err.code == code
+    assert err.path == f"$.{field}"
+
+
+def test_non_string_list_item_reports_exact_path():
+    err = rejects(payload(tags=["fragile", 3]))
+    assert (err.code, err.path) == ("type", "$.tags[1]")
+
+
+def test_missing_required_field():
+    data = dict(BASE)
+    del data["reason"]
+    err = rejects(json.dumps(data))
+    assert (err.code, err.path) == ("missing", "$.reason")
+
+
+def test_unknown_field_gets_a_hint_but_is_not_renamed():
+    data = {**BASE, "amount": 1999}
+    err = rejects(json.dumps(data))
+    assert err.code == "unknown_field"
+    assert "amount_cents" in err.message
+
+
+def test_duplicate_keys_are_rejected():
+    raw = '{"order_id":"ord_A1b2C3d4","amount_cents":1999,"amount_cents":49999,"reason":"late"}'
+    assert rejects(raw).code == "duplicate_key"
+
+
+def test_nan_is_rejected():
+    raw = '{"order_id":"ord_A1b2C3d4","amount_cents":NaN,"reason":"late"}'
+    assert rejects(raw).code == "non_finite_number"
+
+
+@pytest.mark.parametrize("raw,code", [
+    ("not json", "invalid_json"),
+    ('{"order_id": "ord_A1b2C3d4"', "invalid_json"),
+    ("Here are the arguments: " + json.dumps(BASE), "invalid_json"),
+    ("[]", "not_object"),
+    (42, "not_object"),
+])
+def test_bad_payloads(raw, code):
+    assert rejects(raw).code == code
+
+
+# --- strict fields ------------------------------------------------------------
+
+STRICT_SPEC = {**SPEC, "amount_cents": {**SPEC["amount_cents"], "strict": True}}
+
+
+def test_strict_field_refuses_repairs():
+    err = rejects(payload(amount_cents="1999"), STRICT_SPEC)
+    assert (err.code, err.path) == ("repair_forbidden", "$.amount_cents")
+
+
+def test_strict_field_accepts_exact_values():
+    assert parse_arguments(payload(), STRICT_SPEC).args["amount_cents"] == 1999
+
+
+# --- properties ---------------------------------------------------------------
+
+@pytest.mark.parametrize("field,value,expected,rule", REPAIR_CASES)
+def test_repair_is_idempotent(field, value, expected, rule):
+    first = parse_arguments(payload(**{field: value}), SPEC)
+    second = parse_arguments(json.dumps(first.args), SPEC)
+    assert second.args == first.args
+    assert second.repairs == []
+
+
+def test_enum_values_are_casefold_unique():
+    for name, fspec in SPEC.items():
+        if fspec["type"] == "enum":
+            folded = [v.casefold() for v in fspec["values"]]
+            assert len(set(folded)) == len(folded), name
+
+
+def test_error_message_for_model_is_json():
+    err = rejects(payload(amount_cents="19.99"))
+    body = json.loads(error_for_model(err))
+    assert body == {
+        "ok": False,
+        "error": "ambiguous_integer",
+        "path": "$.amount_cents",
+        "message": err.message,
+    }</code></pre>
+
+<p>The idempotence property is the most useful guard you can add: <em>once repaired, a value must be canonical</em>. If a future change makes the parser produce output that it would itself repair again, the coercion is not a normalization — it is a transformation, and it deserves a design review.</p>
+
+<h2 id="run">Step 5. Run and verify</h2>
+<pre><code>python -m pytest -q</code></pre>
+<p>Expected: every test passes, no failures and no errors. If something fails, read the assertion before changing code — the most common causes when adapting this to your own tools are:</p>
+<ul>
+  <li>a coercer checked <code>int</code> before <code>bool</code>;</li>
+  <li>a new enum contains two values that differ only in case (the lint test catches this);</li>
+  <li>a "repair" that is not idempotent, for example trimming whitespace in one place and not another.</li>
+</ul>
+<p>To see what pytest actually checked, list the collected cases:</p>
+<pre><code>python -m pytest --collect-only -q</code></pre>
+
+<h2 id="replay">Step 6. Replay recorded calls</h2>
+<p>Unit tests prove the policy. Replay tells you how the policy meets real traffic: how many calls were clean, how many needed a repair, and which rejections dominate. Create <code>replay.py</code>:</p>
+
+<pre><code>import collections
+import json
+import sys
+
+from refund_spec import SPEC
+from toolargs import ArgumentError, parse_arguments
+
+counts = collections.Counter()
+with open(sys.argv[1], encoding="utf-8") as fh:
+    for line in fh:
+        record = json.loads(line)
+        try:
+            parsed = parse_arguments(record["arguments"], SPEC)
+        except ArgumentError as err:
+            counts[f"reject:{err.code}"] += 1
+            continue
+        counts["ok_repaired" if parsed.repairs else "ok_clean"] += 1
+        for repair in parsed.repairs:
+            counts[f"repair:{repair.rule}"] += 1
+
+for key, value in sorted(counts.items()):
+    print(f"{value:6d} {key}")</code></pre>
+
+<p>Create a small sample file, <code>calls.jsonl</code>. These five lines are synthetic; in your project they would come from your tool-call logs (redacted — see <a href="#limits">limitations</a>).</p>
+
+<pre><code>{"id": 1, "arguments": "{\"order_id\":\"ord_A1b2C3d4\",\"amount_cents\":1999,\"reason\":\"late\"}"}
+{"id": 2, "arguments": "{\"order_id\":\"ord_A1b2C3d4\",\"amount_cents\":\"1999\",\"reason\":\"late\"}"}
+{"id": 3, "arguments": "{\"order_id\":\"ord_A1b2C3d4\",\"amount_cents\":\"19.99\",\"reason\":\"late\"}"}
+{"id": 4, "arguments": "```json\n{\"order_id\":\"ord_A1b2C3d4\",\"amount_cents\":1999,\"reason\":\"late\"}\n```"}
+{"id": 5, "arguments": {"order_id": "ord_A1b2C3d4", "amount": 1999, "reason": "late"}}</code></pre>
+
+<p>Line 5 holds arguments as an already-decoded object, which is what many SDKs hand you. Run:</p>
+<pre><code>python replay.py calls.jsonl</code></pre>
+<p>Working through the policy by hand, the output should be:</p>
+<pre><code>     1 ok_clean
+     2 ok_repaired
+     1 reject:ambiguous_integer
+     1 reject:unknown_field
+     1 repair:numeric_string_to_int
+     1 repair:strip_code_fence</code></pre>
+<p>If your output differs, the parser and this article disagree — check which line moved before trusting either.</p>
+
+<p>On real logs, the numbers to watch are the repair rate per rule and the rejection rate per code, broken down by model version and prompt version. A sudden rise in <code>numeric_string_to_int</code> after a prompt change is a regression in the prompt, even though every call still "works". That is the practical value of logging repairs instead of hiding them.</p>
+
+<h2 id="integration">Step 7. Wire it into the agent loop</h2>
+<p>A sketch — adapt the names to your framework. The essential shape: parse before executing, return rejections to the model as the tool result, log repairs, and cap retries.</p>
+
+<pre><code>from toolargs import ArgumentError, error_for_model, parse_arguments
+
+MAX_ARGUMENT_RETRIES = 2
+
+
+def handle_tool_call(call, spec, execute, log, attempt):
+    try:
+        parsed = parse_arguments(call.arguments, spec)
+    except ArgumentError as err:
+        log.warning("tool_args_rejected", extra={"tool": call.name, "code": err.code, "path": err.path})
+        if attempt &gt;= MAX_ARGUMENT_RETRIES:
+            raise  # stop the loop; escalate to a human or fail the task
+        return error_for_model(err)  # goes back to the model as the tool result
+
+    for repair in parsed.repairs:
+        log.info("tool_args_repaired", extra={"tool": call.name, "path": repair.path, "rule": repair.rule})
+    return execute(**parsed.args)</code></pre>
+
+<p>Three decisions to make explicitly:</p>
+<ul>
+  <li><strong>Retry budget.</strong> Two corrections per call is a reasonable starting point; a model that cannot fix <code>"19.99"</code> after an explicit error message will rarely fix it on attempt five.</li>
+  <li><strong>What goes into logs.</strong> The sketch logs path and rule, not <code>before</code>/<code>after</code>. Raw values can contain personal data; log them only through your redaction layer.</li>
+  <li><strong>Side effects after repair.</strong> Repairs are safe by construction, but for a non-<a href="../glossary.html#idempotency">idempotent</a> tool like a refund you still want an idempotency key and, above a threshold, human confirmation. The parser decides whether the arguments are well-formed, not whether the action is wise.</li>
+</ul>
+
+<h2 id="failures">Failure cases to test before you trust it</h2>
+<ol>
+  <li><strong>The over-eager helper.</strong> Someone adds <code>float(value)</code> as a fallback in <code>coerce_integer</code> "to reduce retries". The rejection test for <code>"19.99"</code> must fail. If it does not, your test table has a hole.</li>
+  <li><strong>The silent rename.</strong> A teammate maps <code>amount</code> → <code>amount_cents</code> because the model keeps getting it wrong. Better fix: rename the field in the schema or improve its description; the repair log shows you exactly which field confuses the model.</li>
+  <li><strong>Enum collision.</strong> Adding <code>"Other"</code> next to <code>"other"</code> makes case-insensitive matching ambiguous. The parser rejects such inputs at runtime, and the lint test fails at CI time.</li>
+  <li><strong>Provider drift.</strong> An SDK update starts delivering arguments as a dict instead of a string, or vice versa. <code>decode_payload</code> handles both, but duplicate-key detection only works on strings — when you receive a dict, that check has already been lost upstream.</li>
+  <li><strong>Unit confusion that type checks.</strong> <code>"amount_cents": 19</code> is a valid integer and passes. No representation-level parser can tell 19 cents from "the model meant $19". See below.</li>
+</ol>
+
+<h2 id="limits">Limitations</h2>
+<ul>
+  <li><strong>Representation, not meaning.</strong> This layer catches envelope errors. A well-formed call with the wrong order ID or wrong amount passes. Semantic checks — "does this order exist, is the amount ≤ what was paid" — belong in the tool itself.</li>
+  <li><strong>Not a security boundary on its own.</strong> Arguments influenced by <a href="../glossary.html#prompt-injection">prompt injection</a> can be perfectly well-formed. Strict parsing reduces the attack surface (no surprising coercions to exploit) but authorization and limits are separate <a href="../glossary.html#guardrails">guardrails</a>.</li>
+  <li><strong>First error only.</strong> The parser stops at the first problem. That keeps the code simple, but a call with three bad fields takes up to three round trips. If that shows up in your replay numbers, collect all errors and return them together.</li>
+  <li><strong>Narrow schema dialect.</strong> Nested objects, <code>oneOf</code>, numeric strings for decimals and string formats beyond date are not covered. Extend by adding coercers with the same contract: return a canonical value or raise a coded error, and add both a repair and a reject test.</li>
+  <li><strong>Strictness is a trade-off you measure.</strong> Rejecting <code>" 1999"</code> is a deliberate choice; you may decide trimming whitespace is unambiguous for your fields. Make that change with a test and a rule name, not with a quiet <code>.strip()</code>.</li>
+</ul>
+
+<h2 id="checklist">Checklist</h2>
+<ul>
+  <li>The policy table exists and every repair has a one-sentence justification.</li>
+  <li><code>python -m pytest -q</code> passes locally and in CI.</li>
+  <li>The idempotence test covers every repair rule.</li>
+  <li>High-risk fields are marked <code>strict</code> or have an explicit reason not to be.</li>
+  <li>Repairs and rejections are logged by rule and code, without raw personal data.</li>
+  <li>Replay runs on a redacted sample of real calls after every model or prompt change.</li>
+  <li>The retry budget is capped and exhaustion escalates instead of looping.</li>
+</ul>
+
+<p>Next: browse more step-by-step material in <a href="guides.html">the guides</a>, and look up any unfamiliar term in <a href="../glossary.html">the glossary</a>.</p>
+
+<section class="service-note">
+  <b>We publish what works for us—and implement the same solutions for your business.</b>
+  We design AI automation, Telegram bots, chats, and AI agents for real-world processes.
+  <a href="../contacts-en.html">Discuss your project →</a>
+</section>
+</article>
+</main>
+
+<footer class="site-footer">
+  <p>© 2026 Agent Lab Journal · <a href="guides.html">Guides</a> · <a href="../glossary.html">Glossary</a></p>
+</footer>
+
+</body>
+</html>
