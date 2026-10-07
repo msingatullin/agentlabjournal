@@ -1,0 +1,404 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Как построить LLM-роутер и проверить экономию без потери качества — Agent Lab Journal</title>
+  <meta name="description" content="Как построить LLM-роутер и проверить экономию без потери качества: правила выбора модели, внешняя проверка вместо самооценки, лимиты бюджета, журнал затрат и парное сравнение с базовой стратегией.">
+  <link rel="canonical" href="https://agentlabjournal.online/llm-router-cost-quality-test.html">
+  <link rel="stylesheet" href="style.css">
+  <link rel="stylesheet" href="reading.css">
+
+  <meta property="og:type" content="article">
+  <meta property="og:site_name" content="Agent Lab Journal">
+  <meta property="og:locale" content="ru_RU">
+  <meta property="og:title" content="Как построить LLM-роутер и проверить экономию без потери качества">
+  <meta property="og:description" content="Роутер с лимитами бюджета, эскалацией по внешней проверке и журналом затрат. Проверка на фиксированном наборе запросов против стратегии «всегда дорогая модель».">
+  <meta property="og:url" content="https://agentlabjournal.online/llm-router-cost-quality-test.html">
+
+  <meta name="twitter:card" content="summary">
+  <meta name="twitter:title" content="Как построить LLM-роутер и проверить экономию без потери качества">
+  <meta name="twitter:description" content="Роутер с бюджетом, эскалацией и журналом затрат плюс воспроизводимое парное сравнение с базовой стратегией.">
+
+  <script type="application/ld+json">
+  {
+    "@context": "https://schema.org",
+    "@type": "Article",
+    "headline": "Как построить LLM-роутер и проверить экономию без потери качества",
+    "description": "Практическое руководство: правила маршрутизации, эскалация по внешней проверке, лимиты бюджета, журнал затрат и сравнение с базовой стратегией на фиксированном наборе запросов.",
+    "inLanguage": "ru",
+    "datePublished": "2026-10-07",
+    "dateModified": "2026-10-07",
+    "mainEntityOfPage": "https://agentlabjournal.online/llm-router-cost-quality-test.html",
+    "author": { "@type": "Organization", "name": "Agent Lab Journal" },
+    "publisher": { "@type": "Organization", "name": "Agent Lab Journal" },
+    "proficiencyLevel": "Expert",
+    "timeRequired": "PT12M"
+  }
+  </script>
+<link rel="stylesheet" href="homepage.css"><link rel="stylesheet" href="max-promo.css">  <meta property="og:image" content="https://agentlabjournal.online/assets/covers/llm-context-window-budget-social.png">
+  <meta property="og:image:alt" content="Как построить LLM-роутер и проверить экономию без потери качества">
+  <meta name="twitter:image" content="https://agentlabjournal.online/assets/covers/llm-context-window-budget-social.png">
+</head>
+<body>
+  <header class="site-header">
+    <a href="index.html">Agent Lab Journal</a>
+    <nav>
+      <a href="guides.html">Руководства</a>
+      <a href="glossary.html">Глоссарий</a>
+    </nav>
+  </header>
+
+  <main>
+    <article class="reading">
+<a href="https://max.ru/channel_AgentLab?utm_source=agentlabjournal&utm_medium=article&utm_campaign=max_channel&utm_content=article_footer" class="max-promo-block" target="_blank" rel="noopener noreferrer" aria-label="Самое важное из мира AI в канале MAX AgentLab">
+  <span class="max-promo-block__icon" aria-hidden="true"></span>
+  <span class="max-promo-block__content"><span class="max-promo-block__title">Самое важное из мира AI — в канале MAX AgentLab</span><span class="max-promo-block__desc">Отдельные разборы, инструменты и практические схемы</span></span>
+  <span class="max-promo-block__arrow" aria-hidden="true">→</span>
+</a>
+<a href="https://t.me/pelmenews?utm_source=agentlabjournal&utm_medium=article&utm_campaign=telegram_channel&utm_content=article_intro" class="telegram-promo-block" target="_blank" rel="noopener noreferrer" aria-label="Читайте Agent Lab в Telegram">
+  <span class="telegram-promo-block__icon" aria-hidden="true"></span>
+  <span class="telegram-promo-block__content">
+    <span class="telegram-promo-block__title">Читайте Agent Lab в Telegram</span>
+    <span class="telegram-promo-block__desc">Разборы, кейсы и новости о практических AI-агентах без лишней воды.</span>
+  </span>
+  <span class="telegram-promo-block__arrow" aria-hidden="true">→</span>
+</a>
+      <h1>Как построить LLM-роутер и проверить экономию без потери качества</h1>
+        <figure class="article-cover" data-editorial-cover="llm-router-cost-quality-test"><img src="assets/covers/llm-context-window-budget.png" alt="Как построить LLM-роутер и проверить экономию без потери качества" width="1280" height="720" fetchpriority="high"><figcaption>Temporary fallback cover; replace in editorial pass.</figcaption></figure>
+      <p class="reading-meta">Уровень: продвинутый · Чтение: до 12 минут · Результат: работающий роутер с лимитами бюджета, эскалацией и журналом затрат, проверенный на фиксированном наборе запросов против базовой стратегии</p>
+
+      <h2>Зачем это нужно и в чём подвох</h2>
+      <p>Типичная картина: все запросы, от «переведи слово» до «найди ошибку в миграции», уходят одной самой сильной модели. Это надёжно, но дорого. Очевидное решение — <a href="glossary.html">LLM-роутер</a>: дешёвая модель берёт простые запросы, сложные отправляются сильной.</p>
+      <p>Подвох в том, как роутер решает, что дешёвого ответа достаточно. Самый популярный способ — спросить у модели её уверенность и выйти раньше, если она высокая. Этот ранний выход ненадёжен: модель может быть уверенной и ошибаться, и тогда роутер закрепляет неверный ответ, а сэкономленные деньги превращаются в незаметную деградацию качества. Поэтому в этой статье решение об эскалации принимает <strong>внешняя проверка</strong>: валидация схемы, обязательные поля, прогон тестов. Экономию мы признаём только после парного сравнения с базовой стратегией на заранее зафиксированном наборе запросов.</p>
+      <p>Все цены, пороги и примеры запросов ниже — шаблоны. Подставьте тарифы своего провайдера и собственные данные. Цифр «у нас получилось X% экономии» здесь нет намеренно: их нужно получить на своём наборе.</p>
+
+      <h2>Архитектура</h2>
+      <ol>
+        <li><strong>Классификатор уровня.</strong> Дешёвые детерминированные правила (длина, ключевые слова) выбирают стартовый уровень: <code>cheap</code> или <code>strong</code>.</li>
+        <li><strong>Внешняя проверка во время работы.</strong> Это проверка, которая не знает эталонного ответа: парсится ли JSON, есть ли нужные ключи, проходят ли тесты. Самооценка модели в решение не входит.</li>
+        <li><strong>Эскалация.</strong> Если проверка не пройдена, запрос уходит на следующий уровень, но только если позволяет бюджет.</li>
+        <li><strong>Бюджет.</strong> Ограничены и стоимость одного запроса, и общая сумма. Когда лимит исчерпан, роутер возвращает явный статус. Тихой подмены на более слабую модель нет.</li>
+        <li><strong>Журнал затрат.</strong> Каждый вызов модели записывается отдельной строкой JSONL: модель, токены, стоимость, результат проверки, причина эскалации.</li>
+      </ol>
+      <p>Главное различие: <em>runtime-проверка</em> работает в продакшене и не знает правильного ответа, а <em>оценка (grade)</em> использует эталон и существует только в эксперименте. Если эталон попадёт в runtime-проверку, результаты эксперимента окажутся завышенными.</p>
+
+      <h2>Шаг 1. Окружение</h2>
+      <p>Все команды создают файлы только в новой папке проекта и ничего не отправляют наружу:</p>
+      <pre><code>mkdir llm-router &amp;&amp; cd llm-router
+python3 -m venv .venv
+. .venv/bin/activate
+mkdir -p cache runs data</code></pre>
+      <p>Скрипты используют только стандартную библиотеку Python. SDK провайдера подключите сами в функции <code>provider_call</code>.</p>
+
+      <h2>Шаг 2. Конфигурация</h2>
+      <p>Файл <code>router_config.json</code>. Имена моделей и цены — заглушки, замените их актуальными значениями из прайса вашего провайдера.</p>
+      <pre><code>{
+  "tiers": { "cheap": "MODEL_CHEAP", "strong": "MODEL_STRONG" },
+  "models": {
+    "MODEL_CHEAP":  { "usd_per_mtok_in": 0.0, "usd_per_mtok_out": 0.0 },
+    "MODEL_STRONG": { "usd_per_mtok_in": 0.0, "usd_per_mtok_out": 0.0 }
+  },
+  "rules": {
+    "long_prompt_chars": 4000,
+    "strong_keywords": ["докажи", "миграц", "race condition", "архитектур"]
+  },
+  "max_output_tokens": 1024,
+  "budget": { "total_usd": 5.0, "per_request_usd": 0.05 },
+  "log_path": "runs/cost_log.jsonl"
+}</code></pre>
+      <p>Пока цены нулевые, бюджет не сработает, и это заметно сразу. Так и задумано: заглушку нельзя случайно принять за реальные данные.</p>
+
+      <h2>Шаг 3. Роутер</h2>
+      <p>Файл <code>router.py</code>:</p>
+      <pre><code>"""LLM-роутер: выбор уровня, внешняя проверка, эскалация, бюджет, журнал затрат."""
+import hashlib
+import json
+import time
+import uuid
+from pathlib import Path
+
+CONFIG = json.loads(Path("router_config.json").read_text(encoding="utf-8"))
+CACHE_DIR = Path("cache")
+
+
+class BudgetExceeded(Exception):
+    pass
+
+
+class Budget:
+    def __init__(self, total_usd, per_request_usd):
+        self.total = total_usd
+        self.per_request = per_request_usd
+        self.spent = 0.0
+
+    def reserve(self, worst_case):
+        if self.spent + worst_case &gt; self.total:
+            raise BudgetExceeded("total budget")
+
+    def charge(self, cost):
+        self.spent += cost
+
+
+def estimate_cost(model, tokens_in, tokens_out):
+    p = CONFIG["models"][model]
+    return tokens_in / 1e6 * p["usd_per_mtok_in"] + tokens_out / 1e6 * p["usd_per_mtok_out"]
+
+
+def approx_tokens(text):
+    # Грубая оценка только для резерва бюджета; фактические токены берём из ответа провайдера.
+    return len(text) // 3 + 1
+
+
+def provider_call(model, prompt, max_tokens):
+    """Верните (text, tokens_in, tokens_out) из usage вашего провайдера."""
+    raise NotImplementedError("подключите SDK провайдера")
+
+
+def call_model(model, prompt, max_tokens):
+    key = hashlib.sha256(f"{model}\n{max_tokens}\n{prompt}".encode()).hexdigest()
+    path = CACHE_DIR / f"{key}.json"
+    if path.exists():
+        return tuple(json.loads(path.read_text(encoding="utf-8")))
+    result = provider_call(model, prompt, max_tokens)
+    path.write_text(json.dumps(result, ensure_ascii=False), encoding="utf-8")
+    return result
+
+
+def pick_tier(prompt):
+    rules = CONFIG["rules"]
+    if len(prompt) &gt; rules["long_prompt_chars"]:
+        return "strong"
+    if any(k in prompt.lower() for k in rules["strong_keywords"]):
+        return "strong"
+    return "cheap"
+
+
+def runtime_check(query, answer):
+    """Проверка без эталона: только то, что доступно в продакшене."""
+    check = query.get("runtime_check", {"type": "none"})
+    if check["type"] == "json_keys":
+        try:
+            data = json.loads(answer)
+        except json.JSONDecodeError:
+            return False, "invalid_json"
+        missing = [k for k in check["keys"] if k not in data]
+        return (not missing), ("missing:" + ",".join(missing) if missing else "ok")
+    if check["type"] == "non_empty":
+        return bool(answer.strip()), "ok" if answer.strip() else "empty"
+    # Нечего проверить: эскалировать нечем, честно помечаем.
+    return True, "unchecked"
+
+
+def log_event(record):
+    with open(CONFIG["log_path"], "a", encoding="utf-8") as f:
+        f.write(json.dumps(record, ensure_ascii=False) + "\n")
+
+
+def route(query, budget, force_tier=None, strategy="router"):
+    request_id = str(uuid.uuid4())
+    start = force_tier or pick_tier(query["prompt"])
+    chain = ["cheap", "strong"] if start == "cheap" else ["strong"]
+    spent, answer, final_model, status = 0.0, None, None, "ok"
+
+    for step, tier in enumerate(chain):
+        model = CONFIG["tiers"][tier]
+        worst = estimate_cost(model, approx_tokens(query["prompt"]), CONFIG["max_output_tokens"])
+        if spent + worst &gt; budget.per_request:
+            status = "per_request_cap"
+            break
+        try:
+            budget.reserve(worst)
+        except BudgetExceeded:
+            status = "total_budget"
+            break
+
+        text, tin, tout = call_model(model, query["prompt"], CONFIG["max_output_tokens"])
+        cost = estimate_cost(model, tin, tout)
+        budget.charge(cost)
+        spent += cost
+        ok, reason = runtime_check(query, text)
+        answer, final_model = text, model
+
+        log_event({
+            "ts": time.time(), "request_id": request_id, "query_id": query["id"],
+            "strategy": strategy, "step": step, "tier": tier, "model": model,
+            "tokens_in": tin, "tokens_out": tout, "cost_usd": round(cost, 8),
+            "check_ok": ok, "check_reason": reason,
+            "escalate": (not ok) and step &lt; len(chain) - 1,
+        })
+        if ok:
+            break
+        status = "check_failed"
+
+    return {"answer": answer, "model": final_model, "cost_usd": spent,
+            "status": status, "escalated": final_model == CONFIG["tiers"]["strong"] and start == "cheap"}</code></pre>
+      <p>Что важно в этом коде:</p>
+      <ul>
+        <li>Бюджет резервируется по худшему случаю <em>до</em> вызова, а списывается по фактическим токенам <em>после</em>. Поэтому лимит не превышается даже на длинном ответе.</li>
+        <li>Если лимит исчерпан, вызывающий код получает статус <code>per_request_cap</code> или <code>total_budget</code>. Что делать дальше (поставить в очередь, отказать, позвать человека), решает он, а не роутер молча.</li>
+        <li>Кэш по хэшу (модель, лимит, промпт) делает повторные прогоны бесплатными и детерминированными. Обе стратегии получают одинаковые ответы сильной модели на одинаковые запросы.</li>
+        <li>Статус <code>unchecked</code> показывает, где внешней проверки нет. Такие ответы дешёвой модели проходят без контроля, и их долю нужно видеть в отчёте.</li>
+      </ul>
+
+      <h2>Шаг 4. Фиксированный набор запросов</h2>
+      <p>Файл <code>data/test.jsonl</code>, по одной записи на строку. Ниже две записи-примера, а не реальный датасет:</p>
+      <pre><code>{"id": "q001", "prompt": "Верни JSON с ключами city и country для: Казань", "runtime_check": {"type": "json_keys", "keys": ["city", "country"]}, "grade": {"type": "json_equals", "value": {"city": "Казань", "country": "Россия"}}}
+{"id": "q002", "prompt": "Найди race condition в этом коде: ...", "runtime_check": {"type": "non_empty"}, "grade": {"type": "contains_all", "values": ["lock"]}}</code></pre>
+      <p>Правила формирования набора:</p>
+      <ul>
+        <li>Берите запросы из реального трафика в тех пропорциях, в которых они приходят, а не только «интересные».</li>
+        <li>Разделите данные на <code>data/dev.jsonl</code> (на нём подбираете ключевые слова и пороги) и <code>data/test.jsonl</code> (запускаете один раз, когда правила заморожены).</li>
+        <li>Зафиксируйте <code>temperature</code> и версии моделей. Если провайдер обновил модель, старый кэш для сравнения не годится.</li>
+      </ul>
+
+      <h2>Шаг 5. Прогон обеих стратегий</h2>
+      <p>Файл <code>evaluate.py</code>. Здесь грейдер видит эталон, а роутер нет:</p>
+      <pre><code>import argparse
+import json
+from pathlib import Path
+
+from router import CONFIG, Budget, route
+
+
+def grade(query, answer):
+    if answer is None:
+        return False
+    g = query["grade"]
+    if g["type"] == "json_equals":
+        try:
+            return json.loads(answer) == g["value"]
+        except json.JSONDecodeError:
+            return False
+    if g["type"] == "contains_all":
+        return all(s.lower() in answer.lower() for s in g["values"])
+    raise ValueError(f"unknown grade type: {g['type']}")
+
+
+def main():
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--data", required=True)
+    ap.add_argument("--strategy", choices=["baseline", "router"], required=True)
+    ap.add_argument("--out", required=True)
+    args = ap.parse_args()
+
+    b = CONFIG["budget"]
+    budget = Budget(b["total_usd"], b["per_request_usd"])
+    force = "strong" if args.strategy == "baseline" else None
+
+    with open(args.out, "w", encoding="utf-8") as out:
+        for line in Path(args.data).read_text(encoding="utf-8").splitlines():
+            q = json.loads(line)
+            r = route(q, budget, force_tier=force, strategy=args.strategy)
+            out.write(json.dumps({
+                "id": q["id"], "passed": grade(q, r["answer"]),
+                "cost_usd": r["cost_usd"], "model": r["model"],
+                "status": r["status"], "escalated": r["escalated"],
+            }, ensure_ascii=False) + "\n")
+
+
+if __name__ == "__main__":
+    main()</code></pre>
+      <p>Запуск. Сначала идёт baseline, чтобы ответы сильной модели попали в кэш:</p>
+      <pre><code>python3 evaluate.py --data data/test.jsonl --strategy baseline --out runs/baseline.jsonl
+python3 evaluate.py --data data/test.jsonl --strategy router   --out runs/router.jsonl</code></pre>
+      <p>Учтите одну тонкость. Из-за общего кэша второй прогон не платит за повторные вызовы сильной модели, но в <code>cost_usd</code> стоимость всё равно записывается по токенам. Сравнение остаётся честным, а реальный счёт на эксперимент меньше.</p>
+
+      <h2>Шаг 6. Парное сравнение и решение</h2>
+      <p>Порог допустимых регрессий задаётся <strong>до</strong> того, как вы увидите результаты. Файл <code>compare.py</code>:</p>
+      <pre><code>import json
+import sys
+
+
+def load(path):
+    with open(path, encoding="utf-8") as f:
+        return {r["id"]: r for r in map(json.loads, f)}
+
+
+base, rout = load(sys.argv[1]), load(sys.argv[2])
+max_regressions = int(sys.argv[3])
+assert base.keys() == rout.keys(), "наборы запросов различаются"
+
+both = sum(base[i]["passed"] and rout[i]["passed"] for i in base)
+regressed = [i for i in base if base[i]["passed"] and not rout[i]["passed"]]
+improved = [i for i in base if not base[i]["passed"] and rout[i]["passed"]]
+cost_b = sum(r["cost_usd"] for r in base.values())
+cost_r = sum(r["cost_usd"] for r in rout.values())
+escalated = sum(r["escalated"] for r in rout.values())
+capped = [i for i, r in rout.items() if r["status"] in ("per_request_cap", "total_budget")]
+
+print(f"запросов: {len(base)}, оба прошли: {both}")
+print(f"регрессии (baseline да, router нет): {len(regressed)} {regressed}")
+print(f"улучшения (baseline нет, router да): {len(improved)} {improved}")
+print(f"стоимость baseline: {cost_b:.4f} USD, router: {cost_r:.4f} USD")
+if cost_b &gt; 0:
+    print(f"экономия: {100 * (1 - cost_r / cost_b):.1f}%")
+print(f"эскалаций: {escalated}, упёрлись в бюджет: {capped}")
+ok = len(regressed) &lt;= max_regressions and not capped
+print("РЕШЕНИЕ:", "принять" if ok else "не принимать")</code></pre>
+      <pre><code>python3 compare.py runs/baseline.jsonl runs/router.jsonl 0</code></pre>
+      <p>Смотрите на <em>расходящиеся пары</em>, а не только на итоговый процент прохождения. Одинаковый общий процент может скрывать пять регрессий и пять случайных улучшений. Каждую регрессию из списка откройте вручную: обычно по ней видно, какой проверки не хватило в <code>runtime_check</code>.</p>
+
+      <h2>Проверка результата</h2>
+      <p>Роутер готов, когда выполнены все пункты:</p>
+      <ul>
+        <li><code>compare.py</code> выдаёт «принять» на <code>data/test.jsonl</code> при пороге, записанном заранее.</li>
+        <li>В журнале у каждого <code>request_id</code> есть хотя бы одна строка и сумма <code>cost_usd</code> совпадает с итогом в <code>runs/router.jsonl</code>:
+          <pre><code>python3 -c "import json; print(sum(json.loads(l)['cost_usd'] for l in open('runs/cost_log.jsonl') if json.loads(l)['strategy']=='router'))"</code></pre>
+        </li>
+        <li>Доля <code>check_reason == "unchecked"</code> у ответов дешёвой модели известна и устраивает вас:
+          <pre><code>grep '"strategy": "router"' runs/cost_log.jsonl | grep -c '"check_reason": "unchecked"'</code></pre>
+        </li>
+        <li>Тест бюджета: временно задайте <code>per_request_usd</code> меньше стоимости одного вызова и убедитесь, что запросы получают статус <code>per_request_cap</code>, а не ответ модели.</li>
+      </ul>
+      <p>Перед повторным полным прогоном удалите старый журнал (<code>rm runs/cost_log.jsonl</code>), иначе суммы задвоятся.</p>
+
+      <h2>Типовые ошибки</h2>
+      <ul>
+        <li><strong>Ранний выход по самооценке.</strong> «Уверенность 0.9» — это текст, который сгенерировала та же модель, а не независимая проверка. Если другой проверки нет, лучше честно пометить ответ как <code>unchecked</code>, чем делать вид, что он проверен.</li>
+        <li><strong>Утечка эталона в runtime-проверку.</strong> Если <code>runtime_check</code> сравнивает ответ с эталоном, роутер в эксперименте эскалирует ровно тогда, когда нужно. В продакшене такого не будет.</li>
+        <li><strong>Подбор правил на тестовом наборе.</strong> Ключевые слова, подогнанные под тест, дают красивый отчёт и ничего не говорят о реальном трафике.</li>
+        <li><strong>Учёт только успешных вызовов.</strong> Неудачный дешёвый вызов перед эскалацией тоже стоит денег. Журнал пишет каждый шаг, и сумма считается по всем шагам.</li>
+        <li><strong>Тихая деградация при исчерпании бюджета.</strong> Если при нехватке денег роутер незаметно переключается на слабую модель, качество падает и в метриках это не видно.</li>
+        <li><strong>Сравнение разных версий моделей.</strong> Если baseline и router прогоняли в разные дни без кэша, вы сравниваете в том числе обновления провайдера.</li>
+      </ul>
+
+      <h2>Ограничения</h2>
+      <ul>
+        <li>Ноль регрессий на небольшом наборе не доказывает отсутствие деградации. Он лишь означает, что на этих запросах её не нашли. Чем меньше набор, тем осторожнее вывод.</li>
+        <li>Правила по длине и ключевым словам грубые. Обученный классификатор может выбирать уровень точнее, но его тоже нужно проверять тем же парным сравнением.</li>
+        <li>Роутер полезен ровно настолько, насколько хороши внешние проверки. Для свободного текста без структуры их часто нет, и такие запросы безопаснее сразу отправлять сильной модели.</li>
+        <li>Задержка не измеряется. Эскалация добавляет второй вызов. Если важен p95, добавьте в журнал время ответа и сравните его отдельно.</li>
+        <li>Цены у провайдеров меняются. Держите их в конфиге и пересчитывайте отчёт по журналу токенов, а не по сохранённым суммам.</li>
+      </ul>
+
+      <h2>Что дальше</h2>
+      <p>Похожие практические разборы собраны в <a href="guides.html">руководствах</a>, определения терминов — в <a href="glossary.html">глоссарии</a>. Следующий логичный шаг — подключить журнал затрат к ежедневному отчёту и раз в неделю повторять парное сравнение на свежей выборке трафика.</p>
+<aside class="service-note" aria-label="Связаться по проекту">
+  <div class="service-note__copy">
+    <p class="service-note__label">Связь с Agent Lab</p>
+    <p class="service-note__title">Внедрим такой контур в ваш процесс</p>
+    <p class="service-note__text">Напишите инженеру Agent Lab в Telegram: опишите задачу, бота или интеграцию — предложим пилот с проверками и понятными границами.</p>
+  </div>
+  <a class="service-note__link" href="https://t.me/msrzn007?utm_source=journal&amp;utm_medium=article&amp;utm_campaign=service_note" target="_blank" rel="noopener">Написать в Telegram
+    <svg viewBox="0 0 16 16" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"><path d="M3 13 13 3M6 3h7v7"/></svg>
+  </a>
+</aside>
+<aside class="service-note service-note--sitevisor" aria-label="Экспресс-аудит сайта">
+  <div class="service-note__copy">
+    <p class="service-note__label">SiteVisor</p>
+    <p class="service-note__title">Проверьте техническое состояние и готовность вашего сайта к рекламе</p>
+    <p class="service-note__text">Экспресс-аудит на SiteVisor.pro: индексация, скорость, разметка, аналитика и точки конверсии.</p>
+  </div>
+  <a class="service-note__link" href="https://sitevisor.pro/?utm_source=journal&amp;utm_medium=article&amp;utm_campaign=leadmagnet" target="_blank" rel="noopener">Экспресс-аудит на SiteVisor.pro
+    <svg viewBox="0 0 16 16" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"><path d="M3 13 13 3M6 3h7v7"/></svg>
+  </a>
+</aside>
+</article>
+  </main>
+
+  <footer class="site-footer">
+    <p>© Agent Lab Journal · <a href="guides.html">Руководства</a> · <a href="glossary.html">Глоссарий</a></p>
+  </footer>
+</body>
+</html>
