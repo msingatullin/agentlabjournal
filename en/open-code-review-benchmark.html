@@ -1,0 +1,431 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Специализированный AI-ревьюер против универсального агента: практический тест — Agent Lab Journal</title>
+<meta name="description" content="Специализированный AI-ревьюер против универсального агента: практический тест. A reproducible protocol for comparing Open Code Review with a general-purpose agent on precision, recall, file coverage, time, tokens and comment anchoring.">
+<link rel="canonical" href="https://agentlabjournal.online/en/open-code-review-benchmark.html">
+<link rel="alternate" hreflang="en" href="https://agentlabjournal.online/en/open-code-review-benchmark.html">
+<link rel="alternate" hreflang="ru" href="https://agentlabjournal.online/open-code-review-benchmark.html">
+<link rel="stylesheet" href="../style.css">
+<link rel="stylesheet" href="../reading.css">
+
+<meta property="og:type" content="article">
+<meta property="og:site_name" content="Agent Lab Journal">
+<meta property="og:locale" content="en_US">
+<meta property="og:title" content="Специализированный AI-ревьюер против универсального агента: практический тест">
+<meta property="og:description" content="A reproducible protocol for comparing Open Code Review with a general-purpose agent: precision, recall, file coverage, time, tokens and comment anchoring on a large seeded diff.">
+<meta property="og:url" content="https://agentlabjournal.online/en/open-code-review-benchmark.html">
+<meta property="og:image" content="https://agentlabjournal.online/assets/covers/llm-context-window-budget-social.png">
+<meta property="article:modified_time" content="2026-10-07">
+
+<meta name="twitter:card" content="summary_large_image">
+<meta name="twitter:title" content="Специализированный AI-ревьюер против универсального агента: практический тест">
+<meta name="twitter:description" content="Seed known defects into a large diff, run both reviewers under the same conditions, and score precision, recall, coverage, anchoring, time and tokens.">
+<meta name="twitter:image" content="https://agentlabjournal.online/assets/covers/llm-context-window-budget-social.png">
+
+<script type="application/ld+json">
+{
+  "@context": "https://schema.org",
+  "@type": "Article",
+  "headline": "Специализированный AI-ревьюер против универсального агента: практический тест",
+  "description": "A reproducible protocol for comparing Open Code Review with a general-purpose agent on precision, recall, file coverage, time, token usage and comment anchoring.",
+  "image": ["https://agentlabjournal.online/assets/covers/llm-context-window-budget-social.png"],
+  "dateModified": "2026-10-07",
+  "inLanguage": "en",
+  "author": {
+    "@type": "Organization",
+    "name": "Agent Lab Journal",
+    "url": "https://agentlabjournal.online/"
+  },
+  "publisher": {
+    "@type": "Organization",
+    "name": "Agent Lab Journal",
+    "url": "https://agentlabjournal.online/"
+  },
+  "mainEntityOfPage": {
+    "@type": "WebPage",
+    "@id": "https://agentlabjournal.online/en/open-code-review-benchmark.html"
+  }
+}
+</script>
+<link rel="stylesheet" href="../homepage.css"><link rel="stylesheet" href="../max-promo.css">  <meta property="og:image:alt" content="Специализированный AI-ревьюер против универсального агента: практический тест">
+</head>
+<body>
+
+<header class="site-header">
+  <a class="site-logo" href="index.html">Agent Lab Journal</a>
+  <nav aria-label="Main">
+    <a href="index.html">Home</a>
+    <a href="guides.html">Guides</a>
+    <a href="../glossary.html">Glossary</a>
+    <a href="../open-code-review-benchmark.html" hreflang="ru" lang="ru">RU</a>
+  </nav>
+</header>
+
+<main>
+<article class="reading">
+
+<h1>Специализированный AI-ревьюер против универсального агента: практический тест</h1>
+        <figure class="article-cover" data-editorial-cover="open-code-review-benchmark"><img src="../assets/covers/llm-context-window-budget.png" alt="Специализированный AI-ревьюер против универсального агента: практический тест" width="1280" height="720" fetchpriority="high"><figcaption>Temporary fallback cover; replace in editorial pass.</figcaption></figure>
+
+<p class="reading-meta">Intermediate · 40 min read · Updated 7 October 2026</p>
+
+<p class="lead">Ask a general-purpose <a href="../glossary.html#ai-agent">AI agent</a> to review a 60-file change and you will usually get a confident summary. What you often don't get is a comment on file 47, a comment attached to the line that actually contains the bug, or a token bill proportional to the work. This article gives you a test you can run on your own code to find out whether a dedicated reviewer such as Open Code Review does better — and by how much — instead of trusting either vendor's demo.</p>
+
+<p>The test plants known defects into a large <a href="../glossary.html#diff">diff</a>, runs both reviewers under matched conditions, and scores six things: precision, recall, file coverage, anchor validity, wall-clock time and tokens. Everything is scripted, so a second person can repeat it and get comparable numbers.</p>
+
+<aside class="note">
+<p><strong>What this article does and does not claim.</strong> It publishes a protocol, a scoring script and a results template. It does <em>not</em> publish a verdict: no measured numbers for Open Code Review or any agent appear below, because a result from our repository says little about yours. Every command marked “example” must be checked against the version you install. Field names, prompts and defect lists are illustrations, not measurements.</p>
+</aside>
+
+<h2 id="problem">The problem in one paragraph</h2>
+
+<p>Code review of a large change is a coverage task disguised as a reasoning task. A general agent has to decide which files to open, keep enough of each one in its <a href="../glossary.html#context-window">context window</a>, and then translate “this is wrong” into a <a href="../glossary.html#pull-request">pull request</a> comment with a valid path, line and side. Three failure modes follow directly: files that are never opened, comments that land on the wrong line (or are rejected by the platform and silently become a general comment), and a high <a href="../glossary.html#token">token</a> count from re-reading the same files. A specialised reviewer claims to fix these by owning the iteration over files and the mapping to diff positions. The claim is testable.</p>
+
+<h2 id="case">The concrete case</h2>
+
+<p>Use one service you know well — the example below assumes a mid-sized Python web service — and build one deliberately large change on top of a fixed base commit:</p>
+
+<ul>
+  <li><strong>Noise:</strong> 40–60 files of realistic but harmless edits: renames, type hints, log message wording, an extracted helper. This is what makes the diff “large”.</li>
+  <li><strong>Seeded defects:</strong> 12–20 bugs you insert on purpose and record precisely (file, side, line range, category). This is your <a href="../glossary.html#ground-truth">ground truth</a>.</li>
+  <li><strong>Decoys:</strong> 3–5 changes that look suspicious but are correct (for example, an intentionally broad <code>except</code> with a comment explaining why). These measure false alarms.</li>
+</ul>
+
+<p>Place defects deliberately to probe the known weaknesses:</p>
+
+<table>
+  <thead>
+    <tr><th>Placement</th><th>Why</th><th>Example defect</th></tr>
+  </thead>
+  <tbody>
+    <tr><td>Last files in path order</td><td>Tests whether the reviewer reaches the end of the diff</td><td><code>zz_reports/export.py</code>: off-by-one in pagination</td></tr>
+    <tr><td>Deep inside a 600-line file</td><td>Tests attention within a long file</td><td>Missing <code>await</code> on an async DB call</td></tr>
+    <tr><td>Deleted lines only (left side)</td><td>Tests anchoring to removed code</td><td>Removed permission check in a view</td></tr>
+    <tr><td>Two-file interaction</td><td>Tests cross-file reasoning</td><td>Function now returns cents, caller still assumes rupees/dollars</td></tr>
+    <tr><td>Test file</td><td>Tests whether tests are reviewed at all</td><td>Assertion changed to always pass</td></tr>
+    <tr><td>Config / non-code file</td><td>Tests coverage beyond source code</td><td>Timeout changed from seconds to milliseconds without unit change</td></tr>
+  </tbody>
+</table>
+
+<h2 id="setup">Step 0. Pin the environment</h2>
+
+<p>The comparison is only meaningful if the reviewers differ in <em>tooling</em>, not in model, temperature or input. Write the environment down before the first run.</p>
+
+<pre><code># bench/ENV.md — fill in before the first run
+base_sha:            &lt;git rev-parse base&gt;
+head_sha:            &lt;git rev-parse bench/head&gt;
+open_code_review:    &lt;version or commit you installed&gt;
+general_agent:       &lt;name + version, e.g. output of `claude --version`&gt;
+model (both):        &lt;same model id for both tools, if OCR lets you choose&gt;
+temperature:         &lt;value, or "tool default — not configurable"&gt;
+machine / network:   &lt;runner type, region&gt;
+date:                &lt;YYYY-MM-DD&gt;</code></pre>
+
+<p>If Open Code Review cannot use the same model as the agent, say so in the results. You are then comparing two systems, not two <a href="../glossary.html#harness">harnesses</a>, and the conclusion must be narrower.</p>
+
+<h2 id="build">Step 1. Build the benchmark change and the ground truth</h2>
+
+<pre><code>git switch -c bench/head base
+# ... apply noise edits, seeded defects and decoys ...
+git commit -am "bench: large change with seeded defects"
+
+mkdir -p bench/runs
+git diff --no-color --no-ext-diff -U3 base bench/head &gt; bench/change.diff
+git diff --stat base bench/head | tail -1</code></pre>
+
+<p>Record every seeded defect as one line of <a href="../glossary.html#jsonl">JSONL</a>. Line numbers refer to the new file for <code>RIGHT</code> and the old file for <code>LEFT</code>, matching how GitHub addresses review comments.</p>
+
+<pre><code>{"id":"D01","path":"zz_reports/export.py","side":"RIGHT","start":88,"end":90,"category":"logic","severity":"high","summary":"page offset uses page*size+1"}
+{"id":"D02","path":"app/orders/service.py","side":"RIGHT","start":412,"end":412,"category":"async","severity":"high","summary":"missing await on repo.save"}
+{"id":"D03","path":"app/views/admin.py","side":"LEFT","start":57,"end":59,"category":"security","severity":"critical","summary":"permission check removed"}
+{"id":"D04","path":"app/billing/money.py","side":"RIGHT","start":21,"end":24,"category":"cross-file","severity":"high","summary":"returns minor units; see D04b caller"}</code></pre>
+
+<p>Keep <code>bench/truth.jsonl</code> out of the reviewed branch. If a reviewer can read the answer key, the test is void. Also strip commit messages and code comments that hint at the bugs (“TODO: fix pagination”).</p>
+
+<h2 id="sandbox">Step 2. Use a sandbox PR as the common output channel</h2>
+
+<p>Comparing free-text output from two tools is where most informal tests go wrong. The cleanest neutral format is the platform itself: let each run post review comments to its own pull request in a <strong>private sandbox repository</strong>, then pull the comments back through the API. This also tests anchoring honestly, because GitHub rejects review comments whose line is not part of the diff.</p>
+
+<pre><code># one branch (and one PR) per tool per run, all pointing at the same commit
+for run in ocr-r1 ocr-r2 ocr-r3 agent-r1 agent-r2 agent-r3; do
+  git branch "bench/$run" bench/head
+  git push sandbox "bench/$run"
+  gh pr create --repo OWNER/SANDBOX --base base --head "bench/$run" \
+     --title "bench $run" --body "benchmark run, do not merge"
+done</code></pre>
+
+<p>Do not run this against a public or shared repository: posted comments are visible to everyone with access and may be indexed or emailed to watchers.</p>
+
+<h2 id="ocr">Step 3. Run Open Code Review</h2>
+
+<p>Install it following the project's own README and record the exact version. Because invocation details differ between releases, the script below wraps it in a variable rather than guessing flags.</p>
+
+<pre><code># bench/run_ocr.sh — example wrapper; set OCR_CMD from the README of your version
+set -euo pipefail
+RUN="$1"; PR="$2"
+start=$(date +%s)
+$OCR_CMD "$PR" 2&gt;&amp;1 | tee "bench/runs/$RUN.log"
+end=$(date +%s)
+echo "{\"run\":\"$RUN\",\"wall_seconds\":$((end-start))}" &gt; "bench/runs/$RUN.time.json"</code></pre>
+
+<p>Capture token usage from whatever the tool reports. If it reports nothing, read usage from your model provider's console for an isolated API key used only for this run, and note that the figure was taken from the provider side.</p>
+
+<h2 id="agent">Step 4. Run the general-purpose agent under matched conditions</h2>
+
+<p>Give the agent the same input (the PR, or <code>bench/change.diff</code> plus read access to the checkout), the same model if possible, and a prompt that asks for the same output. Do not coach it with hints you would not give a human reviewer.</p>
+
+<pre><code># bench/prompts/review.md
+You are reviewing the changes between `base` and `bench/head` in this repository.
+Review every changed file. For each real problem, output one JSON object per line:
+{"path": "...", "line": N, "side": "RIGHT|LEFT", "severity": "low|medium|high|critical", "body": "..."}
+`line` is the new-file line for RIGHT and the old-file line for LEFT, and must be a line
+that appears in the diff. Output nothing except these JSON lines.</code></pre>
+
+<p>Example for Claude Code in <a href="../glossary.html#headless-mode">headless mode</a>, with read-only tools. Verify the flags with <code>claude --help</code> for your installed version:</p>
+
+<pre><code>start=$(date +%s)
+claude -p "$(cat bench/prompts/review.md)" \
+  --output-format json \
+  --allowedTools "Read,Grep,Glob,Bash(git diff:*)" \
+  &gt; bench/runs/agent-r1.raw.json
+end=$(date +%s)
+echo "{\"run\":\"agent-r1\",\"wall_seconds\":$((end-start))}" &gt; bench/runs/agent-r1.time.json</code></pre>
+
+<p>The JSON envelope contains the agent's final text and a usage block; extract the comment lines and the token counts from it. Then post the comments to the agent's sandbox PR with the same API the specialised tool uses, so both are judged by the platform's anchoring rules:</p>
+
+<pre><code>gh api repos/OWNER/SANDBOX/pulls/$PR/reviews --method POST --input review.json
+# review.json: {"event":"COMMENT","commit_id":"&lt;head_sha&gt;","comments":[{"path":..,"line":..,"side":..,"body":..}]}</code></pre>
+
+<p>If the API rejects the review because one comment has an invalid line, do not fix it by hand. Record the rejection, drop the invalid comment, post the rest, and count the dropped one as an anchor failure. A real integration would have faced the same error.</p>
+
+<h2 id="normalize">Step 5. Normalize all comments to one file per run</h2>
+
+<pre><code>gh api repos/OWNER/SANDBOX/pulls/$PR/comments --paginate \
+  --jq '.[] | {path, line, side, body}' -c &gt; bench/runs/$RUN.comments.jsonl
+
+# general (non-line) comments: kept separately, they cannot be anchored
+gh api repos/OWNER/SANDBOX/pulls/$PR/reviews --paginate \
+  --jq '.[] | select(.body != "") | {body}' -c &gt; bench/runs/$RUN.general.jsonl</code></pre>
+
+<p>Findings that only appear in a general review body count toward recall only after manual adjudication, and never toward anchor validity.</p>
+
+<h2 id="score">Step 6. Score</h2>
+
+<p>The script parses the unified diff to learn which lines are commentable on each side, then matches comments to ground truth by path, side and line with a small tolerance.</p>
+
+<pre><code>#!/usr/bin/env python3
+"""Score normalized review comments against seeded ground truth."""
+import argparse
+import collections
+import json
+import re
+
+HUNK = re.compile(r"^@@ -(\d+)(?:,\d+)? \+(\d+)(?:,\d+)? @@")
+
+
+def commentable_lines(diff_path):
+    lines = collections.defaultdict(lambda: {"LEFT": set(), "RIGHT": set()})
+    path, old, new, in_hunk = None, 0, 0, False
+    with open(diff_path, encoding="utf-8", errors="replace") as f:
+        for raw in f:
+            line = raw.rstrip("\n")
+            if line.startswith("diff --git "):
+                path, in_hunk = None, False
+                continue
+            if not in_hunk and line.startswith(("--- ", "+++ ")):
+                p = line[4:]
+                if p != "/dev/null":
+                    path = p[2:] if p[:2] in ("a/", "b/") else p
+                continue
+            m = HUNK.match(line)
+            if m:
+                old, new, in_hunk = int(m[1]), int(m[2]), True
+                continue
+            if not in_hunk or path is None:
+                continue
+            if line.startswith("+"):
+                lines[path]["RIGHT"].add(new)
+                new += 1
+            elif line.startswith("-"):
+                lines[path]["LEFT"].add(old)
+                old += 1
+            elif line.startswith(" "):
+                lines[path]["LEFT"].add(old)
+                lines[path]["RIGHT"].add(new)
+                old += 1
+                new += 1
+    return lines
+
+
+def load_jsonl(path):
+    with open(path, encoding="utf-8") as f:
+        return [json.loads(l) for l in f if l.strip()]
+
+
+def main():
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--diff", required=True)
+    ap.add_argument("--truth", required=True)
+    ap.add_argument("--comments", required=True)
+    ap.add_argument("--adjudicated", help="JSONL of {comment_idx, verdict: valid|invalid}")
+    ap.add_argument("--tolerance", type=int, default=3)
+    a = ap.parse_args()
+
+    valid = commentable_lines(a.diff)
+    truth = load_jsonl(a.truth)
+    comments = load_jsonl(a.comments)
+    verdicts = {}
+    if a.adjudicated:
+        verdicts = {r["comment_idx"]: r["verdict"] for r in load_jsonl(a.adjudicated)}
+
+    found, useful, anchored, pending = set(), 0, 0, []
+    for i, c in enumerate(comments):
+        side, line = c.get("side") or "RIGHT", c.get("line")
+        if isinstance(line, int) and line in valid.get(c["path"], {}).get(side, set()):
+            anchored += 1
+        hit = next((d["id"] for d in truth
+                    if d["path"] == c["path"] and d.get("side", "RIGHT") == side
+                    and isinstance(line, int)
+                    and d["start"] - a.tolerance &lt;= line &lt;= d["end"] + a.tolerance), None)
+        if hit and verdicts.get(i) != "invalid":
+            found.add(hit)
+            useful += 1
+        elif verdicts.get(i) == "valid":
+            useful += 1
+        elif i not in verdicts:
+            pending.append(i)
+
+    n = len(comments)
+    defect_files = {d["path"] for d in truth}
+    commented_files = {c["path"] for c in comments}
+    print(json.dumps({
+        "comments": n,
+        "precision": round(useful / n, 3) if n else None,
+        "recall": round(len(found) / len(truth), 3),
+        "anchor_validity": round(anchored / n, 3) if n else None,
+        "diff_files_commented": f"{len(commented_files &amp; set(valid))}/{len(valid)}",
+        "defect_files_commented": f"{len(commented_files &amp; defect_files)}/{len(defect_files)}",
+        "missed": sorted(d["id"] for d in truth if d["id"] not in found),
+        "pending_adjudication": pending,
+    }, ensure_ascii=False, indent=2))
+    if pending:
+        print("WARNING: precision is a lower bound until pending comments are adjudicated")
+
+
+if __name__ == "__main__":
+    main()</code></pre>
+
+<pre><code>python3 bench/score.py --diff bench/change.diff --truth bench/truth.jsonl \
+  --comments bench/runs/ocr-r1.comments.jsonl --adjudicated bench/runs/ocr-r1.adj.jsonl</code></pre>
+
+<p>What each number means:</p>
+
+<ul>
+  <li><strong><a href="../glossary.html#precision-recall">Precision</a></strong> — share of comments that are useful: either they hit a seeded defect or a human judged them a real issue. A comment on a decoy counts as a <a href="../glossary.html#false-positive">false positive</a> unless the adjudicator disagrees with your decoy.</li>
+  <li><strong>Recall</strong> — share of seeded defects found by at least one line comment.</li>
+  <li><strong>Anchor validity</strong> — share of comments sitting on a line that exists in the diff on the stated side. Comments the API rejected in Step 4 must be added back to the denominator by hand.</li>
+  <li><strong>File coverage</strong> — two ratios: changed files that received any comment, and defect-bearing files that received any comment. The second is the one that exposes skipped files.</li>
+  <li><strong>Time and tokens</strong> — from the <code>.time.json</code> files and the usage figures captured per run.</li>
+</ul>
+
+<h2 id="adjudicate">Step 7. Adjudicate blind</h2>
+
+<p>Location matching is a filter, not a judgement: a comment three lines from D02 about a typo will match D02. Have a second person read every matched and pending comment <em>without knowing which tool wrote it</em> and record a verdict:</p>
+
+<pre><code>{"comment_idx": 0, "verdict": "valid"}
+{"comment_idx": 4, "verdict": "invalid", "note": "near D02 but about naming, not the missing await"}</code></pre>
+
+<p>Shuffle comments from all runs into one sheet with tool names removed, then split verdicts back per run. This takes longer than the automated part and is the step that makes the numbers trustworthy.</p>
+
+<h2 id="repeat">Step 8. Repeat and report variance</h2>
+
+<p>Both tools are non-deterministic. Run each at least three times on the same commit and report the median plus min–max. A difference smaller than the spread between runs of the same tool is not a difference.</p>
+
+<h2 id="results">Results template</h2>
+
+<p>Fill this in from your own runs. The empty cells are intentional: we are not publishing numbers we did not measure on your code.</p>
+
+<table>
+  <thead>
+    <tr><th>Metric (median, min–max over runs)</th><th>Open Code Review</th><th>General agent</th></tr>
+  </thead>
+  <tbody>
+    <tr><td>Precision</td><td>—</td><td>—</td></tr>
+    <tr><td>Recall (seeded defects)</td><td>—</td><td>—</td></tr>
+    <tr><td>Defect files commented</td><td>—</td><td>—</td></tr>
+    <tr><td>Anchor validity (incl. API rejections)</td><td>—</td><td>—</td></tr>
+    <tr><td>Decoys flagged</td><td>—</td><td>—</td></tr>
+    <tr><td>Wall-clock time, s</td><td>—</td><td>—</td></tr>
+    <tr><td>Input / output tokens</td><td>—</td><td>—</td></tr>
+    <tr><td>Model used</td><td>—</td><td>—</td></tr>
+  </tbody>
+</table>
+
+<p>Report per-category recall as well (security, async, cross-file, left-side). An overall recall can hide the fact that one tool never comments on deleted lines.</p>
+
+<h2 id="verify">How to verify your own setup before trusting it</h2>
+
+<ol>
+  <li><strong>Score the answer key against itself.</strong> Convert <code>truth.jsonl</code> into a comments file (path, side, line = start) and run the scorer. You should see recall 1.0 and anchor validity 1.0. Anything less means a ground-truth line is outside the diff — fix the key, not the reviewers.</li>
+  <li><strong>Score an empty run.</strong> An empty comments file should give recall 0 and no crash.</li>
+  <li><strong>Post one hand-written comment on a known-bad line</strong> (outside any hunk) to the sandbox PR and confirm the API rejects it. This proves your anchor test reflects the platform's real behaviour.</li>
+  <li><strong>Diff the inputs.</strong> Confirm every run's PR shows the same head SHA: <code>gh pr view $PR --json headRefOid</code>.</li>
+</ol>
+
+<h2 id="failures">Failure cases you will likely hit</h2>
+
+<ul>
+  <li><strong>Agent output is not valid JSONL.</strong> Do not repair it with a second model. Count the run as producing zero line comments and note the format failure; that is a genuine operational result.</li>
+  <li><strong>Lines are off by the hunk header.</strong> A common agent mistake is counting lines from the top of the hunk, or giving the old-file number with <code>side: RIGHT</code>. The scorer will show low anchor validity with comments clustered a few lines away from defects — look at the raw lines before concluding the tool “missed” bugs.</li>
+  <li><strong>Rename-only files.</strong> A file renamed without edits has no hunk; any comment on it is unanchorable. Keep seeded defects out of pure renames.</li>
+  <li><strong>Context truncation.</strong> If the agent's log shows it never read a file, that is a coverage failure, not a reasoning failure. Log which files each run opened if your agent exposes tool calls.</li>
+  <li><strong>Rate limits mid-run.</strong> Retries inflate wall-clock time and sometimes tokens. Mark affected runs and rerun rather than averaging them in.</li>
+  <li><strong>Seed leakage.</strong> Variable names like <code>buggy_offset</code> or a branch named <code>add-bugs</code> leak the answer. Review your own seeds like an attacker would.</li>
+  <li><strong>Untrusted content in the diff.</strong> A reviewer that reads the repository also reads any instructions hidden in it. If you add a <a href="../glossary.html#prompt-injection">prompt injection</a> probe as one of the seeds, score it separately and keep the agent's tools read-only.</li>
+</ul>
+
+<h2 id="limits">Limitations</h2>
+
+<ul>
+  <li>Seeded bugs are easier and more local than many real ones. High recall here is necessary, not sufficient.</li>
+  <li>One repository and one language say little about others. Repeat on at least two codebases before generalising.</li>
+  <li>If the two tools use different models, the test cannot separate model quality from harness quality.</li>
+  <li>The prompt for the general agent is a variable. A better prompt may close part of the gap; publish the prompt you used so others can challenge it.</li>
+  <li>Precision depends on the adjudicator. Two adjudicators with a disagreement log are better than one.</li>
+  <li>Token counts from different sources (tool log vs. provider console) are not always counted the same way. State the source for each figure.</li>
+</ul>
+
+<h2 id="checklist">Checklist</h2>
+
+<ul>
+  <li>Base and head SHAs, tool versions and model IDs recorded in <code>bench/ENV.md</code>.</li>
+  <li>Ground truth outside the reviewed branch; self-score gives 1.0 / 1.0.</li>
+  <li>Private sandbox repository; one PR per run on the same head SHA.</li>
+  <li>Same input, same model where possible, read-only tools for the agent.</li>
+  <li>API rejections recorded as anchor failures, not fixed by hand.</li>
+  <li>Blind adjudication of every matched and pending comment.</li>
+  <li>At least three runs per tool; median and range reported.</li>
+  <li>Prompts, scorer and truth file published alongside the numbers.</li>
+</ul>
+
+<p>When the table is filled, the decision is usually simple: if the specialised reviewer wins on defect-file coverage and anchor validity with similar recall, it is doing what it promises; if the general agent matches it once the prompt asks for per-file iteration, the extra tool may not be worth maintaining. Either way, you will know from your own code rather than from a demo.</p>
+
+<p>More practical material is in the <a href="guides.html">guides</a>; definitions of the terms used here are collected in the <a href="../glossary.html">glossary</a>.</p>
+
+<section class="service-note">
+  <b>We publish what works for us—and implement the same solutions for your business.</b>
+  We design AI automation, Telegram bots, chats, and AI agents for real-world processes.
+  <a href="../contacts-en.html">Discuss your project →</a>
+</section>
+</article>
+</main>
+
+<footer class="site-footer">
+  <p>© 2026 Agent Lab Journal · <a href="guides.html">Guides</a> · <a href="../glossary.html">Glossary</a></p>
+</footer>
+
+</body>
+</html>
