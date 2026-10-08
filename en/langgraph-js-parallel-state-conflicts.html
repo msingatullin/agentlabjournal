@@ -1,0 +1,607 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Как проверить конфликты состояния в мультиагентном LangGraph.js: a reproducible TypeScript test | Agent Lab Journal</title>
+<meta name="description" content="Как проверить конфликты состояния в мультиагентном LangGraph.js: a reproducible Vitest suite for parallel writes, plus safe channels built on commutative reducers, per-agent ownership and deterministic Send routing.">
+<link rel="canonical" href="https://agentlabjournal.online/en/langgraph-js-parallel-state-conflicts.html">
+<link rel="alternate" hreflang="en" href="https://agentlabjournal.online/en/langgraph-js-parallel-state-conflicts.html">
+<link rel="alternate" hreflang="ru" href="https://agentlabjournal.online/langgraph-js-parallel-state-conflicts.html">
+<link rel="stylesheet" href="../style.css">
+<link rel="stylesheet" href="../reading.css">
+
+<meta property="og:type" content="article">
+<meta property="og:site_name" content="Agent Lab Journal">
+<meta property="og:locale" content="en_US">
+<meta property="og:title" content="Как проверить конфликты состояния в мультиагентном LangGraph.js">
+<meta property="og:description" content="Make parallel-write conflicts in LangGraph.js visible with a reproducible TypeScript test, then fix them with commutative reducers, channel ownership and deterministic routing.">
+<meta property="og:url" content="https://agentlabjournal.online/en/langgraph-js-parallel-state-conflicts.html">
+<meta property="og:image" content="https://agentlabjournal.online/assets/covers/llm-context-window-budget-social.png">
+<meta property="article:modified_time" content="2026-10-08">
+
+<meta name="twitter:card" content="summary_large_image">
+<meta name="twitter:title" content="Как проверить конфликты состояния в мультиагентном LangGraph.js">
+<meta name="twitter:description" content="A reproducible Vitest suite for parallel state writes in LangGraph.js, plus safe reducers, channel ownership and deterministic routing.">
+<meta name="twitter:image" content="https://agentlabjournal.online/assets/covers/llm-context-window-budget-social.png">
+
+<script type="application/ld+json">
+{
+  "@context": "https://schema.org",
+  "@type": "Article",
+  "headline": "Как проверить конфликты состояния в мультиагентном LangGraph.js",
+  "description": "A reproducible TypeScript test for parallel writes to shared LangGraph.js state, plus safe channels built on commutative reducers, per-agent ownership and deterministic Send routing.",
+  "image": ["https://agentlabjournal.online/assets/covers/llm-context-window-budget-social.png"],
+  "datePublished": "2026-10-08",
+  "dateModified": "2026-10-08",
+  "inLanguage": "en",
+  "author": {
+    "@type": "Organization",
+    "name": "Agent Lab Journal",
+    "url": "https://agentlabjournal.online/"
+  },
+  "publisher": {
+    "@type": "Organization",
+    "name": "Agent Lab Journal",
+    "url": "https://agentlabjournal.online/"
+  },
+  "mainEntityOfPage": {
+    "@type": "WebPage",
+    "@id": "https://agentlabjournal.online/en/langgraph-js-parallel-state-conflicts.html"
+  }
+}
+</script>
+<link rel="stylesheet" href="../homepage.css"><link rel="stylesheet" href="../max-promo.css">  <meta property="og:image:alt" content="Как проверить конфликты состояния в мультиагентном LangGraph.js">
+</head>
+<body>
+
+<header class="site-header">
+  <a class="site-logo" href="index.html">Agent Lab Journal</a>
+  <nav class="site-nav" aria-label="Main">
+    <a href="index.html">Home</a>
+    <a href="guides.html">Guides</a>
+    <a href="../glossary.html">Glossary</a>
+  </nav>
+</header>
+
+<main>
+<article class="reading">
+
+<h1>Как проверить конфликты состояния в мультиагентном LangGraph.js</h1>
+        <figure class="article-cover" data-editorial-cover="langgraph-js-parallel-state-conflicts"><img src="../assets/covers/llm-context-window-budget.png" alt="Как проверить конфликты состояния в мультиагентном LangGraph.js" width="1280" height="720" fetchpriority="high"><figcaption>Temporary fallback cover; replace in editorial pass.</figcaption></figure>
+<p class="reading-meta">Level: advanced · Reading time: 45 min · Updated: 8 October 2026</p>
+
+<p class="lead">You run three agents in parallel and the final state says the critic approved publication. Or it says the researcher found one source when it found two. Or the same note shows up three times. Nothing crashed. In a LangGraph.js <a href="../glossary.html#multi-agent-system">multi-agent system</a>, this is usually not the model's fault. Parallel nodes write to a shared state channel, and the channel's merge semantics decide which updates survive. This guide shows how to make those conflicts visible with a TypeScript test you can run yourself. It then replaces the fragile channels with three mechanisms that the same suite checks: commutative reducers, explicit channel ownership and deterministic routing.</p>
+
+<aside class="note">
+  <p><strong>Evidence boundary.</strong> We wrote the code and tests in this article to match the documented behavior of <code>@langchain/langgraph</code> (the <code>Annotation</code>, <code>StateGraph</code> and <code>Send</code> APIs). We did <em>not</em> include run output, because we are not publishing results we did not capture alongside this text. Treat every <code>expect(...)</code> as a specification: if your installed version behaves differently, the failing assertion is the finding. Record your versions with <code>npm ls</code> before you draw conclusions.</p>
+</aside>
+
+<h2 id="problem">1. The problem in one superstep</h2>
+
+<p>LangGraph runs a graph in <a href="../glossary.html#superstep">supersteps</a>. Every node scheduled for the same step runs concurrently, and their returned updates are applied to the <a href="../glossary.html#agent-state">state</a> together when the step ends. Each state key is a <a href="../glossary.html#state-channel">channel</a>, and the channel's type decides what happens when more than one update arrives in the same step:</p>
+
+<ul>
+  <li><strong>No reducer</strong> (<code>Annotation&lt;T&gt;()</code>): a last-value channel. It accepts one write per step. A second concurrent write raises an error. LangGraph.js reports it as an invalid concurrent graph update and points you to a reducer.</li>
+  <li><strong>With a <a href="../glossary.html#reducer">reducer</a></strong> (<code>Annotation&lt;T&gt;({ reducer, default })</code>): every update is folded into the current value with <code>reducer(current, update)</code>. The step never fails, so any information the reducer throws away is lost silently.</li>
+</ul>
+
+<p>That gives you three typical failure modes, from loudest to quietest:</p>
+
+<ol>
+  <li><strong>Loud:</strong> two agents write to a last-value channel in parallel, and the run throws.</li>
+  <li><strong>Silent loss:</strong> someone "fixes" the error with <code>reducer: (_old, next) =&gt; next</code>. One agent's output disappears, and which one depends on application order.</li>
+  <li><strong>Silent duplication:</strong> a node reads the list, appends to it and returns the whole list to an append reducer. This read-modify-write pattern multiplies existing entries once per parallel writer.</li>
+</ol>
+
+<p>All three are a <a href="../glossary.html#race-condition">race condition</a> in the general sense: the result depends on how concurrent writes are combined, not only on what each agent did. You can't catch them by reading prompts. You catch them by testing the merge semantics directly.</p>
+
+<h2 id="case">2. The concrete case</h2>
+
+<p>We use a small editorial pipeline as the running example. A planner <a href="../glossary.html#fan-out">fans out</a> tasks to three agents that run in parallel:</p>
+
+<ul>
+  <li><code>researcher</code> records sources and votes on a shared verdict;</li>
+  <li><code>critic</code> records risks and votes on the same shared verdict;</li>
+  <li><code>editor</code> writes two successive versions of a headline.</li>
+</ul>
+
+<p>Our requirements:</p>
+
+<ol>
+  <li>Concurrent writes never fail randomly and never disappear silently.</li>
+  <li>An agent can write only to keys it owns, plus an explicit <code>shared:</code> namespace.</li>
+  <li>When two agents disagree at the same version, the state records a <em>conflict</em>. A last-write-wins rule must not hide it.</li>
+  <li>The final state is byte-identical however the tasks are ordered on input and however long each agent takes.</li>
+</ol>
+
+<p>The fixture data below is invented for the test. It is not output from a real model.</p>
+
+<h2 id="setup">3. Project setup</h2>
+
+<pre><code>mkdir langgraph-state-conflicts &amp;&amp; cd langgraph-state-conflicts
+npm init -y
+npm pkg set type=module
+npm pkg set scripts.test="vitest run" scripts.typecheck="tsc"
+npm install @langchain/langgraph @langchain/core
+npm install -D typescript vitest tsx @types/node
+
+# Record exactly what you tested against
+npm ls @langchain/langgraph @langchain/core</code></pre>
+
+<p><code>tsconfig.json</code>:</p>
+
+<pre><code>{
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "NodeNext",
+    "moduleResolution": "NodeNext",
+    "strict": true,
+    "skipLibCheck": true,
+    "noEmit": true
+  },
+  "include": ["src", "tests", "scripts"]
+}</code></pre>
+
+<p>Layout:</p>
+
+<pre><code>src/ledger.ts      # pure merge logic: no LangGraph import
+src/graphs.ts      # three broken graphs and one safe graph
+tests/state-conflicts.test.ts
+scripts/trace.ts   # optional: print per-node updates</code></pre>
+
+<p>The merge logic stays in a file with no framework dependency. That way you can test its algebraic properties exhaustively in milliseconds, apart from graph execution.</p>
+
+<h2 id="ledger">4. A conflict-preserving reducer</h2>
+
+<p>The core idea: don't store "the value" of a shared key. Store <em>every distinct candidate</em> for each key, sorted by a total order. The winner is derived as the first element. A conflict is a tie at the highest version. Set union with a fixed sort order is commutative, associative and idempotent. The reducer's result therefore can't depend on the order in which LangGraph applies the updates, and re-applying the same update changes nothing (<a href="../glossary.html#idempotency">idempotency</a>).</p>
+
+<p><code>src/ledger.ts</code>:</p>
+
+<pre><code>export type AgentId = "researcher" | "critic" | "editor";
+
+export interface Finding {
+  id: string;      // "&lt;owner&gt;:&lt;name&gt;" or "shared:&lt;name&gt;"
+  owner: AgentId;  // stamped by the worker, never by the model
+  version: number;
+  text: string;
+}
+
+// Every id maps to a sorted, de-duplicated list of candidates.
+export type Ledger = Record&lt;string, Finding[]&gt;;
+
+export function compareFindings(a: Finding, b: Finding): number {
+  if (a.version !== b.version) return b.version - a.version; // newest first
+  if (a.owner !== b.owner) return a.owner &lt; b.owner ? -1 : 1;
+  if (a.text !== b.text) return a.text &lt; b.text ? -1 : 1;
+  return 0;
+}
+
+export function assertOwnership(f: Finding): void {
+  const ns = f.id.split(":", 1)[0];
+  if (ns !== f.owner &amp;&amp; ns !== "shared") {
+    throw new Error(`Ownership violation: ${f.owner} wrote ${f.id}`);
+  }
+}
+
+export function mergeLedger(left: Ledger, right: Ledger): Ledger {
+  for (const [id, list] of Object.entries(right)) {
+    for (const f of list) {
+      if (f.id !== id) throw new Error(`Key mismatch: ${id} vs ${f.id}`);
+      assertOwnership(f);
+    }
+  }
+  const ids = [...new Set([...Object.keys(left), ...Object.keys(right)])].sort();
+  const out: Ledger = {};
+  for (const id of ids) {
+    const all = [...(left[id] ?? []), ...(right[id] ?? [])].sort(compareFindings);
+    out[id] = all.filter((f, i) =&gt; i === 0 || compareFindings(all[i - 1], f) !== 0);
+  }
+  return out;
+}
+
+export const winner = (l: Ledger, id: string): Finding | undefined =&gt; l[id]?.[0];
+
+// A conflict is a tie at the highest version, not ordinary version history.
+export const conflicts = (l: Ledger): string[] =&gt;
+  Object.keys(l).filter(
+    (id) =&gt; l[id].length &gt; 1 &amp;&amp; l[id][0].version === l[id][1].version,
+  );</code></pre>
+
+<p>Design decisions worth calling out:</p>
+
+<ul>
+  <li><strong>Sorted keys in the output object.</strong> <code>JSON.stringify</code> follows insertion order. Rebuilding the object with sorted ids makes snapshots comparable byte for byte.</li>
+  <li><strong>No <code>Date.now()</code>, no randomness, no I/O in the reducer.</strong> A reducer must be a pure function. A timestamp tie-break looks deterministic but isn't.</li>
+  <li><strong>The tie-break by owner name is arbitrary on purpose.</strong> It exists only so that the <em>derived</em> winner is stable. The conflict itself is still reported through <code>conflicts()</code>, and a person or policy should resolve it.</li>
+  <li><strong>The reducer throws on ownership violations.</strong> Failing the step is better than merging a write that shouldn't exist.</li>
+</ul>
+
+<h2 id="graphs">5. Three broken graphs and one safe graph</h2>
+
+<p><code>src/graphs.ts</code>. The broken graphs are deliberately minimal, so each test isolates exactly one failure mode.</p>
+
+<pre><code>import { Annotation, END, Send, START, StateGraph } from "@langchain/langgraph";
+import { type AgentId, type Finding, type Ledger, mergeLedger } from "./ledger.js";
+
+/* ---------- 1. Loud: two writers, one last-value channel ---------- */
+export const NaiveState = Annotation.Root({
+  topic: Annotation&lt;string&gt;(),
+  summary: Annotation&lt;string&gt;(),
+});
+
+export const buildNaive = () =&gt;
+  new StateGraph(NaiveState)
+    .addNode("researcher", async () =&gt; ({ summary: "from researcher" }))
+    .addNode("critic", async () =&gt; ({ summary: "from critic" }))
+    .addEdge(START, "researcher")
+    .addEdge(START, "critic")
+    .addEdge("researcher", END)
+    .addEdge("critic", END)
+    .compile();
+
+/* ---------- 2. Silent loss: a reducer that hides the conflict ---------- */
+export const LossyState = Annotation.Root({
+  topic: Annotation&lt;string&gt;(),
+  summary: Annotation&lt;string&gt;({ reducer: (_old, next) =&gt; next, default: () =&gt; "" }),
+});
+
+export const buildLossy = () =&gt;
+  new StateGraph(LossyState)
+    .addNode("researcher", async () =&gt; ({ summary: "from researcher" }))
+    .addNode("critic", async () =&gt; ({ summary: "from critic" }))
+    .addEdge(START, "researcher")
+    .addEdge(START, "critic")
+    .addEdge("researcher", END)
+    .addEdge("critic", END)
+    .compile();
+
+/* ---------- 3. Silent duplication: read-modify-write into an append reducer ---------- */
+export const NotesState = Annotation.Root({
+  notes: Annotation&lt;string[]&gt;({ reducer: (a, b) =&gt; a.concat(b), default: () =&gt; [] }),
+});
+
+export const buildReadModifyWrite = () =&gt;
+  new StateGraph(NotesState)
+    .addNode("seed", async () =&gt; ({ notes: ["seed"] }))
+    // Bug: returns the whole list instead of a delta.
+    .addNode("researcher", async (s: typeof NotesState.State) =&gt; ({ notes: [...s.notes, "r"] }))
+    .addNode("critic", async (s: typeof NotesState.State) =&gt; ({ notes: [...s.notes, "c"] }))
+    .addEdge(START, "seed")
+    .addEdge("seed", "researcher")
+    .addEdge("seed", "critic")
+    .addEdge("researcher", END)
+    .addEdge("critic", END)
+    .compile();
+
+/* ---------- 4. Safe: owned channels, ledger reducer, deterministic routing ---------- */
+export interface Task {
+  taskId: string;
+  agent: AgentId;
+  delayMs: number;                         // test hook to shuffle completion order
+  writes: Array&lt;Omit&lt;Finding, "owner"&gt;&gt;;   // the agent cannot choose its owner
+}
+
+const sortedUnion = (a: string[], b: string[]) =&gt; [...new Set([...a, ...b])].sort();
+
+export const SafeState = Annotation.Root({
+  tasks: Annotation&lt;Task[]&gt;(),  // single writer (graph input): last-value is a guard
+  ledger: Annotation&lt;Ledger&gt;({ reducer: mergeLedger, default: () =&gt; ({}) }),
+  log: Annotation&lt;string[]&gt;({ reducer: sortedUnion, default: () =&gt; [] }),
+});
+
+// Node-level ownership: a node may only return the channels it owns.
+export function owned&lt;I, O extends Record&lt;string, unknown&gt;&gt;(
+  node: string,
+  keys: readonly string[],
+  fn: (input: I) =&gt; Promise&lt;O&gt;,
+) {
+  return async (input: I): Promise&lt;O&gt; =&gt; {
+    const out = await fn(input);
+    const extra = Object.keys(out).filter((k) =&gt; !keys.includes(k));
+    if (extra.length) throw new Error(`${node} wrote unowned channel(s): ${extra.join(", ")}`);
+    return out;
+  };
+}
+
+async function planner(s: typeof SafeState.State) {
+  const ids = s.tasks.map((t) =&gt; t.taskId);
+  if (new Set(ids).size !== ids.length) throw new Error("Duplicate taskId in input");
+  return { log: [`planner:${s.tasks.length}`] };
+}
+
+export function routeTasks(state: typeof SafeState.State): Send[] {
+  return [...state.tasks]
+    .sort((a, b) =&gt; (a.taskId &lt; b.taskId ? -1 : a.taskId &gt; b.taskId ? 1 : 0))
+    .map((t) =&gt; new Send("worker", t));
+}
+
+async function worker(task: Task) {
+  await new Promise((r) =&gt; setTimeout(r, task.delayMs));
+  const update: Ledger = {};
+  for (const w of task.writes) {
+    (update[w.id] ??= []).push({ ...w, owner: task.agent }); // owner stamped here
+  }
+  return { ledger: update, log: [`${task.agent}:${task.taskId}`] };
+}
+
+export const buildSafe = () =&gt;
+  new StateGraph(SafeState)
+    .addNode("planner", owned("planner", ["log"], planner))
+    .addNode("worker", owned("worker", ["ledger", "log"], worker))
+    .addEdge(START, "planner")
+    .addConditionalEdges("planner", routeTasks, ["worker"])
+    .addEdge("worker", END)
+    .compile();</code></pre>
+
+<p>Here is how the safe graph maps onto the requirements:</p>
+
+<table>
+  <thead>
+    <tr><th>Channel</th><th>Writers</th><th>Merge semantics</th><th>Why</th></tr>
+  </thead>
+  <tbody>
+    <tr><td><code>tasks</code></td><td>graph input only</td><td>last value</td><td>A second writer would be a bug. The built-in error acts as an ownership assertion.</td></tr>
+    <tr><td><code>ledger</code></td><td>all workers</td><td><code>mergeLedger</code>: union, total order, conflicts kept</td><td>Concurrent writes are expected, and none may be lost.</td></tr>
+    <tr><td><code>log</code></td><td>planner, workers</td><td>sorted set union</td><td>Order-independent audit trail.</td></tr>
+  </tbody>
+</table>
+
+<p>There are three layers of ownership. The <strong>channel layer</strong> lets only reducer channels accept concurrent writes. The <strong>node layer</strong> (<code>owned(...)</code>) stops a node from returning keys it doesn't own. The <strong>key layer</strong> (<code>assertOwnership</code>) stops an agent from writing into another agent's namespace. The worker stamps <code>owner</code> from the task and doesn't take it from model output, so an agent can't claim to be someone else.</p>
+
+<p>Routing is deterministic because <code>routeTasks</code> builds the <code>Send</code> list from state alone and sorts it by a stable key. An LLM-chosen route or the input order of tasks can't change it. Don't assume a sorted <code>Send</code> list also fixes the order in which updates are applied. The safe design doesn't depend on that order, and that is what the tests verify.</p>
+
+<h2 id="tests">6. The reproducible test suite</h2>
+
+<p><code>tests/state-conflicts.test.ts</code>:</p>
+
+<pre><code>import { describe, expect, it } from "vitest";
+import {
+  buildLossy, buildNaive, buildReadModifyWrite, buildSafe, owned, type Task,
+} from "../src/graphs.js";
+import { conflicts, mergeLedger, winner, type Ledger } from "../src/ledger.js";
+
+/* ---------- fixtures (invented data, not model output) ---------- */
+const fixture: Task[] = [
+  { taskId: "t1", agent: "researcher", delayMs: 0, writes: [
+    { id: "researcher:source-1", version: 1, text: "RFC draft found" },
+    { id: "shared:verdict", version: 1, text: "publish" },
+  ] },
+  { taskId: "t2", agent: "critic", delayMs: 0, writes: [
+    { id: "critic:risk-1", version: 1, text: "claim lacks source" },
+    { id: "shared:verdict", version: 1, text: "hold" },
+  ] },
+  { taskId: "t3", agent: "editor", delayMs: 0, writes: [
+    { id: "editor:headline", version: 1, text: "Draft A" },
+    { id: "editor:headline", version: 2, text: "Draft B" },
+  ] },
+];
+
+/* ---------- helpers ---------- */
+function rng(seed: number) { // mulberry32: small, seedable, reproducible
+  return () =&gt; {
+    seed = (seed + 0x6d2b79f5) | 0;
+    let t = Math.imul(seed ^ (seed &gt;&gt;&gt; 15), 1 | seed);
+    t = (t + Math.imul(t ^ (t &gt;&gt;&gt; 7), 61 | t)) ^ t;
+    return ((t ^ (t &gt;&gt;&gt; 14)) &gt;&gt;&gt; 0) / 4294967296;
+  };
+}
+
+function shuffle&lt;T&gt;(xs: T[], r: () =&gt; number): T[] {
+  const a = [...xs];
+  for (let i = a.length - 1; i &gt; 0; i--) {
+    const j = Math.floor(r() * (i + 1));
+    [a[i], a[j]] = [a[j], a[i]];
+  }
+  return a;
+}
+
+function* permutations&lt;T&gt;(xs: T[]): Generator&lt;T[]&gt; {
+  if (xs.length &lt;= 1) { yield xs; return; }
+  for (let i = 0; i &lt; xs.length; i++) {
+    const rest = [...xs.slice(0, i), ...xs.slice(i + 1)];
+    for (const p of permutations(rest)) yield [xs[i], ...p];
+  }
+}
+
+const updates: Ledger[] = fixture.flatMap((t) =&gt;
+  t.writes.map((w) =&gt; ({ [w.id]: [{ ...w, owner: t.agent }] })),
+);
+
+/* ---------- 1. reproduce the failure modes ---------- */
+describe("failure modes", () =&gt; {
+  it("last-value channel rejects two writers in one superstep", async () =&gt; {
+    await expect(buildNaive().invoke({ topic: "x" }))
+      .rejects.toThrow(/summary|INVALID_CONCURRENT_GRAPH_UPDATE/);
+  });
+
+  it("last-write-wins reducer completes but keeps only one agent's output", async () =&gt; {
+    const out = await buildLossy().invoke({ topic: "x" });
+    // No error is raised: the loss is silent. Exactly one value survives.
+    expect(["from researcher", "from critic"]).toContain(out.summary);
+  });
+
+  it("read-modify-write into an append reducer duplicates existing entries", async () =&gt; {
+    const out = await buildReadModifyWrite().invoke({});
+    expect(out.notes.filter((n) =&gt; n === "seed")).toHaveLength(3);
+    expect(out.notes).toHaveLength(5);
+  });
+});
+
+/* ---------- 2. algebraic properties of the reducer (no LangGraph) ---------- */
+describe("mergeLedger", () =&gt; {
+  it("is order-independent across all permutations of the updates", () =&gt; {
+    const seen = new Set&lt;string&gt;();
+    for (const p of permutations(updates)) {
+      seen.add(JSON.stringify(p.reduce(mergeLedger, {} as Ledger)));
+    }
+    expect(seen.size).toBe(1); // 6 updates -&gt; 720 orders, one result
+  });
+
+  it("is idempotent: re-applying an update changes nothing", () =&gt; {
+    const once = updates.reduce(mergeLedger, {} as Ledger);
+    const twice = updates.reduce(mergeLedger, once);
+    expect(twice).toEqual(once);
+  });
+
+  it("reports ties as conflicts and keeps version history out of them", () =&gt; {
+    const l = updates.reduce(mergeLedger, {} as Ledger);
+    expect(conflicts(l)).toEqual(["shared:verdict"]);
+    expect(l["shared:verdict"].map((f) =&gt; f.text).sort()).toEqual(["hold", "publish"]);
+    expect(winner(l, "editor:headline")?.text).toBe("Draft B");
+  });
+
+  it("rejects writes outside the owner's namespace", () =&gt; {
+    expect(() =&gt; mergeLedger({}, {
+      "researcher:source-1": [{ id: "researcher:source-1", owner: "critic", version: 9, text: "x" }],
+    })).toThrow(/Ownership violation/);
+  });
+});
+
+/* ---------- 3. ownership at the node level ---------- */
+describe("owned()", () =&gt; {
+  it("fails a node that returns a channel it does not own", async () =&gt; {
+    const node = owned("rogue", ["ledger"], async () =&gt; ({ ledger: {}, tasks: [] }));
+    await expect(node({})).rejects.toThrow(/unowned channel\(s\): tasks/);
+  });
+});
+
+/* ---------- 4. the full graph ---------- */
+describe("safe graph", () =&gt; {
+  it("produces identical state across 20 shuffled, re-timed runs", async () =&gt; {
+    const app = buildSafe();
+    const snapshots = new Set&lt;string&gt;();
+    for (let seed = 1; seed &lt;= 20; seed++) {
+      const r = rng(seed);
+      const tasks = shuffle(fixture, r).map((t) =&gt; ({ ...t, delayMs: Math.floor(r() * 40) }));
+      const out = await app.invoke({ tasks });
+      snapshots.add(JSON.stringify({ ledger: out.ledger, log: out.log }));
+    }
+    expect(snapshots.size).toBe(1);
+  }, 30_000);
+
+  it("surfaces the verdict conflict instead of hiding it", async () =&gt; {
+    const out = await buildSafe().invoke({ tasks: fixture });
+    expect(conflicts(out.ledger)).toEqual(["shared:verdict"]);
+    expect(out.log).toEqual(["critic:t2", "editor:t3", "planner:3", "researcher:t1"]);
+  });
+
+  it("fails the run when an agent writes into another agent's namespace", async () =&gt; {
+    const rogue: Task = { taskId: "t9", agent: "critic", delayMs: 0, writes: [
+      { id: "researcher:source-1", version: 9, text: "overwritten" },
+    ] };
+    await expect(buildSafe().invoke({ tasks: [...fixture, rogue] }))
+      .rejects.toThrow(/Ownership violation/);
+  });
+
+  it("rejects duplicate task ids before fan-out", async () =&gt; {
+    await expect(buildSafe().invoke({ tasks: [...fixture, fixture[0]] }))
+      .rejects.toThrow(/Duplicate taskId/);
+  });
+});</code></pre>
+
+<p>Run it:</p>
+
+<pre><code>npm run typecheck
+npm test</code></pre>
+
+<h3 id="reading-results">How to read the results</h3>
+
+<ul>
+  <li><strong>The "failure modes" block should pass.</strong> Each of those tests asserts that the bug <em>exists</em>, so a pass means you reproduced it. If the first test fails because no error was raised, your version treats concurrent last-value writes differently. Note that and look at the actual state, since it's a silent-loss case now.</li>
+  <li><strong>The error text in test 1 is version-dependent.</strong> The regex accepts either the key name or the error code. If neither matches, print the error and update the pattern. Don't delete the test.</li>
+  <li><strong>The <code>mergeLedger</code> block runs without LangGraph.</strong> If it fails, the bug is in your merge logic, not in the framework. This is the cheapest place to find it.</li>
+  <li><strong>The 20-run test checks invariance, not speed.</strong> A <code>snapshots.size</code> above 1 means some part of the final state depends on order or timing. Diff two snapshots to find which channel.</li>
+</ul>
+
+<h2 id="trace">7. Tracing which nodes wrote in which step</h2>
+
+<p>When a test fails on your own graph, look at the per-node updates before you change any reducer. <code>scripts/trace.ts</code>:</p>
+
+<pre><code>import { buildSafe, type Task } from "../src/graphs.js";
+
+const tasks: Task[] = [
+  { taskId: "t1", agent: "researcher", delayMs: 30, writes: [{ id: "shared:verdict", version: 1, text: "publish" }] },
+  { taskId: "t2", agent: "critic", delayMs: 0, writes: [{ id: "shared:verdict", version: 1, text: "hold" }] },
+];
+
+const stream = await buildSafe().stream({ tasks }, { streamMode: "updates" });
+for await (const chunk of stream) {
+  console.log(JSON.stringify(chunk));
+}</code></pre>
+
+<pre><code>npx tsx scripts/trace.ts</code></pre>
+
+<p>Each chunk is keyed by the node that produced it. What to look for in your own graphs:</p>
+
+<ul>
+  <li>two different nodes returning the same key in the same step, where that key has no reducer;</li>
+  <li>a node returning a full collection where you expected a delta, which is the read-modify-write smell;</li>
+  <li>keys a node returns that it has no business touching. Wrap that node in <code>owned(...)</code>.</li>
+</ul>
+
+<p>If you also want to look at state <em>between</em> supersteps, compile with a <a href="../glossary.html#checkpoint">checkpointer</a> (<code>compile({ checkpointer: new MemorySaver() })</code>), invoke with a <code>thread_id</code> and iterate <code>app.getStateHistory(config)</code>. That's useful when the problem only shows up after several rounds.</p>
+
+<h2 id="apply">8. Applying this to an existing graph</h2>
+
+<ol>
+  <li><strong>Inventory the channels.</strong> For every key in your <code>Annotation.Root</code>, write down which nodes return it and whether those nodes can be scheduled in the same superstep: static fan-out edges, <code>Send</code> or conditional edges that return several targets.</li>
+  <li><strong>Classify each channel.</strong> Single writer → keep it a last-value channel; the error is your guard. Multiple writers → it needs a reducer, and you must decide whether conflicts should be <em>kept</em> (ledger), <em>combined</em> (set union, sum, max) or <em>rejected</em> (throw).</li>
+  <li><strong>Make updates deltas.</strong> Nodes return only what they add. Search for patterns like <code>[...state.x, item]</code> or <code>{ ...state.x, k: v }</code> in returns to channels with reducers.</li>
+  <li><strong>Property-test every reducer.</strong> Run all permutations of a representative set of updates and check idempotency. If a reducer can't pass these tests, its channel shouldn't receive parallel writes.</li>
+  <li><strong>Make routing a pure function of state.</strong> If an LLM proposes the plan, persist the plan in state first (a single writer), then route from the stored plan with a stable sort.</li>
+  <li><strong>Add the invariance test.</strong> Shuffle input order and inject delays with a seeded generator. Assert that one snapshot results.</li>
+</ol>
+
+<h2 id="failures">9. Failure cases and anti-patterns</h2>
+
+<ul>
+  <li><strong>"Fixing" the concurrent update error with <code>(_, b) =&gt; b</code>.</strong> This turns a loud failure into silent loss. If you really want last-write-wins, define "last" by data (a version field), not by arrival.</li>
+  <li><strong>Object spread as a reducer.</strong> <code>(a, b) =&gt; ({ ...a, ...b })</code> loses one side whenever two agents write the same key, and it doesn't merge nested objects.</li>
+  <li><strong>Plain <code>concat</code> with snapshot tests.</strong> Concatenation is not commutative. If application order ever changes, a snapshot test becomes flaky with no logic change. Sort, or use a set.</li>
+  <li><strong>Side effects inside reducers.</strong> Logging to an external service, calling APIs or reading the clock make the reducer impure and break replay. Keep effects in nodes.</li>
+  <li><strong>Trusting model-reported identity.</strong> If the <code>owner</code> field comes from model output, ownership checks are decoration. Stamp it in code.</li>
+  <li><strong>LLM-chosen fan-out without a stored plan.</strong> Two runs can route differently even when your state code is correct. Test the router with fixed state, not with a live model.</li>
+  <li><strong>Duplicate <code>Send</code> payloads.</strong> If a planner emits the same task twice, an append reducer records it twice. Validate task ids before fan-out, as the planner above does, or make the reducer idempotent.</li>
+</ul>
+
+<h2 id="limitations">10. Limitations</h2>
+
+<ul>
+  <li><strong>No published run output.</strong> This article specifies the expected behavior and gives you the means to check it. It doesn't report results from our environment. Your version of <code>@langchain/langgraph</code> decides the actual outcome.</li>
+  <li><strong>Typing of narrowed node inputs.</strong> The worker takes a <code>Task</code> (the <code>Send</code> payload) instead of the full state. LangGraph.js documents this pattern, but if your version's types reject it, type the parameter as <code>typeof SafeState.State &amp; Task</code> or add a cast at the <code>addNode</code> call.</li>
+  <li><strong>Scope is one run.</strong> These tests cover writes inside a single graph execution. Two independent <code>invoke</code> calls on the same <code>thread_id</code> with a shared checkpointer are a different concurrency problem (persistence-level). Reducers don't solve it.</li>
+  <li><strong>Conflict policy is a business decision.</strong> The ledger guarantees that conflicts are kept and detected deterministically. It doesn't decide whether "hold" should beat "publish". Route conflicts to a reviewer or an explicit policy node.</li>
+  <li><strong>Cost.</strong> The ledger keeps every distinct candidate and re-sorts on every merge. That's fine for dozens or hundreds of entries per key. For large collections, keep a compact index and move the full history to external storage.</li>
+  <li><strong>Timing injection is not proof.</strong> Seeded delays show that completion order doesn't matter in the cases you ran. The permutation test on the pure reducer is the stronger guarantee. Keep both.</li>
+</ul>
+
+<h2 id="checklist">11. Verification checklist</h2>
+
+<ul>
+  <li><code>npm ls @langchain/langgraph @langchain/core</code> output is saved next to the test results.</li>
+  <li>The three failure-mode tests pass. You reproduced the bugs, so the harness can see them.</li>
+  <li>Every reducer passes the all-permutations and idempotency tests.</li>
+  <li>Every multi-writer channel has a documented merge policy; every single-writer channel has no reducer.</li>
+  <li>Every node is wrapped in <code>owned(...)</code>, or the ownership is enforced some other way you can test.</li>
+  <li>Routing depends only on stored state and uses a stable sort.</li>
+  <li>The 20-run invariance test yields exactly one snapshot.</li>
+  <li>Conflicts appear in state and are resolved by an explicit step, never by arrival order.</li>
+</ul>
+
+<p>More hands-on material on testing and controlling agents is in <a href="guides.html">the guides</a>. Terms used here are defined in the <a href="../glossary.html">glossary</a>.</p>
+
+<section class="service-note">
+  <b>We publish what works for us—and implement the same solutions for your business.</b>
+  We design AI automation, Telegram bots, chats, and AI agents for real-world processes.
+  <a href="../contacts-en.html">Discuss your project →</a>
+</section>
+</article>
+</main>
+
+<footer class="site-footer">
+  <p>© 2026 Agent Lab Journal · <a href="guides.html">Guides</a> · <a href="../glossary.html">Glossary</a></p>
+</footer>
+
+</body>
+</html>
