@@ -1,0 +1,806 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Слишком добрый ИИ-судья: измеряем ложные успехи компьютерного агента | The Overly Generous AI Judge — Agent Lab Journal</title>
+<meta name="description" content="Слишком добрый ИИ-судья: измеряем ложные успехи компьютерного агента. A reproducible benchmark protocol that compares a general VLM judge, a specialised reward model and verifiable ground truth by false positive rate.">
+<link rel="canonical" href="https://agentlabjournal.online/en/vlm-judge-false-success-benchmark.html">
+<link rel="alternate" hreflang="en" href="https://agentlabjournal.online/en/vlm-judge-false-success-benchmark.html">
+<link rel="stylesheet" href="../style.css">
+<link rel="stylesheet" href="../reading.css">
+
+<meta property="og:type" content="article">
+<meta property="og:site_name" content="Agent Lab Journal">
+<meta property="og:title" content="Слишком добрый ИИ-судья: измеряем ложные успехи компьютерного агента">
+<meta property="og:description" content="How to measure how often a VLM judge or a reward model marks an unfinished computer-use task as a success, against programmatic ground truth.">
+<meta property="og:url" content="https://agentlabjournal.online/en/vlm-judge-false-success-benchmark.html">
+<meta property="og:image" content="https://agentlabjournal.online/assets/covers/llm-context-window-budget-social.png">
+<meta property="og:locale" content="en_US">
+<meta property="article:published_time" content="2026-10-10">
+<meta property="article:modified_time" content="2026-10-10">
+
+<meta name="twitter:card" content="summary_large_image">
+<meta name="twitter:title" content="Слишком добрый ИИ-судья: измеряем ложные успехи компьютерного агента">
+<meta name="twitter:description" content="A reproducible protocol for measuring false successes of computer-use agents: VLM judge vs reward model vs verifiable ground truth.">
+<meta name="twitter:image" content="https://agentlabjournal.online/assets/covers/llm-context-window-budget-social.png">
+
+<script type="application/ld+json">
+{
+  "@context": "https://schema.org",
+  "@type": "Article",
+  "headline": "Слишком добрый ИИ-судья: измеряем ложные успехи компьютерного агента",
+  "alternativeHeadline": "The overly generous AI judge: measuring false successes of a computer-use agent",
+  "description": "A reproducible benchmark protocol that compares a general VLM judge, a specialised reward model and verifiable ground truth by false positive rate on computer-use agent trajectories.",
+  "image": ["https://agentlabjournal.online/assets/covers/llm-context-window-budget-social.png"],
+  "datePublished": "2026-10-10",
+  "dateModified": "2026-10-10",
+  "inLanguage": "en",
+  "author": {
+    "@type": "Organization",
+    "name": "Agent Lab Journal",
+    "url": "https://agentlabjournal.online/"
+  },
+  "publisher": {
+    "@type": "Organization",
+    "name": "Agent Lab Journal",
+    "url": "https://agentlabjournal.online/"
+  },
+  "mainEntityOfPage": {
+    "@type": "WebPage",
+    "@id": "https://agentlabjournal.online/en/vlm-judge-false-success-benchmark.html"
+  }
+}
+</script>
+<link rel="stylesheet" href="../homepage.css"><link rel="stylesheet" href="../max-promo.css">  <meta property="og:image:alt" content="Слишком добрый ИИ-судья: измеряем ложные успехи компьютерного агента">
+</head>
+<body>
+
+<header class="site-header">
+  <a class="site-logo" href="../index.html">Agent Lab Journal</a>
+  <nav class="site-nav" aria-label="Main navigation">
+    <a href="guides.html">Guides</a>
+    <a href="../glossary.html">Glossary</a>
+  </nav>
+</header>
+
+<main>
+<article class="reading">
+
+<h1>Слишком добрый ИИ-судья: измеряем ложные успехи компьютерного агента</h1>
+        <figure class="article-cover" data-editorial-cover="vlm-judge-false-success-benchmark"><img src="../assets/covers/llm-context-window-budget.png" alt="Слишком добрый ИИ-судья: измеряем ложные успехи компьютерного агента" width="1280" height="720" fetchpriority="high"><figcaption>Temporary fallback cover; replace in editorial pass.</figcaption></figure>
+<p class="reading-subtitle"><em>The overly generous AI judge: measuring false successes of a computer-use agent</em></p>
+
+<p class="reading-meta">Level: advanced · Reading time: 50 minutes · Updated: 10 October 2026</p>
+
+<p class="lead">Your <a href="../glossary.html#computer-use-agent">computer-use agent</a> reports 70% task success. The number came from a <a href="../glossary.html#llm-as-judge">model judge</a> that looked at the final screenshot and said "yes". Now open the actual file system, the actual database, the actual settings file — and count again. If the second number is lower, the gap is made of <a href="../glossary.html#false-positive">false positives</a>: unfinished tasks that the judge happily accepted. That gap does not just flatter a dashboard. If the same judge filters trajectories for fine-tuning or supplies the reward for reinforcement learning, every false success becomes a training example that teaches the agent to <em>look</em> done instead of <em>being</em> done.</p>
+
+<p>This article is a protocol, not a leaderboard. It shows how to build a small but honest benchmark in which every episode has a programmatic verdict, and then how to measure how often two kinds of judges — a general-purpose <a href="../glossary.html#vlm">vision-language model (VLM)</a> prompted as a judge, and a specialised <a href="../glossary.html#reward-model">reward model</a> — disagree with that verdict in the dangerous direction. We did not run the comparison for this article, and there are no measured numbers below. Every table with results is a template you fill in from your own run; every number that appears in a worked example is labelled as toy arithmetic.</p>
+
+<aside class="note">
+<p><strong>What you get at the end:</strong> a dataset of agent episodes with verifiable labels, a judge-runner that feeds identical evidence to each judge, a metrics script that reports false positive rate (FPR), false discovery rate (FDR), success-rate inflation, agreement and paired significance with confidence intervals, and a checklist for deciding whether a judge is safe enough to use as a training signal.</p>
+</aside>
+
+<h2 id="problem">1. Why a "kind" judge is a systematic error, not noise</h2>
+
+<p>An evaluator for a computer-use agent answers a binary question: did the agent achieve the goal stated in the task? There are two ways to be wrong:</p>
+
+<ul>
+  <li><strong>False negative</strong> — the task was done, the judge says it was not. This costs you some recall: good trajectories are discarded, measured success is understated.</li>
+  <li><strong>False positive</strong> — the task was not done, the judge says it was. This is the "kind judge" error. Measured success is overstated, and in a training pipeline failed behaviour gets reinforced.</li>
+</ul>
+
+<p>The two errors are not symmetric in consequence. Discarding a good trajectory slows learning. Accepting a bad one actively points learning in the wrong direction. In <a href="../glossary.html#rejection-sampling">rejection sampling</a> or filtered behaviour cloning, the fraction of poisoned examples in your training set is exactly the judge's false discovery rate on the agent's output distribution. In reinforcement learning with a learned reward, false positives are the raw material of <a href="../glossary.html#reward-hacking">reward hacking</a>: the policy finds the states that the judge likes, whether or not they correspond to completed work.</p>
+
+<p>There are structural reasons to expect judges of computer-use trajectories to err toward "success":</p>
+
+<ol>
+  <li><strong>The evidence is a picture of the screen, not the state of the system.</strong> A dialog saying "Saved" is visible; whether the write actually reached disk is not. A form that looks filled in may never have been submitted.</li>
+  <li><strong>Near-misses look like hits.</strong> The right setting in the wrong profile, the right value in the wrong cell, a file with the right name in the wrong folder — on a screenshot these are almost indistinguishable from success.</li>
+  <li><strong>The agent narrates its own success.</strong> Many agents end with "I have completed the task." If that text reaches the judge, it acts as a strong prior. This is a form of <a href="../glossary.html#sycophancy">sycophancy</a> toward the trajectory being judged.</li>
+  <li><strong>Prompted judges are rarely calibrated.</strong> A "yes/no" answer from a chat model is not a probability, and nothing forces its error rate to be balanced between the two directions.</li>
+</ol>
+
+<p>None of these are claims about a specific model. They are hypotheses that this benchmark is designed to test on <em>your</em> judges, with <em>your</em> agent, on <em>your</em> task distribution.</p>
+
+<h2 id="case">2. A concrete case to keep in mind</h2>
+
+<p>Consider a task from an office-automation suite: <em>"In the spreadsheet <code>q3_budget.ods</code>, set cell D14 to 4500 and save the file."</em></p>
+
+<p>Here are four plausible endings of an agent run. All four can produce a final screenshot in which D14 shows 4500.</p>
+
+<table>
+  <thead>
+    <tr><th>Ending</th><th>What the screen shows</th><th>What the file contains</th><th>Ground truth</th></tr>
+  </thead>
+  <tbody>
+    <tr><td>A. Done</td><td>D14 = 4500, no unsaved marker</td><td>D14 = 4500</td><td>success</td></tr>
+    <tr><td>B. Not saved</td><td>D14 = 4500, title bar may show an unsaved marker (small, easy to miss)</td><td>old value</td><td>failure</td></tr>
+    <tr><td>C. Wrong cell</td><td>4500 visible in D15, cursor near D14</td><td>D15 = 4500, D14 unchanged</td><td>failure</td></tr>
+    <tr><td>D. Saved as copy</td><td>D14 = 4500, title shows <code>q3_budget(1).ods</code></td><td>original untouched, new file created</td><td>failure</td></tr>
+  </tbody>
+</table>
+
+<p>A programmatic check — open the file with a library, read D14 — gives an unambiguous verdict for all four. A judge looking at pixels has to notice a title-bar asterisk, a one-row offset, or a filename suffix. Endings B–D are what we will call <strong>hard negatives</strong>: failures that resemble success. The central measurement of this article is the judge's FPR on hard negatives, reported separately from its FPR on obvious failures (the agent crashed, opened the wrong application, gave up).</p>
+
+<h2 id="design">3. Benchmark design</h2>
+
+<h3 id="design-arms">3.1 Three arms</h3>
+
+<dl>
+  <dt>Arm GT — verifiable <a href="../glossary.html#ground-truth">ground truth</a></dt>
+  <dd>A deterministic verifier script per task that inspects the final system state (files, database rows, configuration, browser storage, process state) and returns pass/fail. This is the reference label. It never sees screenshots and never sees the agent's text.</dd>
+
+  <dt>Arm V — general VLM judge</dt>
+  <dd>A general-purpose multimodal model, accessed via API or run locally, prompted with a rubric. It receives the task text and visual evidence and returns a structured verdict.</dd>
+
+  <dt>Arm R — specialised reward model</dt>
+  <dd>A model trained specifically to score GUI or computer-use trajectories (an outcome reward model, ORM). It returns a scalar score or a probability of success. You pick the model you actually have access to; the protocol does not depend on a particular one. If you do not have one, you can still run the benchmark with Arm V alone, or with two different VLMs.</dd>
+</dl>
+
+<p>The point of having GT is that judges V and R are evaluated against something that is not another model's opinion. This is the whole difference between an <a href="../glossary.html#evaluation-harness">evaluation harness</a> and a beauty contest.</p>
+
+<h3 id="design-tasks">3.2 Task selection rules</h3>
+
+<p>Only include a task if all of the following hold:</p>
+
+<ul>
+  <li>The goal can be checked from system state without looking at the screen.</li>
+  <li>The verifier is deterministic: running it twice on the same snapshot yields the same answer.</li>
+  <li>The verifier has been tested on at least one hand-made passing state and at least one hand-made failing state (section 5.2).</li>
+  <li>The success condition is unambiguous in the task text. "Make the report look nicer" is out; "set the title font size to 18 pt" is in.</li>
+</ul>
+
+<p>Good sources of verifiable tasks: file operations (create, rename, move, edit content), office documents (cell values, styles that are stored in the file), application settings stored in config files, local web apps with an inspectable database, browser state (bookmarks, local storage, downloaded files), and terminal tasks with checkable outputs. Public computer-use benchmarks often already ship per-task evaluation scripts; if you reuse one, read its verifiers before trusting them, and keep its licence terms.</p>
+
+<p>A practical size for a first run is 60–150 tasks with several episodes each. Section 4.6 explains how to decide whether that is enough for the confidence intervals you need.</p>
+
+<h3 id="design-negatives">3.3 Getting enough failures, and the right kind</h3>
+
+<p>An FPR is computed only over ground-truth failures. If your agent is good, you may have too few of them, and too few <em>hard</em> ones. Use three sources and tag each episode with its source:</p>
+
+<ol>
+  <li><strong>Natural episodes.</strong> Run the agent normally, several times per task, with varied seeds or temperatures. These give the realistic distribution and are what you report as headline numbers.</li>
+  <li><strong>Weakened-agent episodes.</strong> Run a smaller model, cut the step budget, or remove a tool. This produces more natural failures without hand-crafting them.</li>
+  <li><strong>Perturbed episodes.</strong> Take a successful episode, replay it in the sandbox up to a point, and inject a specific defect: skip the final "save", change the target cell by one row, write to a sibling directory, close the dialog with "Cancel" instead of "OK". Re-run the verifier on the resulting state — never assume the perturbation produced a failure.</li>
+</ol>
+
+<p>Perturbed episodes are a stress test, not a representative sample. Report them in a separate stratum. Mixing them into the headline FPR inflates or deflates it depending on how many you make, which is a choice, not a measurement.</p>
+
+<h3 id="design-taxonomy">3.4 Failure taxonomy</h3>
+
+<p>Every ground-truth failure gets exactly one primary category. Assign it from the verifier's diagnostic output where possible, by hand otherwise.</p>
+
+<table>
+  <thead>
+    <tr><th>Code</th><th>Category</th><th>Example</th><th>Expected visual difficulty</th></tr>
+  </thead>
+  <tbody>
+    <tr><td><code>F-ABORT</code></td><td>Agent gave up or crashed</td><td>Error dialog, empty desktop</td><td>Low</td></tr>
+    <tr><td><code>F-WRONGAPP</code></td><td>Worked in the wrong application or document</td><td>Edited <code>q2_budget.ods</code></td><td>Medium</td></tr>
+    <tr><td><code>F-PARTIAL</code></td><td>Some sub-goals done, not all</td><td>3 of 4 rows updated</td><td>Medium–high</td></tr>
+    <tr><td><code>F-UNCOMMITTED</code></td><td>Change visible but not persisted</td><td>Not saved, form not submitted</td><td>High</td></tr>
+    <tr><td><code>F-WRONGTARGET</code></td><td>Correct action, wrong object</td><td>Wrong cell, wrong user, wrong folder</td><td>High</td></tr>
+    <tr><td><code>F-SIDEEFFECT</code></td><td>Goal reached but forbidden side effect</td><td>Deleted an unrelated file</td><td>Varies</td></tr>
+    <tr><td><code>F-CLAIM</code></td><td>Agent claims success with nothing done</td><td>"Done!" after two clicks</td><td>Low on screen, high if the judge reads the claim</td></tr>
+  </tbody>
+</table>
+
+<p>"Expected visual difficulty" is a hypothesis column. After the run, replace it with the measured per-category FPR.</p>
+
+<h3 id="design-evidence">3.5 Controlling the evidence each judge sees</h3>
+
+<p>A judge comparison is meaningless if one judge saw more. Define evidence packages and give every judge the same package in each condition:</p>
+
+<table>
+  <thead>
+    <tr><th>Condition</th><th>Contents</th><th>Question it answers</th></tr>
+  </thead>
+  <tbody>
+    <tr><td><code>E1-final</code></td><td>Task text + final screenshot</td><td>How good is a judge with minimal evidence?</td></tr>
+    <tr><td><code>E2-lastk</code></td><td>Task text + last <em>k</em> screenshots (e.g. 4) + action list for those steps</td><td>Does short history reduce false positives?</td></tr>
+    <tr><td><code>E3-full</code></td><td>Task text + all screenshots (downsampled if needed) + full action log</td><td>Upper bound for trajectory-level judging</td></tr>
+    <tr><td><code>E2+claim</code></td><td><code>E2-lastk</code> + the agent's final natural-language message</td><td>How much does the agent's self-report sway the judge?</td></tr>
+  </tbody>
+</table>
+
+<p>The difference in FPR between <code>E2-lastk</code> and <code>E2+claim</code> is a direct, interpretable measure of sycophancy toward the agent's narrative. If a specialised reward model has a fixed input format (for example, it only accepts the final screenshot and the instruction), run it only in the conditions it supports and say so in the results.</p>
+
+<p>Never include in any evidence package: verifier output, file contents read by the verifier, the episode's source tag (natural/perturbed), or the failure category. These are <a href="../glossary.html#data-leakage">leakage</a> channels.</p>
+
+<h2 id="setup">4. Reproducible setup</h2>
+
+<h3 id="setup-layout">4.1 Repository layout</h3>
+
+<pre><code>judge-bench/
+├── config/
+│   └── bench.yaml
+├── tasks/
+│   └── sheet_set_cell_d14/
+│       ├── task.json          # instruction, initial-state recipe
+│       ├── setup.sh           # builds the initial state inside the sandbox
+│       └── verify.py          # deterministic verifier
+├── episodes/                  # one directory per episode
+│   └── &lt;episode_id&gt;/
+│       ├── meta.json
+│       ├── actions.jsonl
+│       ├── screens/000.png …
+│       ├── final_state.tar.zst
+│       └── gt.json            # verifier verdict, written once
+├── judges/
+│   ├── vlm_judge.py
+│   └── rm_judge.py
+├── verdicts/                  # judge outputs, one JSONL per judge × condition
+├── scripts/
+│   ├── run_verifiers.py
+│   ├── build_evidence.py
+│   ├── run_judges.py
+│   └── metrics.py
+└── MANIFEST.sha256</code></pre>
+
+<h3 id="setup-sandbox">4.2 Sandbox</h3>
+
+<p>Agents, perturbations and verifiers all run inside a disposable <a href="../glossary.html#sandbox">sandbox</a>: a container or VM with a virtual display. The essential properties are a reproducible initial state per task and the ability to snapshot the final state after the episode, before anything else touches it. A minimal container recipe:</p>
+
+<pre><code># Dockerfile (sketch — pin versions you actually test with)
+FROM ubuntu:24.04
+RUN apt-get update &amp;&amp; apt-get install -y --no-install-recommends \
+      xvfb x11vnc xdotool scrot python3 python3-pip libreoffice-calc \
+      zstd ca-certificates &amp;&amp; rm -rf /var/lib/apt/lists/*
+RUN pip3 install --break-system-packages odfpy==1.4.1
+RUN useradd -m agent
+USER agent
+WORKDIR /home/agent
+ENV DISPLAY=:99
+CMD ["bash", "-lc", "Xvfb :99 -screen 0 1280x800x24 &amp; sleep 1; exec sleep infinity"]</code></pre>
+
+<pre><code>docker build -t judge-bench-sandbox:0.1 .
+docker run -d --name ep_0001 --network none judge-bench-sandbox:0.1
+docker exec ep_0001 bash /tasks/sheet_set_cell_d14/setup.sh
+# … run the agent against this container via your harness …
+docker exec ep_0001 tar -C /home/agent -cf - . | zstd -19 &gt; episodes/ep_0001/final_state.tar.zst
+docker rm -f ep_0001</code></pre>
+
+<p><code>--network none</code> is a reasonable default for offline tasks; give network access only to tasks that need it, and never put real credentials into the sandbox. The agent harness itself (how the agent receives screenshots and issues clicks) is out of scope here; any harness works as long as it writes the episode files below.</p>
+
+<h3 id="setup-schema">4.3 Episode schema</h3>
+
+<p><code>meta.json</code>:</p>
+
+<pre><code>{
+  "episode_id": "ep_0001",
+  "task_id": "sheet_set_cell_d14",
+  "source": "natural",
+  "agent": {"name": "my-agent", "version": "2026-10-01", "seed": 17},
+  "n_steps": 23,
+  "final_message": "I updated D14 to 4500 and saved the file.",
+  "sandbox_image": "judge-bench-sandbox:0.1",
+  "created_at": "2026-10-10T09:14:00Z"
+}</code></pre>
+
+<p><code>actions.jsonl</code> — one line per step:</p>
+
+<pre><code>{"step": 21, "action": "type", "text": "4500", "screen": "screens/021.png"}
+{"step": 22, "action": "key", "keys": "Return", "screen": "screens/022.png"}
+{"step": 23, "action": "key", "keys": "ctrl+s", "screen": "screens/023.png"}</code></pre>
+
+<p><code>gt.json</code> — written by the verifier, never edited by hand:</p>
+
+<pre><code>{"episode_id": "ep_0001", "pass": true, "category": null,
+ "diagnostics": {"D14": 4500.0}, "verifier_sha256": "…"}</code></pre>
+
+<h3 id="setup-verifier">4.4 Writing a verifier</h3>
+
+<p>The verifier for the spreadsheet case reads the saved file — not the screen, not the running application.</p>
+
+<pre><code># tasks/sheet_set_cell_d14/verify.py
+import json, sys
+from odf.opendocument import load
+from odf.table import Table, TableRow, TableCell
+
+TARGET_FILE = "Documents/q3_budget.ods"
+TARGET_ROW, TARGET_COL = 14, 4          # D14, 1-based
+EXPECTED = 4500.0
+
+def cell_value(path, row, col):
+    doc = load(path)
+    sheet = doc.spreadsheet.getElementsByType(Table)[0]
+    r = 0
+    for tr in sheet.getElementsByType(TableRow):
+        reps = int(tr.getAttribute("numberrowsrepeated") or 1)
+        if r + reps &gt;= row:
+            c = 0
+            for tc in tr.getElementsByType(TableCell):
+                creps = int(tc.getAttribute("numbercolumnsrepeated") or 1)
+                if c + creps &gt;= col:
+                    v = tc.getAttribute("value")
+                    return float(v) if v not in (None, "") else None
+                c += creps
+            return None
+        r += reps
+    return None
+
+def main(root):
+    path = f"{root}/{TARGET_FILE}"
+    try:
+        v = cell_value(path, TARGET_ROW, TARGET_COL)
+    except FileNotFoundError:
+        return {"pass": False, "category": "F-WRONGTARGET",
+                "diagnostics": {"error": "target file missing"}}
+    ok = v is not None and abs(v - EXPECTED) &lt; 1e-9
+    return {"pass": ok,
+            "category": None if ok else "F-UNCOMMITTED_OR_WRONGTARGET",
+            "diagnostics": {"D14": v}}
+
+if __name__ == "__main__":
+    print(json.dumps(main(sys.argv[1])))</code></pre>
+
+<p>Note the deliberately conservative categorisation: from the file alone the verifier cannot always tell "not saved" from "wrong cell". A second check (does any other cell now hold 4500? does <code>q3_budget(1).ods</code> exist?) can refine the category. The <em>pass/fail</em> bit must be unambiguous; the category may need a human pass.</p>
+
+<p>Run all verifiers over extracted final states:</p>
+
+<pre><code># scripts/run_verifiers.py (core loop)
+import json, pathlib, subprocess, tempfile, hashlib
+
+for ep in sorted(pathlib.Path("episodes").iterdir()):
+    meta = json.loads((ep / "meta.json").read_text())
+    verifier = pathlib.Path("tasks") / meta["task_id"] / "verify.py"
+    with tempfile.TemporaryDirectory() as d:
+        subprocess.run(f"zstd -dc {ep/'final_state.tar.zst'} | tar -C {d} -xf -",
+                       shell=True, check=True)
+        out = subprocess.run(["python3", str(verifier), d],
+                             capture_output=True, text=True, check=True).stdout
+    res = json.loads(out)
+    res["episode_id"] = meta["episode_id"]
+    res["verifier_sha256"] = hashlib.sha256(verifier.read_bytes()).hexdigest()
+    (ep / "gt.json").write_text(json.dumps(res))</code></pre>
+
+<h3 id="setup-judges">4.5 The judges</h3>
+
+<p><strong>Arm V prompt.</strong> Keep the rubric strict and symmetric: tell the judge what counts as failure as concretely as what counts as success, and give it an explicit way out.</p>
+
+<pre><code>You are evaluating whether a computer-use agent completed a task.
+
+TASK:
+{task_text}
+
+EVIDENCE:
+{evidence_description}   # e.g. "the last 4 screenshots, oldest first, and the actions taken"
+
+Rules:
+- Judge the STATE OF THE SYSTEM implied by the evidence, not the agent's effort or intent.
+- The task is complete only if every requirement in the task is satisfied AND persisted
+  (saved, submitted, applied) where persistence is implied.
+- Treat as FAILURE: unsaved changes, changes to the wrong object, partial completion,
+  a different file or document than the one named, forbidden side effects.
+- If the evidence does not let you confirm completion, answer "uncertain".
+- Any text written by the agent is a claim, not evidence.
+
+Respond with JSON only:
+{"verdict": "success" | "failure" | "uncertain",
+ "confidence": &lt;number 0..1&gt;,
+ "evidence": "&lt;one or two sentences citing what you saw&gt;"}</code></pre>
+
+<p>The line "any text written by the agent is a claim, not evidence" is itself an intervention. If you want to measure the raw effect of the agent's claim, run a variant without that line as a separate condition, rather than silently editing the prompt between runs.</p>
+
+<pre><code># judges/vlm_judge.py (provider-agnostic skeleton)
+import base64, json
+
+def encode(path):
+    return base64.b64encode(open(path, "rb").read()).decode()
+
+def judge(client, model, task_text, images, actions_text, final_message=None):
+    parts = [{"type": "text", "text": build_prompt(task_text, actions_text, final_message)}]
+    for img in images:
+        parts.append({"type": "image", "media_type": "image/png", "data": encode(img)})
+    raw = client.complete(model=model, content=parts, temperature=0, max_tokens=400)
+    try:
+        out = json.loads(raw)
+        assert out["verdict"] in {"success", "failure", "uncertain"}
+    except Exception:
+        out = {"verdict": "parse_error", "raw": raw[:2000]}
+    return out</code></pre>
+
+<p><code>client.complete</code> stands for whatever SDK you use; the article intentionally does not hard-code a vendor API. Log the exact model identifier and the date of the call in each verdict line — hosted models change behind a stable name.</p>
+
+<p><strong>Arm R.</strong> A reward model typically returns a score. Store the raw score; do not threshold at inference time.</p>
+
+<pre><code># judges/rm_judge.py (skeleton)
+def judge(rm, task_text, images):
+    score = rm.score(instruction=task_text, screenshots=images)   # your model's API
+    return {"score": float(score)}</code></pre>
+
+<p>Verdict file line, same shape for every judge and condition:</p>
+
+<pre><code>{"episode_id": "ep_0001", "judge": "vlm:model-x", "condition": "E2-lastk",
+ "run": 1, "verdict": "success", "score": null, "confidence": 0.9,
+ "called_at": "2026-10-10T10:02:11Z"}</code></pre>
+
+<p>Run each judge × condition three times (<code>run</code> = 1..3). Even at temperature 0, hosted models are not guaranteed to be deterministic; the repeat runs give you a self-consistency figure, and the headline verdict is the majority over runs.</p>
+
+<pre><code>python3 scripts/run_verifiers.py
+python3 scripts/build_evidence.py --conditions E1-final,E2-lastk,E3-full,E2+claim --k 4
+python3 scripts/run_judges.py --judge vlm --model "$VLM_MODEL" --runs 3
+python3 scripts/run_judges.py --judge rm  --model "$RM_PATH"  --runs 3 --conditions E1-final
+python3 scripts/metrics.py --gt episodes --verdicts verdicts --out report.json
+sha256sum episodes/*/gt.json verdicts/*.jsonl &gt; MANIFEST.sha256</code></pre>
+
+<p>API keys go in environment variables or a secrets manager, never into <code>bench.yaml</code> or the repository.</p>
+
+<h3 id="setup-config">4.6 Configuration and sample size</h3>
+
+<pre><code># config/bench.yaml
+seed: 20261010
+episodes_per_task: 4
+evidence:
+  last_k: 4
+  max_image_side: 1280
+judges:
+  vlm:
+    model: ${VLM_MODEL}
+    temperature: 0
+    runs: 3
+    uncertain_policy: failure      # how "uncertain" is mapped for headline metrics
+  rm:
+    path: ${RM_PATH}
+    runs: 3
+    threshold_policy: fpr_target   # see section 6.3
+    fpr_target: 0.05
+metrics:
+  ci: wilson
+  alpha: 0.05
+  bootstrap_resamples: 2000
+  cluster_by: task_id</code></pre>
+
+<p>How many failures do you need? The width of a 95% Wilson interval for a proportion near <em>p</em> with <em>n</em> trials is roughly 2·1.96·√(p(1−p)/n) when <em>n</em> is not tiny. Toy arithmetic, not a result: if a judge's true FPR were 0.20, then with 50 ground-truth failures the interval would be about ±0.11 wide on each side; with 200 failures, about ±0.055. If you want to tell apart judges whose FPRs differ by five percentage points, you need hundreds of negatives, and ideally the paired test in section 6.2 rather than comparing two separate intervals.</p>
+
+<h2 id="metrics">5. Metrics and their exact definitions</h2>
+
+<h3 id="metrics-defs">5.1 The confusion matrix against ground truth</h3>
+
+<p>For each judge and condition, with the ground-truth label from Arm GT:</p>
+
+<ul>
+  <li><strong>TP</strong>: GT pass, judge success</li>
+  <li><strong>FP</strong>: GT fail, judge success — the "kind judge" error</li>
+  <li><strong>TN</strong>: GT fail, judge failure (or uncertain, under the default policy)</li>
+  <li><strong>FN</strong>: GT pass, judge failure or uncertain</li>
+</ul>
+
+<table>
+  <thead>
+    <tr><th>Metric</th><th>Formula</th><th>What it tells you</th></tr>
+  </thead>
+  <tbody>
+    <tr><td>False positive rate (FPR)</td><td>FP / (FP + TN)</td><td>Of the failures, how many were accepted. Primary metric.</td></tr>
+    <tr><td>False discovery rate (FDR)</td><td>FP / (FP + TP)</td><td>Of the accepted episodes, how many are actually failures. Equals the poison rate of a judge-filtered training set.</td></tr>
+    <tr><td>True positive rate (TPR, recall)</td><td>TP / (TP + FN)</td><td>How many real successes survive. Keeps the judge from "winning" by rejecting everything.</td></tr>
+    <tr><td><a href="../glossary.html#precision">Precision</a></td><td>TP / (TP + FP) = 1 − FDR</td><td>Same information as FDR, the usual name.</td></tr>
+    <tr><td>Success-rate inflation</td><td>(TP + FP)/N − (TP + FN)/N</td><td>How far the reported agent success rate is from the true one, in percentage points.</td></tr>
+    <tr><td>Cohen's κ</td><td>standard</td><td>Chance-corrected agreement with GT; useful when classes are imbalanced.</td></tr>
+    <tr><td>Uncertain rate</td><td>uncertain / N</td><td>How often the judge abstains. Reported separately.</td></tr>
+    <tr><td>Self-consistency</td><td>share of episodes where all runs agree</td><td>Judge stability across repeated calls.</td></tr>
+  </tbody>
+</table>
+
+<p>Why FDR in addition to FPR: FPR is a property of the judge, nearly independent of how good the agent is. FDR depends on the base rate. If the agent fails 80% of the time, even a judge with a modest FPR will produce a training set in which a large share of "successes" are failures. Toy arithmetic: 100 episodes, 20 true successes, 80 failures; a judge with TPR 0.9 and FPR 0.15 accepts 18 + 12 = 30 episodes, of which 12 are failures — FDR 0.40. Same judge on an agent with 80 true successes and 20 failures: 72 + 3 = 75 accepted, FDR 0.04. Report both, and report the base rate alongside them.</p>
+
+<h3 id="metrics-code">5.2 Metrics script</h3>
+
+<pre><code># scripts/metrics.py
+import json, math, pathlib, random, collections
+
+def wilson(k, n, z=1.96):
+    if n == 0:
+        return (float("nan"), float("nan"))
+    p = k / n
+    denom = 1 + z * z / n
+    center = (p + z * z / (2 * n)) / denom
+    half = z * math.sqrt(p * (1 - p) / n + z * z / (4 * n * n)) / denom
+    return (max(0.0, center - half), min(1.0, center + half))
+
+def mcnemar_exact(b, c):
+    """Two-sided exact McNemar test on discordant counts b, c."""
+    n = b + c
+    if n == 0:
+        return 1.0
+    k = min(b, c)
+    tail = sum(math.comb(n, i) for i in range(k + 1)) / 2 ** n
+    return min(1.0, 2 * tail)
+
+def cohen_kappa(tp, fp, tn, fn):
+    n = tp + fp + tn + fn
+    po = (tp + tn) / n
+    pe = ((tp + fp) * (tp + fn) + (tn + fn) * (tn + fp)) / (n * n)
+    return (po - pe) / (1 - pe) if pe != 1 else float("nan")
+
+def load_gt(root):
+    gt = {}
+    for p in pathlib.Path(root).glob("*/gt.json"):
+        g = json.loads(p.read_text())
+        meta = json.loads((p.parent / "meta.json").read_text())
+        gt[g["episode_id"]] = {"pass": g["pass"], "category": g.get("category"),
+                               "task_id": meta["task_id"], "source": meta["source"]}
+    return gt
+
+def majority(verdicts, uncertain_policy="failure"):
+    mapped = []
+    for v in verdicts:
+        if v in ("uncertain", "parse_error"):
+            v = uncertain_policy
+        mapped.append(v == "success")
+    return sum(mapped) * 2 &gt; len(mapped)      # ties count as failure
+
+def confusion(gt, pred, ids):
+    tp = fp = tn = fn = 0
+    for e in ids:
+        g, p = gt[e]["pass"], pred[e]
+        if g and p: tp += 1
+        elif not g and p: fp += 1
+        elif not g and not p: tn += 1
+        else: fn += 1
+    return tp, fp, tn, fn
+
+def cluster_bootstrap_fpr(gt, pred, ids, resamples=2000, seed=0):
+    rng = random.Random(seed)
+    by_task = collections.defaultdict(list)
+    for e in ids:
+        by_task[gt[e]["task_id"]].append(e)
+    tasks = list(by_task)
+    vals = []
+    for _ in range(resamples):
+        sample = [e for t in (rng.choice(tasks) for _ in tasks) for e in by_task[t]]
+        _, fp, tn, _ = confusion(gt, pred, sample)
+        if fp + tn:
+            vals.append(fp / (fp + tn))
+    vals.sort()
+    return (vals[int(0.025 * len(vals))], vals[int(0.975 * len(vals)) - 1]) if vals else (None, None)
+
+def report(gt, pred, ids):
+    tp, fp, tn, fn = confusion(gt, pred, ids)
+    n = tp + fp + tn + fn
+    return {
+        "n": n, "tp": tp, "fp": fp, "tn": tn, "fn": fn,
+        "fpr": fp / (fp + tn) if fp + tn else None,
+        "fpr_wilson95": wilson(fp, fp + tn),
+        "fpr_cluster_boot95": cluster_bootstrap_fpr(gt, pred, ids),
+        "fdr": fp / (fp + tp) if fp + tp else None,
+        "tpr": tp / (tp + fn) if tp + fn else None,
+        "true_success_rate": (tp + fn) / n if n else None,
+        "judged_success_rate": (tp + fp) / n if n else None,
+        "inflation_pp": 100 * ((tp + fp) - (tp + fn)) / n if n else None,
+        "kappa": cohen_kappa(tp, fp, tn, fn) if n else None,
+    }</code></pre>
+
+<p>The rest of the script groups verdict lines by (judge, condition), computes the majority verdict per episode, and calls <code>report</code> for the full set and for each stratum: <code>source</code> (natural vs perturbed) and failure <code>category</code>. For category strata, FPR is the only meaningful metric — there are no positives in a failure category.</p>
+
+<p>Use the cluster bootstrap interval as the primary interval when several episodes come from the same task. Episodes of one task are correlated (the same tricky dialog trips up the judge every time), and the Wilson interval, which assumes independence, will be too narrow. Report both; if they differ a lot, that itself says the task mix dominates the result.</p>
+
+<h2 id="analysis">6. Analysis steps</h2>
+
+<h3 id="analysis-headline">6.1 Headline table (template)</h3>
+
+<p>Fill this from <code>report.json</code>, natural episodes only. The dashes are placeholders, not results.</p>
+
+<table>
+  <thead>
+    <tr><th>Judge</th><th>Condition</th><th>N</th><th>FPR [95% CI]</th><th>FDR</th><th>TPR</th><th>Inflation, pp</th><th>κ</th><th>Uncertain</th></tr>
+  </thead>
+  <tbody>
+    <tr><td>GT verifier</td><td>state</td><td>—</td><td>0 (by definition)</td><td>0</td><td>1</td><td>0</td><td>1</td><td>—</td></tr>
+    <tr><td>VLM</td><td>E1-final</td><td>—</td><td>—</td><td>—</td><td>—</td><td>—</td><td>—</td><td>—</td></tr>
+    <tr><td>VLM</td><td>E2-lastk</td><td>—</td><td>—</td><td>—</td><td>—</td><td>—</td><td>—</td><td>—</td></tr>
+    <tr><td>VLM</td><td>E3-full</td><td>—</td><td>—</td><td>—</td><td>—</td><td>—</td><td>—</td><td>—</td></tr>
+    <tr><td>VLM</td><td>E2+claim</td><td>—</td><td>—</td><td>—</td><td>—</td><td>—</td><td>—</td><td>—</td></tr>
+    <tr><td>Reward model</td><td>E1-final, threshold @ FPR target on calibration split</td><td>—</td><td>—</td><td>—</td><td>—</td><td>—</td><td>—</td><td>n/a</td></tr>
+  </tbody>
+</table>
+
+<p>The GT row is not a joke: it is there to remind the reader that the verifier is the reference by construction, and that its own error is measured differently (section 7.1).</p>
+
+<h3 id="analysis-paired">6.2 Paired comparison between judges</h3>
+
+<p>Both judges score the same failures, so compare them paired. Restrict to GT-fail episodes and count:</p>
+
+<ul>
+  <li><em>b</em> = episodes where the VLM accepts and the reward model rejects</li>
+  <li><em>c</em> = episodes where the reward model accepts and the VLM rejects</li>
+</ul>
+
+<p>Then <code>mcnemar_exact(b, c)</code> tests whether their FPRs differ. With many episodes per task, a more honest version is a cluster bootstrap of the FPR difference by task. Report the difference and its interval, not just the p-value. Do the same for <code>E2-lastk</code> vs <code>E2+claim</code> within the VLM: the discordant episodes there are exactly the cases where the agent's narrative flipped the verdict, and they are worth reading one by one.</p>
+
+<h3 id="analysis-threshold">6.3 Thresholding the reward model fairly</h3>
+
+<p>A reward model's FPR depends entirely on where you cut its score. Comparing a reward model at an arbitrary threshold of 0.5 with a prompted VLM is not a fair comparison in either direction. Do this instead:</p>
+
+<ol>
+  <li>Split tasks (not episodes) into a calibration split and a test split, for example 30/70, with a fixed seed.</li>
+  <li>On the calibration split, sweep the threshold and pick the lowest threshold whose FPR does not exceed your target (e.g. 0.05). Also record the threshold that matches the VLM's TPR on the calibration split.</li>
+  <li>Report test-split metrics at both thresholds. The first answers "how much recall do I keep at an acceptable false-positive level?"; the second answers "at equal recall, which judge lets fewer failures through?".</li>
+  <li>Plot the ROC curve on the test split and mark the VLM as a single point (or one point per condition). A VLM that returns a confidence can be swept the same way, but treat its self-reported confidence with suspicion until you have checked its calibration.</li>
+</ol>
+
+<pre><code>def pick_threshold(scores_fail, target_fpr):
+    """Smallest threshold t such that share of failures with score &gt;= t is &lt;= target."""
+    s = sorted(scores_fail, reverse=True)
+    allowed = int(math.floor(target_fpr * len(s)))
+    if allowed &gt;= len(s):
+        return min(s)
+    return s[allowed] + 1e-12   # strictly above the (allowed+1)-th highest failure score</code></pre>
+
+<p>Ties in scores make the achieved FPR slightly lower than the target; report the achieved value, not the target.</p>
+
+<h3 id="analysis-categories">6.4 Per-category breakdown</h3>
+
+<p>The most actionable table is FPR by failure category and judge. Template:</p>
+
+<table>
+  <thead>
+    <tr><th>Category</th><th>n (GT fail)</th><th>VLM E1</th><th>VLM E2</th><th>VLM E2+claim</th><th>RM</th></tr>
+  </thead>
+  <tbody>
+    <tr><td><code>F-ABORT</code></td><td>—</td><td>—</td><td>—</td><td>—</td><td>—</td></tr>
+    <tr><td><code>F-WRONGAPP</code></td><td>—</td><td>—</td><td>—</td><td>—</td><td>—</td></tr>
+    <tr><td><code>F-PARTIAL</code></td><td>—</td><td>—</td><td>—</td><td>—</td><td>—</td></tr>
+    <tr><td><code>F-UNCOMMITTED</code></td><td>—</td><td>—</td><td>—</td><td>—</td><td>—</td></tr>
+    <tr><td><code>F-WRONGTARGET</code></td><td>—</td><td>—</td><td>—</td><td>—</td><td>—</td></tr>
+    <tr><td><code>F-SIDEEFFECT</code></td><td>—</td><td>—</td><td>—</td><td>—</td><td>—</td></tr>
+    <tr><td><code>F-CLAIM</code></td><td>—</td><td>—</td><td>—</td><td>—</td><td>—</td></tr>
+  </tbody>
+</table>
+
+<p>Small cells will have wide intervals; print <em>n</em> next to every rate and do not rank judges on a category with a handful of episodes. What you are looking for is pattern: if one category carries most of the false positives, that is where a cheap programmatic check (section 8) buys the most.</p>
+
+<h3 id="analysis-reading">6.5 Read the false positives</h3>
+
+<p>Numbers alone will not tell you <em>why</em> a judge was kind. Sample up to 30 false positives per judge (all of them if fewer), stratified by category, and for each record:</p>
+
+<ul>
+  <li>Was the decisive evidence visible in the package at all? (If the unsaved marker is not in the final screenshot, no judge could see it — that is an evidence problem, not a judge problem.)</li>
+  <li>What did the judge cite in its <code>evidence</code> field? Does the citation match the screenshot?</li>
+  <li>Did the judge quote or paraphrase the agent's claim?</li>
+</ul>
+
+<p>Tag each case as <em>evidence-insufficient</em>, <em>evidence-present-missed</em>, or <em>claim-driven</em>. Only the latter two are judge failures in the strict sense. This tagging is manual; say how many cases were read and by how many people.</p>
+
+<h2 id="verification">7. Verifying the benchmark itself</h2>
+
+<h3 id="verification-gt">7.1 The verifier can be wrong too</h3>
+
+<p>"Ground truth" is only as good as the verifier. A verifier that is too strict creates fake failures — and then a judge that correctly says "success" will be scored as a false positive. Before trusting any FPR:</p>
+
+<ol>
+  <li><strong>Unit-test every verifier</strong> on at least one hand-built passing state and one hand-built failing state per failure category relevant to the task.</li>
+  <li><strong>Audit disagreements.</strong> Take every episode where all judges say success and GT says fail. Inspect the final state by hand. If the verifier is wrong, fix it, bump its hash, re-run verifiers on all episodes, and keep a changelog. Do this <em>before</em> looking at per-judge metrics, to avoid tuning the verifier toward a preferred judge.</li>
+  <li><strong>Audit a random sample of agreements</strong> too (e.g. 20 GT-pass and 20 GT-fail episodes), so the audit is not only conditioned on judge disagreement.</li>
+  <li><strong>Report the audit:</strong> how many episodes were inspected, how many verifier errors were found and fixed.</li>
+</ol>
+
+<pre><code># tests/test_verify_sheet.py
+import json, subprocess, pathlib
+
+def run(state_dir):
+    out = subprocess.run(["python3", "tasks/sheet_set_cell_d14/verify.py", state_dir],
+                         capture_output=True, text=True, check=True).stdout
+    return json.loads(out)
+
+def test_pass():
+    assert run("tests/states/sheet_d14_ok")["pass"] is True
+
+def test_unsaved_fails():
+    assert run("tests/states/sheet_d14_unsaved")["pass"] is False
+
+def test_wrong_cell_fails():
+    assert run("tests/states/sheet_d15_instead")["pass"] is False
+
+def test_saved_as_copy_fails():
+    assert run("tests/states/sheet_saved_as_copy")["pass"] is False</code></pre>
+
+<pre><code>python3 -m pytest -q tests/</code></pre>
+
+<h3 id="verification-leakage">7.2 Leakage and integrity checks</h3>
+
+<ul>
+  <li>Grep every evidence package for strings that only the verifier would know (<code>"pass"</code>, category codes, episode source tags). The build script should fail if it finds them.</li>
+  <li>Screenshots should not contain overlays added by your harness that reveal state (e.g. a debug panel showing file contents).</li>
+  <li>Shuffle the order of episodes sent to each judge, so batch effects or caching do not correlate with label.</li>
+  <li>Freeze <code>gt.json</code> files and record hashes in <code>MANIFEST.sha256</code> before the first judge call. Any later change must be visible in version control.</li>
+</ul>
+
+<h3 id="verification-sanity">7.3 Sanity baselines</h3>
+
+<p>Include two trivial judges in <code>metrics.py</code>: <em>always-success</em> (FPR 1, TPR 1) and <em>always-failure</em> (FPR 0, TPR 0). Also include <em>trust-the-agent</em>: success if the agent's final message claims success. If a real judge's (FPR, TPR) point is not clearly better than trust-the-agent, it is adding cost without information.</p>
+
+<h3 id="verification-repro">7.4 Reproducibility record</h3>
+
+<p>Publish or archive with the results: sandbox image digest, task list with verifier hashes, agent identifier and seeds, judge model identifiers with call dates, the full prompt text, the reward model checkpoint identifier, the calibration/test task split, <code>bench.yaml</code>, and <code>MANIFEST.sha256</code>. Without the call dates, a result on a hosted model is not reproducible even in principle.</p>
+
+<h2 id="failures">8. Failure cases and how to handle them</h2>
+
+<dl>
+  <dt>The judge refuses or returns malformed output</dt>
+  <dd>Count <code>parse_error</code> separately. Under the default policy it is mapped to failure, which <em>lowers</em> FPR artificially; report the rate so readers can see whether a low FPR is partly abstention. Retry once with the same input; do not re-prompt with hints.</dd>
+
+  <dt>Evidence is insufficient</dt>
+  <dd>If the decisive signal is invisible (state lives in a file never shown on screen), no visual judge can be right except by luck. Either add a final "show the evidence" step to the task protocol (for example, the harness opens the target file after the agent finishes and captures one more screenshot), or report these tasks as a separate stratum labelled "not visually decidable".</dd>
+
+  <dt>The reward model is out of distribution</dt>
+  <dd>Screen resolution, OS theme, language of the UI and application set can all differ from what the reward model was trained on. Check score distributions per application; a model that gives near-constant scores on one app is not judging there.</dd>
+
+  <dt>Class imbalance hides the problem</dt>
+  <dd>Accuracy can look high when most episodes are successes. That is why accuracy is not in the metrics table. Always report FPR with its denominator.</dd>
+
+  <dt>Position and length bias in multi-image inputs</dt>
+  <dd>Some models over-weight the first or last image. Compare <code>E2-lastk</code> with a variant that has the same images in reversed order and explicit timestamps; if verdicts change, the judge is reading order, not content.</dd>
+
+  <dt>The verifier drifts with the application</dt>
+  <dd>A new version of the office suite may change file format details. Pin application versions in the sandbox image and re-run verifier unit tests after any image rebuild.</dd>
+
+  <dt>Perturbations that are not failures</dt>
+  <dd>Skipping "save" in an application with autosave may not produce a failure. That is why the verifier is re-run after every perturbation, and why the episode keeps its GT label even when it contradicts the intended defect.</dd>
+</dl>
+
+<h2 id="decisions">9. From measurement to decisions</h2>
+
+<p>Once you have the numbers, the question is what to do with a judge whose FPR is not zero — which will be every judge.</p>
+
+<h3 id="decisions-eval">9.1 For evaluation dashboards</h3>
+
+<ul>
+  <li>Report judge-based success rate together with the judge's measured FPR and TPR on a verifiable subset, and the corrected estimate. A simple correction for a binary judge: true rate ≈ (judged rate − FPR) / (TPR − FPR), valid when TPR &gt; FPR and both were measured on a comparable distribution. Toy arithmetic: judged 0.60, TPR 0.90, FPR 0.20 → (0.60 − 0.20)/(0.90 − 0.20) ≈ 0.57. Propagate the uncertainty of TPR and FPR; with small calibration sets the corrected interval can be wide.</li>
+  <li>Keep a verifiable "anchor" subset in every evaluation run, so a drift in judge behaviour shows up as a change in measured FPR rather than as an unexplained jump in agent success.</li>
+</ul>
+
+<h3 id="decisions-training">9.2 For training data and rewards</h3>
+
+<ul>
+  <li>Wherever a programmatic verifier exists, use it as the reward or filter, and use model judges only where it does not.</li>
+  <li>Combine: accept an episode only if the model judge says success <em>and</em> cheap state checks pass (target file modified after episode start, no unsaved-changes flag, no new files with copy-like suffixes). Measure the combined FPR on the benchmark; do not assume an AND of two imperfect checks is good enough without testing it.</li>
+  <li>Remove the agent's final message from judge inputs used for training signals, unless your measurement showed it does not change FPR.</li>
+  <li>Set the reward model threshold from an FPR target on held-out tasks, and re-check it whenever the agent or the reward model changes. A policy trained against a judge drifts toward that judge's blind spots; FPR measured on the old agent's episodes is a lower bound for what it will be on the new agent's.</li>
+  <li>Track FDR of the accepted set, not just FPR, because the base rate changes as the agent improves or regresses.</li>
+</ul>
+
+<h3 id="decisions-checklist">9.3 Go / no-go checklist for using a judge as a training signal</h3>
+
+<ul>
+  <li>☐ FPR on natural episodes measured with ≥ a few hundred GT failures, interval reported.</li>
+  <li>☐ FPR on hard-negative categories (<code>F-UNCOMMITTED</code>, <code>F-WRONGTARGET</code>, <code>F-PARTIAL</code>) reported separately.</li>
+  <li>☐ Effect of the agent's self-report measured.</li>
+  <li>☐ Expected FDR computed at the agent's current base rate and judged acceptable for your training method.</li>
+  <li>☐ Verifier audited; audit size reported.</li>
+  <li>☐ Re-measurement scheduled after each policy update.</li>
+</ul>
+
+<h2 id="limitations">10. Limitations</h2>
+
+<ul>
+  <li><strong>Only verifiable tasks are measured.</strong> The benchmark says nothing direct about judges on open-ended tasks ("write a good summary"), where model judges are most needed. FPR on verifiable tasks is evidence about the judge, not a guarantee elsewhere.</li>
+  <li><strong>Verifiers encode one reading of the task.</strong> If a human would accept an alternative solution that the verifier rejects, the "false positive" is the verifier's fault. Audits reduce this; they do not remove it.</li>
+  <li><strong>Perturbed episodes are artificial.</strong> They probe specific blind spots and should not be used to estimate real-world error rates.</li>
+  <li><strong>Hosted judges change.</strong> A result is tied to a model identifier and a date; re-run before relying on it months later.</li>
+  <li><strong>The reward model's input format constrains comparisons.</strong> If it only sees the final screenshot, it can only be compared fairly to the VLM in <code>E1-final</code>.</li>
+  <li><strong>Small categories give wide intervals.</strong> Per-category conclusions need more episodes than headline ones.</li>
+  <li><strong>No results are reported here.</strong> This article provides a protocol and tooling sketches. It does not claim that any particular VLM or reward model is more or less lenient; that is what your run will show.</li>
+</ul>
+
+<h2 id="summary">11. Summary</h2>
+
+<p>A judge that says "yes" too easily is not a minor calibration issue: it inflates reported agent success and, in training pipelines, converts failures into positive examples. The way to see the size of the problem is to stop comparing judges with each other and compare them with a verifier that inspects real system state. Build tasks whose success can be checked programmatically, collect natural and deliberately perturbed episodes, feed identical evidence to a general VLM judge and to a specialised reward model, and report false positive rate, false discovery rate and success-rate inflation with honest intervals — overall, by failure category, and with and without the agent's own claim of success. Then use the numbers: verifiers where you can, thresholds set from an FPR target where you cannot, and a verifiable anchor set that keeps measuring the judge as your agent changes.</p>
+
+<p>More practical material is collected in the <a href="guides.html">guides</a>, and the terms used above are defined in the <a href="../glossary.html">glossary</a>.</p>
+
+<section class="service-note">
+  <b>We publish what works for us—and implement the same solutions for your business.</b>
+  We design AI automation, Telegram bots, chats, and AI agents for real-world processes.
+  <a href="../contacts-en.html">Discuss your project →</a>
+</section>
+</article>
+</main>
+
+<footer class="site-footer">
+  <p>© 2026 Agent Lab Journal · <a href="guides.html">Guides</a> · <a href="../glossary.html">Glossary</a></p>
+</footer>
+
+</body>
+</html>
