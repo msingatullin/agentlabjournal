@@ -1,0 +1,586 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Фабрика задач для терминального агента: воспроизводим рекурсивное усложнение — Agent Lab Journal</title>
+<meta name="description" content="Фабрика задач для терминального агента: воспроизводим рекурсивное усложнение. Build a mini-pipeline that extends a verified task, updates its solution and tests, checks them in a clean container, and measures how much the agent's success rate drops.">
+<link rel="canonical" href="https://agentlabjournal.online/en/recursive-terminal-task-synthesis.html">
+<link rel="alternate" hreflang="ru" href="https://agentlabjournal.online/recursive-terminal-task-synthesis.html">
+<link rel="alternate" hreflang="en" href="https://agentlabjournal.online/en/recursive-terminal-task-synthesis.html">
+<link rel="stylesheet" href="../style.css">
+<link rel="stylesheet" href="../reading.css">
+
+<meta property="og:type" content="article">
+<meta property="og:site_name" content="Agent Lab Journal">
+<meta property="og:title" content="Фабрика задач для терминального агента: воспроизводим рекурсивное усложнение">
+<meta property="og:description" content="A reproducible pipeline that grows verified terminal tasks one level at a time, rejects broken extensions with hard gates, and measures the agent's success drop with confidence intervals.">
+<meta property="og:url" content="https://agentlabjournal.online/en/recursive-terminal-task-synthesis.html">
+<meta property="og:image" content="https://agentlabjournal.online/assets/covers/llm-context-window-budget-social.png">
+<meta property="og:locale" content="en_US">
+<meta property="article:modified_time" content="2026-10-10">
+
+<meta name="twitter:card" content="summary_large_image">
+<meta name="twitter:title" content="Фабрика задач для терминального агента: воспроизводим рекурсивное усложнение">
+<meta name="twitter:description" content="Extend a verified terminal task, regenerate solution and tests, validate in a clean container, measure the success drop.">
+<meta name="twitter:image" content="https://agentlabjournal.online/assets/covers/llm-context-window-budget-social.png">
+
+<script type="application/ld+json">
+{
+  "@context": "https://schema.org",
+  "@type": "Article",
+  "headline": "Фабрика задач для терминального агента: воспроизводим рекурсивное усложнение",
+  "description": "A reproducible mini-pipeline that extends a verified terminal task, updates its reference solution and tests, runs them in a clean environment, and measures the drop in agent success rate.",
+  "image": ["https://agentlabjournal.online/assets/covers/llm-context-window-budget-social.png"],
+  "datePublished": "2026-10-10",
+  "dateModified": "2026-10-10",
+  "inLanguage": "en",
+  "author": {"@type": "Organization", "name": "Agent Lab Journal", "url": "https://agentlabjournal.online/"},
+  "publisher": {"@type": "Organization", "name": "Agent Lab Journal", "url": "https://agentlabjournal.online/"},
+  "mainEntityOfPage": {"@type": "WebPage", "@id": "https://agentlabjournal.online/en/recursive-terminal-task-synthesis.html"}
+}
+</script>
+<link rel="stylesheet" href="../homepage.css"><link rel="stylesheet" href="../max-promo.css">  <meta property="og:image:alt" content="Фабрика задач для терминального агента: воспроизводим рекурсивное усложнение">
+</head>
+<body>
+<header class="site-header">
+  <a class="site-logo" href="../en/index.html">Agent Lab Journal</a>
+  <nav class="site-nav">
+    <a href="guides.html">Guides</a>
+    <a href="../glossary.html">Glossary</a>
+    <a href="../recursive-terminal-task-synthesis.html" hreflang="ru">RU</a>
+  </nav>
+</header>
+
+<main>
+<article class="reading">
+
+<h1>Фабрика задач для терминального агента: воспроизводим рекурсивное усложнение</h1>
+        <figure class="article-cover" data-editorial-cover="recursive-terminal-task-synthesis"><img src="../assets/covers/llm-context-window-budget.png" alt="Фабрика задач для терминального агента: воспроизводим рекурсивное усложнение" width="1280" height="720" fetchpriority="high"><figcaption>Temporary fallback cover; replace in editorial pass.</figcaption></figure>
+<p class="reading-subtitle">A task factory for terminal agents: reproducing recursive task extension, one verified level at a time.</p>
+
+<div class="reading-meta">
+  <span>Level: advanced</span> ·
+  <span>Reading time: 75 minutes</span> ·
+  <span>Updated: <time datetime="2026-10-10">10 October 2026</time></span>
+</div>
+
+<p class="lead">Writing hard, checkable tasks for a <a href="../glossary.html#terminal-agent">terminal agent</a> by hand is slow: each one needs an environment, a reference solution and tests that agree with each other. Fully synthetic tasks are cheap, but the instruction, the tests and the container often drift apart. That gives you tasks that can't be solved, or tests that pass for no real reason. This guide builds the middle path. You start from one task you have already verified. A model proposes a harder version, writes the new solution and tests, and the result has to pass a set of mechanical gates in a clean container before it's accepted. The accepted task then becomes the seed for the next level. At the end you measure how much your agent's success rate falls with each level, and how many candidate tasks the gates rejected along the way.</p>
+
+<aside class="callout">
+  <p><strong>What this article is and isn't.</strong> It contains a complete design, working code skeletons and a worked example task. It does <em>not</em> report measured numbers. We haven't run this pipeline against a specific model for this article, so every results table below is an empty template for you to fill in. Treat any number you see in examples as an illustration, not a finding.</p>
+</aside>
+
+<h2 id="problem">1. The problem in one paragraph</h2>
+<p>To train or evaluate a terminal agent you need tasks with three parts that agree: an <strong>instruction</strong> the agent reads, an <strong>environment</strong> (a container image with files and tools), and an <strong>automated checker</strong> (tests run after the agent finishes). People write good tasks but few of them. A <a href="../glossary.html#llm">language model</a> writes many tasks, but its mistakes show up in predictable places: a test checks something the instruction never asked for, a required tool is missing from the image, the reference solution "passes" only because the tests are empty, or the solution was never actually run. Recursive extension helps because each new task inherits a base that already works. You only need to verify the <em>difference</em>, which is much easier than verifying a whole new task.</p>
+
+<h2 id="result">2. What you'll have at the end</h2>
+<ul>
+  <li>A directory format for tasks that a script can check: instruction, Dockerfile, reference solution, tests, and a requirement map.</li>
+  <li>An <code>extend.py</code> step that asks any model (through a command you configure) for a harder child task in a strict JSON format.</li>
+  <li>A <code>validate.py</code> step with seven gates. They run in a <a href="../glossary.html#sandbox">sandbox</a> container with networking turned off.</li>
+  <li>A <code>grow.py</code> loop that builds a lineage of depth 0 → 1 → 2 → 3 and logs every rejection along with its reason.</li>
+  <li>An <code>measure.py</code> step that runs your agent N times per task and reports the success rate per depth with Wilson confidence intervals, plus a paired drop for each lineage.</li>
+</ul>
+
+<h2 id="prereqs">3. Prerequisites</h2>
+<ul>
+  <li>Linux or macOS with Docker (rootless or standard), Python 3.11+, <code>pytest</code> on the host for local syntax checks.</li>
+  <li>Some command that takes a prompt on stdin and prints a model response on stdout. Call it <code>$EXTENDER_CMD</code>. It can wrap any provider's CLI or SDK. This article doesn't assume a particular one.</li>
+  <li>A command that runs your agent against a task container. Call it <code>$AGENT_CMD</code>. Section 9 defines the contract.</li>
+  <li>A budget. Every extension attempt costs one model call plus several container runs, and measurement costs N agent episodes per task. Estimate this before you scale up.</li>
+</ul>
+
+<h2 id="layout">4. Task format</h2>
+<p>Each task is a directory. The agent sees only <code>instruction.md</code> and whatever the Dockerfile puts into the image. Tests and the reference solution are mounted <em>after</em> the agent finishes and are never baked into the image.</p>
+
+<pre><code>tasks/
+  logreport-d0/
+    task.json            # id, parent, depth, requirement ids, superseded tests
+    instruction.md       # what the agent reads
+    Dockerfile           # environment; must not COPY tests/ or solution.sh
+    env/                 # files copied into the image (fixtures)
+    solution.sh          # reference ("oracle") solution
+    tests/
+      test_outputs.py    # pytest; each test tagged with a requirement id
+</code></pre>
+
+<p><code>task.json</code> for the seed:</p>
+<pre><code>{
+  "id": "logreport-d0",
+  "parent": null,
+  "depth": 0,
+  "requirements": {
+    "R1": "Read every *.log file in /app/logs",
+    "R2": "Write /app/report.json mapping HTTP status code (string) to count (int)"
+  },
+  "superseded_tests": []
+}</code></pre>
+
+<p>The requirement map does real work. Gate G5 uses it to check that the instruction and the tests describe the same thing, and that is exactly where synthetic tasks tend to drift.</p>
+
+<h2 id="seed">5. The concrete case: a seed task</h2>
+<p>We use a deliberately small seed so that every level can be read by a person. The point of the case is the <em>mechanism</em>. The difficulty of the seed doesn't matter here.</p>
+
+<h3>instruction.md (depth 0)</h3>
+<pre><code>Access logs in combined format are in /app/logs/*.log.
+Produce /app/report.json: a JSON object whose keys are HTTP status
+codes as strings and whose values are the number of requests with
+that status, summed across all files. [R1] [R2]</code></pre>
+
+<h3>Dockerfile</h3>
+<pre><code>FROM python:3.12-slim@sha256:&lt;pin-a-digest-you-have-pulled&gt;
+RUN pip install --no-cache-dir pytest==8.3.3
+WORKDIR /app
+COPY env/logs /app/logs
+</code></pre>
+<p>Pin the base image by digest. Without that, "clean environment" quietly changes underneath you between runs, and drops you see across depths may really come from image drift.</p>
+
+<h3>solution.sh</h3>
+<pre><code>#!/usr/bin/env bash
+set -euo pipefail
+python3 - &lt;&lt;'PY'
+import json, glob, re, collections
+pat = re.compile(r'"\S+ \S+ \S+" (\d{3}) ')
+c = collections.Counter()
+for f in sorted(glob.glob("/app/logs/*.log")):
+    with open(f, encoding="utf-8", errors="replace") as fh:
+        for line in fh:
+            m = pat.search(line)
+            if m:
+                c[m.group(1)] += 1
+json.dump(dict(c), open("/app/report.json", "w"), sort_keys=True)
+PY</code></pre>
+
+<h3>tests/test_outputs.py</h3>
+<pre><code>import json, pathlib, pytest
+
+REPORT = pathlib.Path("/app/report.json")
+
+@pytest.mark.req("R2")
+def test_report_exists_and_is_object():
+    data = json.loads(REPORT.read_text())
+    assert isinstance(data, dict)
+    assert all(isinstance(k, str) and isinstance(v, int) for k, v in data.items())
+
+@pytest.mark.req("R1", "R2")
+def test_counts_match_fixture():
+    # Expected counts are computed once from env/logs by a human and frozen here.
+    expected = {"200": 7, "301": 1, "404": 2, "500": 1}
+    assert json.loads(REPORT.read_text()) == expected
+</code></pre>
+<p>The expected counts above belong to <em>our</em> fixture. Compute your own from your own <code>env/logs</code> and freeze them in the test file. If the expected values are calculated at test time with the same logic as the solution, the test only proves that the code agrees with itself.</p>
+<p>Register the marker in <code>tests/conftest.py</code>:</p>
+<pre><code>def pytest_configure(config):
+    config.addinivalue_line("markers", "req(*ids): requirement ids covered by the test")</code></pre>
+
+<p>Before going further, check the seed by hand with the same validator you'll use for its children (section 7). A seed that fails its own gates will pass the defect on to every task built from it.</p>
+
+<h2 id="extend">6. Extension step</h2>
+<p>The extender gets the full parent task and has to return one child task as JSON. The child adds <em>one</em> new capability and keeps every parent requirement unless it explicitly supersedes one. Each step changes as little as possible, so when a child fails a gate you know which addition caused it.</p>
+
+<h3>prompts/extend.txt</h3>
+<pre><code>You are extending a verified terminal task. You receive the parent
+instruction, Dockerfile, env file listing, reference solution, tests
+and requirement map.
+
+Produce ONE harder child task that:
+- adds exactly one new capability that a competent engineer would need
+  real terminal work to implement (new input format, new constraint,
+  new output, error handling, performance bound);
+- keeps every parent requirement unless listed in "superseded_tests"
+  with a justification;
+- is solvable offline inside the given image plus any packages you add
+  to the Dockerfile with pinned versions;
+- has deterministic tests with frozen expected values; never compute
+  expected values with the same code as the solution;
+- tags every test with @pytest.mark.req(...) using requirement ids, and
+  mentions every requirement id in the instruction as [Rn].
+
+Return only JSON with keys:
+instruction_md, dockerfile, env_files (path -&gt; content, text only),
+solution_sh, tests_py, requirements (id -&gt; text),
+superseded_tests (list of test names), rationale.</code></pre>
+
+<h3>extend.py</h3>
+<pre><code>import json, os, pathlib, shlex, subprocess, sys
+
+def read_task(d: pathlib.Path) -&gt; dict:
+    env = {str(p.relative_to(d)): p.read_text(errors="replace")
+           for p in (d / "env").rglob("*") if p.is_file()}
+    return {
+        "task": json.loads((d / "task.json").read_text()),
+        "instruction_md": (d / "instruction.md").read_text(),
+        "dockerfile": (d / "Dockerfile").read_text(),
+        "env_files": env,
+        "solution_sh": (d / "solution.sh").read_text(),
+        "tests_py": (d / "tests" / "test_outputs.py").read_text(),
+    }
+
+def extend(parent: pathlib.Path, child: pathlib.Path) -&gt; None:
+    prompt = pathlib.Path("prompts/extend.txt").read_text()
+    payload = prompt + "\n\nPARENT:\n" + json.dumps(read_task(parent), indent=1)
+    out = subprocess.run(shlex.split(os.environ["EXTENDER_CMD"]),
+                         input=payload, capture_output=True, text=True,
+                         timeout=900, check=True).stdout
+    start, end = out.find("{"), out.rfind("}")
+    spec = json.loads(out[start:end + 1])
+
+    p = json.loads((parent / "task.json").read_text())
+    child.mkdir(parents=True)
+    (child / "tests").mkdir()
+    for rel, content in spec["env_files"].items():
+        dst = child / rel
+        if not dst.resolve().is_relative_to(child.resolve()):
+            raise ValueError(f"env path escapes task dir: {rel}")
+        dst.parent.mkdir(parents=True, exist_ok=True)
+        dst.write_text(content)
+    (child / "instruction.md").write_text(spec["instruction_md"])
+    (child / "Dockerfile").write_text(spec["dockerfile"])
+    (child / "solution.sh").write_text(spec["solution_sh"])
+    (child / "tests" / "test_outputs.py").write_text(spec["tests_py"])
+    (child / "tests" / "conftest.py").write_text(
+        (parent / "tests" / "conftest.py").read_text())
+    (child / "task.json").write_text(json.dumps({
+        "id": child.name, "parent": p["id"], "depth": p["depth"] + 1,
+        "requirements": spec["requirements"],
+        "superseded_tests": spec.get("superseded_tests", []),
+        "rationale": spec.get("rationale", ""),
+    }, indent=2))
+
+if __name__ == "__main__":
+    extend(pathlib.Path(sys.argv[1]), pathlib.Path(sys.argv[2]))</code></pre>
+
+<p>Note: the env files are rewritten by the model. If the parent fixtures are large or binary, copy them from the parent and let the model add files only. Otherwise a model that is told to keep the fixtures may still quietly change them.</p>
+
+<h2 id="gates">7. The seven gates</h2>
+<p>An extension is accepted only if it passes every gate. Every gate runs in a fresh container built from the child's own Dockerfile, with <code>--network none</code>. A gate that needs the network to pass is a broken task, not an unlucky run.</p>
+
+<table>
+  <thead><tr><th>Gate</th><th>Check</th><th>Defect it catches</th></tr></thead>
+  <tbody>
+    <tr><td>G0 Build</td><td>Image builds with <code>--no-cache</code>; Dockerfile does not COPY <code>tests/</code> or <code>solution.sh</code></td><td>Missing tools, unpinned installs, test leakage into the image</td></tr>
+    <tr><td>G1 Novelty</td><td>Parent solution <em>fails</em> the child tests</td><td>"Extensions" that add nothing</td></tr>
+    <tr><td>G2 Solvable</td><td>Child solution passes the child tests in 3 of 3 fresh runs</td><td>Unsolvable tasks, <a href="../glossary.html#flaky-test">flaky tests</a></td></tr>
+    <tr><td>G3 Regression</td><td>Inherited parent tests (minus superseded ones) pass against the child solution in the child image</td><td>Silent loss of earlier requirements</td></tr>
+    <tr><td>G4 Non-vacuous</td><td>A no-op solution (<code>true</code>) fails the child tests</td><td>Tests that pass on an untouched environment</td></tr>
+    <tr><td>G5 Alignment</td><td>Every requirement id appears in the instruction and in at least one test marker; every test has a marker; no unknown ids</td><td>Instruction–test drift</td></tr>
+    <tr><td>G6 Leakage</td><td>Instruction does not contain expected literal values from the tests; image filesystem contains no test file</td><td>Tasks answerable by copying</td></tr>
+  </tbody>
+</table>
+
+<p>G1 and G4 are the gates people most often leave out, and they catch the most common defect of synthetic tasks: tests that don't actually tell a correct solution apart from a wrong one.</p>
+
+<h3>validate.py</h3>
+<pre><code>import ast, hashlib, json, pathlib, re, shutil, subprocess, sys, tempfile
+
+DOCKER_RUN = ["docker", "run", "--rm", "--network", "none",
+              "--memory", "2g", "--cpus", "2", "--pids-limit", "512"]
+
+def image_tag(task: pathlib.Path) -&gt; str:
+    h = hashlib.sha256()
+    for p in sorted([task / "Dockerfile", *(task / "env").rglob("*")]):
+        if p.is_file():
+            h.update(str(p.relative_to(task)).encode()); h.update(p.read_bytes())
+    return f"taskfactory/{task.name}:{h.hexdigest()[:12]}"
+
+def build(task):
+    df = (task / "Dockerfile").read_text()
+    if re.search(r"^\s*(COPY|ADD)\s+.*(tests|solution\.sh)", df, re.M):
+        raise GateError("G0", "Dockerfile copies tests or solution")
+    tag = image_tag(task)
+    r = subprocess.run(["docker", "build", "--no-cache", "-q", "-t", tag, str(task)],
+                       capture_output=True, text=True, timeout=1800)
+    if r.returncode:
+        raise GateError("G0", r.stderr[-2000:])
+    return tag
+
+def run(tag, solution: pathlib.Path, tests_dir: pathlib.Path, deselect=()):
+    """Run solution, then tests, in one fresh container. Returns (passed, junit_text)."""
+    with tempfile.TemporaryDirectory() as tmp:
+        out = pathlib.Path(tmp)
+        args = " ".join(f"--deselect /tests/test_outputs.py::{t}" for t in deselect)
+        script = (f"bash /solution.sh &gt;/out/solution.log 2&gt;&amp;1; "
+                  f"pytest -q -p no:cacheprovider {args} --junitxml=/out/junit.xml /tests "
+                  f"&gt;/out/pytest.log 2&gt;&amp;1")
+        r = subprocess.run(DOCKER_RUN + [
+            "-v", f"{solution.resolve()}:/solution.sh:ro",
+            "-v", f"{tests_dir.resolve()}:/tests:ro",
+            "-v", f"{out}:/out", tag, "bash", "-c", script],
+            capture_output=True, text=True, timeout=1200)
+        junit = (out / "junit.xml").read_text() if (out / "junit.xml").exists() else ""
+        return r.returncode == 0, junit
+
+class GateError(Exception):
+    def __init__(self, gate, detail): super().__init__(f"{gate}: {detail}"); self.gate = gate
+
+def markers(tests_py: str):
+    """Map test function name -&gt; set of requirement ids from @pytest.mark.req(...)."""
+    tree, found = ast.parse(tests_py), {}
+    for node in ast.walk(tree):
+        if isinstance(node, ast.FunctionDef) and node.name.startswith("test_"):
+            ids = set()
+            for d in node.decorator_list:
+                if (isinstance(d, ast.Call) and getattr(d.func, "attr", "") == "req"):
+                    ids |= {a.value for a in d.args if isinstance(a, ast.Constant)}
+            found[node.name] = ids
+    return found
+
+def validate(child: pathlib.Path, parent: pathlib.Path | None) -&gt; dict:
+    meta = json.loads((child / "task.json").read_text())
+    tests_py = (child / "tests" / "test_outputs.py").read_text()
+    instr = (child / "instruction.md").read_text()
+    report = {"task": meta["id"], "gates": {}}
+
+    # G5 alignment (cheap, run first)
+    req = set(meta["requirements"])
+    tmap = markers(tests_py)
+    in_instr = set(re.findall(r"\[(R\d+)\]", instr))
+    tagged = set().union(*tmap.values()) if tmap else set()
+    problems = []
+    if req - in_instr: problems.append(f"not in instruction: {sorted(req - in_instr)}")
+    if req - tagged: problems.append(f"no test: {sorted(req - tagged)}")
+    if tagged - req: problems.append(f"unknown ids in tests: {sorted(tagged - req)}")
+    if [t for t, ids in tmap.items() if not ids]: problems.append("untagged tests")
+    if problems: raise GateError("G5", "; ".join(problems))
+    report["gates"]["G5"] = "pass"
+
+    # G6 leakage, part 1: long literals from tests must not appear in the instruction
+    lits = {n.value for n in ast.walk(ast.parse(tests_py))
+            if isinstance(n, ast.Constant) and isinstance(n.value, str) and len(n.value) &gt;= 12}
+    leaked = [l for l in lits if l in instr and not l.startswith("/")]
+    if leaked: raise GateError("G6", f"instruction contains test literals: {leaked[:3]}")
+
+    tag = build(child); report["gates"]["G0"] = "pass"; report["image"] = tag
+
+    # G6 leakage, part 2: nothing named like tests inside the image
+    r = subprocess.run(DOCKER_RUN + [tag, "bash", "-c",
+        "find / -xdev -name 'test_outputs.py' -o -xdev -name 'solution.sh' 2&gt;/dev/null"],
+        capture_output=True, text=True, timeout=300)
+    if r.stdout.strip(): raise GateError("G6", f"found in image: {r.stdout.strip()[:200]}")
+    report["gates"]["G6"] = "pass"
+
+    tests = child / "tests"
+    # G2 solvable, 3 fresh runs
+    for i in range(3):
+        ok, junit = run(tag, child / "solution.sh", tests)
+        if not ok: raise GateError("G2", f"reference failed on run {i+1}")
+    report["gates"]["G2"] = "pass"
+
+    # G4 non-vacuous
+    with tempfile.NamedTemporaryFile("w", suffix=".sh", delete=False) as f:
+        f.write("#!/usr/bin/env bash\ntrue\n"); noop = pathlib.Path(f.name)
+    ok, _ = run(tag, noop, tests)
+    if ok: raise GateError("G4", "no-op solution passes")
+    report["gates"]["G4"] = "pass"
+
+    if parent is not None:
+        # G1 novelty: parent solution must fail child tests
+        ok, _ = run(tag, parent / "solution.sh", tests)
+        if ok: raise GateError("G1", "parent solution already passes child tests")
+        report["gates"]["G1"] = "pass"
+
+        # G3 regression: parent tests (minus superseded) pass with child solution
+        ok, _ = run(tag, child / "solution.sh", parent / "tests",
+                    deselect=meta.get("superseded_tests", []))
+        if not ok: raise GateError("G3", "child solution breaks inherited tests")
+        report["gates"]["G3"] = "pass"
+    return report
+
+if __name__ == "__main__":
+    child = pathlib.Path(sys.argv[1])
+    parent = pathlib.Path(sys.argv[2]) if len(sys.argv) &gt; 2 else None
+    try:
+        print(json.dumps(validate(child, parent), indent=2))
+    except GateError as e:
+        print(json.dumps({"task": child.name, "rejected": e.gate, "detail": str(e)}))
+        sys.exit(1)</code></pre>
+
+<p>Things to know about this code:</p>
+<ul>
+  <li>G3 runs the <em>parent's</em> tests in the <em>child's</em> image. When the child changes fixtures, some parent tests with frozen values become legitimately wrong. That is what <code>superseded_tests</code> is for, but read every superseded entry yourself, because the model can also use it to drop tests that are simply inconvenient. Section 10 suggests a cap.</li>
+  <li>The leakage check on literals is a heuristic. It misses numbers and short strings, and it can flag legitimate file paths, which is why paths are excluded. Treat it as a tripwire, not proof.</li>
+  <li>The 3-of-3 rule finds obvious <a href="../glossary.html#flaky-test">flakiness</a> only. Raise the count for tasks that involve timing, concurrency or randomness.</li>
+</ul>
+
+<h2 id="grow">8. Recursive growth loop</h2>
+<p>Each accepted child becomes the parent of the next attempt. A rejected child is logged and retried, up to a fixed number of attempts per level. If a level runs out of attempts, the lineage stops there. You don't skip ahead from an unvalidated task.</p>
+
+<h3>grow.py</h3>
+<pre><code>import json, pathlib, shutil, subprocess, sys, time
+from extend import extend
+from validate import validate, GateError
+
+def grow(seed: pathlib.Path, max_depth=3, attempts=4, log="runs/grow.jsonl"):
+    pathlib.Path(log).parent.mkdir(exist_ok=True)
+    parent = seed
+    for depth in range(1, max_depth + 1):
+        accepted = None
+        for a in range(attempts):
+            child = seed.parent / f"{seed.name.rsplit('-d', 1)[0]}-d{depth}-a{a}"
+            shutil.rmtree(child, ignore_errors=True)
+            rec = {"ts": time.time(), "parent": parent.name, "child": child.name,
+                   "depth": depth, "attempt": a}
+            try:
+                extend(parent, child)
+                rec |= validate(child, parent); rec["status"] = "accepted"
+                accepted = child
+            except GateError as e:
+                rec |= {"status": "rejected", "gate": e.gate, "detail": str(e)[:500]}
+            except Exception as e:  # malformed JSON, timeouts, path errors
+                rec |= {"status": "error", "detail": repr(e)[:500]}
+            with open(log, "a") as fh: fh.write(json.dumps(rec) + "\n")
+            if accepted: break
+        if not accepted:
+            print(f"lineage stopped at depth {depth}"); return
+        parent = accepted
+
+if __name__ == "__main__":
+    grow(pathlib.Path(sys.argv[1]))</code></pre>
+
+<p>Run it for several seeds, not one. A single lineage tells you about one chain of model decisions. To say anything about "recursive extension" in general, you need several independent lineages, each with its own seed.</p>
+<pre><code>export EXTENDER_CMD="your-model-cli --max-tokens 16000"
+python validate.py tasks/logreport-d0          # the seed must pass its own gates
+for s in tasks/*-d0; do python grow.py "$s"; done
+jq -r 'select(.status!="accepted") | [.depth,.gate // "error"] | @tsv' runs/grow.jsonl \
+  | sort | uniq -c</code></pre>
+
+<h3>What a lineage for our seed might look like (illustrative)</h3>
+<p>Here is the kind of chain a model may propose. We wrote it ourselves as an example. It is not output from a run:</p>
+<ol>
+  <li><strong>d1:</strong> rotated logs <code>access.log.1.gz</code>, <code>access.log.2.gz</code> must also be counted [R3]. Fixtures gain gzip files, and the parent solution undercounts, so G1 fires as intended.</li>
+  <li><strong>d2:</strong> requests from IPs listed in <code>/app/config/healthcheck_ips.txt</code> (one per line, <code>#</code> comments allowed) are excluded [R4]. Parent test <code>test_counts_match_fixture</code> becomes superseded because its frozen counts change.</li>
+  <li><strong>d3:</strong> also write <code>/app/report_hourly.csv</code> with header <code>hour_utc,status,count</code>, timestamps normalized from mixed offsets to UTC, rows sorted [R5]. A correct solution needs timezone handling, CSV formatting and the earlier filters all together.</li>
+</ol>
+<p>Notice what happens at d2. The superseded test is legitimate, but the replacement test has to cover R1 and R2 again with new frozen values. Otherwise G5 still passes (R1 might be covered by another test), and part of the base behaviour is no longer checked. Review the superseded list together with the new test set.</p>
+
+<h2 id="measure">9. Measuring the success drop</h2>
+<h3>Agent contract</h3>
+<p><code>$AGENT_CMD</code> receives the image tag and the instruction path. It must start a container from that image (network policy is your call, but write it down), let the agent work, and then save the final container filesystem as a new image that the tests can run against. A simple, honest way to do this is with <code>docker commit</code>:</p>
+<pre><code>#!/usr/bin/env bash
+# agent_episode.sh IMAGE INSTRUCTION OUT_TAG
+set -euo pipefail
+cid=$(docker run -d --network none "$1" sleep infinity)
+your-agent --container "$cid" --instruction "$2" --max-steps 60 --timeout 1800 || true
+docker commit "$cid" "$3" &gt;/dev/null
+docker rm -f "$cid" &gt;/dev/null</code></pre>
+<p>The tests then run against <code>OUT_TAG</code> with a no-op solution. The agent's work <em>is</em> the solution. Keep the step budget, timeout and agent model identical across depths. If you change any of them between depths, you are measuring that change and not the task difficulty.</p>
+
+<h3>measure.py</h3>
+<pre><code>import json, math, pathlib, subprocess, sys, collections
+from validate import run, image_tag
+
+NOOP = pathlib.Path("noop.sh"); NOOP.write_text("#!/usr/bin/env bash\ntrue\n")
+
+def wilson(k, n, z=1.96):
+    if n == 0: return (float("nan"),) * 3
+    p = k / n; d = 1 + z*z/n
+    c = (p + z*z/(2*n)) / d
+    h = z * math.sqrt(p*(1-p)/n + z*z/(4*n*n)) / d
+    return p, max(0, c - h), min(1, c + h)
+
+def episode(task, i):
+    tag = image_tag(task); out = f"{tag}-ep{i}".replace(":", "-")
+    subprocess.run(["bash", "agent_episode.sh", tag, str(task / "instruction.md"), out],
+                   check=True, timeout=3600)
+    ok, _ = run(out, NOOP, task / "tests")
+    subprocess.run(["docker", "rmi", "-f", out], capture_output=True)
+    return ok
+
+def main(tasks_glob="tasks/*", n=20, log="runs/measure.jsonl"):
+    res = collections.defaultdict(list)
+    for task in sorted(pathlib.Path().glob(tasks_glob)):
+        meta = json.loads((task / "task.json").read_text())
+        if meta.get("status") == "rejected": continue
+        for i in range(n):
+            ok = episode(task, i)
+            res[(meta["id"], meta["depth"])].append(ok)
+            with open(log, "a") as fh:
+                fh.write(json.dumps({"task": meta["id"], "depth": meta["depth"],
+                                     "episode": i, "pass": ok}) + "\n")
+    by_depth = collections.defaultdict(lambda: [0, 0])
+    for (_, d), oks in res.items():
+        by_depth[d][0] += sum(oks); by_depth[d][1] += len(oks)
+    for d in sorted(by_depth):
+        k, m = by_depth[d]; p, lo, hi = wilson(k, m)
+        print(f"depth {d}: {k}/{m} = {p:.2f}  95% CI [{lo:.2f}, {hi:.2f}]")
+
+if __name__ == "__main__":
+    main(*sys.argv[1:2])</code></pre>
+<p><code>measure.py</code> only scans directories that are accepted tasks. In practice, move rejected attempts out of <code>tasks/</code> (or mark them) when <code>grow.py</code> finishes, so they never get into the measurement.</p>
+
+<h3>How to read the numbers</h3>
+<ul>
+  <li><strong>Pooled rate per depth</strong> with Wilson intervals, as printed above. Episodes inside one task are correlated, so the interval is optimistic when there are few tasks per depth. With few lineages, prefer the per-lineage view below.</li>
+  <li><strong>Paired drop per lineage:</strong> for each lineage, <code>rate(d0) − rate(dk)</code>. The pair shares a seed, so this separates "harder because of extension" from "this seed was hard anyway". Report the median and the full list. With fewer than about ten lineages, don't report a single average as a finding.</li>
+  <li><strong>Gate yield:</strong> accepted / attempted at each depth, and the rejection count per gate. This is the cost side of the factory. If yield falls sharply with depth, the extender is reaching the limit of what it can construct consistently, and that tells you something about deeper tasks too.</li>
+  <li>The pass rate is the success over N episodes with fixed settings. That is effectively <a href="../glossary.html#pass-at-k">pass@1</a> estimated from N samples, not pass@N.</li>
+</ul>
+
+<h3>Results template (fill in from your runs)</h3>
+<table>
+  <thead><tr><th>Depth</th><th>Accepted tasks</th><th>Attempts</th><th>Rejections by gate</th><th>Episodes</th><th>Pass rate [95% CI]</th></tr></thead>
+  <tbody>
+    <tr><td>0</td><td>—</td><td>—</td><td>—</td><td>—</td><td>—</td></tr>
+    <tr><td>1</td><td>—</td><td>—</td><td>—</td><td>—</td><td>—</td></tr>
+    <tr><td>2</td><td>—</td><td>—</td><td>—</td><td>—</td><td>—</td></tr>
+    <tr><td>3</td><td>—</td><td>—</td><td>—</td><td>—</td><td>—</td></tr>
+  </tbody>
+</table>
+<p>Also record: extender model and version, agent model and version, base image digest, step budget, timeout, network policy, N, and the commit of your factory code. Without these, nobody can reproduce your table, including you three months from now.</p>
+
+<h2 id="verify">10. Verifying the factory itself</h2>
+<p>The gates guard the tasks. Something has to guard the gates. Before you trust any measurement, run these checks:</p>
+<ol>
+  <li><strong>Planted defects.</strong> Take an accepted child and break it in known ways: empty the tests to <code>assert True</code> (G4 must fire), make the Dockerfile <code>COPY tests /tests</code> (G0 must fire), remove an <code>[R3]</code> tag from the instruction (G5 must fire), copy the parent's tests unchanged (G1 must fire), insert <code>random.random() &lt; 0.5</code> into an assertion (G2 should fire most of the time). Write these as a small test suite for <code>validate.py</code> and run it on every change.</li>
+  <li><strong>Human audit sample.</strong> For each depth, read at least a few accepted tasks end to end: is the instruction sufficient to pass the tests without guessing? Track the share where the answer is "no". The gates check consistency, not fairness. A task can pass all seven gates and still depend on an unstated output format.</li>
+  <li><strong>Superseded-test cap.</strong> Reject a child automatically if it supersedes more than, say, half of the inherited tests. Pick the threshold yourself and write it down. A child that throws out most of its inheritance is a new task, not an extension, and it skips the cheap differential verification the whole approach relies on.</li>
+  <li><strong>Re-run from scratch.</strong> Delete all built images and re-run <code>validate.py</code> on every accepted task. Any task that now fails was accepted because of cache or timing, and must be removed.</li>
+</ol>
+
+<h2 id="failures">11. Failure cases you should expect</h2>
+<ul>
+  <li><strong>The test copies the solution's logic.</strong> The model writes tests that compute expected values with the same parser as the solution, so they agree whether the parser is right or wrong. G4 and G1 may not notice. Mitigation: the prompt requires frozen values, plus a reviewer check for imports from the solution or re-parsing of the fixtures inside tests.</li>
+  <li><strong>Unstated format.</strong> Tests require a trailing newline, a key order or a float precision that the instruction never mentions. The gates pass, and the agent fails for reasons that have nothing to do with skill. That inflates the measured drop. Only human audit catches this reliably.</li>
+  <li><strong>Difficulty by obscurity.</strong> The extension makes the task "harder" by hiding information (an undocumented config path) instead of requiring more work. Success falls, but you're measuring guessing ability. Prefer extensions that add a capability over ones that add ambiguity.</li>
+  <li><strong>Fixture rewrite.</strong> The model silently changes parent fixtures, so G3 fails or the superseded list grows. Copying fixtures from the parent and allowing additions only removes most of this.</li>
+  <li><strong>Network dependence.</strong> The solution runs <code>pip install</code> at runtime. With <code>--network none</code> it fails G2, which is correct. Move installs into the Dockerfile with pinned versions.</li>
+  <li><strong>Resource limits.</strong> A d3 task that only passes with 8 GB of memory fails under the 2 GB limit. Decide the limits up front and give them to the extender in the prompt.</li>
+  <li><strong>Training on the measurement.</strong> If the same generated tasks are used for training and for the success-drop measurement, the drop shrinks for a reason that isn't capability. Keep a held-out set of lineages that never enters training. This is a form of <a href="../glossary.html#data-leakage">data leakage</a>.</li>
+</ul>
+
+<h2 id="limits">12. Limitations</h2>
+<ul>
+  <li>The gates prove internal consistency: the reference passes, the parent and the no-op fail, the requirements are mapped. They don't prove the task is a good one, realistic, or fair to an agent that only sees the instruction.</li>
+  <li>Difficulty measured as a success drop depends on the agent. A level that is hard for one agent may be trivial for another. Report the agent alongside the curve.</li>
+  <li>Small samples. With a handful of lineages and 20 episodes per task, intervals are wide, and differences between adjacent depths may not be distinguishable. Say so in your write-up rather than ranking depths on point estimates.</li>
+  <li>Docker isolation with <code>--network none</code> and resource limits is reasonable for tasks from your own extender. It isn't a strong security boundary for untrusted code. If extender output or agent actions could be adversarial, use a stronger sandbox (separate VM, gVisor or similar), and never mount host credentials or a Docker socket into task containers.</li>
+  <li>The approach inherits the seed's domain. Recursive extension of a log-processing task gives you harder log-processing tasks. To cover more ground, you need more diverse seeds, not deeper lineages.</li>
+</ul>
+
+<h2 id="checklist">13. Short checklist</h2>
+<ol>
+  <li>Seed task with requirement ids, frozen expected values, pinned base image, and it passes <code>validate.py</code>.</li>
+  <li>Extender prompt with strict JSON output; fixtures copied from the parent, additions only.</li>
+  <li>Seven gates in fresh containers with no network; planted-defect suite for the validator.</li>
+  <li>Several independent lineages, a fixed number of attempts per level, every rejection logged with its gate.</li>
+  <li>Fixed agent settings across depths, N episodes per task, Wilson intervals, paired per-lineage drops, gate yield.</li>
+  <li>Human audit sample per depth, superseded-test cap, held-out lineages for evaluation.</li>
+  <li>Record models, versions, digests, budgets and code commit next to every results table.</li>
+</ol>
+
+<p class="reading-next">More hands-on material: <a href="guides.html">all guides</a> and the <a href="../glossary.html">glossary of terms</a>.</p>
+
+<section class="service-note">
+  <b>We publish what works for us—and implement the same solutions for your business.</b>
+  We design AI automation, Telegram bots, chats, and AI agents for real-world processes.
+  <a href="../contacts-en.html">Discuss your project →</a>
+</section>
+</article>
+</main>
+
+<footer class="site-footer">
+  <p>© 2026 Agent Lab Journal · <a href="guides.html">Guides</a> · <a href="../glossary.html">Glossary</a> · <a href="../rss-en.xml">RSS</a></p>
+</footer>
+</body>
+</html>
