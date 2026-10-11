@@ -1,0 +1,843 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Проверяем устойчивость stateful-агента к перезапуску: a reproducible restart test | Agent Lab Journal</title>
+<meta name="description" content="Проверяем устойчивость stateful-агента к перезапуску: build a local Python and SQLite agent stack, kill it with SIGKILL mid-task, and use pytest to verify state recovery, task resumption and the action journal.">
+<link rel="canonical" href="https://agentlabjournal.online/en/centra-persistent-agent-restart-test.html">
+<link rel="stylesheet" href="../style.css">
+<link rel="stylesheet" href="../reading.css">
+
+<meta property="og:type" content="article">
+<meta property="og:site_name" content="Agent Lab Journal">
+<meta property="og:locale" content="en_US">
+<meta property="og:title" content="Проверяем устойчивость stateful-агента к перезапуску">
+<meta property="og:description" content="Build a local agent stack with durable state and an action journal. Then kill it at fixed points and prove that it resumes without losing work or repeating side effects.">
+<meta property="og:url" content="https://agentlabjournal.online/en/centra-persistent-agent-restart-test.html">
+<meta property="og:image" content="https://agentlabjournal.online/assets/covers/llm-context-window-budget-social.png">
+<meta property="article:modified_time" content="2026-10-11">
+
+<meta name="twitter:card" content="summary_large_image">
+<meta name="twitter:title" content="Проверяем устойчивость stateful-агента к перезапуску">
+<meta name="twitter:description" content="A reproducible SIGKILL test for a stateful agent: checkpoints, recovery, idempotent side effects and an append-only action journal.">
+<meta name="twitter:image" content="https://agentlabjournal.online/assets/covers/llm-context-window-budget-social.png">
+
+<script type="application/ld+json">
+{
+  "@context": "https://schema.org",
+  "@type": "Article",
+  "headline": "Проверяем устойчивость stateful-агента к перезапуску",
+  "description": "Build a local Python and SQLite agent stack, kill it with SIGKILL mid-task, and use pytest to verify state recovery, task resumption and the action journal.",
+  "image": ["https://agentlabjournal.online/assets/covers/llm-context-window-budget-social.png"],
+  "datePublished": "2026-10-11",
+  "dateModified": "2026-10-11",
+  "inLanguage": "en",
+  "author": {
+    "@type": "Organization",
+    "name": "Agent Lab Journal editorial team",
+    "url": "https://agentlabjournal.online/"
+  },
+  "publisher": {
+    "@type": "Organization",
+    "name": "Agent Lab Journal",
+    "url": "https://agentlabjournal.online/"
+  },
+  "mainEntityOfPage": {
+    "@type": "WebPage",
+    "@id": "https://agentlabjournal.online/en/centra-persistent-agent-restart-test.html"
+  }
+}
+</script>
+<link rel="stylesheet" href="../homepage.css"><link rel="stylesheet" href="../max-promo.css">  <meta property="og:image:alt" content="Проверяем устойчивость stateful-агента к перезапуску">
+</head>
+<body>
+
+<header class="site-header">
+  <a class="site-logo" href="index.html">Agent Lab Journal</a>
+  <nav aria-label="Main">
+    <a href="index.html">Home</a>
+    <a href="guides.html">Guides</a>
+    <a href="../glossary.html">Glossary</a>
+  </nav>
+</header>
+
+<main>
+<article class="reading">
+
+<h1>Проверяем устойчивость stateful-агента к перезапуску</h1>
+        <figure class="article-cover" data-editorial-cover="centra-persistent-agent-restart-test"><img src="../assets/covers/llm-context-window-budget.png" alt="Проверяем устойчивость stateful-агента к перезапуску" width="1280" height="720" fetchpriority="high"><figcaption>Temporary fallback cover; replace in editorial pass.</figcaption></figure>
+<p class="reading-subtitle"><em>Testing how a stateful agent survives restarts: durable checkpoints, task resumption and an action journal, all verified with a hard-kill test suite.</em></p>
+
+<p class="reading-meta">Level: advanced · Reading and hands-on time: about 90 minutes · Updated 11 October 2026 · Stack: Python 3.10+, SQLite, pytest, optional Ollama</p>
+
+<p class="lead">Long agent tasks often fail the same way. The process stops halfway through. On restart, the agent has lost its context, its intermediate results and any record of what it already did. It either starts over, paying again for model calls and repeating side effects, or it carries on from a guessed position. This guide builds a small local agent stack in which every step is checkpointed and journaled. It then gives you a test suite that kills the process with <code>SIGKILL</code> at nine fixed points and one random point, restarts it, and checks that the task finishes exactly once and that the journal explains what happened.</p>
+
+<aside class="note">
+<p><strong>What this article is and isn't.</strong> All code is complete and meant to be copied and run. Shell output appears only where its meaning is fixed by the operating system or by the assertions in the test suite. No measured timings or run logs are reported here, because the editor did not attach a run record to this article. Run the suite yourself, and treat a passing run on your machine as the evidence.</p>
+</aside>
+
+<nav class="toc" aria-label="Contents">
+<h2>Contents</h2>
+<ol>
+  <li><a href="#case">The case: a report agent that gets killed halfway through</a></li>
+  <li><a href="#model">The model: what "survives a restart" means</a></li>
+  <li><a href="#setup">Setup</a></li>
+  <li><a href="#store">Durable state and the action journal (store.py)</a></li>
+  <li><a href="#tools">Tools and idempotent side effects (tools.py)</a></li>
+  <li><a href="#agent">The agent loop with recovery (agent.py)</a></li>
+  <li><a href="#manual">Manual run: kill, inspect, resume</a></li>
+  <li><a href="#tests">The automated restart test suite (test_restart.py)</a></li>
+  <li><a href="#verify">How to read a passing and a failing run</a></li>
+  <li><a href="#failures">Failure cases and what catches them</a></li>
+  <li><a href="#llm">Adding a local model with Ollama</a></li>
+  <li><a href="#limits">Limitations</a></li>
+  <li><a href="#next">Next steps</a></li>
+</ol>
+</nav>
+
+<h2 id="case">1. The case: a report agent that gets killed halfway through</h2>
+
+<p>Take a small but realistic <a href="../glossary.html#agent">agent</a> task (this is an illustrative scenario, not a customer report). Every night the agent:</p>
+<ol>
+  <li>reads a notes file (<code>fetch</code>);</li>
+  <li>summarizes it, optionally with a local <a href="../glossary.html#llm">LLM</a> (<code>summarize</code>);</li>
+  <li>writes a report file that some other system picks up (<code>write_artifact</code>). This step is a <a href="../glossary.html#side-effect">side effect</a>, so it changes the world outside the agent.</li>
+</ol>
+<p>Suppose the process is killed by an out-of-memory event, a deploy or a laptop lid closing. If that happens between steps 2 and 3, a naive agent that holds its plan and results in memory loses all of it. If it happens <em>after</em> step 3 wrote the file but <em>before</em> the agent recorded that, a naive retry writes a second report. Both failures are quiet. The usual result is a duplicate email, a doubled database row or a second ticket.</p>
+
+<p>A <a href="../glossary.html#stateful-agent">stateful agent</a> fixes this by keeping its plan, step outputs and progress in durable storage outside the process. The fix is only real if you test it, though. The test has to stop the process abruptly at every dangerous boundary.</p>
+
+<h2 id="model">2. The model: what "survives a restart" means</h2>
+
+<p>"Restart resilience" can mean almost anything, so the tests check five concrete properties:</p>
+<ol>
+  <li><strong>State is preserved.</strong> After a kill, the database still holds the task, its plan and the output of every committed step.</li>
+  <li><strong>The task resumes, not restarts.</strong> Steps committed before the kill are not run again.</li>
+  <li><strong>Interrupted steps are recovered explicitly.</strong> A step that was in progress at kill time is moved back to <code>pending</code>, and the journal records that recovery.</li>
+  <li><strong>Side effects happen exactly once in outcome.</strong> The executor is <a href="../glossary.html#at-least-once">at-least-once</a>: a step may run twice. The side effect is made <a href="../glossary.html#idempotency">idempotent</a> with a stable key, so the external result appears once.</li>
+  <li><strong>The journal is complete and consistent.</strong> Every <code>step_started</code> event is matched by exactly one <code>step_finished</code>, <code>step_recovered</code> or <code>step_error</code>, and every process run is visible as its own <code>run_started</code>.</li>
+</ol>
+
+<p>Two design rules make these properties achievable:</p>
+<ul>
+  <li><strong>State change and journal entry share one transaction.</strong> The step status and the <a href="../glossary.html#event-log">event journal</a> row are committed together. You can never have a "done" step without its journal entry, or the reverse.</li>
+  <li><strong>The step is the <a href="../glossary.html#checkpoint">checkpoint</a> boundary.</strong> The agent commits before a step (<code>running</code>) and after it (<code>done</code>), and nothing else is durable. Everything between those two commits must be safe to repeat.</li>
+</ul>
+
+<p>Because of this, there are exactly three interesting places to kill a step:</p>
+<table>
+  <thead>
+    <tr><th>Crash point</th><th>Durable state at kill time</th><th>Correct behaviour on restart</th></tr>
+  </thead>
+  <tbody>
+    <tr><td><code>before_effect</code></td><td>step is <code>running</code>, tool not called</td><td>recover the step, run it again</td></tr>
+    <tr><td><code>after_effect</code></td><td>step is <code>running</code>, tool <em>already</em> produced its effect</td><td>recover, run again, and the effect must deduplicate</td></tr>
+    <tr><td><code>after_commit</code></td><td>step is <code>done</code></td><td>no recovery, continue with the next step</td></tr>
+  </tbody>
+</table>
+<p>With three steps, that gives 3 × 3 = 9 deterministic crash scenarios. One more test sends <code>SIGKILL</code> from outside while a step is sleeping, to confirm that the internal crash hooks aren't hiding anything.</p>
+
+<h2 id="setup">3. Setup</h2>
+
+<p>You need Linux or macOS, because the code uses <code>fcntl</code> file locks and POSIX signals. You also need Python 3.10 or newer, and optionally the <code>sqlite3</code> command-line tool for inspection. The agent itself uses only the standard library. pytest is needed only for the tests.</p>
+
+<pre><code>mkdir restart-lab &amp;&amp; cd restart-lab
+python3 -m venv .venv
+. .venv/bin/activate
+pip install pytest
+mkdir input
+printf 'Line one\nLine two\n\nLine three\nLine four\n' &gt; input/notes.txt</code></pre>
+
+<p>The final layout:</p>
+<pre><code>restart-lab/
+├── agent.py          # CLI + agent loop + recovery
+├── store.py          # SQLite schema, transactions, journal
+├── tools.py          # fetch / summarize / write_artifact
+├── plan.json         # the task plan
+├── test_restart.py   # the restart test suite
+└── input/notes.txt</code></pre>
+
+<p>Create <code>plan.json</code>:</p>
+<pre><code>{
+  "goal": "Summarize notes into a report",
+  "steps": [
+    {"tool": "fetch", "input": {"path": "input/notes.txt"}},
+    {"tool": "summarize", "input": {"from": 0}},
+    {"tool": "write_artifact", "input": {"from": 1}}
+  ]
+}</code></pre>
+
+<p>The plan is fixed on purpose. If an LLM produced the plan, it would have to be persisted at task creation for the same reason as everything else. A restart must not re-plan, because a second plan can differ from the first.</p>
+
+<h2 id="store">4. Durable state and the action journal (store.py)</h2>
+
+<p>SQLite is used in <a href="../glossary.html#wal">WAL</a> mode with <code>synchronous=FULL</code>. With those settings, a committed transaction survives the process being killed. The connection uses <code>isolation_level=None</code>, which lets the code issue <code>BEGIN IMMEDIATE</code> / <code>COMMIT</code> itself, so it is always clear what is atomic.</p>
+
+<pre><code>"""Durable state for the agent: tasks, steps and an append-only event journal."""
+import json
+import sqlite3
+import time
+
+SCHEMA = """
+CREATE TABLE IF NOT EXISTS tasks(
+  id TEXT PRIMARY KEY,
+  goal TEXT NOT NULL,
+  status TEXT NOT NULL,                    -- pending | running | done | failed
+  created_at REAL NOT NULL,
+  updated_at REAL NOT NULL
+);
+CREATE TABLE IF NOT EXISTS steps(
+  task_id TEXT NOT NULL REFERENCES tasks(id),
+  idx INTEGER NOT NULL,
+  tool TEXT NOT NULL,
+  input TEXT NOT NULL,
+  status TEXT NOT NULL DEFAULT 'pending',  -- pending | running | done | failed
+  output TEXT,
+  attempts INTEGER NOT NULL DEFAULT 0,
+  PRIMARY KEY(task_id, idx)
+);
+CREATE TABLE IF NOT EXISTS events(
+  seq INTEGER PRIMARY KEY AUTOINCREMENT,
+  ts REAL NOT NULL,
+  task_id TEXT NOT NULL,
+  run_id TEXT NOT NULL,
+  kind TEXT NOT NULL,
+  step_idx INTEGER,
+  data TEXT NOT NULL
+);
+"""
+
+
+def connect(path):
+    conn = sqlite3.connect(path, isolation_level=None, timeout=10)
+    conn.execute("PRAGMA journal_mode=WAL")
+    conn.execute("PRAGMA synchronous=FULL")
+    conn.execute("PRAGMA foreign_keys=ON")
+    conn.executescript(SCHEMA)
+    return conn
+
+
+class tx:
+    """BEGIN IMMEDIATE ... COMMIT, or ROLLBACK on exception."""
+
+    def __init__(self, conn):
+        self.conn = conn
+
+    def __enter__(self):
+        self.conn.execute("BEGIN IMMEDIATE")
+        return self.conn
+
+    def __exit__(self, exc_type, exc, tb):
+        self.conn.execute("COMMIT" if exc_type is None else "ROLLBACK")
+        return False
+
+
+def log(conn, task_id, run_id, kind, step_idx=None, **data):
+    """Append one journal event. Call only inside a tx() block."""
+    conn.execute(
+        "INSERT INTO events(ts, task_id, run_id, kind, step_idx, data) VALUES(?,?,?,?,?,?)",
+        (time.time(), task_id, run_id, kind, step_idx, json.dumps(data, sort_keys=True)),
+    )
+
+
+def create_task(conn, task_id, goal, plan, run_id):
+    now = time.time()
+    with tx(conn):
+        conn.execute(
+            "INSERT INTO tasks(id, goal, status, created_at, updated_at) VALUES(?,?,?,?,?)",
+            (task_id, goal, "pending", now, now),
+        )
+        for i, step in enumerate(plan):
+            conn.execute(
+                "INSERT INTO steps(task_id, idx, tool, input) VALUES(?,?,?,?)",
+                (task_id, i, step["tool"], json.dumps(step["input"], sort_keys=True)),
+            )
+        log(conn, task_id, run_id, "task_created", steps=len(plan))</code></pre>
+
+<p>The journal lives in the same database file as the state. That is deliberate. A separate JSONL file would need its own fsync discipline, and it could disagree with the state after a crash. A JSONL export for humans and log shippers is generated <em>from</em> the table later.</p>
+
+<h2 id="tools">5. Tools and idempotent side effects (tools.py)</h2>
+
+<p>Every tool takes the same arguments: <code>(input, ctx, idem_key)</code>. Here <code>ctx</code> maps step indexes to the committed outputs of earlier steps. <code>idem_key</code> is stable across retries (<code>&lt;task_id&gt;-&lt;step_idx&gt;</code>), and it is the only thing that keeps the side effect from repeating.</p>
+
+<pre><code>"""Agent tools. Every tool must be safe to call more than once with the same idem_key."""
+import hashlib
+import json
+import os
+import urllib.request
+from pathlib import Path
+
+ART = Path(os.environ.get("AGENT_ARTIFACTS", "artifacts"))
+
+
+def fetch(inp, ctx, idem_key):
+    text = Path(inp["path"]).read_text(encoding="utf-8")
+    return {
+        "chars": len(text),
+        "sha256": hashlib.sha256(text.encode("utf-8")).hexdigest(),
+        "text": text,
+    }
+
+
+def summarize(inp, ctx, idem_key):
+    text = ctx[inp["from"]]["text"]
+    if os.environ.get("AGENT_LLM") == "ollama":
+        body = json.dumps({
+            "model": os.environ.get("OLLAMA_MODEL", "llama3.2"),
+            "prompt": "Summarize the following notes in three short lines:\n\n" + text,
+            "stream": False,
+        }).encode("utf-8")
+        req = urllib.request.Request(
+            os.environ.get("OLLAMA_URL", "http://127.0.0.1:11434") + "/api/generate",
+            data=body,
+            headers={"Content-Type": "application/json"},
+        )
+        with urllib.request.urlopen(req, timeout=300) as resp:
+            return {"summary": json.load(resp)["response"].strip(), "engine": "ollama"}
+    # Deterministic stub: first three non-empty lines.
+    lines = [line.strip() for line in text.splitlines() if line.strip()]
+    return {"summary": "\n".join(lines[:3]), "engine": "stub"}
+
+
+def write_artifact(inp, ctx, idem_key):
+    content = ctx[inp["from"]]["summary"]
+    ART.mkdir(parents=True, exist_ok=True)
+
+    if os.environ.get("AGENT_UNSAFE_EFFECTS") == "1":
+        # Deliberately NOT idempotent: used only by the negative-control test.
+        log_path = ART / "report.log"
+        with open(log_path, "a", encoding="utf-8") as f:
+            f.write(content + "\n---\n")
+        return {"path": str(log_path), "deduplicated": False}
+
+    final = ART / f"{idem_key}.md"
+    tmp = ART / f".{idem_key}.{os.getpid()}.tmp"
+    with open(tmp, "w", encoding="utf-8") as f:
+        f.write(content)
+        f.flush()
+        os.fsync(f.fileno())
+    try:
+        os.link(tmp, final)  # atomic; raises if final already exists
+        deduplicated = False
+    except FileExistsError:
+        deduplicated = True
+    finally:
+        os.unlink(tmp)
+    return {"path": str(final), "deduplicated": deduplicated}</code></pre>
+
+<p>Why <code>write → fsync → link</code> instead of simply <code>open(..., O_EXCL)</code>? With <code>O_EXCL</code>, a kill between creating the file and finishing the write leaves a partial file behind. The retry would then "deduplicate" against that partial file and accept it as the result. <code>os.link</code> publishes the complete file atomically under its final name, or fails because the name already exists. Any partial work is left only in a temp file that is never treated as the result.</p>
+
+<p>For a real external API, the equivalent is to send <code>idem_key</code> as the provider's idempotency key or request ID. If the provider has no such mechanism, the step cannot be made exactly-once from the agent's side. Section 10 covers this.</p>
+
+<h2 id="agent">6. The agent loop with recovery (agent.py)</h2>
+
+<p>On every start, the loop runs recovery first. It finds steps left in <code>running</code> by a previous process, resets them to <code>pending</code> and journals that. It then executes pending steps in order. Crash hooks controlled by <code>AGENT_CRASH_AT=&lt;point&gt;:&lt;idx&gt;</code> send <code>SIGKILL</code> to the agent's own process. With SIGKILL there is no exception, no <code>finally</code> block and no clean shutdown, which is the condition the test needs.</p>
+
+<p>A per-task <a href="../glossary.html#lock">lock</a> (<code>fcntl.flock</code>) stops two processes from running the same task at once. The kernel releases it when the process dies, even after SIGKILL, so a crash cannot leave a stale lock.</p>
+
+<pre><code>"""Minimal stateful agent: durable steps, crash recovery, append-only journal."""
+import argparse
+import fcntl
+import json
+import os
+import signal
+import sys
+import time
+import uuid
+
+import store
+import tools
+
+TOOLS = {
+    "fetch": tools.fetch,
+    "summarize": tools.summarize,
+    "write_artifact": tools.write_artifact,
+}
+
+
+def crash_point(name, idx):
+    if os.environ.get("AGENT_CRASH_AT") == f"{name}:{idx}":
+        os.kill(os.getpid(), signal.SIGKILL)
+
+
+def recover(conn, task_id, run_id):
+    with store.tx(conn):
+        rows = conn.execute(
+            "SELECT idx FROM steps WHERE task_id=? AND status='running' ORDER BY idx",
+            (task_id,),
+        ).fetchall()
+        for (idx,) in rows:
+            conn.execute(
+                "UPDATE steps SET status='pending' WHERE task_id=? AND idx=?", (task_id, idx)
+            )
+            store.log(conn, task_id, run_id, "step_recovered", idx)
+        store.log(conn, task_id, run_id, "run_started", recovered=[r[0] for r in rows])
+
+
+def set_task(conn, task_id, status):
+    conn.execute(
+        "UPDATE tasks SET status=?, updated_at=? WHERE id=?", (status, time.time(), task_id)
+    )
+
+
+def run(conn, task_id, run_id):
+    task = conn.execute("SELECT status FROM tasks WHERE id=?", (task_id,)).fetchone()
+    if task is None:
+        print(f"unknown task {task_id}", file=sys.stderr)
+        return 1
+    if task[0] in ("done", "failed"):
+        return 0 if task[0] == "done" else 2
+
+    max_attempts = int(os.environ.get("AGENT_MAX_ATTEMPTS", "3"))
+    delay = float(os.environ.get("AGENT_STEP_DELAY", "0"))
+    recover(conn, task_id, run_id)
+
+    while True:
+        row = conn.execute(
+            "SELECT idx, tool, input, attempts FROM steps "
+            "WHERE task_id=? AND status='pending' ORDER BY idx LIMIT 1",
+            (task_id,),
+        ).fetchone()
+        if row is None:
+            with store.tx(conn):
+                set_task(conn, task_id, "done")
+                store.log(conn, task_id, run_id, "task_done")
+            return 0
+
+        idx, tool, inp, attempts = row
+        if attempts &gt;= max_attempts:
+            with store.tx(conn):
+                conn.execute(
+                    "UPDATE steps SET status='failed' WHERE task_id=? AND idx=?", (task_id, idx)
+                )
+                set_task(conn, task_id, "failed")
+                store.log(conn, task_id, run_id, "task_failed", idx, reason="max_attempts")
+            return 2
+
+        with store.tx(conn):
+            conn.execute(
+                "UPDATE steps SET status='running', attempts=attempts+1 "
+                "WHERE task_id=? AND idx=?",
+                (task_id, idx),
+            )
+            set_task(conn, task_id, "running")
+            store.log(conn, task_id, run_id, "step_started", idx, tool=tool, attempt=attempts + 1)
+
+        ctx = {
+            i: json.loads(out)
+            for i, out in conn.execute(
+                "SELECT idx, output FROM steps WHERE task_id=? AND status='done'", (task_id,)
+            )
+        }
+        idem_key = f"{task_id}-{idx}"
+
+        crash_point("before_effect", idx)
+        time.sleep(delay)
+        try:
+            out = TOOLS[tool](json.loads(inp), ctx, idem_key)
+        except Exception as exc:
+            with store.tx(conn):
+                conn.execute(
+                    "UPDATE steps SET status='pending' WHERE task_id=? AND idx=?", (task_id, idx)
+                )
+                store.log(conn, task_id, run_id, "step_error", idx, error=repr(exc))
+            continue
+        crash_point("after_effect", idx)
+
+        with store.tx(conn):
+            conn.execute(
+                "UPDATE steps SET status='done', output=? WHERE task_id=? AND idx=?",
+                (json.dumps(out, sort_keys=True), task_id, idx),
+            )
+            store.log(conn, task_id, run_id, "step_finished", idx, tool=tool)
+        crash_point("after_commit", idx)
+
+
+def status(conn, task_id):
+    task = conn.execute("SELECT id, goal, status FROM tasks WHERE id=?", (task_id,)).fetchone()
+    if task is None:
+        print(f"unknown task {task_id}", file=sys.stderr)
+        return 1
+    steps = [
+        {"idx": i, "tool": t, "status": s, "attempts": a}
+        for i, t, s, a in conn.execute(
+            "SELECT idx, tool, status, attempts FROM steps WHERE task_id=? ORDER BY idx",
+            (task_id,),
+        )
+    ]
+    print(json.dumps({"task": task[0], "goal": task[1], "status": task[2], "steps": steps}, indent=2))
+    return 0
+
+
+def export(conn, task_id):
+    for seq, ts, run_id, kind, idx, data in conn.execute(
+        "SELECT seq, ts, run_id, kind, step_idx, data FROM events WHERE task_id=? ORDER BY seq",
+        (task_id,),
+    ):
+        record = {"seq": seq, "ts": ts, "run": run_id, "kind": kind, "step": idx}
+        record.update(json.loads(data))
+        print(json.dumps(record, ensure_ascii=False))
+    return 0
+
+
+def acquire_lock(db, task_id):
+    handle = open(f"{db}.{task_id}.lock", "w")
+    try:
+        fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except BlockingIOError:
+        handle.close()
+        return None
+    return handle
+
+
+def main():
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--db", default="state.db")
+    sub = parser.add_subparsers(dest="cmd", required=True)
+    c = sub.add_parser("create")
+    c.add_argument("task_id")
+    c.add_argument("plan")
+    for name in ("run", "status", "export"):
+        sub.add_parser(name).add_argument("task_id")
+    args = parser.parse_args()
+
+    conn = store.connect(args.db)
+    run_id = uuid.uuid4().hex[:8]
+
+    if args.cmd == "create":
+        with open(args.plan, encoding="utf-8") as f:
+            plan = json.load(f)
+        store.create_task(conn, args.task_id, plan["goal"], plan["steps"], run_id)
+        return 0
+    if args.cmd == "run":
+        lock = acquire_lock(args.db, args.task_id)
+        if lock is None:
+            print(f"task {args.task_id} is already running", file=sys.stderr)
+            return 3
+        return run(conn, args.task_id, run_id)
+    if args.cmd == "status":
+        return status(conn, args.task_id)
+    return export(conn, args.task_id)
+
+
+if __name__ == "__main__":
+    sys.exit(main())</code></pre>
+
+<p>Exit codes: <code>0</code> means done, <code>1</code> means unknown task, <code>2</code> means failed after the maximum number of attempts, and <code>3</code> means another process holds the lock. When the agent is killed by a signal, Python's <code>subprocess</code> reports <code>-9</code>, and bash reports <code>137</code> (128 + 9).</p>
+
+<h2 id="manual">7. Manual run: kill, inspect, resume</h2>
+
+<p>Do this once by hand before automating it. Watching the state change makes the assertions in the next section easier to follow.</p>
+
+<pre><code>python agent.py create t1 plan.json
+
+# Kill the agent right after the report file was written,
+# but before the step was marked done.
+AGENT_CRASH_AT=after_effect:2 python agent.py run t1; echo "exit=$?"</code></pre>
+
+<p>Bash should report <code>exit=137</code>, probably with a "Killed" line from the shell. Now look at what survived:</p>
+
+<pre><code>python agent.py status t1
+sqlite3 state.db "SELECT seq, run_id, kind, step_idx FROM events ORDER BY seq;"
+ls -la artifacts/</code></pre>
+
+<p>From the code, you should see the following. Steps 0 and 1 are <code>done</code>. Step 2 is <code>running</code> with <code>attempts = 1</code>, and the task is <code>running</code>. The journal ends with <code>step_started</code> for step 2 and has no matching finish event. <code>artifacts/t1-2.md</code> already exists. This is the most dangerous state: the effect happened, but the agent has no durable record that it did.</p>
+
+<p>Resume:</p>
+<pre><code>python agent.py run t1; echo "exit=$?"
+python agent.py status t1
+python agent.py export t1 &gt; journal.jsonl
+cat journal.jsonl
+ls artifacts/
+sqlite3 state.db "SELECT output FROM steps WHERE task_id='t1' AND idx=2;"</code></pre>
+
+<p>Expected: <code>exit=0</code>, and all three steps <code>done</code>. Step 2 has <code>attempts = 2</code>. The journal contains a second <code>run_started</code> with a different <code>run</code> id, a <code>step_recovered</code> for step 2, a second <code>step_started</code> for step 2, then <code>step_finished</code> and <code>task_done</code>. There is still exactly one <code>t1-2.md</code>, and the stored output for step 2 contains <code>"deduplicated": true</code>. Steps 0 and 1 were not run again, which you can tell because they have no second <code>step_started</code>.</p>
+
+<p>To repeat the experiment, delete <code>state.db*</code>, the lock files and <code>artifacts/</code>, then create the task again.</p>
+
+<h2 id="tests">8. The automated restart test suite (test_restart.py)</h2>
+
+<p>The suite runs the agent as a real subprocess, so the kills are real. Each test gets a fresh temporary directory. Environment variables starting with <code>AGENT_</code> are removed from the parent environment so that a stray setting in your shell can't change the results.</p>
+
+<pre><code>"""Restart-resilience tests: kill the agent at fixed points and verify recovery."""
+import json
+import os
+import signal
+import sqlite3
+import subprocess
+import sys
+import time
+from pathlib import Path
+
+import pytest
+
+AGENT = Path(__file__).resolve().parent / "agent.py"
+PLAN = {
+    "goal": "Summarize notes into a report",
+    "steps": [
+        {"tool": "fetch", "input": {"path": "input/notes.txt"}},
+        {"tool": "summarize", "input": {"from": 0}},
+        {"tool": "write_artifact", "input": {"from": 1}},
+    ],
+}
+EXPECTED = "Line one\nLine two\nLine three"
+
+
+def agent_cmd(wd, *args):
+    return [sys.executable, str(AGENT), "--db", str(wd / "state.db"), *args]
+
+
+def agent_env(wd, **extra):
+    env = {k: v for k, v in os.environ.items() if not k.startswith("AGENT_")}
+    env["AGENT_ARTIFACTS"] = str(wd / "artifacts")
+    env.update(extra)
+    return env
+
+
+def run_agent(wd, *args, **extra):
+    return subprocess.run(
+        agent_cmd(wd, *args), cwd=wd, env=agent_env(wd, **extra),
+        capture_output=True, text=True, timeout=60,
+    )
+
+
+def query(wd, sql):
+    conn = sqlite3.connect(wd / "state.db")
+    try:
+        return conn.execute(sql).fetchall()
+    finally:
+        conn.close()
+
+
+def events(wd):
+    rows = query(wd, "SELECT kind, step_idx, data FROM events WHERE task_id='t1' ORDER BY seq")
+    return [(k, i, json.loads(d)) for k, i, d in rows]
+
+
+def kinds(evts, kind):
+    return [i for k, i, _ in evts if k == kind]
+
+
+def step_output(wd, idx):
+    (out,) = query(wd, f"SELECT output FROM steps WHERE task_id='t1' AND idx={int(idx)}")[0]
+    return json.loads(out)
+
+
+def artifacts(wd):
+    folder = wd / "artifacts"
+    return sorted(folder.glob("*.md")) if folder.exists() else []
+
+
+def wait_for(predicate, timeout=10.0):
+    deadline = time.monotonic() + timeout
+    while time.monotonic() &lt; deadline:
+        if predicate():
+            return True
+        time.sleep(0.05)
+    return False
+
+
+@pytest.fixture
+def wd(tmp_path):
+    (tmp_path / "input").mkdir()
+    (tmp_path / "input" / "notes.txt").write_text(
+        "Line one\nLine two\n\nLine three\nLine four\n", encoding="utf-8"
+    )
+    (tmp_path / "plan.json").write_text(json.dumps(PLAN), encoding="utf-8")
+    result = run_agent(tmp_path, "create", "t1", "plan.json")
+    assert result.returncode == 0, result.stderr
+    return tmp_path
+
+
+def assert_completed_once(wd):
+    (task,) = query(wd, "SELECT status FROM tasks WHERE id='t1'")[0]
+    steps = [s for (s,) in query(wd, "SELECT status FROM steps WHERE task_id='t1' ORDER BY idx")]
+    assert task == "done"
+    assert steps == ["done", "done", "done"]
+
+    evts = events(wd)
+    assert sorted(kinds(evts, "step_finished")) == [0, 1, 2]
+    assert len(kinds(evts, "task_done")) == 1
+    # Journal consistency: every start is closed by exactly one outcome.
+    closed = (len(kinds(evts, "step_finished")) + len(kinds(evts, "step_recovered"))
+              + len(kinds(evts, "step_error")))
+    assert len(kinds(evts, "step_started")) == closed
+
+    files = artifacts(wd)
+    assert [f.name for f in files] == ["t1-2.md"]
+    assert files[0].read_text(encoding="utf-8") == EXPECTED
+    return evts
+
+
+def test_baseline_without_crash(wd):
+    result = run_agent(wd, "run", "t1")
+    assert result.returncode == 0, result.stderr
+    evts = assert_completed_once(wd)
+    assert kinds(evts, "step_recovered") == []
+    assert len(kinds(evts, "run_started")) == 1
+
+
+@pytest.mark.parametrize("point", ["before_effect", "after_effect", "after_commit"])
+@pytest.mark.parametrize("idx", [0, 1, 2])
+def test_crash_and_resume(wd, point, idx):
+    first = run_agent(wd, "run", "t1", AGENT_CRASH_AT=f"{point}:{idx}")
+    assert first.returncode == -signal.SIGKILL
+
+    second = run_agent(wd, "run", "t1")
+    assert second.returncode == 0, second.stderr
+
+    evts = assert_completed_once(wd)
+    assert len(kinds(evts, "run_started")) == 2
+    interrupted = point != "after_commit"
+    assert kinds(evts, "step_recovered") == ([idx] if interrupted else [])
+    assert kinds(evts, "step_started").count(idx) == (2 if interrupted else 1)
+    for other in {0, 1, 2} - {idx}:
+        assert kinds(evts, "step_started").count(other) == 1
+    if (point, idx) == ("after_effect", 2):
+        assert step_output(wd, 2)["deduplicated"] is True
+
+
+def test_external_sigkill_mid_step(wd):
+    proc = subprocess.Popen(
+        agent_cmd(wd, "run", "t1"), cwd=wd, env=agent_env(wd, AGENT_STEP_DELAY="1.0"),
+        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+    )
+    try:
+        assert wait_for(lambda: 1 in kinds(events(wd), "step_started"))
+        proc.send_signal(signal.SIGKILL)
+    finally:
+        proc.wait(timeout=15)
+    assert proc.returncode == -signal.SIGKILL
+
+    result = run_agent(wd, "run", "t1")
+    assert result.returncode == 0, result.stderr
+    evts = assert_completed_once(wd)
+    assert kinds(evts, "step_recovered") == [1]
+
+
+def test_second_runner_is_rejected(wd):
+    proc = subprocess.Popen(
+        agent_cmd(wd, "run", "t1"), cwd=wd, env=agent_env(wd, AGENT_STEP_DELAY="1.0"),
+        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+    )
+    try:
+        assert wait_for(lambda: kinds(events(wd), "run_started"))
+        result = run_agent(wd, "run", "t1")
+        assert result.returncode == 3
+    finally:
+        proc.kill()
+        proc.wait(timeout=15)
+
+
+def test_negative_control_unsafe_effect_is_duplicated(wd):
+    """Proves the suite can detect duplication: a non-idempotent effect must repeat."""
+    first = run_agent(wd, "run", "t1", AGENT_CRASH_AT="after_effect:2", AGENT_UNSAFE_EFFECTS="1")
+    assert first.returncode == -signal.SIGKILL
+    second = run_agent(wd, "run", "t1", AGENT_UNSAFE_EFFECTS="1")
+    assert second.returncode == 0, second.stderr
+    log = (wd / "artifacts" / "report.log").read_text(encoding="utf-8")
+    assert log.count("\n---\n") == 2</code></pre>
+
+<p>Run it:</p>
+<pre><code>pytest -v test_restart.py</code></pre>
+
+<p>The suite collects 13 tests: 1 baseline, 9 parametrized crash scenarios, 1 external kill, 1 lock test and 1 negative control. The two tests that use <code>AGENT_STEP_DELAY=1.0</code> add a few seconds of wall time each. The rest depend only on process startup speed.</p>
+
+<h3>Why the negative control matters</h3>
+<p>A restart test that never fails proves little. <code>test_negative_control_unsafe_effect_is_duplicated</code> switches the report writer to a plain append and <em>asserts that the duplicate appears</em>. If that test ever fails, your crash injection isn't reaching the dangerous window (for example, because a refactor moved <code>crash_point("after_effect", ...)</code>). In that case, the green results from the other tests can't be trusted.</p>
+
+<h2 id="verify">9. How to read a passing and a failing run</h2>
+
+<p>When the whole suite is green, the five properties from section 2 hold for this plan on your machine:</p>
+<ul>
+  <li><strong>State preserved:</strong> the second process finds the steps committed by the first and does not repeat them (<code>step_started</code> count of 1 for every non-interrupted step).</li>
+  <li><strong>Resume, not restart:</strong> two <code>run_started</code> events, but each step is finished exactly once.</li>
+  <li><strong>Explicit recovery:</strong> <code>step_recovered</code> appears exactly when the kill landed inside a step, and never after <code>after_commit</code>.</li>
+  <li><strong>Single external outcome:</strong> one <code>t1-2.md</code> with the expected content, including after a kill in <code>after_effect:2</code>.</li>
+  <li><strong>Consistent journal:</strong> starts equal finishes + recoveries + errors.</li>
+</ul>
+
+<p>Typical red results and what they mean:</p>
+<table>
+  <thead>
+    <tr><th>Failing assertion</th><th>Likely cause</th></tr>
+  </thead>
+  <tbody>
+    <tr><td><code>first.returncode == -9</code> fails with <code>0</code></td><td>The crash hook didn't fire. Check the spelling of <code>AGENT_CRASH_AT</code> and whether the hook is still placed where the test expects.</td></tr>
+    <tr><td>Two <code>.md</code> files, or a modified artifact</td><td>The idempotency key isn't stable across runs (for example, it includes <code>run_id</code> or a timestamp), or the writer isn't atomic.</td></tr>
+    <tr><td><code>step_started</code> count &gt; 1 for a step that wasn't interrupted</td><td>Committed outputs are being ignored. The loop is selecting by something other than <code>status='pending'</code>, or recovery resets <code>done</code> steps.</td></tr>
+    <tr><td>Steps stuck in <code>running</code> after the second run</td><td>Recovery didn't run, or it ran in a transaction that was rolled back.</td></tr>
+    <tr><td>Journal consistency assertion fails</td><td>A state change was committed without its event, or an event was written outside the state transaction.</td></tr>
+    <tr><td><code>database is locked</code> in stderr</td><td>Two writers overlapped. Check that the lock test passes and that nothing else holds the DB open in write mode.</td></tr>
+  </tbody>
+</table>
+
+<h2 id="failures">10. Failure cases and what catches them</h2>
+
+<p>Not every failure is covered by this suite. Here is where the boundary lies:</p>
+<table>
+  <thead>
+    <tr><th>Failure</th><th>Covered here?</th><th>Notes</th></tr>
+  </thead>
+  <tbody>
+    <tr><td>Process killed (SIGKILL, OOM killer, <code>docker kill</code>)</td><td>Yes</td><td>The core of the suite.</td></tr>
+    <tr><td>Graceful stop (SIGTERM, Ctrl+C)</td><td>Indirectly</td><td>A graceful stop is a subset of a hard kill as long as there are no shutdown handlers that write state. If you add such handlers, add a SIGTERM variant of the external-kill test.</td></tr>
+    <tr><td>Duplicate concurrent runner</td><td>Yes</td><td><code>test_second_runner_is_rejected</code>. Valid on one host only; see limitations.</td></tr>
+    <tr><td>Tool raises an exception</td><td>Partly</td><td>The loop journals <code>step_error</code> and retries up to <code>AGENT_MAX_ATTEMPTS</code>. Add a test with a tool that always fails and assert exit code <code>2</code> and <code>task_failed</code>.</td></tr>
+    <tr><td>Input changed between runs</td><td>By design, not tested</td><td>The committed <code>fetch</code> output (with its <code>sha256</code>) is reused after restart. That is the right behaviour for resumption, but a stale-data check, if you need one, has to be written explicitly.</td></tr>
+    <tr><td>Non-idempotent external API</td><td>No, only demonstrated</td><td>The negative control shows the duplication. The fix depends on the provider: idempotency keys, a lookup by client reference before retrying, or marking the step as "manual confirmation required" after a recovery.</td></tr>
+    <tr><td>Power loss / OS crash</td><td>No</td><td>SIGKILL leaves the OS page cache intact. Power loss doesn't. <code>synchronous=FULL</code> and <code>fsync</code> help, but the atomic <code>link</code> also needs an fsync of the <em>directory</em> to be durable against power loss. Test this in a VM that you hard-reset.</td></tr>
+    <tr><td>Corrupt or deleted database</td><td>No</td><td>This calls for backups (<code>sqlite3 state.db ".backup ..."</code>), not recovery logic.</td></tr>
+  </tbody>
+</table>
+
+<h2 id="llm">11. Adding a local model with Ollama</h2>
+
+<p>The stub summarizer keeps the tests deterministic. To run the same stack against a local model, install <a href="../glossary.html#ollama">Ollama</a>, pull a model and switch the engine. The model name below is an example, so use any model you have pulled:</p>
+
+<pre><code>ollama pull llama3.2
+rm -rf state.db* artifacts/
+python agent.py create t2 plan.json
+AGENT_LLM=ollama OLLAMA_MODEL=llama3.2 AGENT_CRASH_AT=after_commit:1 python agent.py run t2
+AGENT_LLM=ollama OLLAMA_MODEL=llama3.2 python agent.py run t2
+python agent.py export t2</code></pre>
+
+<p>What changes when a model is involved:</p>
+<ul>
+  <li><strong>Committed model output is cached.</strong> A kill at <code>after_commit:1</code> doesn't call the model again on restart, because the summary is already stored in <code>steps.output</code>. This is where durable state saves real time and compute.</li>
+  <li><strong>Uncommitted model output is lost and regenerated.</strong> A kill at <code>before_effect:1</code> or <code>after_effect:1</code> makes the model run again, and its output may differ from the first attempt. That's acceptable because nothing downstream saw the first attempt. It is also why the test suite compares exact artifact content only in stub mode.</li>
+  <li><strong>The artifact is pinned to the committed summary.</strong> Because <code>write_artifact</code> reads from <code>ctx</code> (committed outputs only) and deduplicates by key, a retry of step 2 can't publish a different text than the first attempt did.</li>
+</ul>
+<p>Don't put live model calls in the automated suite. Nondeterministic outputs make content assertions flaky, and a missing local server would turn into false failures. Keep model runs as a manual or nightly smoke check, separate from the restart test.</p>
+
+<h2 id="limits">12. Limitations</h2>
+<ul>
+  <li><strong>Single host.</strong> <code>flock</code> and SQLite are local. With several workers on different machines, you need a database with row-level leases (for example, <code>SELECT ... FOR UPDATE SKIP LOCKED</code> in PostgreSQL) and lease expiry, plus a test where a worker dies while holding a lease.</li>
+  <li><strong>Step granularity.</strong> Work done inside a step isn't checkpointed. A 30-minute step that dies at minute 29 starts again from zero. Split long steps, or let the tool keep its own resumable progress.</li>
+  <li><strong>Large outputs.</strong> <code>fetch</code> stores the full text in SQLite to keep the example short. For large inputs, store a path plus hash and keep the content in content-addressed files.</li>
+  <li><strong>Orphan temp files.</strong> A kill inside <code>write_artifact</code> can leave <code>.t1-2.&lt;pid&gt;.tmp</code> behind. These files are harmless and never published, but clean them up on start if they pile up.</li>
+  <li><strong>Schema evolution.</strong> Resuming a task created by an older version of the code needs migrations and a compatibility test: create the task with version N, resume it with version N+1.</li>
+  <li><strong>Conversational memory isn't covered.</strong> This stack persists task state and history. Persisting a chat context window is a different design problem, covered in the agent memory guide.</li>
+  <li><strong>Platform.</strong> Linux/macOS only, because of <code>fcntl</code> and <code>SIGKILL</code>. On Windows you'd need a different lock and termination mechanism.</li>
+</ul>
+
+<h2 id="next">13. Next steps</h2>
+<p>When the suite is green, keep it as a <a href="../glossary.html#regression-test">regression test</a>. Any change to the agent loop, the tools or the storage layer should be followed by a full <code>pytest -v test_restart.py</code> run. Whenever you add a tool, add its crash points to the parametrization. If the tool has an external side effect, also add a negative control that proves a duplicate would be caught.</p>
+
+<p>For related work, see the <a href="guide-agent-memory.html">agent memory guide</a> and <a href="guide-agent-testing.html">testing AI agents</a>. Browse all practical material in <a href="guides.html">the guides section</a>, and look up unfamiliar terms in the <a href="../glossary.html">glossary</a>.</p>
+
+<section class="service-note">
+  <b>We publish what works for us—and implement the same solutions for your business.</b>
+  We design AI automation, Telegram bots, chats, and AI agents for real-world processes.
+  <a href="../contacts-en.html">Discuss your project →</a>
+</section>
+</article>
+</main>
+
+<footer class="site-footer">
+  <p>© 2026 Agent Lab Journal · <a href="guides.html">Guides</a> · <a href="../glossary.html">Glossary</a></p>
+</footer>
+
+</body>
+</html>

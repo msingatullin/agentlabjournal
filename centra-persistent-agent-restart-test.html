@@ -1,0 +1,452 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Проверяем устойчивость stateful-агента к перезапуску — Agent Lab Journal</title>
+  <meta name="description" content="Проверяем устойчивость stateful-агента к перезапуску: чекпоинты в SQLite, журнал действий в JSONL и воспроизводимый тест, в котором агента останавливают через kill и потом восстанавливают задачу.">
+  <link rel="canonical" href="https://agentlabjournal.online/centra-persistent-agent-restart-test.html">
+  <link rel="stylesheet" href="style.css">
+  <link rel="stylesheet" href="reading.css">
+
+  <meta property="og:type" content="article">
+  <meta property="og:locale" content="ru_RU">
+  <meta property="og:site_name" content="Agent Lab Journal">
+  <meta property="og:title" content="Проверяем устойчивость stateful-агента к перезапуску">
+  <meta property="og:description" content="Локальный агентный стек на Python и SQLite и тест, который убивает процесс посреди задачи, перезапускает агента и проверяет состояние, результат и журнал действий.">
+  <meta property="og:url" content="https://agentlabjournal.online/centra-persistent-agent-restart-test.html">
+  <meta property="article:published_time" content="2026-10-11">
+
+  <meta name="twitter:card" content="summary">
+  <meta name="twitter:title" content="Проверяем устойчивость stateful-агента к перезапуску">
+  <meta name="twitter:description" content="Чекпоинты в SQLite, журнал действий в JSONL и воспроизводимый тест на восстановление после kill -9.">
+
+  <script type="application/ld+json">
+  {
+    "@context": "https://schema.org",
+    "@type": "Article",
+    "headline": "Проверяем устойчивость stateful-агента к перезапуску",
+    "description": "Проверяем устойчивость stateful-агента к перезапуску: чекпоинты в SQLite, журнал действий в JSONL и воспроизводимый тест, в котором агента останавливают через kill и потом восстанавливают задачу.",
+    "inLanguage": "ru",
+    "datePublished": "2026-10-11",
+    "dateModified": "2026-10-11",
+    "author": {
+      "@type": "Organization",
+      "name": "Agent Lab Journal"
+    },
+    "publisher": {
+      "@type": "Organization",
+      "name": "Agent Lab Journal",
+      "url": "https://agentlabjournal.online/"
+    },
+    "mainEntityOfPage": {
+      "@type": "WebPage",
+      "@id": "https://agentlabjournal.online/centra-persistent-agent-restart-test.html"
+    },
+    "proficiencyLevel": "Expert",
+    "timeRequired": "PT12M"
+  }
+  </script>
+<link rel="stylesheet" href="homepage.css"><link rel="stylesheet" href="max-promo.css">  <meta property="og:image" content="https://agentlabjournal.online/assets/covers/llm-context-window-budget-social.png">
+  <meta property="og:image:alt" content="Проверяем устойчивость stateful-агента к перезапуску">
+  <meta name="twitter:image" content="https://agentlabjournal.online/assets/covers/llm-context-window-budget-social.png">
+</head>
+<body>
+  <header class="site-header">
+    <a class="site-logo" href="index.html">Agent Lab Journal</a>
+    <nav aria-label="Основная навигация">
+      <a href="guides.html">Гайды</a>
+      <a href="glossary.html">Глоссарий</a>
+    </nav>
+  </header>
+
+  <main>
+    <article class="reading">
+<a href="https://max.ru/channel_AgentLab?utm_source=agentlabjournal&utm_medium=article&utm_campaign=max_channel&utm_content=article_footer" class="max-promo-block" target="_blank" rel="noopener noreferrer" aria-label="Самое важное из мира AI в канале MAX AgentLab">
+  <span class="max-promo-block__icon" aria-hidden="true"></span>
+  <span class="max-promo-block__content"><span class="max-promo-block__title">Самое важное из мира AI — в канале MAX AgentLab</span><span class="max-promo-block__desc">Отдельные разборы, инструменты и практические схемы</span></span>
+  <span class="max-promo-block__arrow" aria-hidden="true">→</span>
+</a>
+<a href="https://t.me/pelmenews?utm_source=agentlabjournal&utm_medium=article&utm_campaign=telegram_channel&utm_content=article_intro" class="telegram-promo-block" target="_blank" rel="noopener noreferrer" aria-label="Читайте Agent Lab в Telegram">
+  <span class="telegram-promo-block__icon" aria-hidden="true"></span>
+  <span class="telegram-promo-block__content">
+    <span class="telegram-promo-block__title">Читайте Agent Lab в Telegram</span>
+    <span class="telegram-promo-block__desc">Разборы, кейсы и новости о практических AI-агентах без лишней воды.</span>
+  </span>
+  <span class="telegram-promo-block__arrow" aria-hidden="true">→</span>
+</a>
+      <h1>Проверяем устойчивость stateful-агента к перезапуску</h1>
+        <figure class="article-cover" data-editorial-cover="centra-persistent-agent-restart-test"><img src="assets/covers/llm-context-window-budget.png" alt="Проверяем устойчивость stateful-агента к перезапуску" width="1280" height="720" fetchpriority="high"><figcaption>Temporary fallback cover; replace in editorial pass.</figcaption></figure>
+      <p class="reading-meta">Уровень: продвинутый · Чтение: до 12 минут · Опубликовано: 11 октября 2026</p>
+
+      <p class="lead">Долгая задача агента может прерваться в любой момент: процесс упал, контейнер пересоздали, ноутбук закрыли. Если состояние хранится только в памяти, после такой остановки пропадают контекст, промежуточные результаты и история действий. Тогда агент либо начинает всё сначала, либо, что хуже, повторяет уже выполненные действия. В этой статье мы соберём небольшой локальный стек и напишем воспроизводимый тест. Тест жёстко останавливает агента посреди работы, запускает его снова и проверяет три вещи: что состояние сохранилось, что задача восстановилась и что журнал действий остался целым.</p>
+
+      <h2>Что именно проверяем</h2>
+      <p><a href="glossary.html">Stateful-агент</a> хранит состояние задачи между шагами: план, статус каждого шага, результаты вызовов инструментов и журнал. Чтобы агент пережил перезапуск, нужны четыре свойства:</p>
+      <ul>
+        <li><strong>Сохранность состояния.</strong> Шаг, который отмечен как выполненный, после перезапуска остаётся выполненным, и его результат не теряется.</li>
+        <li><strong>Восстановление задачи.</strong> Новый процесс продолжает работу с первого незавершённого шага и не пересоздаёт план.</li>
+        <li><strong>Целостность журнала.</strong> По журналу видно, когда задачу создали, когда возобновили и чем она закончилась. Ни один шаг не записан как завершённый дважды.</li>
+        <li><strong>Эквивалентность результата.</strong> Итоговый отчёт после сбоя и перезапуска совпадает с отчётом прогона без сбоев.</li>
+      </ul>
+      <p>Тестировать будем самый неприятный сценарий — <code>SIGKILL</code>. Процесс не получает шанса что-то дописать или закрыть, поэтому обработчики завершения и блоки <code>finally</code> не помогут. Если агент переживает <code>kill -9</code>, мягкая остановка ему тоже не страшна.</p>
+
+      <h2>Стек и допущения</h2>
+      <ul>
+        <li>Python 3.10 или новее. Нужна только стандартная библиотека: <code>sqlite3</code>, <code>subprocess</code>, <code>unittest</code>.</li>
+        <li>SQLite в режиме WAL — источник истины для состояния задачи.</li>
+        <li>Журнал действий в формате JSONL, запись только в конец файла с <code>fsync</code> после каждого события. Это журнал для аудита и диагностики, а не для управления агентом.</li>
+        <li>Linux или macOS. Ручная проверка использует <code>timeout</code> из GNU coreutils (на macOS команда называется <code>gtimeout</code>).</li>
+      </ul>
+      <p>Вместо обращения к LLM инструмент агента здесь детерминированный: он считает слова и хэш текстовых файлов. Так сделано намеренно. Тест проверяет механику персистентности, и ответы модели, которые меняются от запуска к запуску, в нём только мешали бы. Как подключить локальную модель, описано в конце статьи.</p>
+
+      <h2>Шаг 1. Рабочий каталог</h2>
+      <pre><code>mkdir -p ~/restart-lab/inbox
+cd ~/restart-lab
+for i in 1 2 3 4 5; do echo "заметка номер $i для проверки перезапуска" &gt; inbox/note_$i.txt; done
+ls inbox</code></pre>
+      <p>Команды создают только каталог <code>~/restart-lab</code> и файлы внутри него. Чтобы всё убрать, достаточно удалить этот каталог.</p>
+
+      <h2>Шаг 2. Агент с чекпоинтами и журналом</h2>
+      <p>Сохраните файл как <code>agent.py</code>. Код ниже — учебный пример, а не готовая библиотека.</p>
+      <pre><code>"""Учебный stateful-агент: план и результаты в SQLite, журнал действий в JSONL."""
+import argparse
+import hashlib
+import json
+import os
+import sqlite3
+import time
+from pathlib import Path
+
+SCHEMA = """
+CREATE TABLE IF NOT EXISTS task (
+  id TEXT PRIMARY KEY,
+  goal TEXT NOT NULL,
+  status TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS step (
+  task_id TEXT NOT NULL,
+  idx INTEGER NOT NULL,
+  name TEXT NOT NULL,
+  status TEXT NOT NULL,
+  result TEXT,
+  PRIMARY KEY (task_id, idx)
+);
+"""
+
+
+def connect(path):
+    con = sqlite3.connect(path, isolation_level=None)
+    con.execute("PRAGMA journal_mode=WAL")
+    con.execute("PRAGMA synchronous=FULL")
+    con.executescript(SCHEMA)
+    return con
+
+
+def log_event(path, **event):
+    event["ts"] = round(time.time(), 3)
+    with open(path, "a", encoding="utf-8") as f:
+        f.write(json.dumps(event, ensure_ascii=False) + "\n")
+        f.flush()
+        os.fsync(f.fileno())
+
+
+def seal_journal(path):
+    """Если прошлый процесс оборвал строку, закрываем её переводом строки."""
+    p = Path(path)
+    if p.exists() and p.stat().st_size:
+        with open(p, "rb+") as f:
+            f.seek(-1, os.SEEK_END)
+            if f.read(1) != b"\n":
+                f.write(b"\n")
+
+
+def read_journal(path):
+    events, broken = [], 0
+    p = Path(path)
+    if not p.exists():
+        return events, broken
+    for line in p.read_text(encoding="utf-8", errors="replace").splitlines():
+        if not line.strip():
+            continue
+        try:
+            events.append(json.loads(line))
+        except json.JSONDecodeError:
+            broken += 1  # строка, оборванная аварийной остановкой
+    return events, broken
+
+
+def summarize(path):
+    text = Path(path).read_text(encoding="utf-8")
+    digest = hashlib.sha256(text.encode("utf-8")).hexdigest()[:12]
+    return {"file": Path(path).name, "words": len(text.split()), "sha256": digest}
+
+
+def reconcile(con, a):
+    """Шаг завершён в БД, но в журнал не попал: дописываем событие с пометкой."""
+    events, _ = read_journal(a.log)
+    logged = {e.get("idx") for e in events
+              if e.get("task") == a.task and e.get("event") == "step_done"}
+    done = con.execute(
+        "SELECT idx FROM step WHERE task_id = ? AND status = 'done' ORDER BY idx",
+        (a.task,),
+    ).fetchall()
+    for (idx,) in done:
+        if idx not in logged:
+            log_event(a.log, task=a.task, event="step_done", idx=idx, reconciled=True)
+
+
+def run(a):
+    seal_journal(a.log)
+    con = connect(a.db)
+    row = con.execute("SELECT status FROM task WHERE id = ?", (a.task,)).fetchone()
+
+    if row is None:
+        names = [p.name for p in sorted(Path(a.inbox).glob("*.txt"))]
+        con.execute("BEGIN IMMEDIATE")
+        con.execute("INSERT INTO task VALUES (?, ?, 'running')",
+                    (a.task, "summarize " + str(a.inbox)))
+        con.executemany(
+            "INSERT INTO step VALUES (?, ?, ?, 'pending', NULL)",
+            [(a.task, i, n) for i, n in enumerate(names)],
+        )
+        con.execute("COMMIT")
+        log_event(a.log, task=a.task, event="task_created", steps=len(names))
+    elif row[0] == "done":
+        log_event(a.log, task=a.task, event="already_done")
+        return
+    else:
+        log_event(a.log, task=a.task, event="task_resumed")
+        reconcile(con, a)
+
+    pending = con.execute(
+        "SELECT idx, name FROM step WHERE task_id = ? AND status != 'done' ORDER BY idx",
+        (a.task,),
+    ).fetchall()
+    for idx, name in pending:
+        log_event(a.log, task=a.task, event="step_started", idx=idx, name=name)
+        result = summarize(Path(a.inbox) / name)
+        time.sleep(a.delay)  # окно, в которое тест «роняет» процесс
+        con.execute(
+            "UPDATE step SET status = 'done', result = ? WHERE task_id = ? AND idx = ?",
+            (json.dumps(result, ensure_ascii=False), a.task, idx),
+        )
+        log_event(a.log, task=a.task, event="step_done", idx=idx)
+
+    rows = con.execute(
+        "SELECT result FROM step WHERE task_id = ? ORDER BY idx", (a.task,)
+    ).fetchall()
+    tmp = Path(a.out).with_suffix(".tmp")
+    tmp.write_text(json.dumps([json.loads(r[0]) for r in rows],
+                              ensure_ascii=False, indent=2), encoding="utf-8")
+    os.replace(tmp, a.out)
+    con.execute("UPDATE task SET status = 'done' WHERE id = ?", (a.task,))
+    log_event(a.log, task=a.task, event="task_done")
+
+
+def main():
+    p = argparse.ArgumentParser()
+    p.add_argument("--task", required=True)
+    p.add_argument("--inbox", required=True)
+    p.add_argument("--db", default="state.db")
+    p.add_argument("--log", default="actions.jsonl")
+    p.add_argument("--out", default="report.json")
+    p.add_argument("--delay", type=float, default=0.0)
+    run(p.parse_args())
+
+
+if __name__ == "__main__":
+    main()</code></pre>
+
+      <h3>На чём держится восстановление</h3>
+      <ul>
+        <li><strong>План фиксируется один раз.</strong> Список шагов записывается в одной транзакции вместе с задачей. При перезапуске агент не сканирует <code>inbox</code> заново, поэтому новые файлы не сдвинут нумерацию шагов.</li>
+        <li><strong>Сначала результат, потом статус.</strong> Результат и статус <code>done</code> записываются одним <code>UPDATE</code>, то есть атомарно. Если процесс упадёт до этой записи, шаг выполнится повторно. Это семантика «как минимум один раз» (at-least-once), и она допустима только для идемпотентных инструментов.</li>
+        <li><strong>Журнал вторичен.</strong> Сбой между коммитом в SQLite и записью в журнал возможен. Функция <code>reconcile</code> находит такие шаги и дописывает для них событие с флагом <code>reconciled</code>, поэтому журнал остаётся полным.</li>
+        <li><strong>Отчёт пишется атомарно.</strong> Сначала создаётся временный файл, затем <code>os.replace</code> подменяет им итоговый. Наполовину записанного <code>report.json</code> не бывает.</li>
+      </ul>
+
+      <h2>Шаг 3. Ручная проверка с жёсткой остановкой</h2>
+      <p>Сначала проверим механику вручную. Каждый шаг длится около секунды, а через три секунды <code>timeout</code> отправляет процессу <code>SIGKILL</code>:</p>
+      <pre><code>timeout --signal=KILL 3 python3 agent.py --task demo --inbox inbox --delay 1
+echo "код выхода: $?"
+python3 -c "import sqlite3; print(sqlite3.connect('state.db').execute('SELECT idx, status FROM step ORDER BY idx').fetchall())"</code></pre>
+      <p>Код выхода должен быть ненулевым: для GNU <code>timeout</code> с сигналом KILL это 137. В выводе SQLite часть шагов будет со статусом <code>done</code>, остальные — <code>pending</code>. Сколько именно шагов успеет завершиться, зависит от скорости машины. Теперь перезапускаем агента с той же задачей:</p>
+      <pre><code>python3 agent.py --task demo --inbox inbox
+cat report.json
+tail -n 15 actions.jsonl</code></pre>
+      <p>В журнале после первого блока событий должно появиться <code>task_resumed</code>, затем <code>step_started</code> и <code>step_done</code> для оставшихся шагов и в конце <code>task_done</code>. Шаг, прерванный посреди работы, получит два события <code>step_started</code> и одно <code>step_done</code>. Так в журнале и выглядит семантика at-least-once.</p>
+
+      <h2>Шаг 4. Воспроизводимый тест</h2>
+      <p>У ручной проверки результат зависит от тайминга. Автоматический тест убирает эту зависимость: он ждёт в журнале конкретное событие и только после него останавливает процесс. Сохраните файл как <code>test_restart.py</code> рядом с <code>agent.py</code>:</p>
+      <pre><code>import json
+import sqlite3
+import subprocess
+import sys
+import tempfile
+import time
+import unittest
+from collections import Counter
+from pathlib import Path
+
+from agent import read_journal
+
+AGENT = Path(__file__).with_name("agent.py")
+STEPS = 6
+
+
+def agent_cmd(work, task, delay, prefix):
+    return [sys.executable, str(AGENT), "--task", task,
+            "--inbox", str(work / "inbox"),
+            "--db", str(work / (prefix + ".db")),
+            "--log", str(work / (prefix + ".jsonl")),
+            "--out", str(work / (prefix + ".json")),
+            "--delay", str(delay)]
+
+
+class RestartTest(unittest.TestCase):
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.work = Path(self._tmp.name)
+        inbox = self.work / "inbox"
+        inbox.mkdir()
+        for i in range(STEPS):
+            text = " ".join(["слово"] * (i + 3))
+            (inbox / f"note_{i}.txt").write_text(text, encoding="utf-8")
+
+    def tearDown(self):
+        self._tmp.cleanup()
+
+    def wait_steps(self, log, n, timeout=30):
+        deadline = time.monotonic() + timeout
+        while time.monotonic() &lt; deadline:
+            events, _ = read_journal(log)
+            if sum(e.get("event") == "step_done" for e in events) &gt;= n:
+                return
+            time.sleep(0.05)
+        self.fail("агент не дошёл до нужного шага")
+
+    def test_survives_kill(self):
+        w = self.work
+
+        # 1. Эталон: тот же агент без сбоев
+        subprocess.run(agent_cmd(w, "ref", 0, "ref"), check=True, timeout=60)
+        reference = json.loads((w / "ref.json").read_text(encoding="utf-8"))
+
+        # 2. Медленный прогон и SIGKILL после двух завершённых шагов
+        proc = subprocess.Popen(agent_cmd(w, "t1", 0.5, "run"))
+        self.wait_steps(w / "run.jsonl", 2)
+        proc.kill()
+        proc.wait(timeout=10)
+        self.assertNotEqual(proc.returncode, 0)
+        self.assertFalse((w / "run.json").exists())
+
+        con = sqlite3.connect(w / "run.db")
+        done = con.execute("SELECT COUNT(*) FROM step WHERE status = 'done'").fetchone()[0]
+        con.close()
+        self.assertGreaterEqual(done, 2)
+        self.assertLess(done, STEPS)
+
+        # 3. Перезапуск той же задачи
+        subprocess.run(agent_cmd(w, "t1", 0, "run"), check=True, timeout=60)
+        report = json.loads((w / "run.json").read_text(encoding="utf-8"))
+        self.assertEqual(report, reference)
+
+        # 4. Журнал действий
+        events, broken = read_journal(w / "run.jsonl")
+        kinds = Counter(e.get("event") for e in events)
+        self.assertEqual(kinds["task_created"], 1)
+        self.assertEqual(kinds["task_resumed"], 1)
+        self.assertEqual(kinds["task_done"], 1)
+        self.assertGreaterEqual(kinds["step_started"], STEPS)
+        done_idx = Counter(e["idx"] for e in events if e.get("event") == "step_done")
+        self.assertEqual(sorted(done_idx), list(range(STEPS)))
+        self.assertTrue(all(c == 1 for c in done_idx.values()), done_idx)
+        self.assertLessEqual(broken, 1)
+
+        # 5. Повторный запуск завершённой задачи ничего не выполняет
+        subprocess.run(agent_cmd(w, "t1", 0, "run"), check=True, timeout=60)
+        after, _ = read_journal(w / "run.jsonl")
+        self.assertEqual([e.get("event") for e in after[len(events):]], ["already_done"])
+
+
+if __name__ == "__main__":
+    unittest.main()</code></pre>
+      <p>Запуск:</p>
+      <pre><code>cd ~/restart-lab
+python3 -m unittest -v test_restart.py</code></pre>
+      <p>Тест работает во временном каталоге и после себя его удаляет. Ваши файлы в <code>~/restart-lab</code> он не трогает.</p>
+
+      <h2>Как читать результат</h2>
+      <p>Если тест прошёл, <code>unittest</code> выведет <code>test_survives_kill ... ok</code> и итоговое <code>OK</code>. Вот что за этим стоит:</p>
+      <ul>
+        <li>после <code>SIGKILL</code> в базе сохранились как минимум два завершённых шага и при этом не все: процесс действительно прервали посреди задачи;</li>
+        <li>частичный отчёт так и не появился на диске;</li>
+        <li>после перезапуска отчёт полностью совпал с эталонным прогоном без сбоев;</li>
+        <li>в журнале одно создание задачи, одно возобновление и одно завершение, а каждый шаг завершён ровно один раз;</li>
+        <li>повторный запуск завершённой задачи не выполнил ни одного шага.</li>
+      </ul>
+      <p>Чтобы убедиться, что тест действительно ловит регрессии, сломайте агента нарочно. Например, в ветке <code>task_resumed</code> выбирайте все шаги, а не только незавершённые. Тест должен упасть на проверке <code>done_idx</code>, потому что часть шагов окажется завершённой дважды. Тест, который ни разу не падал, ничего не доказывает.</p>
+
+      <h2>Типовые ошибки</h2>
+      <ul>
+        <li><strong>Статус пишется раньше результата.</strong> Если отметить шаг <code>done</code>, а результат сохранить отдельной операцией, после сбоя шаг будет выглядеть выполненным, но без данных. Пишите статус и результат в одной транзакции.</li>
+        <li><strong>План пересчитывается при старте.</strong> Если пока агент лежал, входные данные изменились, индексы шагов разъедутся с сохранёнными результатами. Фиксируйте план при создании задачи.</li>
+        <li><strong>Неидемпотентные инструменты.</strong> Отправка письма, платёж или запись во внешний API при повторе выполнятся второй раз. Таким инструментам нужен ключ идемпотентности, производный от <code>task_id</code> и <code>idx</code>, или паттерн outbox: намерение сначала записывается в БД, а отправка подтверждается отдельно.</li>
+        <li><strong>Журнал без <code>fsync</code>.</strong> Данные зависают в буфере и пропадают при сбое ОС. Против <code>kill -9</code> хватит и <code>flush</code>, но для аудита журнал должен попадать на диск.</li>
+        <li><strong>Парсер журнала падает на оборванной строке.</strong> Аварийная остановка может оставить неполную последнюю строку. Без <code>seal_journal</code> следующее событие приклеится к ней, и испорченными окажутся уже две записи.</li>
+        <li><strong>При копировании переносят только <code>state.db</code>.</strong> В режиме WAL часть данных лежит в <code>state.db-wal</code>. Для бэкапа используйте <code>sqlite3</code> API <code>backup</code> или копируйте остановленную базу вместе со служебными файлами.</li>
+        <li><strong>Вместо <code>SIGKILL</code> тестируют <code>SIGTERM</code>.</strong> Мягкий сигнал даёт процессу время всё аккуратно закрыть и скрывает проблемы, которые проявятся при настоящем падении.</li>
+      </ul>
+
+      <h2>Подключение локальной LLM</h2>
+      <p>Если заменить <code>summarize</code> на вызов локальной модели, например через HTTP API локального сервера, механика не изменится. Добавятся два правила:</p>
+      <ul>
+        <li>сохраняйте ответ модели в <code>step.result</code> до того, как он повлияет на следующие шаги. Тогда после перезапуска агент возьмёт уже полученный ответ и не будет генерировать новый;</li>
+        <li>историю диалога (системный промпт, сообщения, вызовы инструментов) храните в отдельной таблице с порядковым номером и восстанавливайте контекст из неё, а не из памяти процесса.</li>
+      </ul>
+      <p>Ответы модели могут отличаться от запуска к запуску, поэтому сравнение с эталоном придётся ослабить. Проверяйте структуру отчёта, набор обработанных шагов и инварианты журнала, а не дословный текст.</p>
+
+      <h2>Ограничения подхода</h2>
+      <ul>
+        <li>Тест моделирует падение процесса, а не отключение питания или сбой ОС. Насколько надёжен <code>fsync</code>, зависит от файловой системы и окружения: в контейнерах и на сетевых дисках гарантии бывают слабее.</li>
+        <li>Агент однопроцессный. Если задачу могут взять несколько воркеров, нужна аренда задачи с таймаутом (lease) и проверка владельца при каждом коммите.</li>
+        <li>Повтор прерванного шага заложен в саму схему. Если повторное выполнение какого-то шага недопустимо, одних чекпоинтов мало: нужна идемпотентность на стороне инструмента.</li>
+        <li>Один сценарий остановки не покрывает все окна сбоя. Чтобы проверить точки «после коммита, но до записи в журнал» и «после отчёта, но до <code>task_done</code>», добавьте в агента явные точки внедрения сбоя и параметризуйте тест.</li>
+        <li>На Windows <code>proc.kill()</code> вызывает <code>TerminateProcess</code>, а ручная проверка через <code>timeout</code> не подойдёт. Основной тест на <code>unittest</code> переносим, но рассчитан в первую очередь на POSIX.</li>
+      </ul>
+
+      <h2>Что дальше</h2>
+      <p>Добавьте этот тест в регрессионный набор агента и запускайте его при каждом изменении схемы состояния или логики шагов. Другие практические материалы о сборке и проверке агентов собраны в разделе <a href="guides.html">гайдов</a>, а определения терминов из статьи — в <a href="glossary.html">глоссарии</a>.</p>
+<aside class="service-note" aria-label="Связаться по проекту">
+  <div class="service-note__copy">
+    <p class="service-note__label">Связь с Agent Lab</p>
+    <p class="service-note__title">Внедрим такой контур в ваш процесс</p>
+    <p class="service-note__text">Напишите инженеру Agent Lab в Telegram: опишите задачу, бота или интеграцию — предложим пилот с проверками и понятными границами.</p>
+  </div>
+  <a class="service-note__link" href="https://t.me/msrzn007?utm_source=journal&amp;utm_medium=article&amp;utm_campaign=service_note" target="_blank" rel="noopener">Написать в Telegram
+    <svg viewBox="0 0 16 16" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"><path d="M3 13 13 3M6 3h7v7"/></svg>
+  </a>
+</aside>
+<aside class="service-note service-note--sitevisor" aria-label="Экспресс-аудит сайта">
+  <div class="service-note__copy">
+    <p class="service-note__label">SiteVisor</p>
+    <p class="service-note__title">Проверьте техническое состояние и готовность вашего сайта к рекламе</p>
+    <p class="service-note__text">Экспресс-аудит на SiteVisor.pro: индексация, скорость, разметка, аналитика и точки конверсии.</p>
+  </div>
+  <a class="service-note__link" href="https://sitevisor.pro/?utm_source=journal&amp;utm_medium=article&amp;utm_campaign=leadmagnet" target="_blank" rel="noopener">Экспресс-аудит на SiteVisor.pro
+    <svg viewBox="0 0 16 16" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"><path d="M3 13 13 3M6 3h7v7"/></svg>
+  </a>
+</aside>
+</article>
+  </main>
+
+  <footer class="site-footer">
+    <p>© 2026 Agent Lab Journal</p>
+    <nav aria-label="Нижняя навигация">
+      <a href="guides.html">Гайды</a>
+      <a href="glossary.html">Глоссарий</a>
+    </nav>
+  </footer>
+</body>
+</html>
