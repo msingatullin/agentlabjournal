@@ -1,0 +1,407 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Нужен ли исследовательскому агенту цикл самопроверки — LangGraph-эксперимент | Agent Lab Journal</title>
+<meta name="description" content="Нужен ли исследовательскому агенту цикл самопроверки: собираем в LangGraph цикл Research–Reflect с ограничениями и сравниваем его с линейной версией по качеству, времени и числу запросов.">
+<link rel="canonical" href="https://agentlabjournal.online/langgraph-reflection-loop-test.html">
+<link rel="stylesheet" href="style.css">
+<link rel="stylesheet" href="reading.css">
+
+<meta property="og:type" content="article">
+<meta property="og:site_name" content="Agent Lab Journal">
+<meta property="og:locale" content="ru_RU">
+<meta property="og:title" content="Нужен ли исследовательскому агенту цикл самопроверки">
+<meta property="og:description" content="Ограниченный цикл Research–Reflect в LangGraph и воспроизводимое сравнение с линейным пайплайном.">
+<meta property="og:url" content="https://agentlabjournal.online/langgraph-reflection-loop-test.html">
+
+<meta name="twitter:card" content="summary">
+<meta name="twitter:title" content="Нужен ли исследовательскому агенту цикл самопроверки">
+<meta name="twitter:description" content="Ограниченный цикл Research–Reflect в LangGraph и воспроизводимое сравнение с линейным пайплайном.">
+
+<script type="application/ld+json">
+{
+  "@context": "https://schema.org",
+  "@type": "Article",
+  "headline": "Нужен ли исследовательскому агенту цикл самопроверки",
+  "description": "Собираем в LangGraph ограниченный цикл Research–Reflect и сравниваем его с линейной версией по качеству, времени и числу запросов.",
+  "inLanguage": "ru",
+  "datePublished": "2026-10-12",
+  "dateModified": "2026-10-12",
+  "mainEntityOfPage": "https://agentlabjournal.online/langgraph-reflection-loop-test.html",
+  "author": {"@type": "Organization", "name": "Agent Lab Journal"},
+  "publisher": {"@type": "Organization", "name": "Agent Lab Journal"},
+  "proficiencyLevel": "Intermediate",
+  "timeRequired": "PT12M"
+}
+</script>
+<link rel="stylesheet" href="homepage.css"><link rel="stylesheet" href="max-promo.css">  <meta property="og:image" content="https://agentlabjournal.online/assets/covers/llm-context-window-budget-social.png">
+  <meta property="og:image:alt" content="Нужен ли исследовательскому агенту цикл самопроверки">
+  <meta name="twitter:image" content="https://agentlabjournal.online/assets/covers/llm-context-window-budget-social.png">
+</head>
+<body>
+
+<header class="site-header">
+  <a class="site-logo" href="index.html">Agent Lab Journal</a>
+  <nav>
+    <a href="guides.html">Гайды</a>
+    <a href="glossary.html">Глоссарий</a>
+  </nav>
+</header>
+
+<main>
+<article class="reading">
+<a href="https://max.ru/channel_AgentLab?utm_source=agentlabjournal&utm_medium=article&utm_campaign=max_channel&utm_content=article_footer" class="max-promo-block" target="_blank" rel="noopener noreferrer" aria-label="Самое важное из мира AI в канале MAX AgentLab">
+  <span class="max-promo-block__icon" aria-hidden="true"></span>
+  <span class="max-promo-block__content"><span class="max-promo-block__title">Самое важное из мира AI — в канале MAX AgentLab</span><span class="max-promo-block__desc">Отдельные разборы, инструменты и практические схемы</span></span>
+  <span class="max-promo-block__arrow" aria-hidden="true">→</span>
+</a>
+<a href="https://t.me/pelmenews?utm_source=agentlabjournal&utm_medium=article&utm_campaign=telegram_channel&utm_content=article_intro" class="telegram-promo-block" target="_blank" rel="noopener noreferrer" aria-label="Читайте Agent Lab в Telegram">
+  <span class="telegram-promo-block__icon" aria-hidden="true"></span>
+  <span class="telegram-promo-block__content">
+    <span class="telegram-promo-block__title">Читайте Agent Lab в Telegram</span>
+    <span class="telegram-promo-block__desc">Разборы, кейсы и новости о практических AI-агентах без лишней воды.</span>
+  </span>
+  <span class="telegram-promo-block__arrow" aria-hidden="true">→</span>
+</a>
+
+<h1>Нужен ли исследовательскому агенту цикл самопроверки</h1>
+        <figure class="article-cover" data-editorial-cover="langgraph-reflection-loop-test"><img src="assets/covers/llm-context-window-budget.png" alt="Нужен ли исследовательскому агенту цикл самопроверки" width="1280" height="720" fetchpriority="high"><figcaption>Temporary fallback cover; replace in editorial pass.</figcaption></figure>
+
+<div class="reading-meta">
+  <span>Уровень: средний</span> ·
+  <span>Чтение: до 12 минут</span> ·
+  <span>Опубликовано: 12 октября 2026</span>
+</div>
+
+<p>Типичный <a href="glossary.html">исследовательский агент</a> устроен как линейный пайплайн: спланировать запросы, найти материалы, написать ответ. Проблема в том, что последний шаг выполняется всегда, даже когда найденного не хватает. Модель уверенно заполняет пробелы догадками, и читатель не может понять, где факт, а где домысел.</p>
+
+<p>Очевидное решение — дать агенту перечитать собранное и решить, нужен ли ещё поиск. Но у неограниченной рефлексии свои проблемы: каждый проход стоит лишних вызовов модели, а агент, который никогда не бывает «доволен», может крутиться бесконечно. Ниже соберём обе версии на LangGraph, поставим циклу жёсткие ограничения и сравним их на одном наборе вопросов.</p>
+
+<p><strong>Что получится:</strong> рабочий граф с циклом Research–Reflect не больше чем в два прохода, линейная версия для контроля и скрипт, который записывает качество, время и число запросов в CSV.</p>
+
+<h2>Как устроен эксперимент</h2>
+
+<ul>
+  <li><strong>plan</strong> — модель составляет до двух поисковых запросов (1 вызов LLM).</li>
+  <li><strong>research</strong> — поиск по локальному корпусу, без LLM.</li>
+  <li><strong>reflect</strong> — модель оценивает, хватает ли заметок, и предлагает новые запросы (1 вызов LLM). Есть только в версии с циклом.</li>
+  <li><strong>write</strong> — итоговый ответ (1 вызов LLM). Если проверка не прошла, ответ обязан начинаться с пометки «НЕДОСТАТОЧНО ДАННЫХ».</li>
+</ul>
+
+<p>Цикл останавливается при выполнении любого из трёх условий: рефлексия признала данные достаточными; лимит в <code>MAX_REFLECTIONS = 2</code> исчерпан; новых, ещё не использованных запросов нет, то есть прогресса не будет. Подстраховкой служит <code>recursion_limit</code> самого LangGraph.</p>
+
+<p>Чтобы эксперимент воспроизводился без сети и платных API, поиск идёт по маленькому учебному корпусу о <em>вымышленном</em> сервисе Ledger-7. Это пример, а не реальная система: все «факты» о нём придуманы для теста.</p>
+
+<h2>Шаг 1. Окружение</h2>
+
+<p>Нужны Python 3.10+ и локально установленная <a href="https://ollama.com">Ollama</a>. Модель ниже — только пример, подойдёт любая, которая умеет возвращать JSON.</p>
+
+<pre><code>python -m venv .venv
+source .venv/bin/activate
+pip install -U langgraph langchain-ollama
+ollama pull qwen2.5:7b</code></pre>
+
+<h2>Шаг 2. Граф агента</h2>
+
+<p>Сохраните файл как <code>agent.py</code>. В обеих версиях одни и те же узлы, разница только в рёбрах.</p>
+
+<pre><code># agent.py
+import json
+import re
+from typing import List, TypedDict
+
+from langchain_ollama import ChatOllama
+from langgraph.graph import END, START, StateGraph
+
+MODEL = "qwen2.5:7b"  # пример, подставьте свою модель
+MAX_REFLECTIONS = 2
+llm = ChatOllama(model=MODEL, temperature=0)
+
+# Учебный корпус: Ledger-7 — вымышленный сервис, факты придуманы для теста.
+CORPUS = {
+    "d1": "Ledger-7 хранит сообщения в журнале и реплицирует каждое на три узла.",
+    "d2": "Запись в Ledger-7 считается подтверждённой, когда её сохранили два узла из трёх.",
+    "d3": "Ledger-7 хранит сообщения семь дней, после чего журнал сжимается.",
+    "d4": "При сбое отправки клиенты Ledger-7 повторяют попытку с экспоненциальной задержкой.",
+}
+
+
+def search(query: str, k: int = 2) -&gt; List[str]:
+    words = set(re.findall(r"\w+", query.lower()))
+    scored = []
+    for doc_id, text in CORPUS.items():
+        score = len(words &amp; set(re.findall(r"\w+", text.lower())))
+        if score:
+            scored.append((score, doc_id, text))
+    scored.sort(reverse=True)
+    return [f"[{d}] {t}" for _, d, t in scored[:k]]
+
+
+class State(TypedDict, total=False):
+    question: str
+    queries: List[str]
+    used_queries: List[str]
+    notes: List[str]
+    reflections: int
+    sufficient: bool
+    llm_calls: int
+    search_calls: int
+    answer: str
+
+
+def ask(prompt: str) -&gt; str:
+    return llm.invoke(prompt).content
+
+
+def parse_json(text: str):
+    match = re.search(r"\{.*\}", text, re.S)
+    if not match:
+        return None
+    try:
+        return json.loads(match.group(0))
+    except json.JSONDecodeError:
+        return None
+
+
+def plan(state: State) -&gt; State:
+    raw = ask(
+        "Составь не больше двух коротких поисковых запросов для вопроса. "
+        'Верни только JSON вида {"queries": ["..."]}.\n'
+        f"Вопрос: {state['question']}"
+    )
+    data = parse_json(raw) or {}
+    queries = [q for q in data.get("queries", []) if isinstance(q, str)][:2]
+    return {
+        "queries": queries or [state["question"]],
+        "used_queries": [],
+        "notes": [],
+        "reflections": 0,
+        "sufficient": False,
+        "llm_calls": 1,
+        "search_calls": 0,
+    }
+
+
+def research(state: State) -&gt; State:
+    notes = list(state["notes"])
+    used = list(state["used_queries"])
+    for q in state["queries"]:
+        used.append(q)
+        for hit in search(q):
+            if hit not in notes:
+                notes.append(hit)
+    return {
+        "notes": notes,
+        "used_queries": used,
+        "search_calls": state["search_calls"] + len(state["queries"]),
+    }
+
+
+def reflect(state: State) -&gt; State:
+    notes = "\n".join(state["notes"]) or "(заметок нет)"
+    raw = ask(
+        "Ты проверяешь, хватает ли заметок для полного ответа на вопрос. "
+        "Не используй знания вне заметок. Верни только JSON: "
+        '{"sufficient": true|false, "missing": ["..."], "new_queries": ["..."]}.\n'
+        f"Вопрос: {state['question']}\nЗаметки:\n{notes}"
+    )
+    data = parse_json(raw)
+    update = {
+        "reflections": state["reflections"] + 1,
+        "llm_calls": state["llm_calls"] + 1,
+    }
+    if data is None:
+        # Не смогли разобрать ответ: не считаем данные достаточными и не продолжаем цикл.
+        return {**update, "sufficient": False, "queries": []}
+    new = [
+        q for q in data.get("new_queries", [])
+        if isinstance(q, str) and q not in state["used_queries"]
+    ][:2]
+    return {**update, "sufficient": bool(data.get("sufficient")), "queries": new}
+
+
+def route(state: State) -&gt; str:
+    if state["sufficient"]:
+        return "write"
+    if state["reflections"] &gt;= MAX_REFLECTIONS:
+        return "write"
+    if not state["queries"]:
+        return "write"  # новых запросов нет, следующий проход ничего не даст
+    return "research"
+
+
+def write(state: State) -&gt; State:
+    notes = "\n".join(state["notes"]) or "(заметок нет)"
+    checked = state.get("reflections", 0) &gt; 0
+    rule = ""
+    if checked and not state["sufficient"]:
+        rule = ("Проверка показала, что данных не хватает. Начни ответ со строки "
+                "'НЕДОСТАТОЧНО ДАННЫХ:' и перечисли, чего не хватает.\n")
+    answer = ask(
+        "Ответь на вопрос только по заметкам, ссылаясь на [id] источников.\n"
+        f"{rule}Вопрос: {state['question']}\nЗаметки:\n{notes}"
+    )
+    return {"answer": answer, "llm_calls": state["llm_calls"] + 1}
+
+
+def build(reflective: bool):
+    g = StateGraph(State)
+    g.add_node("plan", plan)
+    g.add_node("research", research)
+    g.add_node("write", write)
+    g.add_edge(START, "plan")
+    g.add_edge("plan", "research")
+    g.add_edge("write", END)
+    if reflective:
+        g.add_node("reflect", reflect)
+        g.add_edge("research", "reflect")
+        g.add_conditional_edges("reflect", route, {"research": "research", "write": "write"})
+    else:
+        g.add_edge("research", "write")
+    return g.compile()</code></pre>
+
+<p>Обратите внимание на две детали. Во-первых, неразобранный ответ рефлексии <em>останавливает</em> цикл, но не делает вид, что всё в порядке: итоговый ответ получит пометку о нехватке данных. Во-вторых, повторяющиеся запросы отбрасываются, поэтому модель не может бесконечно «искать то же самое ещё раз».</p>
+
+<h2>Шаг 3. Скрипт сравнения</h2>
+
+<p>Сохраните как <code>compare.py</code>. В наборе три вопроса: два отвечаемых, где нужны факты из разных документов, и один, ответа на который в корпусе нет.</p>
+
+<pre><code># compare.py
+import csv
+import statistics
+import time
+
+from agent import build
+
+CASES = [
+    {"q": "Сколько узлов хранят копию сообщения в Ledger-7 и когда запись подтверждается?",
+     "facts": ["три", "два"], "answerable": True},
+    {"q": "Сколько Ledger-7 хранит сообщения и что делают клиенты при сбое отправки?",
+     "facts": ["сем", "экспоненциал"], "answerable": True},
+    {"q": "Под какой лицензией распространяется Ledger-7?",
+     "facts": [], "answerable": False},
+]
+
+
+def score(answer: str, case: dict) -&gt; float:
+    text = answer.lower()
+    flagged = text.lstrip().startswith("недостаточно данных")
+    if not case["answerable"]:
+        return 1.0 if flagged else 0.0
+    return sum(f in text for f in case["facts"]) / len(case["facts"])
+
+
+rows = []
+for mode, reflective in [("linear", False), ("reflect", True)]:
+    app = build(reflective)
+    for case in CASES:
+        start = time.perf_counter()
+        out = app.invoke({"question": case["q"]}, config={"recursion_limit": 12})
+        rows.append({
+            "mode": mode,
+            "question": case["q"],
+            "quality": score(out["answer"], case),
+            "seconds": round(time.perf_counter() - start, 2),
+            "llm_calls": out["llm_calls"],
+            "search_calls": out["search_calls"],
+        })
+
+with open("results.csv", "w", newline="", encoding="utf-8") as f:
+    writer = csv.DictWriter(f, fieldnames=rows[0].keys())
+    writer.writeheader()
+    writer.writerows(rows)
+
+for mode in ("linear", "reflect"):
+    part = [r for r in rows if r["mode"] == mode]
+    print(mode,
+          "quality=%.2f" % statistics.mean(r["quality"] for r in part),
+          "sec=%.2f" % statistics.mean(r["seconds"] for r in part),
+          "llm=%.1f" % statistics.mean(r["llm_calls"] for r in part),
+          "search=%.1f" % statistics.mean(r["search_calls"] for r in part))</code></pre>
+
+<pre><code>python compare.py</code></pre>
+
+<h2>Шаг 4. Таблица сравнения</h2>
+
+<p>Число вызовов следует прямо из устройства графа, поэтому его границы известны заранее. Качество и время зависят от модели и железа, и мы их не придумываем: заполните эти строки значениями из своего <code>results.csv</code>.</p>
+
+<table>
+  <thead>
+    <tr><th>Метрика</th><th>Линейная версия</th><th>Research–Reflect (≤ 2 прохода)</th><th>Источник значения</th></tr>
+  </thead>
+  <tbody>
+    <tr><td>Вызовы LLM на вопрос</td><td>ровно 2</td><td>от 3 до 4</td><td>следует из графа</td></tr>
+    <tr><td>Поисковые запросы на вопрос</td><td>1–2</td><td>1–4</td><td>следует из графа</td></tr>
+    <tr><td>Шаги графа (supersteps)</td><td>3</td><td>4–6</td><td>следует из графа; лимит 12 не достигается</td></tr>
+    <tr><td>Среднее качество (0–1)</td><td>ваш замер</td><td>ваш замер</td><td><code>quality</code> в results.csv</td></tr>
+    <tr><td>Пометка на вопросе без ответа</td><td>не предусмотрена</td><td>ваш замер</td><td>3-й кейс, <code>quality</code></td></tr>
+    <tr><td>Среднее время, с</td><td>ваш замер</td><td>ваш замер</td><td><code>seconds</code> в results.csv</td></tr>
+  </tbody>
+</table>
+
+<p>Чего стоит ожидать по устройству графа. На третьем вопросе линейная версия в принципе не может набрать балл: у неё нет шага, который поставил бы пометку о нехватке данных. Версия с циклом тратит на вопрос максимум на два вызова LLM больше. Помогает ли второй проход на первых двух вопросах, зависит от того, насколько удачные запросы составит модель на шаге plan. Именно это и показывает замер.</p>
+
+<h2>Как проверить, что всё работает</h2>
+
+<ol>
+  <li>В <code>results.csv</code> у строк <code>linear</code> поле <code>llm_calls</code> равно 2, у строк <code>reflect</code> — 3 или 4. Любое другое значение означает, что граф собран не так.</li>
+  <li>Посмотрите путь выполнения: <code>for step in app.stream({"question": "..."}): print(list(step))</code>. Узел <code>reflect</code> должен встретиться не больше двух раз.</li>
+  <li>Временно поставьте <code>MAX_REFLECTIONS = 0</code>. Версия с циклом должна сразу уходить в <code>write</code> и ставить пометку, так как проверка не пройдена.</li>
+  <li>Запустите сравнение 2–3 раза. Даже при <code>temperature=0</code> локальные модели не всегда детерминированы, поэтому смотрите на разброс, а не на один прогон.</li>
+</ol>
+
+<h2>Типовые ошибки</h2>
+
+<ul>
+  <li><strong>Цикл без счётчика.</strong> Условие «пока модель не скажет sufficient» рано или поздно зациклится. Нужны и счётчик, и проверка на прогресс.</li>
+  <li><strong>Надежда только на <code>recursion_limit</code>.</strong> При превышении LangGraph выбрасывает <code>GraphRecursionError</code>, и ответа нет вовсе. Это аварийный тормоз, а не механизм остановки.</li>
+  <li><strong>Молчаливый fallback.</strong> Если при ошибке разбора JSON считать данные достаточными, цикл формально работает, но ничего не проверяет.</li>
+  <li><strong>Рефлексия знает больше заметок.</strong> Без запрета на внешние знания модель отвечает «данных достаточно», опираясь на свою память, и проверка теряет смысл.</li>
+  <li><strong>Изменяемые списки в состоянии.</strong> Возвращайте новые списки, а не вызывайте <code>append</code> на <code>state["notes"]</code>, иначе отладка через стрим будет показывать путаницу.</li>
+</ul>
+
+<h2>Ограничения</h2>
+
+<ul>
+  <li>Метрика качества грубая: она проверяет вхождение подстрок и может ошибиться в обе стороны, например засчитать «два» внутри «двадцать». Для серьёзных выводов нужна ручная разметка или отдельный оценщик.</li>
+  <li>Три вопроса и игрушечный корпус демонстрируют механику, но не дают статистически значимого вывода. Расширьте набор под свою задачу.</li>
+  <li>Рефлексия оценивает полноту заметок, но не их истинность. Если источник ошибается, цикл этого не заметит.</li>
+  <li>В реальном поиске каждый дополнительный проход стоит сетевых запросов и, возможно, денег. Границы из таблицы помогают оценить худший случай заранее.</li>
+</ul>
+
+<h2>Вывод</h2>
+
+<p>Так нужен ли исследовательскому агенту цикл самопроверки? По устройству графа одно можно сказать без замеров: с ограниченным циклом агент получает возможность честно сказать «данных недостаточно», а линейный пайплайн такой возможности лишён. Цена фиксирована и известна заранее: в нашем графе это максимум два лишних вызова LLM на вопрос. Даёт ли второй проход прирост качества на отвечаемых вопросах, покажет только ваш замер. Начните с <code>MAX_REFLECTIONS = 1</code> и увеличивайте лимит, только если CSV показывает пользу.</p>
+
+<p>Смежные материалы собраны в разделе <a href="guides.html">гайдов</a>, а определения терминов — в <a href="glossary.html">глоссарии</a>.</p>
+<aside class="service-note" aria-label="Связаться по проекту">
+  <div class="service-note__copy">
+    <p class="service-note__label">Связь с Agent Lab</p>
+    <p class="service-note__title">Внедрим такой контур в ваш процесс</p>
+    <p class="service-note__text">Напишите инженеру Agent Lab в Telegram: опишите задачу, бота или интеграцию — предложим пилот с проверками и понятными границами.</p>
+  </div>
+  <a class="service-note__link" href="https://t.me/msrzn007?utm_source=journal&amp;utm_medium=article&amp;utm_campaign=service_note" target="_blank" rel="noopener">Написать в Telegram
+    <svg viewBox="0 0 16 16" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"><path d="M3 13 13 3M6 3h7v7"/></svg>
+  </a>
+</aside>
+<aside class="service-note service-note--sitevisor" aria-label="Экспресс-аудит сайта">
+  <div class="service-note__copy">
+    <p class="service-note__label">SiteVisor</p>
+    <p class="service-note__title">Проверьте техническое состояние и готовность вашего сайта к рекламе</p>
+    <p class="service-note__text">Экспресс-аудит на SiteVisor.pro: индексация, скорость, разметка, аналитика и точки конверсии.</p>
+  </div>
+  <a class="service-note__link" href="https://sitevisor.pro/?utm_source=journal&amp;utm_medium=article&amp;utm_campaign=leadmagnet" target="_blank" rel="noopener">Экспресс-аудит на SiteVisor.pro
+    <svg viewBox="0 0 16 16" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"><path d="M3 13 13 3M6 3h7v7"/></svg>
+  </a>
+</aside>
+</article>
+</main>
+
+<footer class="site-footer">
+  <p>© 2026 Agent Lab Journal · <a href="guides.html">Гайды</a> · <a href="glossary.html">Глоссарий</a></p>
+</footer>
+
+</body>
+</html>

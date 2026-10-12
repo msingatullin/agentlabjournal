@@ -1,0 +1,680 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Нужен ли исследовательскому агенту цикл самопроверки — a bounded LangGraph Research–Reflect test | Agent Lab Journal</title>
+<meta name="description" content="Нужен ли исследовательскому агенту цикл самопроверки: build a LangGraph research agent with a bounded Research–Reflect loop and measure quality, time and request count against a linear pipeline.">
+<link rel="canonical" href="https://agentlabjournal.online/en/langgraph-reflection-loop-test.html">
+<link rel="alternate" hreflang="en" href="https://agentlabjournal.online/en/langgraph-reflection-loop-test.html">
+<link rel="alternate" hreflang="ru" href="https://agentlabjournal.online/langgraph-reflection-loop-test.html">
+<link rel="stylesheet" href="../style.css">
+<link rel="stylesheet" href="../reading.css">
+
+<meta property="og:type" content="article">
+<meta property="og:site_name" content="Agent Lab Journal">
+<meta property="og:title" content="Нужен ли исследовательскому агенту цикл самопроверки — a bounded LangGraph Research–Reflect test">
+<meta property="og:description" content="A reproducible LangGraph experiment: linear research pipeline vs. a Research–Reflect loop with hard stop conditions, scored on fact recall, abstention, wall time and LLM/search calls.">
+<meta property="og:url" content="https://agentlabjournal.online/en/langgraph-reflection-loop-test.html">
+<meta property="og:image" content="https://agentlabjournal.online/assets/covers/llm-context-window-budget-social.png">
+<meta property="og:locale" content="en_US">
+<meta property="article:modified_time" content="2026-10-12">
+
+<meta name="twitter:card" content="summary_large_image">
+<meta name="twitter:title" content="Нужен ли исследовательскому агенту цикл самопроверки — a bounded LangGraph Research–Reflect test">
+<meta name="twitter:description" content="Build a bounded Research–Reflect loop in LangGraph and measure whether it beats a linear pipeline on quality, time and request count.">
+<meta name="twitter:image" content="https://agentlabjournal.online/assets/covers/llm-context-window-budget-social.png">
+
+<script type="application/ld+json">
+{
+  "@context": "https://schema.org",
+  "@type": "Article",
+  "headline": "Нужен ли исследовательскому агенту цикл самопроверки — a bounded LangGraph Research–Reflect test",
+  "description": "Build a LangGraph research agent with a bounded Research–Reflect loop and measure quality, time and request count against a linear pipeline.",
+  "image": ["https://agentlabjournal.online/assets/covers/llm-context-window-budget-social.png"],
+  "datePublished": "2026-10-12",
+  "dateModified": "2026-10-12",
+  "inLanguage": "en",
+  "author": {
+    "@type": "Organization",
+    "name": "Agent Lab Journal",
+    "url": "https://agentlabjournal.online/"
+  },
+  "publisher": {
+    "@type": "Organization",
+    "name": "Agent Lab Journal",
+    "url": "https://agentlabjournal.online/"
+  },
+  "mainEntityOfPage": {
+    "@type": "WebPage",
+    "@id": "https://agentlabjournal.online/en/langgraph-reflection-loop-test.html"
+  }
+}
+</script>
+<link rel="stylesheet" href="../homepage.css"><link rel="stylesheet" href="../max-promo.css">  <meta property="og:image:alt" content="Нужен ли исследовательскому агенту цикл самопроверки">
+</head>
+<body>
+
+<header class="site-header">
+  <a class="site-logo" href="index.html">Agent Lab Journal</a>
+  <nav class="site-nav" aria-label="Main">
+    <a href="index.html">Home</a>
+    <a href="guides.html">Guides</a>
+    <a href="../glossary.html">Glossary</a>
+    <a href="../langgraph-reflection-loop-test.html" hreflang="ru" lang="ru">RU</a>
+  </nav>
+</header>
+
+<main>
+<article class="reading">
+
+<h1>Нужен ли исследовательскому агенту цикл самопроверки: testing a bounded Research–Reflect loop in LangGraph</h1>
+        <figure class="article-cover" data-editorial-cover="langgraph-reflection-loop-test"><img src="../assets/covers/llm-context-window-budget.png" alt="Нужен ли исследовательскому агенту цикл самопроверки" width="1280" height="720" fetchpriority="high"><figcaption>Temporary fallback cover; replace in editorial pass.</figcaption></figure>
+
+<p class="reading-meta">
+  <span>Updated <time datetime="2026-10-12">12 October 2026</time></span> ·
+  <span>Level: intermediate</span> ·
+  <span>Reading and setup time: about 60 minutes</span>
+</p>
+
+<p class="lead">
+A linear research pipeline — plan queries, search, write — always produces an answer, including when the evidence it collected does not support one. The usual fix is to add a self-check step that sends the agent back for more searching. That fix has a cost: every extra round means more model calls, more latency, and, if nothing caps it, a loop that may never end. This article does not settle the question with opinion. You will build both versions on the same model and corpus, give the loop four explicit stop conditions, and produce a comparison table from your own runs.
+</p>
+
+<aside class="note">
+<p><strong>What this article does and does not claim.</strong> The code, corpus and scoring script are complete and meant to be run as written. The results table near the end is an empty template: we do not publish numbers for runs that are not documented here. Your figures will depend on the model, the hardware and the corpus. Anything we say about expected behaviour is labelled as a hypothesis for you to test.</p>
+</aside>
+
+<h2 id="result">What you will have at the end</h2>
+<ul>
+  <li>A <a href="../glossary.html#langgraph">LangGraph</a> research <a href="../glossary.html#ai-agent">agent</a> with two build modes: <code>linear</code> (Plan → Research → Write) and <code>reflective</code> (Plan → Research ⇄ Reflect → Write).</li>
+  <li>A <a href="../glossary.html#reflection">reflection</a> node that returns a structured verdict, plus routing that stops on <em>sufficient evidence</em>, <em>maximum iterations</em>, <em>call budget</em> or <em>no new queries/evidence</em>.</li>
+  <li>An offline, synthetic corpus and four questions: single-hop, two-hop, three-hop and unanswerable.</li>
+  <li>Three pytest tests that check the loop terminates even when the reviewer misbehaves. They use a stub model, so they need no LLM.</li>
+  <li>An evaluation harness that writes <code>results.csv</code> and <code>answers.jsonl</code>, and an aggregation script that prints the comparison table in Markdown.</li>
+</ul>
+
+<h2 id="problem">The real problem: two failure modes pulling in opposite directions</h2>
+
+<p><strong>Failure mode 1 — the confident linear writer.</strong> In a linear pipeline the writer step runs no matter what retrieval returned. Suppose the planner's first queries find a document saying "release 4.2 shipped on the date recorded in ticket NV-118", but never find the ticket itself. A writer told to "answer the question" can do one of three things: say it does not know, quote the indirection without resolving it, or fill the gap with a plausible date — a <a href="../glossary.html#hallucination">hallucination</a>. The pipeline has no step where the gap is spotted and acted on.</p>
+
+<p><strong>Failure mode 2 — the unbounded reviewer.</strong> Add a step that asks "is this evidence enough?" and routes back to search when the answer is no, and you have bought a new set of problems:</p>
+<ul>
+  <li>The reviewer may <em>never</em> be satisfied, especially on questions that cannot be answered from the corpus.</li>
+  <li>It may keep proposing the same query in different words, so the corpus returns the same documents every time.</li>
+  <li>Each round adds at least one <a href="../glossary.html#llm">LLM</a> call and some latency, so cost grows with the number of rounds.</li>
+  <li>When the reviewer's structured output fails to parse, a naive implementation treats that as "not sufficient" and loops again.</li>
+</ul>
+
+<p>The useful question, then, is not "reflection: yes or no?". It is: <em>does a reflection loop with hard bounds improve answers enough on your questions to justify the calls and time it adds?</em> The rest of the article builds a test that answers that.</p>
+
+<h2 id="case">The concrete case: a synthetic corpus with planted gaps</h2>
+
+<p>The corpus is fictional: an internal data pipeline called "Kestrel" at a made-up company "Norvale". We use invented facts on purpose. The model cannot know them from pretraining, so the only way to answer correctly is to retrieve them. On public topics, a correct answer could come from the model's memory, and you would be measuring that memory instead of the loop.</p>
+
+<p>The corpus is built so that some answers are spread across several documents linked by references (release → ticket → date), and one question has no answer in the corpus at all.</p>
+
+<h2 id="setup">Step 0. Environment</h2>
+
+<p>You need Python 3.10+ and a local model served by <a href="../glossary.html#ollama">Ollama</a>. Running locally means no API keys and makes repeated runs cheap. If you prefer a hosted model, swap the chat model class in <code>llm.py</code>. Keep everything else the same so the comparison stays fair.</p>
+
+<pre><code>mkdir reflection-test &amp;&amp; cd reflection-test
+python -m venv .venv
+source .venv/bin/activate          # Windows: .venv\Scripts\activate
+pip install langgraph langchain-core langchain-ollama pydantic pytest
+pip freeze &gt; requirements.lock.txt # record the exact versions you tested
+
+# any instruction-tuned model that supports structured output will do;
+# this tag is an example, not a recommendation backed by our measurements
+ollama pull qwen2.5:7b-instruct</code></pre>
+
+<p>Write down the model tag, the version list in <code>requirements.lock.txt</code> and your hardware. You cannot interpret the time column without them.</p>
+
+<h2 id="corpus">Step 1. Corpus, questions and a deterministic search tool</h2>
+
+<p><code>corpus.json</code>:</p>
+<pre><code>[
+  {"id": "k-01", "text": "Kestrel is an internal data pipeline at Norvale. Kestrel replaced the Heron scheduler in release 4.2."},
+  {"id": "k-02", "text": "Release 4.2 of Kestrel shipped on the date recorded in change ticket NV-118."},
+  {"id": "k-03", "text": "Change ticket NV-118 was approved by the platform board. Deployment window: March 14."},
+  {"id": "k-04", "text": "The Heron scheduler was retired because its retry policy caused duplicate exports."},
+  {"id": "k-05", "text": "Kestrel retry policy: at most 3 retries with exponential backoff starting at 30 seconds."},
+  {"id": "k-06", "text": "The Kestrel on-call rotation is owned by the Ingest team."},
+  {"id": "k-07", "text": "Ingest team staffing is tracked in a separate staffing sheet that is not part of this archive."},
+  {"id": "k-08", "text": "Duplicate exports were detected by the reconciliation job named Tally."}
+]</code></pre>
+
+<p><code>questions.json</code>:</p>
+<pre><code>[
+  {"id": "q1-single", "question": "What is Kestrel's retry policy?",
+   "required_facts": ["3 retries", "30 seconds"], "answerable": true},
+  {"id": "q2-two-hop", "question": "Why was the Heron scheduler retired, and which job detected the problem?",
+   "required_facts": ["duplicate exports", "tally"], "answerable": true},
+  {"id": "q3-three-hop", "question": "On what date was the Kestrel release that replaced Heron deployed?",
+   "required_facts": ["4.2", "march 14"], "answerable": true},
+  {"id": "q4-unanswerable", "question": "Who is the lead of the team that owns the Kestrel on-call rotation?",
+   "required_facts": [], "answerable": false}
+]</code></pre>
+
+<p>The search tool scores by keyword overlap and breaks ties by document id. It is deliberately crude: it returns the same results for the same query every time, so any difference between runs comes from the agent and not from the retriever.</p>
+
+<p><code>search.py</code>:</p>
+<pre><code>import json
+import re
+from pathlib import Path
+
+DOCS = json.loads(Path(__file__).with_name("corpus.json").read_text(encoding="utf-8"))
+
+
+def tokenize(text: str) -&gt; set[str]:
+    return set(re.findall(r"[a-z0-9]+", text.lower()))
+
+
+def search(query: str, k: int = 3) -&gt; list[dict]:
+    q = tokenize(query)
+    scored = []
+    for doc in DOCS:
+        overlap = len(q &amp; tokenize(doc["text"]))
+        if overlap:
+            scored.append((overlap, doc))
+    scored.sort(key=lambda pair: (-pair[0], pair[1]["id"]))
+    return [doc for _, doc in scored[:k]]</code></pre>
+
+<p>Check it before adding any model:</p>
+<pre><code>python -c "from search import search; print([d['id'] for d in search('NV-118 deployment')])"</code></pre>
+<p>Given the corpus above, <code>k-03</code> should appear first, since it shares the most tokens with the query. If it does not, fix the corpus or the tokenizer now. Debugging retrieval through an agent is much harder.</p>
+
+<h2 id="state">Step 2. Shared state with counters</h2>
+
+<p>All nodes read and write one <a href="../glossary.html#agent-state">state</a> object. Counters live in the state rather than in logs, so every run reports its own cost. Fields annotated with <code>operator.add</code> are reducers: when a node returns <code>{"llm_calls": 1}</code>, LangGraph adds 1 to the stored value instead of replacing it.</p>
+
+<p><code>state.py</code>:</p>
+<pre><code>import operator
+from typing import Annotated, TypedDict
+
+
+class ResearchState(TypedDict):
+    question: str
+    pending_queries: list[str]
+    queries_run: Annotated[list[str], operator.add]
+    evidence: Annotated[list[dict], operator.add]
+    new_evidence_last_round: int
+    iteration: int
+    llm_calls: Annotated[int, operator.add]
+    search_calls: Annotated[int, operator.add]
+    verdict: str
+    missing: list[str]
+    stop_reason: str
+    answer: str
+
+
+def initial_state(question: str) -&gt; dict:
+    return {
+        "question": question,
+        "pending_queries": [],
+        "queries_run": [],
+        "evidence": [],
+        "new_evidence_last_round": 0,
+        "iteration": 0,
+        "llm_calls": 0,
+        "search_calls": 0,
+        "verdict": "",
+        "missing": [],
+        "stop_reason": "",
+        "answer": "",
+    }</code></pre>
+
+<p><code>llm.py</code>:</p>
+<pre><code>import os
+
+from langchain_ollama import ChatOllama
+
+MODEL = os.environ.get("AGENT_MODEL", "qwen2.5:7b-instruct")
+llm = ChatOllama(model=MODEL, temperature=0)</code></pre>
+
+<p><code>temperature=0</code> cuts down run-to-run variation but does not remove it. That is why the harness repeats every question.</p>
+
+<h2 id="nodes">Step 3. Nodes: Plan, Research, Reflect, Write</h2>
+
+<p>Both modes use the same Plan, Research and Write nodes. The only difference is whether a Reflect node sits between Research and Write. Without that, the comparison would also be measuring prompt differences.</p>
+
+<p>The reviewer returns <a href="../glossary.html#structured-output">structured output</a> (a Pydantic model), so routing is decided by code and not by parsing free text. Reflect also chooses the stop reason, so routing reduces to a single <code>if</code>.</p>
+
+<p><code>nodes.py</code>:</p>
+<pre><code>import os
+
+from langchain_core.messages import HumanMessage, SystemMessage
+from pydantic import BaseModel, Field
+
+from llm import llm
+from search import search
+
+MAX_ITERATIONS = int(os.environ.get("MAX_ITERATIONS", "3"))
+MAX_LLM_CALLS = int(os.environ.get("MAX_LLM_CALLS", "8"))
+MAX_QUERIES_PER_ROUND = 3
+
+
+class Plan(BaseModel):
+    queries: list[str] = Field(description="1-3 short keyword search queries")
+
+
+class Reflection(BaseModel):
+    sufficient: bool = Field(description="True only if the evidence answers every part of the question")
+    missing: list[str] = Field(default_factory=list, description="What is still unknown")
+    next_queries: list[str] = Field(default_factory=list, description="Up to 3 new keyword queries")
+
+
+def format_evidence(evidence: list[dict]) -&gt; str:
+    return "\n".join(f"[{e['doc_id']}] {e['text']}" for e in evidence) or "(no evidence)"
+
+
+def plan(state: dict) -&gt; dict:
+    messages = [
+        SystemMessage("You plan searches over a small internal document archive. "
+                      "Return 1-3 short keyword queries."),
+        HumanMessage(state["question"]),
+    ]
+    try:
+        queries = llm.with_structured_output(Plan).invoke(messages).queries[:MAX_QUERIES_PER_ROUND]
+    except Exception:
+        queries = []
+    return {"pending_queries": queries or [state["question"]], "llm_calls": 1}
+
+
+def research(state: dict) -&gt; dict:
+    already = set(state["queries_run"])
+    seen = {e["doc_id"] for e in state["evidence"]}
+    ran, new_evidence = [], []
+    for query in state["pending_queries"]:
+        key = query.strip().lower()
+        if key in already:
+            continue
+        already.add(key)
+        ran.append(key)
+        for doc in search(query):
+            if doc["id"] not in seen:
+                seen.add(doc["id"])
+                new_evidence.append({"doc_id": doc["id"], "text": doc["text"], "query": query})
+    return {
+        "evidence": new_evidence,
+        "queries_run": ran,
+        "search_calls": len(ran),
+        "iteration": state["iteration"] + 1,
+        "new_evidence_last_round": len(new_evidence),
+    }
+
+
+def reflect(state: dict) -&gt; dict:
+    calls_after = state["llm_calls"] + 1
+    messages = [
+        SystemMessage("You check whether the evidence fully answers the question. Judge only by the "
+                      "evidence text, not by your own knowledge. If something is missing, name it and "
+                      "propose up to 3 new keyword queries that differ from the queries already run. "
+                      "Follow references: if a document points to a ticket, release or name, search for it."),
+        HumanMessage(f"Question: {state['question']}\n\n"
+                     f"Queries already run: {state['queries_run']}\n\n"
+                     f"Evidence:\n{format_evidence(state['evidence'])}"),
+    ]
+    try:
+        review = llm.with_structured_output(Reflection).invoke(messages)
+    except Exception:
+        review = Reflection(sufficient=False, missing=["reviewer output could not be parsed"])
+
+    run_before = set(state["queries_run"])
+    fresh = [q for q in review.next_queries if q.strip().lower() not in run_before][:MAX_QUERIES_PER_ROUND]
+
+    if review.sufficient:
+        stop = "sufficient"
+    elif state["iteration"] &gt;= MAX_ITERATIONS:
+        stop = "max_iterations"
+    elif calls_after + 2 &gt; MAX_LLM_CALLS:      # one more Reflect and the final Write must still fit
+        stop = "budget"
+    elif not fresh:
+        stop = "no_new_queries"
+    elif state["iteration"] &gt; 1 and state["new_evidence_last_round"] == 0:
+        stop = "stagnation"
+    else:
+        stop = ""
+
+    return {
+        "llm_calls": 1,
+        "verdict": "sufficient" if review.sufficient else "insufficient",
+        "missing": review.missing,
+        "pending_queries": fresh,
+        "stop_reason": stop,
+    }
+
+
+def route_after_reflect(state: dict) -&gt; str:
+    return "write" if state["stop_reason"] else "research"
+
+
+def write(state: dict) -&gt; dict:
+    gaps = ""
+    if state.get("verdict") == "insufficient":
+        gaps = "\n\nA reviewer found these gaps: " + "; ".join(state["missing"])
+    messages = [
+        SystemMessage("Answer using only the evidence. Cite every claim with its [doc-id]. If the evidence "
+                      "does not answer part of the question, write 'Insufficient evidence:' and name what is "
+                      "missing. Do not guess."),
+        HumanMessage(f"Question: {state['question']}\n\n"
+                     f"Evidence:\n{format_evidence(state['evidence'])}{gaps}"),
+    ]
+    return {"answer": llm.invoke(messages).content, "llm_calls": 1}</code></pre>
+
+<h3 id="stop-conditions">Why four stop conditions, and in this order</h3>
+<ol>
+  <li><strong><code>sufficient</code></strong> — the normal exit.</li>
+  <li><strong><code>max_iterations</code></strong> — a hard cap on research rounds. It guards against a reviewer that is never satisfied.</li>
+  <li><strong><code>budget</code></strong> — a cap on total LLM calls. It reserves room for one more review and the final write, so the agent never runs out of budget before it has produced an answer.</li>
+  <li><strong><code>no_new_queries</code> / <code>stagnation</code></strong> — catch a reviewer that rephrases the same query, or a corpus with nothing more to give. These are the cheapest exits and fire most often on unanswerable questions.</li>
+</ol>
+<p>A parse failure in the reviewer does not loop indefinitely. It produces an empty <code>next_queries</code>, which leads to <code>no_new_queries</code>, which leads to Write. That is deliberate.</p>
+
+<p>With the defaults (<code>MAX_ITERATIONS=3</code>, <code>MAX_LLM_CALLS=8</code>), the worst case for the reflective mode is 1 Plan + 3 Reflect + 1 Write = 5 LLM calls and at most 9 search calls. The linear mode always makes 2 LLM calls (Plan + Write) and at most 3 search calls. You can work out these ceilings before running anything; the measurements then show how often real runs get close to them.</p>
+
+<h2 id="graph">Step 4. Two graphs from the same nodes</h2>
+
+<p><code>graph.py</code>:</p>
+<pre><code>from langgraph.graph import END, START, StateGraph
+
+from nodes import plan, reflect, research, route_after_reflect, write
+from state import ResearchState
+
+
+def build_linear():
+    g = StateGraph(ResearchState)
+    g.add_node("plan", plan)
+    g.add_node("research", research)
+    g.add_node("write", write)
+    g.add_edge(START, "plan")
+    g.add_edge("plan", "research")
+    g.add_edge("research", "write")
+    g.add_edge("write", END)
+    return g.compile()
+
+
+def build_reflective():
+    g = StateGraph(ResearchState)
+    g.add_node("plan", plan)
+    g.add_node("research", research)
+    g.add_node("reflect", reflect)
+    g.add_node("write", write)
+    g.add_edge(START, "plan")
+    g.add_edge("plan", "research")
+    g.add_edge("research", "reflect")
+    g.add_conditional_edges("reflect", route_after_reflect, {"research": "research", "write": "write"})
+    g.add_edge("write", END)
+    return g.compile()
+
+
+if __name__ == "__main__":
+    print(build_reflective().get_graph().draw_mermaid())</code></pre>
+
+<p>Run <code>python graph.py</code> and check the printed Mermaid diagram: there should be exactly one cycle, <code>research → reflect → research</code>, and exactly one way out of it, <code>reflect → write</code>.</p>
+
+<p>When invoking, set a <a href="../glossary.html#recursion-limit">recursion limit</a> as a second, independent safeguard. With three iterations, the reflective graph takes about 8 steps. A limit of 25 should never be reached, so if you see <code>GraphRecursionError</code>, your own stop logic has a bug. A limit set close to the expected step count would instead hide that bug.</p>
+
+<h2 id="tests">Step 5. Prove the loop terminates — without a model</h2>
+
+<p>The termination guarantee is the main point of this design, so test it with a stub model that behaves in the ways you are worried about. These tests run in under a second and need no Ollama.</p>
+
+<p><code>test_loop_bounds.py</code>:</p>
+<pre><code>import itertools
+
+import nodes
+from graph import build_reflective
+from state import initial_state
+
+
+class StubLLM:
+    def __init__(self, make_reflection):
+        self.make_reflection = make_reflection
+
+    def with_structured_output(self, schema):
+        outer = self
+
+        class Runner:
+            def invoke(self, _messages):
+                if schema is nodes.Plan:
+                    return nodes.Plan(queries=["kestrel"])
+                return outer.make_reflection()
+
+        return Runner()
+
+    def invoke(self, _messages):
+        class Message:
+            content = "Insufficient evidence: stub answer"
+        return Message()
+
+
+def run_with(make_reflection, monkeypatch):
+    monkeypatch.setattr(nodes, "llm", StubLLM(make_reflection))
+    return build_reflective().invoke(initial_state("stub question"), config={"recursion_limit": 25})
+
+
+def test_satisfied_reviewer_stops_after_one_round(monkeypatch):
+    final = run_with(lambda: nodes.Reflection(sufficient=True), monkeypatch)
+    assert final["stop_reason"] == "sufficient"
+    assert final["iteration"] == 1
+    assert final["llm_calls"] == 3  # plan + reflect + write
+
+
+def test_reviewer_repeating_itself_stops(monkeypatch):
+    final = run_with(lambda: nodes.Reflection(sufficient=False, next_queries=["Kestrel"]), monkeypatch)
+    assert final["stop_reason"] == "no_new_queries"
+
+
+def test_never_satisfied_reviewer_is_capped(monkeypatch):
+    counter = itertools.count(1)
+    final = run_with(
+        lambda: nodes.Reflection(sufficient=False, next_queries=[f"kestrel variant {next(counter)}"]),
+        monkeypatch,
+    )
+    assert final["stop_reason"] in {"max_iterations", "budget", "stagnation"}
+    assert final["iteration"] &lt;= nodes.MAX_ITERATIONS
+    assert final["llm_calls"] &lt;= nodes.MAX_LLM_CALLS</code></pre>
+
+<pre><code>pytest -q test_loop_bounds.py</code></pre>
+
+<p>The second test covers the case where a case-variant of an executed query (<code>"Kestrel"</code> vs <code>"kestrel"</code>) is correctly treated as a repeat. The third covers the never-satisfied reviewer. Depending on what the stub queries retrieve, it can exit through <code>stagnation</code> or <code>max_iterations</code>, so it asserts on the bounds and does not require one particular reason.</p>
+
+<h2 id="eval">Step 6. Evaluation harness</h2>
+
+<p>The <a href="../glossary.html#agent-evaluation">evaluation</a> is deterministic and uses no LLM judge. Each answer gets these scores:</p>
+<ul>
+  <li><strong>Fact recall</strong> (answerable questions): the share of <code>required_facts</code> that appear in the answer as case-insensitive substrings.</li>
+  <li><strong>Abstention</strong> (unanswerable question): whether the answer contains <code>insufficient evidence</code>.</li>
+  <li><strong>Citation validity</strong>: every <code>[k-NN]</code> cited in the answer was actually retrieved during the run.</li>
+  <li><strong>Cost</strong>: wall-clock seconds, LLM calls, search calls, iterations and stop reason.</li>
+</ul>
+
+<p><code>run_eval.py</code>:</p>
+<pre><code>import csv
+import json
+import re
+import sys
+import time
+from pathlib import Path
+
+from graph import build_linear, build_reflective
+from state import initial_state
+
+REPEATS = int(sys.argv[1]) if len(sys.argv) &gt; 1 else 3
+QUESTIONS = json.loads(Path("questions.json").read_text(encoding="utf-8"))
+GRAPHS = {"linear": build_linear(), "reflective": build_reflective()}
+CITATION = re.compile(r"\[(k-\d+)\]")
+
+
+def score(question: dict, final: dict) -&gt; dict:
+    answer = final["answer"].lower()
+    cited = set(CITATION.findall(final["answer"]))
+    retrieved = {e["doc_id"] for e in final["evidence"]}
+    row = {"citations": len(cited), "citations_valid": int(cited &lt;= retrieved)}
+    if question["answerable"]:
+        hits = sum(fact.lower() in answer for fact in question["required_facts"])
+        row["fact_recall"] = round(hits / len(question["required_facts"]), 3)
+        row["abstained"] = ""
+    else:
+        row["fact_recall"] = ""
+        row["abstained"] = int("insufficient evidence" in answer)
+    return row
+
+
+rows = []
+with open("answers.jsonl", "w", encoding="utf-8") as log:
+    for repeat in range(REPEATS):
+        for question in QUESTIONS:
+            for mode, graph in GRAPHS.items():
+                started = time.perf_counter()
+                final = graph.invoke(initial_state(question["question"]), config={"recursion_limit": 25})
+                seconds = round(time.perf_counter() - started, 2)
+                row = {
+                    "mode": mode, "question": question["id"], "repeat": repeat, "seconds": seconds,
+                    "llm_calls": final["llm_calls"], "search_calls": final["search_calls"],
+                    "iterations": final["iteration"], "stop_reason": final["stop_reason"] or "linear",
+                    **score(question, final),
+                }
+                rows.append(row)
+                log.write(json.dumps({**row, "answer": final["answer"],
+                                      "queries_run": final["queries_run"]}, ensure_ascii=False) + "\n")
+                print(row)
+
+with open("results.csv", "w", newline="", encoding="utf-8") as f:
+    writer = csv.DictWriter(f, fieldnames=list(rows[0]))
+    writer.writeheader()
+    writer.writerows(rows)</code></pre>
+
+<p>Inside each repeat, the two modes alternate per question. If the model server warms up over time or your machine slows down, both modes are affected about equally. Run a warm-up call before timing anything — the first request to Ollama often includes model loading time:</p>
+
+<pre><code>ollama run qwen2.5:7b-instruct "ok" &gt; /dev/null
+python run_eval.py 5</code></pre>
+
+<p><code>aggregate.py</code>:</p>
+<pre><code>import csv
+from collections import Counter, defaultdict
+from statistics import mean, median
+
+rows = list(csv.DictReader(open("results.csv", encoding="utf-8")))
+by_mode = defaultdict(list)
+for r in rows:
+    by_mode[r["mode"]].append(r)
+
+print("| Metric | " + " | ".join(by_mode) + " |")
+print("|---|" + "---|" * len(by_mode))
+
+
+def line(name, fn):
+    print(f"| {name} | " + " | ".join(fn(rs) for rs in by_mode.values()) + " |")
+
+
+line("Mean fact recall (answerable)",
+     lambda rs: f"{mean(float(r['fact_recall']) for r in rs if r['fact_recall']):.2f}")
+line("Abstention rate (unanswerable)",
+     lambda rs: f"{mean(int(r['abstained']) for r in rs if r['abstained'] != ''):.2f}")
+line("Citation validity rate", lambda rs: f"{mean(int(r['citations_valid']) for r in rs):.2f}")
+line("Median seconds per question", lambda rs: f"{median(float(r['seconds']) for r in rs):.1f}")
+line("Median LLM calls", lambda rs: f"{median(int(r['llm_calls']) for r in rs):g}")
+line("Max LLM calls", lambda rs: str(max(int(r['llm_calls']) for r in rs)))
+line("Median search calls", lambda rs: f"{median(int(r['search_calls']) for r in rs):g}")
+line("Stop reasons", lambda rs: ", ".join(f"{k}: {v}" for k, v in Counter(r["stop_reason"] for r in rs).items()))</code></pre>
+
+<pre><code>python aggregate.py</code></pre>
+
+<h2 id="results">Step 7. The comparison table</h2>
+
+<p>This is the table <code>aggregate.py</code> produces. The cells are empty on purpose: fill them in from your own run, and record the model tag, repeat count and hardware next to the table.</p>
+
+<table>
+  <caption>Linear vs. bounded reflective agent — fill in from <code>python aggregate.py</code></caption>
+  <thead>
+    <tr><th>Metric</th><th>linear</th><th>reflective</th></tr>
+  </thead>
+  <tbody>
+    <tr><td>Mean fact recall (answerable)</td><td>—</td><td>—</td></tr>
+    <tr><td>Abstention rate (unanswerable)</td><td>—</td><td>—</td></tr>
+    <tr><td>Citation validity rate</td><td>—</td><td>—</td></tr>
+    <tr><td>Median seconds per question</td><td>—</td><td>—</td></tr>
+    <tr><td>Median LLM calls</td><td>2 (fixed by design)</td><td>—</td></tr>
+    <tr><td>Max LLM calls</td><td>2 (fixed by design)</td><td>— (ceiling 5 with defaults)</td></tr>
+    <tr><td>Median search calls</td><td>— (ceiling 3)</td><td>— (ceiling 9)</td></tr>
+    <tr><td>Stop reasons</td><td>linear</td><td>—</td></tr>
+  </tbody>
+</table>
+
+<p>Run details to record: model ___, Ollama version ___, repeats ___, CPU/GPU ___, date ___.</p>
+
+<h3 id="reading-results">How to read your table</h3>
+<p>Do not stop at the averages. Look at recall per question in <code>results.csv</code>:</p>
+<ul>
+  <li><strong>q1-single</strong> is the control. Reflection should add calls here without improving recall. If the reflective mode does <em>worse</em> on q1, your reviewer is pushing the writer into hedging.</li>
+  <li><strong>q2-two-hop and q3-three-hop</strong> are where a loop could help, because the first round of searches may not reach the referenced documents (<code>k-03</code>, <code>k-08</code>). <em>Hypothesis to test:</em> recall improves here if, and only if, the reviewer turns references such as "NV-118" or "Tally" into new queries. Check <code>queries_run</code> in <code>answers.jsonl</code> to see whether it did.</li>
+  <li><strong>q4-unanswerable</strong> tests honesty and loop discipline. Look at both the abstention rate and the stop reason. <code>no_new_queries</code> or <code>stagnation</code> are the cheap, healthy exits; a run of <code>max_iterations</code> means the reviewer keeps finding "promising" queries that lead nowhere.</li>
+</ul>
+
+<h3 id="decision">A decision rule you can apply</h3>
+<p>Before you run anything, write down the minimum improvement that would justify the extra cost — for example, "recall on multi-hop questions must improve by at least X, and median latency may grow by no more than Y". Then compare. If you set the threshold after looking at the numbers, any result can be made to look like a win. If reflection only helps on multi-hop questions, a reasonable design is to keep the linear path by default and let a cheap classifier, or the first reviewer verdict, decide whether to enter the loop.</p>
+
+<h2 id="verification">Verification checklist</h2>
+<ol>
+  <li><code>pytest -q</code> passes: all three termination tests are green.</li>
+  <li><code>python graph.py</code> shows a single cycle with a single exit.</li>
+  <li>In <code>results.csv</code>, no reflective row exceeds <code>MAX_LLM_CALLS</code> or <code>MAX_ITERATIONS</code>, and every linear row has <code>llm_calls == 2</code>.</li>
+  <li>Every row has a non-empty <code>stop_reason</code>. An empty one in reflective mode would mean Write was reached without a decision, which the graph should make impossible.</li>
+  <li>Read at least five answers from each mode in <code>answers.jsonl</code> by hand. Substring matching can be fooled — "not 3 retries" contains "3 retries" — so the score should agree with what you read.</li>
+  <li>Rerun with <code>MAX_ITERATIONS=1</code>. The reflective mode should then behave like linear plus one review. That is a quick check that the cap is actually wired in.</li>
+</ol>
+
+<h2 id="failures">Failure cases and what they look like</h2>
+
+<h3>The rubber-stamp reviewer</h3>
+<p><em>Symptom:</em> almost every reflective run stops with <code>sufficient</code> after round 1, and multi-hop recall equals linear. The reflective mode has added one call and changed nothing. <em>Fix:</em> make the reviewer prompt require a list of each sub-question with the doc-id that answers it, and set <code>sufficient</code> to true only when every item has one. A clause like "Follow references" in the prompt matters on this corpus.</p>
+
+<h3>The never-satisfied reviewer</h3>
+<p><em>Symptom:</em> many <code>max_iterations</code> stops, including on q1. <em>Fix:</em> the caps are doing their job, but you are paying for it. Tighten the reviewer's criteria, or lower <code>MAX_ITERATIONS</code> to 2 and measure again.</p>
+
+<h3>Query paraphrasing</h3>
+<p><em>Symptom:</em> <code>queries_run</code> contains "kestrel release date", "release date of kestrel", "kestrel date released". Exact-match deduplication will not catch these. <code>stagnation</code> eventually will, because they return the same documents, but only after a wasted round. <em>Fix:</em> dedupe on sorted token sets instead of raw strings, or reject a query whose top-k results are already all in <code>evidence</code>.</p>
+
+<h3>Structured output parse failures</h3>
+<p><em>Symptom:</em> <code>missing</code> contains "reviewer output could not be parsed". Small local models fail at JSON schemas more often than large hosted ones. <em>Fix:</em> count these failures separately — add a field if they are frequent — and treat a high rate as a reason to change the model, not something to hide in the averages.</p>
+
+<h3>The hedging writer</h3>
+<p><em>Symptom:</em> once the reviewer's gap list reaches the writer, answers to answerable questions start with "Insufficient evidence:" even though all the facts were retrieved. Recall may still score well, because the facts are present, but the answer is worse to read. <em>Fix:</em> pass gaps to the writer only when <code>stop_reason</code> is not <code>sufficient</code> (the code already does this), and check by hand.</p>
+
+<h3>GraphRecursionError</h3>
+<p><em>Symptom:</em> an exception instead of an answer. With a limit of 25 and these caps, this should not happen. If it does, a stop condition is not being reached — usually because <code>iteration</code> is not being incremented, or <code>route_after_reflect</code> reads a field that the node did not set.</p>
+
+<h2 id="limitations">Limitations of this test</h2>
+<ul>
+  <li><strong>Tiny corpus, few questions.</strong> With four questions, one flipped answer moves the average a lot. Treat the result as a smoke test of the method, then extend <code>questions.json</code> using questions from your real workload before deciding anything.</li>
+  <li><strong>Keyword retrieval.</strong> A vector or hybrid retriever will find referenced documents differently. Real retrieval might get the second hop right without any loop, which would shrink the benefit of reflection. Swap in your own retriever and run the same harness.</li>
+  <li><strong>Substring scoring.</strong> It is cheap and transparent, but it does not understand negation or paraphrase. It does not check whether the answer is <em>correct</em>, only whether it contains the required facts.</li>
+  <li><strong>Same model plays every role.</strong> The planner, reviewer and writer share the same blind spots. Using a different model as reviewer is a separate experiment, and it changes the cost profile.</li>
+  <li><strong>Call count is not token count.</strong> The reviewer's prompt grows with the evidence, so later reflect calls cost more than earlier ones. If you pay per token, log usage metadata from the model responses as well.</li>
+  <li><strong>Wall time depends on the setup.</strong> Your hardware, quantisation and concurrent load all affect latency. Compare the two modes only within one run, never across machines.</li>
+</ul>
+
+<h2 id="answer">So: does a research agent need a self-check loop?</h2>
+<p>Not by default. A bounded loop is worth adding only if your own table shows a real gain on the kind of questions your users ask — typically multi-hop questions over documents that refer to one another — at a latency and call cost you have agreed to in advance. Whichever way you decide, the parts you should keep are the bounds: an iteration cap, a call budget that reserves room for the final answer, and an exit when there is no new evidence. An unbounded loop answers the question no better than a linear pipeline, and it costs more.</p>
+
+<h2 id="next">Where to go next</h2>
+<ul>
+  <li>More step-by-step builds and tests: <a href="guides.html">Agent Lab Journal guides</a>.</li>
+  <li>Terms used in this article: <a href="../glossary.html">glossary</a>.</li>
+</ul>
+
+<section class="service-note">
+  <b>We publish what works for us—and implement the same solutions for your business.</b>
+  We design AI automation, Telegram bots, chats, and AI agents for real-world processes.
+  <a href="../contacts-en.html">Discuss your project →</a>
+</section>
+</article>
+</main>
+
+<footer class="site-footer">
+  <p>© 2026 Agent Lab Journal · <a href="guides.html">Guides</a> · <a href="../glossary.html">Glossary</a> · <a href="../rss-en.xml">RSS</a></p>
+</footer>
+
+</body>
+</html>
