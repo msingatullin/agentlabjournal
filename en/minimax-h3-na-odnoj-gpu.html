@@ -1,0 +1,522 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Как запустить MiniMax H3 на игровой видеокарте: int8, offload и честный замер скорости — Agent Lab Journal</title>
+<meta name="description" content="Как запустить MiniMax H3 на игровой видеокарте: int8, offload и честный замер скорости. A reproducible test bench for running MiniMax H3 open-weight video generation on one consumer GPU, with a measurement protocol for int8 vs bf16, offload modes, resolutions and step counts.">
+<link rel="canonical" href="https://agentlabjournal.online/en/minimax-h3-na-odnoj-gpu.html">
+<link rel="alternate" hreflang="en" href="https://agentlabjournal.online/en/minimax-h3-na-odnoj-gpu.html">
+<link rel="alternate" hreflang="ru" href="https://agentlabjournal.online/minimax-h3-na-odnoj-gpu.html">
+<link rel="stylesheet" href="../style.css">
+<link rel="stylesheet" href="../reading.css">
+
+<meta property="og:type" content="article">
+<meta property="og:site_name" content="Agent Lab Journal">
+<meta property="og:title" content="Как запустить MiniMax H3 на игровой видеокарте: int8, offload и честный замер скорости">
+<meta property="og:description" content="A reproducible single-GPU bench for MiniMax H3: int8 vs bf16, CPU offload modes, resolutions and step counts, measured with a protocol you can repeat.">
+<meta property="og:url" content="https://agentlabjournal.online/en/minimax-h3-na-odnoj-gpu.html">
+<meta property="og:image" content="https://agentlabjournal.online/assets/covers/llm-context-window-budget-social.png">
+<meta property="og:locale" content="en_US">
+<meta property="article:published_time" content="2026-10-12">
+<meta property="article:modified_time" content="2026-10-12">
+
+<meta name="twitter:card" content="summary_large_image">
+<meta name="twitter:title" content="Как запустить MiniMax H3 на игровой видеокарте: int8, offload и честный замер скорости">
+<meta name="twitter:description" content="A reproducible single-GPU bench for MiniMax H3: int8 vs bf16, offload modes, resolutions and step counts.">
+<meta name="twitter:image" content="https://agentlabjournal.online/assets/covers/llm-context-window-budget-social.png">
+
+<script type="application/ld+json">
+{
+  "@context": "https://schema.org",
+  "@type": "Article",
+  "headline": "Как запустить MiniMax H3 на игровой видеокарте: int8, offload и честный замер скорости",
+  "description": "A reproducible test bench for running MiniMax H3 open-weight video generation on one consumer GPU, with a measurement protocol for int8 vs bf16, offload modes, resolutions and step counts.",
+  "image": ["https://agentlabjournal.online/assets/covers/llm-context-window-budget-social.png"],
+  "datePublished": "2026-10-12",
+  "dateModified": "2026-10-12",
+  "inLanguage": "en",
+  "author": {
+    "@type": "Organization",
+    "name": "Agent Lab Journal",
+    "url": "https://agentlabjournal.online/"
+  },
+  "publisher": {
+    "@type": "Organization",
+    "name": "Agent Lab Journal",
+    "url": "https://agentlabjournal.online/"
+  },
+  "mainEntityOfPage": {
+    "@type": "WebPage",
+    "@id": "https://agentlabjournal.online/en/minimax-h3-na-odnoj-gpu.html"
+  }
+}
+</script>
+<link rel="stylesheet" href="../homepage.css"><link rel="stylesheet" href="../max-promo.css">  <meta property="og:image:alt" content="Как запустить MiniMax H3 на игровой видеокарте: int8, offload и честный замер скорости">
+</head>
+<body>
+
+<header class="site-header">
+  <a class="site-logo" href="../index.html">Agent Lab Journal</a>
+  <nav class="site-nav">
+    <a href="guides.html">Guides</a>
+    <a href="../glossary.html">Glossary</a>
+    <a href="../rss-en.xml">RSS</a>
+  </nav>
+</header>
+
+<main>
+<article class="reading">
+
+<p class="reading-meta">
+  <span>Level: advanced</span> ·
+  <span>Reading time: 35 minutes</span> ·
+  <span>Updated: <time datetime="2026-10-12">October 12, 2026</time></span>
+</p>
+
+<h1>Как запустить MiniMax H3 на игровой видеокарте: int8, offload и честный замер скорости</h1>
+        <figure class="article-cover" data-editorial-cover="minimax-h3-na-odnoj-gpu"><img src="../assets/covers/llm-context-window-budget.png" alt="Как запустить MiniMax H3 на игровой видеокарте: int8, offload и честный замер скорости" width="1280" height="720" fetchpriority="high"><figcaption>Temporary fallback cover; replace in editorial pass.</figcaption></figure>
+
+<p class="lead">
+Open weights do not mean "runs on your PC". With a large video-generation model such as MiniMax H3, the hard part is not
+downloading the checkpoint. It is the unstable inference stack, the checkpoint conversion step, a system-RAM requirement
+that is easy to underestimate, and latency figures that nobody publishes in a form you can compare. This guide builds a
+bench that answers one narrow question with numbers you produce yourself: <strong>on this specific gaming GPU, what does
+int8 save compared with bf16, what does each offload mode cost, and how do resolution and step count change latency
+and memory use?</strong>
+</p>
+
+<aside class="note">
+<p><strong>What this article is and is not.</strong> It is a measurement protocol, a harness and a results template.
+It does <em>not</em> contain benchmark numbers from our editors. We have not run MiniMax H3 for this article, so every cell
+in the results table below is empty until you fill it in. Repository names, script names, flags and memory requirements
+change between releases, and you must check them against the official model card and repository at the time you run
+the bench. Wherever a command depends on the model's own tooling, it is marked as a placeholder.</p>
+</aside>
+
+<h2 id="why">Why a "честный замер" needs a protocol</h2>
+
+<p>Most published speed claims for local video models skip at least one of these:</p>
+<ul>
+  <li>whether the first (cold) run, which includes weight loading and kernel compilation, is counted;</li>
+  <li>whether text encoding and <a href="../glossary.html#vae">VAE</a> decoding are inside the timed region;</li>
+  <li>peak <a href="../glossary.html#vram">VRAM</a> compared with peak <em>system RAM</em>, which is where offload moves the cost;</li>
+  <li>the exact resolution, frame count, step count and seed;</li>
+  <li>driver, CUDA, PyTorch and library versions.</li>
+</ul>
+<p>If any of these is missing, two numbers are not comparable. The bench below records all of them for every run, so
+that a row in your table means the same thing as a row in someone else's.</p>
+
+<h2 id="case">The concrete case</h2>
+
+<p>The scenario is a single desktop machine with one consumer card, which we call "the gaming GPU". Typical examples are
+cards with 16 or 24 GB of VRAM. The goal is a short text-to-video clip at the lowest settings that still produce
+usable output, followed by a scale-up. You compare:</p>
+<ul>
+  <li><strong>precision:</strong> <a href="../glossary.html#bf16">bf16</a> weights against <a href="../glossary.html#int8">int8</a> weight-only <a href="../glossary.html#quantization">quantization</a>;</li>
+  <li><strong>placement:</strong> everything on the GPU, model-level <a href="../glossary.html#offload">CPU offload</a>, and sequential (layer-level) offload;</li>
+  <li><strong>workload:</strong> two or three resolutions and two or three step counts at a fixed frame count.</li>
+</ul>
+<p>Expect some combinations to fail with out-of-memory errors. A failure is a valid result. Record it as <code>OOM</code>
+with the stage at which it happened, and do not drop the row.</p>
+
+<h2 id="prereqs">Prerequisites and what to verify first</h2>
+
+<ol>
+  <li><strong>Read the model card.</strong> Record the license, the officially supported inference path (the
+  repository's own scripts, a <code>diffusers</code> pipeline, or both), the declared minimum hardware, and whether an
+  official quantized checkpoint exists. Do not rely on third-party summaries.</li>
+  <li><strong>Check disk space.</strong> You need room for the original checkpoint, a converted copy if conversion is
+  required, and the Hugging Face cache. Conversion can briefly need roughly twice the checkpoint size.</li>
+  <li><strong>Check system RAM and swap.</strong> Offload moves weights into system RAM. If RAM plus swap is smaller
+  than the bf16 weights, offload modes will thrash or be killed by the OOM killer. Look at the actual safetensors
+  sizes in the repository and plan from those, not from a parameter count.</li>
+  <li><strong>Check the driver and CUDA.</strong> Use <code>nvidia-smi</code> to confirm that the driver supports the CUDA
+  version your PyTorch wheel was built for.</li>
+</ol>
+
+<pre><code># Record the machine once; store it next to the results
+nvidia-smi --query-gpu=name,memory.total,driver_version --format=csv
+free -g
+df -h ~/.cache/huggingface
+python -c "import torch;print(torch.__version__, torch.version.cuda, torch.cuda.get_device_name(0))"
+</code></pre>
+
+<h2 id="env">Step 1. Pin an isolated environment</h2>
+
+<p>The stack around new video models moves quickly. Install a pinned environment, so that a run you repeat next
+week uses the same code. Use the exact versions the model repository specifies. The values below are placeholders
+and must be replaced.</p>
+
+<pre><code>python -m venv ~/venvs/h3-bench
+source ~/venvs/h3-bench/bin/activate
+pip install --upgrade pip
+
+# Replace with the versions pinned in the model repository's requirements
+pip install "torch==&lt;PINNED&gt;" --index-url https://download.pytorch.org/whl/&lt;CUDA_TAG&gt;
+pip install "diffusers==&lt;PINNED&gt;" "transformers==&lt;PINNED&gt;" "accelerate==&lt;PINNED&gt;" \
+            "torchao==&lt;PINNED&gt;" safetensors psutil
+
+pip freeze &gt; bench/env.lock.txt
+</code></pre>
+
+<p>If the model requires installing its repository from source, clone it, pin it to a commit, and record that
+commit hash:</p>
+
+<pre><code>git clone &lt;OFFICIAL_REPO_URL&gt; h3-src
+cd h3-src &amp;&amp; git checkout &lt;COMMIT&gt; &amp;&amp; git rev-parse HEAD &gt; ../bench/model_repo_commit.txt
+pip install -e .
+</code></pre>
+
+<h2 id="weights">Step 2. Download and, if required, convert the checkpoint</h2>
+
+<p>Download into an explicit directory rather than relying on the cache layout. Use <code>huggingface-cli login</code>
+interactively or set <code>HF_TOKEN</code> in your shell. Never write the token into scripts or into this bench's
+result files.</p>
+
+<pre><code>huggingface-cli download &lt;MODEL_REPO_ID&gt; --local-dir ./weights/h3-original
+sha256sum ./weights/h3-original/*.safetensors &gt; bench/weights.sha256
+</code></pre>
+
+<p>Some open video models ship weights in a layout that the <code>diffusers</code> loader cannot read directly, and
+provide a conversion script for that purpose. If the H3 repository includes one, run it exactly as documented:</p>
+
+<pre><code># Placeholder: use the script name and flags from the official repository
+python h3-src/&lt;convert_script&gt;.py \
+  --input ./weights/h3-original \
+  --output ./weights/h3-diffusers \
+  --dtype bfloat16
+</code></pre>
+
+<p>Run the conversion to bf16, not to int8. Quantize at load time (Step 4). That keeps one source of truth on disk
+and makes the int8 against bf16 comparison clean: same weights, different runtime precision.</p>
+
+<p><strong>How to verify the conversion:</strong> load the converted model on CPU, count the parameters and compare
+the count with the original's sum of tensor element counts. Then generate a 2–4-step smoke clip. A conversion bug
+usually shows up as pure noise or a solid colour, not as a subtle quality drop.</p>
+
+<h2 id="harness">Step 3. The measurement harness</h2>
+
+<p>The harness does not depend on how the model is invoked. It wraps any command and records wall time, peak
+VRAM (sampled from <code>nvidia-smi</code>), peak RSS of the process tree, and the exit status. That way you can
+measure the official CLI script and your own Python pipeline with the same tool.</p>
+
+<pre><code># bench/measure.py
+import json, subprocess, sys, threading, time, platform
+import psutil
+
+def sample_gpu(stop, peak):
+    while not stop.is_set():
+        out = subprocess.run(
+            ["nvidia-smi", "--query-gpu=memory.used", "--format=csv,noheader,nounits", "-i", "0"],
+            capture_output=True, text=True).stdout.strip()
+        if out:
+            peak["vram_mib"] = max(peak["vram_mib"], int(out.splitlines()[0]))
+        time.sleep(0.2)
+
+def tree_rss(proc):
+    try:
+        procs = [proc] + proc.children(recursive=True)
+        return sum(p.memory_info().rss for p in procs if p.is_running())
+    except psutil.Error:
+        return 0
+
+def main():
+    label, cmd = sys.argv[1], sys.argv[2:]
+    peak = {"vram_mib": 0, "rss_bytes": 0}
+    stop = threading.Event()
+    t = threading.Thread(target=sample_gpu, args=(stop, peak), daemon=True)
+    t.start()
+    t0 = time.perf_counter()
+    p = subprocess.Popen(cmd)
+    ps = psutil.Process(p.pid)
+    while p.poll() is None:
+        peak["rss_bytes"] = max(peak["rss_bytes"], tree_rss(ps))
+        time.sleep(0.2)
+    wall = time.perf_counter() - t0
+    stop.set(); t.join()
+    rec = {
+        "label": label, "cmd": cmd, "exit_code": p.returncode,
+        "wall_s": round(wall, 2),
+        "peak_vram_mib": peak["vram_mib"],
+        "peak_rss_gib": round(peak["rss_bytes"] / 2**30, 2),
+        "host": platform.node(), "ts": time.strftime("%Y-%m-%dT%H:%M:%S"),
+    }
+    with open("bench/results.jsonl", "a") as f:
+        f.write(json.dumps(rec) + "\n")
+    print(json.dumps(rec, indent=2))
+
+if __name__ == "__main__":
+    main()
+</code></pre>
+
+<p>Note the limits of this approach. <code>nvidia-smi</code> reports memory used on the whole device, including other
+processes and the CUDA context. Close the browser and other GPU applications, and record the idle baseline
+before the run. Sampling every 200 ms can miss very short peaks. For exact allocator peaks, also log
+<code>torch.cuda.max_memory_reserved()</code> from inside the pipeline script (Step 4).</p>
+
+<h2 id="pipeline">Step 4. One run script with switchable precision and offload</h2>
+
+<p>This script assumes that a <code>diffusers</code>-compatible pipeline exists for the converted weights. If the model
+only ships its own inference script, apply the same three switches through that script's options, if it has them,
+and still wrap it with <code>measure.py</code>. The <code>diffusers</code> and <code>torchao</code> calls below are real APIs
+of those libraries. Whether H3's pipeline class supports them without changes is something you have to confirm
+yourself.</p>
+
+<pre><code># bench/run_h3.py
+import argparse, json, time, torch
+from diffusers import DiffusionPipeline
+
+ap = argparse.ArgumentParser()
+ap.add_argument("--weights", default="./weights/h3-diffusers")
+ap.add_argument("--precision", choices=["bf16", "int8"], default="bf16")
+ap.add_argument("--offload", choices=["none", "model", "sequential"], default="none")
+ap.add_argument("--width", type=int, required=True)
+ap.add_argument("--height", type=int, required=True)
+ap.add_argument("--frames", type=int, required=True)
+ap.add_argument("--steps", type=int, required=True)
+ap.add_argument("--seed", type=int, default=1234)
+ap.add_argument("--prompt", default="A red paper boat drifting on a calm pond, morning light")
+ap.add_argument("--out", default="bench/out.mp4")
+a = ap.parse_args()
+
+t_load = time.perf_counter()
+pipe = DiffusionPipeline.from_pretrained(a.weights, torch_dtype=torch.bfloat16)
+
+if a.precision == "int8":
+    # Weight-only int8 on the denoiser only; text encoder and VAE stay bf16.
+    from torchao.quantization import quantize_, int8_weight_only
+    denoiser = getattr(pipe, "transformer", None) or getattr(pipe, "unet")
+    quantize_(denoiser, int8_weight_only())
+
+if a.offload == "none":
+    pipe.to("cuda")
+elif a.offload == "model":
+    pipe.enable_model_cpu_offload()
+else:
+    pipe.enable_sequential_cpu_offload()
+load_s = time.perf_counter() - t_load
+
+torch.cuda.reset_peak_memory_stats()
+g = torch.Generator(device="cpu").manual_seed(a.seed)
+torch.cuda.synchronize()
+t_gen = time.perf_counter()
+result = pipe(prompt=a.prompt, width=a.width, height=a.height,
+              num_frames=a.frames, num_inference_steps=a.steps, generator=g)
+torch.cuda.synchronize()
+gen_s = time.perf_counter() - t_gen
+
+from diffusers.utils import export_to_video
+export_to_video(result.frames[0], a.out, fps=16)
+
+print(json.dumps({
+    "precision": a.precision, "offload": a.offload,
+    "w": a.width, "h": a.height, "frames": a.frames, "steps": a.steps, "seed": a.seed,
+    "load_s": round(load_s, 2), "gen_s": round(gen_s, 2),
+    "s_per_step": round(gen_s / a.steps, 3),
+    "torch_peak_reserved_gib": round(torch.cuda.max_memory_reserved() / 2**30, 2),
+}))
+</code></pre>
+
+<p>Design choices worth keeping:</p>
+<ul>
+  <li><strong>Load time is separated from generation time.</strong> Quantization and offload setup cost seconds to
+  minutes. Mixing that into "speed" is the most common mistake in published comparisons.</li>
+  <li><strong>Only the denoiser is quantized.</strong> It holds most of the weights. Quantizing the VAE as well tends to
+  cause visible artifacts, so test that separately if you want to.</li>
+  <li><strong>The seed is fixed and the generator runs on CPU</strong>, so the initial noise is identical across precision
+  and offload modes. Visual differences then come from numerics, not from different noise.</li>
+  <li><strong><code>num_frames</code>, the parameter names and the fps</strong> are typical for <code>diffusers</code> video
+  pipelines. Check H3's pipeline signature and its supported frame counts. Some models require frame counts of the
+  form 4k+1 or similar.</li>
+</ul>
+
+<h2 id="matrix">Step 5. The run matrix</h2>
+
+<p>Do not run every combination at once. Start from the cheapest configuration that has a chance of fitting and
+expand outward. If a configuration hits OOM, every heavier configuration on the same axis will too, so record
+it and skip them.</p>
+
+<pre><code># bench/matrix.sh
+set -u
+FR=&lt;SUPPORTED_FRAME_COUNT&gt;          # fix one frame count for the whole matrix
+RES=("&lt;W_LOW&gt;x&lt;H_LOW&gt;" "&lt;W_MID&gt;x&lt;H_MID&gt;")
+STEPS=(10 30)
+for prec in int8 bf16; do
+  for off in sequential model none; do
+    for r in "${RES[@]}"; do
+      W=${r%x*}; H=${r#*x}
+      for s in "${STEPS[@]}"; do
+        L="$prec-$off-${W}x${H}-f$FR-s$s"
+        # warm-up run, discarded
+        python bench/run_h3.py --precision $prec --offload $off \
+          --width $W --height $H --frames $FR --steps 2 --out /tmp/warm.mp4 &gt;/dev/null 2&gt;&amp;1
+        for rep in 1 2 3; do
+          python bench/measure.py "$L-r$rep" \
+            python bench/run_h3.py --precision $prec --offload $off \
+              --width $W --height $H --frames $FR --steps $s \
+              --out "bench/clips/$L-r$rep.mp4" \
+            | tee -a "bench/log-$L.txt"
+        done
+      done
+    done
+  done
+done
+</code></pre>
+
+<p>Three repetitions per cell is the minimum for reporting a median and seeing variance. Every command starts a new
+Python process, so each repetition includes load time in <code>wall_s</code>. The <code>gen_s</code> value printed by
+<code>run_h3.py</code> is the warm generation figure you report as speed. Keep both: for someone generating one clip
+per session, <code>wall_s</code> is the honest number.</p>
+
+<h2 id="table">Step 6. The results table</h2>
+
+<p>Aggregate with a short script that takes the median of the three repetitions per cell. Then fill in the table.
+The cells are deliberately empty here: <strong>these are your measurements to make</strong>. A published version of
+this table should state the GPU model, VRAM, system RAM, driver, the PyTorch/diffusers/torchao versions and the model
+repository commit.</p>
+
+<table>
+  <thead>
+    <tr>
+      <th>Precision</th><th>Offload</th><th>Resolution</th><th>Steps</th>
+      <th>Load, s</th><th>Gen, s (median)</th><th>s/step</th>
+      <th>Peak VRAM, GiB</th><th>Peak RAM, GiB</th><th>Status</th>
+    </tr>
+  </thead>
+  <tbody>
+    <tr><td>bf16</td><td>none</td><td>low</td><td>10</td><td>—</td><td>—</td><td>—</td><td>—</td><td>—</td><td>not measured</td></tr>
+    <tr><td>bf16</td><td>model</td><td>low</td><td>10</td><td>—</td><td>—</td><td>—</td><td>—</td><td>—</td><td>not measured</td></tr>
+    <tr><td>bf16</td><td>sequential</td><td>low</td><td>10</td><td>—</td><td>—</td><td>—</td><td>—</td><td>—</td><td>not measured</td></tr>
+    <tr><td>int8</td><td>none</td><td>low</td><td>10</td><td>—</td><td>—</td><td>—</td><td>—</td><td>—</td><td>not measured</td></tr>
+    <tr><td>int8</td><td>model</td><td>low</td><td>10</td><td>—</td><td>—</td><td>—</td><td>—</td><td>—</td><td>not measured</td></tr>
+    <tr><td>int8</td><td>sequential</td><td>low</td><td>10</td><td>—</td><td>—</td><td>—</td><td>—</td><td>—</td><td>not measured</td></tr>
+    <tr><td colspan="10">… repeat for mid resolution and 30 steps</td></tr>
+  </tbody>
+</table>
+
+<pre><code># bench/aggregate.py — reads per-run JSON lines printed by run_h3.py from the logs
+import glob, json, statistics, collections
+rows = collections.defaultdict(list)
+for path in glob.glob("bench/log-*.txt"):
+    for line in open(path):
+        line = line.strip()
+        if line.startswith("{") and '"gen_s"' in line:
+            r = json.loads(line)
+            key = (r["precision"], r["offload"], f'{r["w"]}x{r["h"]}', r["steps"])
+            rows[key].append(r)
+for k, rs in sorted(rows.items()):
+    med = lambda f: statistics.median(x[f] for x in rs)
+    print(*k, med("load_s"), med("gen_s"), med("s_per_step"),
+          med("torch_peak_reserved_gib"), f"n={len(rs)}", sep=" | ")
+</code></pre>
+
+<h3 id="reading">How to read the table without fooling yourself</h3>
+<ul>
+  <li><strong>int8 is a memory win first.</strong> Weight-only int8 roughly halves the denoiser's weight storage
+  compared with bf16. Whether it is also faster depends on the kernels available for your GPU. On some setups it is
+  slower per step because of dequantization overhead. Your table decides which applies to you. Do not assume.</li>
+  <li><strong>Model offload against sequential offload</strong> is usually a trade between VRAM and PCIe traffic.
+  Sequential offload moves weights layer by layer and can make each step much slower. Compare <code>s/step</code>, not
+  only total time.</li>
+  <li><strong>Resolution and frame count drive activation memory</strong>, which quantizing the weights does not reduce.
+  If int8 fits at low resolution and OOMs at mid resolution, the limit is activations, not weights.</li>
+  <li><strong>Steps scale time almost linearly</strong> once loading is excluded. If <code>s/step</code> differs a lot between
+  10 and 30 steps, something else (offload transfers, thermal throttling) is in the timed region.</li>
+</ul>
+
+<h2 id="quality">Step 7. Verify output quality, not just speed</h2>
+
+<p>A faster configuration that produces worse video is not a win. With identical seeds and prompts, do at least
+the following:</p>
+<ol>
+  <li>Put the bf16 and int8 clips side by side for the same cell and inspect them frame by frame for texture loss,
+  colour shift and temporal flicker.</li>
+  <li>Compute a simple numeric difference between corresponding frames, such as mean absolute difference or PSNR
+  against the bf16 clip. This is not a perceptual quality score. It flags when int8 diverges sharply.</li>
+  <li>Use three or four different prompts, including one with fine detail such as text, hands or thin lines, where
+  quantization artifacts appear first.</li>
+</ol>
+
+<pre><code># Quick frame-level PSNR between two clips (requires ffmpeg)
+ffmpeg -i bench/clips/int8-model-LOWxLOW-fFR-s30-r1.mp4 \
+       -i bench/clips/bf16-model-LOWxLOW-fFR-s30-r1.mp4 \
+       -lavfi psnr -f null - 2&gt;&amp;1 | tail -n 1
+</code></pre>
+
+<h2 id="failures">Failure cases and what they usually mean</h2>
+
+<dl>
+  <dt><code>CUDA out of memory</code> during <code>pipe.to("cuda")</code></dt>
+  <dd>The weights alone do not fit. Switch to int8 or to an offload mode. This happens before generation, so record
+  "OOM at load".</dd>
+
+  <dt>OOM in the middle of denoising or during VAE decoding</dt>
+  <dd>Activations or the decoder are the limit. Lower the resolution or frame count, or check whether the pipeline
+  exposes VAE tiling or slicing options. Record which stage failed.</dd>
+
+  <dt>The process is killed with no Python traceback</dt>
+  <dd>The Linux OOM killer stopped it because system RAM ran out, which is common with offload or during checkpoint
+  conversion. Check <code>dmesg | tail</code>. Add swap or reduce concurrent memory use. This is the "large RAM"
+  requirement in practice.</dd>
+
+  <dt>Output is noise or a flat colour</dt>
+  <dd>Usually a conversion or dtype mismatch, such as weights converted with the wrong key mapping or a component
+  running in fp16 where it needs bf16. Re-check Step 2 before blaming quantization.</dd>
+
+  <dt><code>quantize_</code> fails or has no effect</dt>
+  <dd>The torchao version does not match the installed PyTorch, or the denoiser uses layer types that the
+  weight-only config does not target. Check the torchao release notes for your PyTorch version. Newer torchao
+  releases expose config-object APIs alongside or instead of <code>int8_weight_only()</code>.</dd>
+
+  <dt><code>enable_*_cpu_offload</code> raises an error or does nothing</dt>
+  <dd>The pipeline may not declare an offload order, or the model's own code may move tensors to the device
+  manually. Fall back to the official script's options, if it has any, and note it in the table.</dd>
+
+  <dt>Large run-to-run variance</dt>
+  <dd>Look for thermal throttling (<code>nvidia-smi -q -d PERFORMANCE</code>), background GPU applications, or a power
+  limit. Lock conditions down and re-run before reporting.</dd>
+</dl>
+
+<h2 id="limits">Limitations of this bench</h2>
+<ul>
+  <li>It measures one GPU in one machine. PCIe generation, CPU, RAM speed and storage all affect offload results, so
+  numbers do not transfer between machines.</li>
+  <li>Weight-only int8 is one quantization approach among several. FP8, int4 and GGUF-style variants, where they exist
+  for H3, need their own rows and their own quality check.</li>
+  <li>Peak VRAM from <code>nvidia-smi</code> includes the CUDA context and fragmentation. The PyTorch figure excludes some
+  non-allocator memory. Report both and say which one you used.</li>
+  <li>Frame-difference metrics against bf16 show divergence, not perceived quality. Human review is still needed.</li>
+  <li>Everything that depends on H3's own tooling (repository, conversion script, pipeline class, supported frame
+  counts, license terms) must be re-verified for the version you download. This article does not assert any of them.</li>
+</ul>
+
+<h2 id="checklist">Reproducibility checklist</h2>
+<ul>
+  <li>☐ <code>env.lock.txt</code>, <code>model_repo_commit.txt</code> and <code>weights.sha256</code> are saved</li>
+  <li>☐ GPU, VRAM, RAM, swap and driver are recorded</li>
+  <li>☐ idle VRAM baseline is recorded before the matrix</li>
+  <li>☐ the warm-up run is excluded, and three repetitions per cell are recorded</li>
+  <li>☐ load time and generation time are reported separately</li>
+  <li>☐ OOM rows are kept, with the failing stage noted</li>
+  <li>☐ bf16 and int8 clips are compared with the same seed and prompts</li>
+  <li>☐ no tokens or personal paths appear in published logs</li>
+</ul>
+
+<p>For related walkthroughs on local models and agent testing, see the <a href="guides.html">guides index</a>.
+Definitions of terms such as quantization, offload and VRAM are in the <a href="../glossary.html">glossary</a>.</p>
+
+<section class="service-note">
+  <b>We publish what works for us—and implement the same solutions for your business.</b>
+  We design AI automation, Telegram bots, chats, and AI agents for real-world processes.
+  <a href="../contacts-en.html">Discuss your project →</a>
+</section>
+</article>
+</main>
+
+<footer class="site-footer">
+  <p>© 2026 Agent Lab Journal · <a href="guides.html">Guides</a> · <a href="../glossary.html">Glossary</a> · <a href="../rss-en.xml">RSS</a></p>
+</footer>
+
+</body>
+</html>
