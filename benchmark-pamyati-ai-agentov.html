@@ -1,0 +1,343 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Как честно сравнить системы памяти для AI-агентов — Agent Lab Journal</title>
+<meta name="description" content="Как честно сравнить системы памяти для AI-агентов: единый интерфейс Add/Search, одна модель ответов, один промпт и одна процедура оценки. Воспроизводимый тест с командами и проверкой.">
+<link rel="canonical" href="https://agentlabjournal.online/benchmark-pamyati-ai-agentov.html">
+<link rel="stylesheet" href="style.css">
+<link rel="stylesheet" href="reading.css">
+
+<meta property="og:type" content="article">
+<meta property="og:locale" content="ru_RU">
+<meta property="og:site_name" content="Agent Lab Journal">
+<meta property="og:title" content="Как честно сравнить системы памяти для AI-агентов">
+<meta property="og:description" content="Воспроизводимый тест нескольких систем памяти: адаптеры Add/Search, фиксированная модель ответов и общая процедура оценки.">
+<meta property="og:url" content="https://agentlabjournal.online/benchmark-pamyati-ai-agentov.html">
+
+<meta name="twitter:card" content="summary">
+<meta name="twitter:title" content="Как честно сравнить системы памяти для AI-агентов">
+<meta name="twitter:description" content="Убираем из сравнения памяти влияние модели ответов, промптов и метода оценки: единый интерфейс Add/Search и общий harness.">
+
+<script type="application/ld+json">
+{
+  "@context": "https://schema.org",
+  "@type": "Article",
+  "headline": "Как честно сравнить системы памяти для AI-агентов",
+  "description": "Воспроизводимый тест нескольких систем памяти для AI-агентов через единый интерфейс Add/Search и общую процедуру оценки.",
+  "inLanguage": "ru",
+  "datePublished": "2026-10-17",
+  "dateModified": "2026-10-17",
+  "mainEntityOfPage": "https://agentlabjournal.online/benchmark-pamyati-ai-agentov.html",
+  "author": {"@type": "Organization", "name": "Agent Lab Journal"},
+  "publisher": {"@type": "Organization", "name": "Agent Lab Journal"},
+  "timeRequired": "PT12M",
+  "proficiencyLevel": "Expert"
+}
+</script>
+<link rel="stylesheet" href="homepage.css"><link rel="stylesheet" href="max-promo.css">  <meta property="og:image" content="https://agentlabjournal.online/assets/covers/llm-context-window-budget-social.png">
+  <meta property="og:image:alt" content="Как честно сравнить системы памяти для AI-агентов">
+  <meta name="twitter:image" content="https://agentlabjournal.online/assets/covers/llm-context-window-budget-social.png">
+</head>
+<body>
+
+<header class="site-header">
+  <a class="site-logo" href="index.html">Agent Lab Journal</a>
+  <nav class="site-nav">
+    <a href="guides.html">Гайды</a>
+    <a href="glossary.html">Глоссарий</a>
+  </nav>
+</header>
+
+<main>
+<article class="reading">
+<a href="https://max.ru/channel_AgentLab?utm_source=agentlabjournal&utm_medium=article&utm_campaign=max_channel&utm_content=article_footer" class="max-promo-block" target="_blank" rel="noopener noreferrer" aria-label="Самое важное из мира AI в канале MAX AgentLab">
+  <span class="max-promo-block__icon" aria-hidden="true"></span>
+  <span class="max-promo-block__content"><span class="max-promo-block__title">Самое важное из мира AI — в канале MAX AgentLab</span><span class="max-promo-block__desc">Отдельные разборы, инструменты и практические схемы</span></span>
+  <span class="max-promo-block__arrow" aria-hidden="true">→</span>
+</a>
+<a href="https://t.me/pelmenews?utm_source=agentlabjournal&utm_medium=article&utm_campaign=telegram_channel&utm_content=article_intro" class="telegram-promo-block" target="_blank" rel="noopener noreferrer" aria-label="Читайте Agent Lab в Telegram">
+  <span class="telegram-promo-block__icon" aria-hidden="true"></span>
+  <span class="telegram-promo-block__content">
+    <span class="telegram-promo-block__title">Читайте Agent Lab в Telegram</span>
+    <span class="telegram-promo-block__desc">Разборы, кейсы и новости о практических AI-агентах без лишней воды.</span>
+  </span>
+  <span class="telegram-promo-block__arrow" aria-hidden="true">→</span>
+</a>
+
+<h1>Как честно сравнить системы памяти для AI-агентов</h1>
+        <figure class="article-cover" data-editorial-cover="benchmark-pamyati-ai-agentov"><img src="assets/covers/llm-context-window-budget.png" alt="Как честно сравнить системы памяти для AI-агентов" width="1280" height="720" fetchpriority="high"><figcaption>Temporary fallback cover; replace in editorial pass.</figcaption></figure>
+
+<p class="reading-meta">Уровень: продвинутый · Чтение: до 12 минут · Обновлено: 17 октября 2026</p>
+
+<p class="lead">Почти любое сравнение памяти агентов, которое попадается в обзорах, на самом деле сравнивает сразу три вещи: саму память, модель, которая пишет ответ, и способ, которым этот ответ оценивают. Если у системы A ответы пишет одна модель со своим промптом, а у системы B другая, разница в итоговом балле ничего не говорит о памяти. Ниже собран воспроизводимый стенд. Все системы подключаются к нему через один интерфейс <code>add</code>/<code>search</code>, а всё, что идёт после поиска, у них общее.</p>
+
+<h2>Что именно мы измеряем</h2>
+
+<p>Под системой памяти здесь понимается компонент, который принимает реплики диалога и по запросу возвращает релевантный контекст. Точное определение и соседние термины есть в статье <a href="glossary.html#agent-memory">память агента</a> в глоссарии. Честный тест держит переменной только одну часть конвейера:</p>
+
+<ol>
+  <li><strong>Запись</strong>: система получает одни и те же сообщения в одном и том же порядке.</li>
+  <li><strong>Поиск</strong>: система получает один и тот же вопрос и возвращает не больше <em>K</em> фрагментов или токенов.</li>
+  <li><strong>Ответ</strong>: одна фиксированная модель, один шаблон промпта, температура 0.</li>
+  <li><strong>Оценка</strong>: одна процедура для всех систем, судья с зафиксированной версией и промптом, плюс детерминированные метрики.</li>
+</ol>
+
+<p>Меняется только реализация шагов 1 и 2. Если на шагах 3 и 4 у систем что-то различается, сравнение уже нечестное.</p>
+
+<h2>Откуда берутся искажения</h2>
+
+<ul>
+  <li><strong>Разные модели ответов.</strong> Сильная модель вытащит ответ даже из шумного контекста, слабая не справится и с хорошим. Получится, что вы сравнили модели, а не память.</li>
+  <li><strong>Свой промпт у каждой системы.</strong> Многие библиотеки памяти поставляются со встроенным шаблоном «ответь, используя воспоминания». Его надо отключить и подставить общий.</li>
+  <li><strong>Разный бюджет контекста.</strong> Система, которая вернула 8000 токенов, почти всегда обгонит систему с 500 токенами. Бюджет фиксируется и записывается в отчёт.</li>
+  <li><strong>Разные судьи и метрики.</strong> Exact match, F1 и LLM-судья дают несопоставимые числа. Ещё хуже, когда у судьи разные промпты.</li>
+  <li><strong>Утечка вопросов.</strong> Если система увидела вопросы на этапе записи (например, через общий кэш), результат завышен.</li>
+  <li><strong>Недетерминизм.</strong> Один прогон с ненулевой температурой не годится как доказательство.</li>
+</ul>
+
+<h2>Шаг 1. Структура стенда</h2>
+
+<p>Дальше идёт пример структуры проекта. Названия файлов условные, адаптируйте их под свой репозиторий.</p>
+
+<pre><code>memory-bench/
+  data/
+    dialogs.jsonl        # сессии диалогов
+    questions.jsonl      # вопросы с эталонными ответами
+  adapters/
+    base.py              # интерфейс MemorySystem
+    full_context.py      # базовая линия: весь диалог
+    no_memory.py         # нижняя граница: пустой контекст
+    my_vector_store.py   # ваша система
+  harness.py             # прогон: add → search → answer
+  evaluate.py            # общая оценка
+  config.yaml            # зафиксированные параметры
+</code></pre>
+
+<p>Формат данных в примере такой:</p>
+
+<pre><code>// dialogs.jsonl — одна строка = одно сообщение
+{"conv_id": "c01", "session": 1, "turn": 3, "role": "user",
+ "text": "Я переехал в Казань в марте", "ts": "2026-03-14T10:00:00Z"}
+
+// questions.jsonl
+{"conv_id": "c01", "qid": "c01-q4", "question": "В каком городе живёт пользователь?",
+ "answer": "Казань", "type": "single_hop"}
+</code></pre>
+
+<p>Поле <code>type</code> понадобится для разбивки результатов: одношаговые вопросы, многошаговые, временные, вопросы на обновление факта, вопросы без ответа. Если в отчёте только общий балл, он почти наверняка скрывает, где именно система ошибается.</p>
+
+<h2>Шаг 2. Единый интерфейс Add/Search</h2>
+
+<pre><code># adapters/base.py
+from abc import ABC, abstractmethod
+from dataclasses import dataclass
+
+@dataclass
+class Message:
+    conv_id: str
+    role: str
+    text: str
+    ts: str
+
+@dataclass
+class Hit:
+    text: str
+    score: float | None = None
+
+class MemorySystem(ABC):
+    name: str
+
+    @abstractmethod
+    def reset(self, conv_id: str) -&gt; None:
+        """Полностью очистить память для conv_id."""
+
+    @abstractmethod
+    def add(self, msg: Message) -&gt; None:
+        """Записать одно сообщение. Вопросы сюда не попадают."""
+
+    @abstractmethod
+    def search(self, conv_id: str, query: str, k: int) -&gt; list[Hit]:
+        """Вернуть не более k фрагментов. Без генерации ответа."""
+</code></pre>
+
+<p>Главное правило: <code>search</code> возвращает только извлечённый контекст. Если библиотека умеет лишь «ответить на вопрос», для честного теста её нужно обернуть так, чтобы отдавались сырые воспоминания. Если это невозможно, отметьте в отчёте, что для этой системы шаг ответа не изолирован.</p>
+
+<p>Две обязательные базовые линии:</p>
+
+<pre><code># adapters/full_context.py — верхний ориентир
+class FullContext(MemorySystem):
+    name = "full_context"
+    def __init__(self): self.store = {}
+    def reset(self, conv_id): self.store[conv_id] = []
+    def add(self, msg): self.store[msg.conv_id].append(f"[{msg.ts}] {msg.role}: {msg.text}")
+    def search(self, conv_id, query, k):
+        return [Hit(text="\n".join(self.store[conv_id]))]
+
+# adapters/no_memory.py — нижняя граница
+class NoMemory(MemorySystem):
+    name = "no_memory"
+    def reset(self, conv_id): pass
+    def add(self, msg): pass
+    def search(self, conv_id, query, k): return []
+</code></pre>
+
+<p>Если ваша система не обгоняет <code>no_memory</code> заметно, проблема в данных или в стенде. Если она обгоняет <code>full_context</code> на коротких диалогах, проверьте, нет ли утечки.</p>
+
+<h2>Шаг 3. Общий harness</h2>
+
+<pre><code># harness.py (сокращённо)
+import json, hashlib, yaml
+from tiktoken import get_encoding  # или токенизатор вашей модели
+
+cfg = yaml.safe_load(open("config.yaml"))
+enc = get_encoding(cfg["tokenizer"])
+
+ANSWER_PROMPT = open("prompts/answer.txt").read()   # один для всех
+
+def truncate(hits, budget):
+    out, used = [], 0
+    for h in hits:
+        n = len(enc.encode(h.text))
+        if used + n &gt; budget:
+            break
+        out.append(h.text); used += n
+    return "\n---\n".join(out), used
+
+def run(system, dialogs, questions, llm):
+    rows = []
+    for conv_id, msgs in dialogs.items():
+        system.reset(conv_id)
+        for m in msgs:                       # одинаковый порядок
+            system.add(m)
+        for q in questions[conv_id]:
+            hits = system.search(conv_id, q["question"], cfg["k"])
+            ctx, used = truncate(hits, cfg["context_budget_tokens"])
+            prompt = ANSWER_PROMPT.format(context=ctx, question=q["question"])
+            ans = llm(prompt, model=cfg["answer_model"], temperature=0, seed=cfg["seed"])
+            rows.append({"system": system.name, "qid": q["qid"], "type": q["type"],
+                         "context_tokens": used, "prediction": ans,
+                         "gold": q["answer"],
+                         "prompt_sha": hashlib.sha256(ANSWER_PROMPT.encode()).hexdigest()[:12]})
+    return rows
+</code></pre>
+
+<p>Функцию <code>llm</code> реализуйте один раз через клиент вашего провайдера и отдавайте её всем системам. Обрезка по бюджету делается снаружи адаптера, поэтому лишний контекст не даст системе преимущества.</p>
+
+<p>Пример <code>config.yaml</code>. Значения нужно подставить свои, это не рекомендация:</p>
+
+<pre><code>answer_model: "&lt;зафиксированная версия модели ответов&gt;"
+judge_model:  "&lt;зафиксированная версия модели-судьи&gt;"
+tokenizer: "cl100k_base"
+k: 10
+context_budget_tokens: 2000
+seed: 42
+runs: 3
+</code></pre>
+
+<h2>Шаг 4. Общая процедура оценки</h2>
+
+<p>Используйте сразу два слоя оценки:</p>
+
+<ul>
+  <li><strong>Детерминированные метрики</strong>: нормализованный exact match и токенный F1. Они дешёвые и воспроизводимые, но плохо справляются с перефразированием.</li>
+  <li><strong>LLM-судья</strong>: бинарный вердикт «ответ эквивалентен эталону», с зафиксированными моделью, промптом и температурой 0. Судья не должен знать, какая система дала ответ.</li>
+</ul>
+
+<pre><code># evaluate.py (фрагмент)
+import random
+JUDGE_PROMPT = open("prompts/judge.txt").read()
+
+def judge_all(rows, llm, cfg):
+    random.Random(cfg["seed"]).shuffle(rows)      # перемешиваем системы
+    for r in rows:
+        p = JUDGE_PROMPT.format(question=r["qid"], gold=r["gold"], pred=r["prediction"])
+        r["judge"] = llm(p, model=cfg["judge_model"], temperature=0).strip().upper() == "YES"
+    return rows
+</code></pre>
+
+<p>Для вопросов без ответа правильным считается явный отказ («в памяти нет данных»). Эти вопросы считайте отдельно: так видно, какие системы склонны галлюцинировать по нерелевантному контексту.</p>
+
+<h2>Шаг 5. Запуск</h2>
+
+<p>Команды безопасны: они пишут только в локальную папку <code>results/</code>. Ключи API передаются через переменные окружения, в репозиторий их не кладите.</p>
+
+<pre><code>python -m venv .venv &amp;&amp; . .venv/bin/activate
+pip install -r requirements.txt
+export LLM_API_KEY=...            # не коммитить
+
+python harness.py --systems no_memory,full_context,my_vector_store \
+                  --runs 3 --out results/run.jsonl
+python evaluate.py --in results/run.jsonl --out results/report.csv
+git rev-parse HEAD &gt; results/commit.txt
+</code></pre>
+
+<h2>Проверка результата</h2>
+
+<p>Прежде чем публиковать цифры, пройдите по списку:</p>
+
+<ol>
+  <li>У всех строк в <code>run.jsonl</code> одинаковый <code>prompt_sha</code> и одна и та же <code>answer_model</code>.</li>
+  <li><code>context_tokens</code> ни у одной строки не больше бюджета. Посмотрите и среднее по системам: если одна стабильно использует половину бюджета, это тоже надо указать.</li>
+  <li>Порядок систем: <code>no_memory</code> &lt; ваша система ≤ примерно <code>full_context</code> (на диалогах, которые помещаются в бюджет). Если порядок другой, ищите баг.</li>
+  <li>Расхождение между прогонами меньше разницы между системами. Сообщайте среднее и разброс по <code>runs</code>, а не лучший прогон.</li>
+  <li>Вручную проверьте 30–50 случайных вердиктов судьи. Если судья заметно расходится с вами, поправьте его промпт и перезапустите оценку для <em>всех</em> систем.</li>
+  <li>Таблица результатов разбита по <code>type</code> вопросов и содержит задержку <code>add</code>/<code>search</code>, если она для вас важна.</li>
+</ol>
+
+<h2>Типовые ошибки</h2>
+
+<ul>
+  <li><strong>Встроенный ответчик библиотеки.</strong> Систему «похвалили», но на самом деле сработала её внутренняя модель и её промпт.</li>
+  <li><strong>Бюджет в фрагментах вместо токенов.</strong> 10 фрагментов по 50 токенов и 10 фрагментов по 800 токенов нельзя сравнивать.</li>
+  <li><strong>Общее состояние между диалогами.</strong> Не вызвали <code>reset</code>, и в результатах появились «воспоминания» из соседнего разговора.</li>
+  <li><strong>Асинхронная запись.</strong> Некоторые системы индексируют в фоне. Перед первым <code>search</code> дождитесь окончания индексации, иначе ответы будут случайно хуже.</li>
+  <li><strong>Подгонка под тест.</strong> Параметры (k, размер чанка) крутили на тех же вопросах, на которых потом отчитались. Нужен отдельный dev-набор.</li>
+  <li><strong>Сравнение с чужими цифрами.</strong> Число из чужого отчёта получено на другом стенде. Сравнивайте только системы, прогнанные через ваш harness.</li>
+</ul>
+
+<h2>Ограничения подхода</h2>
+
+<ul>
+  <li>Интерфейс <code>add</code>/<code>search</code> не подходит для систем, где память и рассуждение неразделимы (например, агент сам решает, что записать, через tool calls). Для них нужен отдельный сценарий, где фиксируется модель агента.</li>
+  <li>Одна фиксированная модель ответов даёт честное сравнение, но выводы относятся к этой модели. Если важна переносимость, повторите тест со второй моделью.</li>
+  <li>LLM-судья сам по себе источник систематической ошибки. Он сравним между системами, но абсолютные значения точности условны.</li>
+  <li>Синтетические диалоги проще реальных. Хороший результат на них ещё не означает хорошего поведения в продакшене.</li>
+  <li>Стоимость и задержка зависят от инфраструктуры, поэтому их лучше указывать как собственные измерения с описанием окружения, а не как свойство системы.</li>
+</ul>
+
+<h2>Итог</h2>
+
+<p>Как честно сравнить системы памяти для AI-агентов: поставить их в одинаковые условия везде, кроме самой памяти. Одинаковые данные и порядок записи, одинаковый бюджет контекста, одна модель ответов с одним промптом, один слепой судья, несколько прогонов и две базовые линии. Всё остальное, что попадает в «сравнение», скорее мешает, чем помогает.</p>
+
+<p>Похожие практические разборы собраны в <a href="guides.html">гайдах</a>, а термины из статьи объяснены в <a href="glossary.html">глоссарии</a>.</p>
+<aside class="service-note" aria-label="Связаться по проекту">
+  <div class="service-note__copy">
+    <p class="service-note__label">Связь с Agent Lab</p>
+    <p class="service-note__title">Внедрим такой контур в ваш процесс</p>
+    <p class="service-note__text">Напишите инженеру Agent Lab в Telegram: опишите задачу, бота или интеграцию — предложим пилот с проверками и понятными границами.</p>
+  </div>
+  <a class="service-note__link" href="https://t.me/msrzn007?utm_source=journal&amp;utm_medium=article&amp;utm_campaign=service_note" target="_blank" rel="noopener">Написать в Telegram
+    <svg viewBox="0 0 16 16" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"><path d="M3 13 13 3M6 3h7v7"/></svg>
+  </a>
+</aside>
+<aside class="service-note service-note--sitevisor" aria-label="Экспресс-аудит сайта">
+  <div class="service-note__copy">
+    <p class="service-note__label">SiteVisor</p>
+    <p class="service-note__title">Проверьте техническое состояние и готовность вашего сайта к рекламе</p>
+    <p class="service-note__text">Экспресс-аудит на SiteVisor.pro: индексация, скорость, разметка, аналитика и точки конверсии.</p>
+  </div>
+  <a class="service-note__link" href="https://sitevisor.pro/?utm_source=journal&amp;utm_medium=article&amp;utm_campaign=leadmagnet" target="_blank" rel="noopener">Экспресс-аудит на SiteVisor.pro
+    <svg viewBox="0 0 16 16" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"><path d="M3 13 13 3M6 3h7v7"/></svg>
+  </a>
+</aside>
+</article>
+</main>
+
+<footer class="site-footer">
+  <p>© 2026 Agent Lab Journal · <a href="guides.html">Гайды</a> · <a href="glossary.html">Глоссарий</a></p>
+</footer>
+
+</body>
+</html>
