@@ -1,0 +1,283 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Environment hooks в Gemini Managed Agents: блокировка и аудит tool calls | Agent Lab Journal</title>
+<meta name="description" content="Environment hooks в Gemini Managed Agents: блокировка и аудит tool calls — практическое руководство: настраиваем pre- и post-execution hooks, блокируем тестовую запись файла и добавляем автоматическую проверку после разрешённого вызова.">
+<link rel="canonical" href="https://agentlabjournal.online/gemini-managed-agents-environment-hooks.html">
+<link rel="stylesheet" href="style.css">
+<link rel="stylesheet" href="reading.css">
+<meta property="og:type" content="article">
+<meta property="og:locale" content="ru_RU">
+<meta property="og:site_name" content="Agent Lab Journal">
+<meta property="og:title" content="Environment hooks в Gemini Managed Agents: блокировка и аудит tool calls">
+<meta property="og:description" content="Настраиваем pre- и post-execution hooks: блокируем тестовую запись файла и проверяем результат разрешённого вызова инструмента.">
+<meta property="og:url" content="https://agentlabjournal.online/gemini-managed-agents-environment-hooks.html">
+<meta name="twitter:card" content="summary">
+<meta name="twitter:title" content="Environment hooks в Gemini Managed Agents: блокировка и аудит tool calls">
+<meta name="twitter:description" content="Pre- и post-execution hooks для удалённого агента: блокировка записи файла и автоматический аудит tool calls.">
+<script type="application/ld+json">
+{
+  "@context": "https://schema.org",
+  "@type": "Article",
+  "headline": "Environment hooks в Gemini Managed Agents: блокировка и аудит tool calls",
+  "description": "Практическое руководство по pre- и post-execution hooks: блокировка тестовой записи файла и автоматическая проверка после разрешённого вызова инструмента.",
+  "inLanguage": "ru",
+  "datePublished": "2026-10-17",
+  "dateModified": "2026-10-17",
+  "mainEntityOfPage": "https://agentlabjournal.online/gemini-managed-agents-environment-hooks.html",
+  "url": "https://agentlabjournal.online/gemini-managed-agents-environment-hooks.html",
+  "author": {"@type": "Organization", "name": "Agent Lab Journal"},
+  "publisher": {"@type": "Organization", "name": "Agent Lab Journal"},
+  "timeRequired": "PT12M",
+  "proficiencyLevel": "Expert"
+}
+</script>
+<link rel="stylesheet" href="homepage.css"><link rel="stylesheet" href="max-promo.css">  <meta property="og:image" content="https://agentlabjournal.online/assets/covers/llm-context-window-budget-social.png">
+  <meta property="og:image:alt" content="Environment hooks в Gemini Managed Agents: блокировка и аудит tool calls">
+  <meta name="twitter:image" content="https://agentlabjournal.online/assets/covers/llm-context-window-budget-social.png">
+</head>
+<body>
+<header class="site-header">
+  <a class="site-logo" href="index.html">Agent Lab Journal</a>
+  <nav aria-label="Основная навигация">
+    <a href="guides.html">Руководства</a>
+    <a href="glossary.html">Глоссарий</a>
+  </nav>
+</header>
+
+<main>
+<article class="reading">
+<a href="https://max.ru/channel_AgentLab?utm_source=agentlabjournal&utm_medium=article&utm_campaign=max_channel&utm_content=article_footer" class="max-promo-block" target="_blank" rel="noopener noreferrer" aria-label="Самое важное из мира AI в канале MAX AgentLab">
+  <span class="max-promo-block__icon" aria-hidden="true"></span>
+  <span class="max-promo-block__content"><span class="max-promo-block__title">Самое важное из мира AI — в канале MAX AgentLab</span><span class="max-promo-block__desc">Отдельные разборы, инструменты и практические схемы</span></span>
+  <span class="max-promo-block__arrow" aria-hidden="true">→</span>
+</a>
+<a href="https://t.me/pelmenews?utm_source=agentlabjournal&utm_medium=article&utm_campaign=telegram_channel&utm_content=article_intro" class="telegram-promo-block" target="_blank" rel="noopener noreferrer" aria-label="Читайте Agent Lab в Telegram">
+  <span class="telegram-promo-block__icon" aria-hidden="true"></span>
+  <span class="telegram-promo-block__content">
+    <span class="telegram-promo-block__title">Читайте Agent Lab в Telegram</span>
+    <span class="telegram-promo-block__desc">Разборы, кейсы и новости о практических AI-агентах без лишней воды.</span>
+  </span>
+  <span class="telegram-promo-block__arrow" aria-hidden="true">→</span>
+</a>
+  <h1>Environment hooks в Gemini Managed Agents: блокировка и аудит tool calls</h1>
+        <figure class="article-cover" data-editorial-cover="gemini-managed-agents-environment-hooks"><img src="assets/covers/llm-context-window-budget.png" alt="Environment hooks в Gemini Managed Agents: блокировка и аудит tool calls" width="1280" height="720" fetchpriority="high"><figcaption>Temporary fallback cover; replace in editorial pass.</figcaption></figure>
+  <p class="reading-meta">Уровень: продвинутый · Чтение: до 12 минут · Обновлено: 17 октября 2026</p>
+
+  <p>Если агент работает удалённо, системный промпт с фразой «никогда не пиши в /etc» ничего не гарантирует. Модель может неверно понять инструкцию, а её рассуждение можно сбить через prompt injection. Ограничение должно стоять в самом окружении и срабатывать в момент вызова инструмента. Именно это делают <a href="glossary.html">environment hooks</a>: код окружения, который выполняется прямо перед <a href="glossary.html">tool call</a> или сразу после него.</p>
+
+  <p>В статье мы соберём минимальный рабочий контур:</p>
+  <ul>
+    <li><strong>pre-execution hook</strong> блокирует тестовую запись файла за пределами разрешённой директории;</li>
+    <li><strong>post-execution hook</strong> после разрешённой записи проверяет результат и пишет запись аудита;</li>
+    <li>проверка покажет, что оба hook действительно срабатывают.</li>
+  </ul>
+
+  <aside class="note">
+    <p><strong>Важно про факты и примеры.</strong> Логику hooks и скрипты ниже мы приводим как переносимый пример. Точные имена полей конфигурации, формат событий и способ регистрации hooks в Gemini Managed Agents зависят от версии платформы, поэтому сверяйте их с официальной документацией вашей версии. Всё, что помечено как «пример», — наша иллюстрация, а не цитата из спецификации. Мы не приводим замеров производительности или цен: в рамках этой статьи мы их не проводили.</p>
+  </aside>
+
+  <h2>Модель угроз и где стоят hooks</h2>
+  <p>Цепочка выполнения выглядит так: модель предлагает вызов → окружение передаёт его pre-hook → если вызов разрешён, инструмент выполняется → результат уходит в post-hook → модель получает результат или сообщение об ошибке.</p>
+  <p>У hooks разные роли:</p>
+  <ul>
+    <li><strong>Pre-execution</strong> — точка контроля. Он видит имя инструмента и аргументы и может отклонить вызов до любого побочного эффекта. Работает по принципу fail-closed: если hook упал или вернул неизвестный ответ, вызов запрещается.</li>
+    <li><strong>Post-execution</strong> — точка проверки. Отменить уже сделанное он не может, зато может сверить результат с ожиданием, записать событие аудита и пометить запуск как требующий внимания.</li>
+  </ul>
+
+  <h2>Шаг 1. Подготовьте изолированную рабочую директорию</h2>
+  <p>Все эксперименты проводим в одноразовой директории. Боевые пути и секреты в них не участвуют.</p>
+  <pre><code>mkdir -p ~/hooks-lab/workspace ~/hooks-lab/hooks ~/hooks-lab/audit
+cd ~/hooks-lab
+python3 --version   # нужен Python 3.9+</code></pre>
+  <p>Политика нашего примера: писать можно только внутри <code>~/hooks-lab/workspace</code>, всё остальное запрещено.</p>
+
+  <h2>Шаг 2. Опишите контракт события (пример)</h2>
+  <p>Чтобы скрипты не зависели от платформы, договоримся: hook получает JSON-событие на stdin и отвечает JSON на stdout. Если ваша среда передаёт событие в другом виде, напишите тонкий адаптер. Логику политики при этом менять не нужно.</p>
+  <pre><code>// Пример входного события для pre-hook
+{
+  "phase": "pre",
+  "tool": "write_file",
+  "args": {"path": "/etc/agent-test.txt", "content": "hello"},
+  "run_id": "test-run-001"
+}
+
+// Пример ответа
+{"decision": "deny", "reason": "path outside workspace"}</code></pre>
+
+  <h2>Шаг 3. Pre-execution hook: блокируем запись вне workspace</h2>
+  <p>Сохраните файл как <code>hooks/pre_write_guard.py</code>:</p>
+  <pre><code>#!/usr/bin/env python3
+import json, os, sys
+
+WORKSPACE = os.path.realpath(os.path.expanduser("~/hooks-lab/workspace"))
+WRITE_TOOLS = {"write_file", "edit_file", "append_file"}
+
+def decide(event):
+    if event.get("tool") not in WRITE_TOOLS:
+        return {"decision": "allow"}
+    raw = event.get("args", {}).get("path")
+    if not isinstance(raw, str) or not raw:
+        return {"decision": "deny", "reason": "missing path"}
+    # realpath раскрывает "..", "~" и симлинки до проверки префикса
+    target = os.path.realpath(os.path.expanduser(raw))
+    if os.path.commonpath([target, WORKSPACE]) != WORKSPACE:
+        return {"decision": "deny", "reason": f"path outside workspace: {target}"}
+    return {"decision": "allow"}
+
+try:
+    result = decide(json.load(sys.stdin))
+except Exception as exc:  # fail-closed
+    result = {"decision": "deny", "reason": f"hook error: {exc}"}
+print(json.dumps(result))</code></pre>
+  <p>Здесь важны три детали: путь нормализуется через <code>realpath</code> (иначе <code>workspace/../../etc</code> пройдёт проверку префикса), сравнение идёт через <code>commonpath</code>, а не <code>startswith</code>, и любое исключение превращается в отказ.</p>
+
+  <h2>Шаг 4. Post-execution hook: аудит и автоматическая проверка</h2>
+  <p>Сохраните файл как <code>hooks/post_write_audit.py</code>. Он убеждается, что файл действительно существует внутри workspace и содержимое совпадает с запрошенным, и дописывает строку в журнал аудита формата JSON Lines.</p>
+  <pre><code>#!/usr/bin/env python3
+import hashlib, json, os, sys, time
+
+WORKSPACE = os.path.realpath(os.path.expanduser("~/hooks-lab/workspace"))
+AUDIT_LOG = os.path.expanduser("~/hooks-lab/audit/tool_calls.jsonl")
+
+def sha256(data: bytes) -> str:
+    return hashlib.sha256(data).hexdigest()
+
+def verify(event):
+    args = event.get("args", {})
+    path = os.path.realpath(os.path.expanduser(args.get("path", "")))
+    expected = args.get("content", "").encode()
+    if os.path.commonpath([path, WORKSPACE]) != WORKSPACE:
+        return "fail", "file outside workspace after execution"
+    if not os.path.isfile(path):
+        return "fail", "file not found"
+    with open(path, "rb") as fh:
+        actual = fh.read()
+    if sha256(actual) != sha256(expected):
+        return "fail", "content mismatch"
+    return "pass", "ok"
+
+event = json.load(sys.stdin)
+status, detail = ("skip", "not a write tool")
+if event.get("tool") in {"write_file", "edit_file", "append_file"}:
+    try:
+        status, detail = verify(event)
+    except Exception as exc:
+        status, detail = "fail", f"verifier error: {exc}"
+
+record = {
+    "ts": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+    "run_id": event.get("run_id"),
+    "tool": event.get("tool"),
+    "path": event.get("args", {}).get("path"),
+    "check": status,
+    "detail": detail,
+}
+with open(AUDIT_LOG, "a", encoding="utf-8") as log:
+    log.write(json.dumps(record, ensure_ascii=False) + "\n")
+print(json.dumps({"check": status, "detail": detail}))</code></pre>
+  <p>Содержимое файла в журнал не попадает, только путь и результат проверки. Так в аудит случайно не утекут данные, которые записал агент.</p>
+  <pre><code>chmod +x hooks/pre_write_guard.py hooks/post_write_audit.py</code></pre>
+
+  <h2>Шаг 5. Проверьте hooks локально, без агента</h2>
+  <p>Сначала прогоните hooks вручную: так вы отделите ошибки политики от ошибок интеграции. Ни одна команда ниже ничего не пишет в системные пути.</p>
+  <pre><code># 1. Запрещённая запись: ожидаем deny
+echo '{"phase":"pre","tool":"write_file","args":{"path":"/etc/agent-test.txt","content":"x"},"run_id":"t1"}' \
+  | python3 hooks/pre_write_guard.py
+
+# 2. Обход через "..": тоже ожидаем deny
+echo '{"phase":"pre","tool":"write_file","args":{"path":"~/hooks-lab/workspace/../../outside.txt","content":"x"},"run_id":"t2"}' \
+  | python3 hooks/pre_write_guard.py
+
+# 3. Разрешённая запись: ожидаем allow
+echo '{"phase":"pre","tool":"write_file","args":{"path":"~/hooks-lab/workspace/note.txt","content":"hello"},"run_id":"t3"}' \
+  | python3 hooks/pre_write_guard.py
+
+# 4. Имитируем выполнение инструмента и запускаем post-hook
+printf 'hello' > ~/hooks-lab/workspace/note.txt
+echo '{"phase":"post","tool":"write_file","args":{"path":"~/hooks-lab/workspace/note.txt","content":"hello"},"run_id":"t3"}' \
+  | python3 hooks/post_write_audit.py
+
+# 5. Битый ввод: ожидаем deny (fail-closed)
+echo 'not json' | python3 hooks/pre_write_guard.py</code></pre>
+  <p>Ожидаемые ответы: в случаях 1, 2 и 5 — <code>"decision": "deny"</code>, в случае 3 — <code>"allow"</code>, в случае 4 — <code>"check": "pass"</code> и новая строка в <code>audit/tool_calls.jsonl</code>.</p>
+
+  <h2>Шаг 6. Подключите hooks к окружению агента</h2>
+  <p>Hooks регистрируются в конфигурации окружения managed-агента. Ниже приведена <em>иллюстративная</em> структура: назначение полей переносится на любую версию, а точные ключи берите из документации Gemini Managed Agents.</p>
+  <pre><code># Пример (иллюстрация, не дословная схема платформы)
+environment:
+  hooks:
+    pre_execution:
+      - match_tools: ["write_file", "edit_file", "append_file"]
+        command: ["python3", "/opt/hooks/pre_write_guard.py"]
+        on_error: deny          # fail-closed
+        timeout_seconds: 5
+    post_execution:
+      - match_tools: ["write_file", "edit_file", "append_file"]
+        command: ["python3", "/opt/hooks/post_write_audit.py"]
+        on_error: flag_run
+        timeout_seconds: 10</code></pre>
+  <p>Учтите, что в удалённом окружении путь <code>~/hooks-lab</code> из локального теста превратится в путь внутри контейнера. Константы <code>WORKSPACE</code> и <code>AUDIT_LOG</code> лучше передавать через переменные окружения, чтобы локально и удалённо работал один и тот же код.</p>
+
+  <h2>Шаг 7. Сквозная проверка на агенте</h2>
+  <p>Дайте агенту две задачи в тестовой сессии:</p>
+  <ol>
+    <li>«Создай файл <code>/etc/agent-test.txt</code> с текстом hello». Ожидание: инструмент не выполнен, агент получил отказ с причиной <code>path outside workspace</code>, файла нет.</li>
+    <li>«Создай файл <code>note.txt</code> в рабочей директории с текстом hello». Ожидание: файл создан, в журнале аудита появилась запись с <code>"check": "pass"</code>.</li>
+  </ol>
+  <p>Проверка результата:</p>
+  <pre><code>test -e /etc/agent-test.txt &amp;&amp; echo "FAIL: blocked write happened" || echo "OK: write blocked"
+tail -n 5 ~/hooks-lab/audit/tool_calls.jsonl
+grep -c '"check": "fail"' ~/hooks-lab/audit/tool_calls.jsonl</code></pre>
+  <p>Если первая команда в удалённом окружении выводит <code>OK</code>, а в журнале есть строка <code>pass</code> для второго вызова, значит, контур работает. Последнюю команду удобно встроить в CI как гейт: ненулевое число <code>fail</code> означает, что запуск нужно разобрать вручную.</p>
+
+  <h2>Типовые ошибки</h2>
+  <ul>
+    <li><strong>Проверка префикса строкой.</strong> <code>path.startswith(WORKSPACE)</code> пропускает <code>workspace-evil/</code> и пути с <code>..</code>. Сначала нормализуйте путь, потом сравнивайте через <code>commonpath</code>.</li>
+    <li><strong>Fail-open по умолчанию.</strong> Если при ошибке или таймауте hook вызов разрешается, достаточно сломать hook, чтобы снять ограничение.</li>
+    <li><strong>Слишком узкий matcher.</strong> Если блокировать только <code>write_file</code>, shell-инструмент с <code>echo &gt; /etc/...</code> пройдёт мимо. Проверьте полный список инструментов агента.</li>
+    <li><strong>Аудит с содержимым.</strong> Если писать в журнал аргументы целиком, в лог попадут токены и персональные данные. Логируйте метаданные и хеши.</li>
+    <li><strong>Ожидание отката от post-hook.</strong> Post-hook только фиксирует проблему, побочный эффект к этому моменту уже произошёл. Всё, что нельзя допустить, должно блокироваться в pre-hook.</li>
+    <li><strong>Проверка только на агенте.</strong> Без локальных тестов из шага 5 непонятно, где ошибка: в политике или в интеграции.</li>
+  </ul>
+
+  <h2>Ограничения подхода</h2>
+  <ul>
+    <li>Hooks видят только то, что проходит через механизм tool calls. Если процесс внутри инструмента сам запускает что-то ещё, hook этого не увидит. Нужна изоляция на уровне файловой системы: read-only монтирования, отдельный пользователь, контейнер.</li>
+    <li>Между проверкой в pre-hook и выполнением есть окно гонки (TOCTOU): симлинк можно подменить после проверки. Для критичных путей ограничивайте права самого процесса инструмента.</li>
+    <li>Политика на путях не заменяет проверку содержимого: агент может легально записать в workspace вредный скрипт. Добавляйте отдельные проверки под свой сценарий.</li>
+    <li>Каждый hook увеличивает задержку вызова. Держите их быстрыми и задавайте таймауты.</li>
+  </ul>
+
+  <h2>Что дальше</h2>
+  <p>Тот же каркас расширяется на сетевые инструменты (allowlist доменов в pre-hook) и на проверку тестов после правки кода (post-hook запускает линтер или юнит-тесты). Смежные материалы собраны в разделе <a href="guides.html">руководств</a>, а термины — в <a href="glossary.html">глоссарии</a>.</p>
+<aside class="service-note" aria-label="Связаться по проекту">
+  <div class="service-note__copy">
+    <p class="service-note__label">Связь с Agent Lab</p>
+    <p class="service-note__title">Внедрим такой контур в ваш процесс</p>
+    <p class="service-note__text">Напишите инженеру Agent Lab в Telegram: опишите задачу, бота или интеграцию — предложим пилот с проверками и понятными границами.</p>
+  </div>
+  <a class="service-note__link" href="https://t.me/msrzn007?utm_source=journal&amp;utm_medium=article&amp;utm_campaign=service_note" target="_blank" rel="noopener">Написать в Telegram
+    <svg viewBox="0 0 16 16" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"><path d="M3 13 13 3M6 3h7v7"/></svg>
+  </a>
+</aside>
+<aside class="service-note service-note--sitevisor" aria-label="Экспресс-аудит сайта">
+  <div class="service-note__copy">
+    <p class="service-note__label">SiteVisor</p>
+    <p class="service-note__title">Проверьте техническое состояние и готовность вашего сайта к рекламе</p>
+    <p class="service-note__text">Экспресс-аудит на SiteVisor.pro: индексация, скорость, разметка, аналитика и точки конверсии.</p>
+  </div>
+  <a class="service-note__link" href="https://sitevisor.pro/?utm_source=journal&amp;utm_medium=article&amp;utm_campaign=leadmagnet" target="_blank" rel="noopener">Экспресс-аудит на SiteVisor.pro
+    <svg viewBox="0 0 16 16" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"><path d="M3 13 13 3M6 3h7v7"/></svg>
+  </a>
+</aside>
+</article>
+</main>
+
+<footer class="site-footer">
+  <p>© 2026 Agent Lab Journal · <a href="guides.html">Руководства</a> · <a href="glossary.html">Глоссарий</a></p>
+</footer>
+</body>
+</html>

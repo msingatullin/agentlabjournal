@@ -1,0 +1,509 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Environment hooks в Gemini Managed Agents: блокировка и аудит tool calls — Agent Lab Journal</title>
+<meta name="description" content="Environment hooks в Gemini Managed Agents: блокировка и аудит tool calls — a reproducible guide to pre- and post-execution hooks that block a test file write, audit every call in a hash-chained log and check allowed writes automatically.">
+<link rel="canonical" href="https://agentlabjournal.online/en/gemini-managed-agents-environment-hooks.html">
+<link rel="stylesheet" href="../style.css">
+<link rel="stylesheet" href="../reading.css">
+
+<meta property="og:type" content="article">
+<meta property="og:title" content="Environment hooks в Gemini Managed Agents: блокировка и аудит tool calls">
+<meta property="og:description" content="Pre- and post-execution hooks for a remote agent: fail-closed blocking, a tamper-evident audit log and an automatic check after each allowed tool call.">
+<meta property="og:url" content="https://agentlabjournal.online/en/gemini-managed-agents-environment-hooks.html">
+<meta property="og:image" content="https://agentlabjournal.online/assets/covers/llm-context-window-budget-social.png">
+<meta property="og:site_name" content="Agent Lab Journal">
+<meta property="og:locale" content="en_US">
+
+<meta name="twitter:card" content="summary_large_image">
+<meta name="twitter:title" content="Environment hooks в Gemini Managed Agents: блокировка и аудит tool calls">
+<meta name="twitter:description" content="Block a test file write before it runs, audit every tool call, and check allowed writes automatically.">
+<meta name="twitter:image" content="https://agentlabjournal.online/assets/covers/llm-context-window-budget-social.png">
+
+<script type="application/ld+json">
+{
+  "@context": "https://schema.org",
+  "@type": "Article",
+  "headline": "Environment hooks в Gemini Managed Agents: блокировка и аудит tool calls",
+  "description": "A reproducible guide to pre- and post-execution hooks that block a test file write, audit every tool call in a hash-chained log and check allowed writes automatically.",
+  "image": ["https://agentlabjournal.online/assets/covers/llm-context-window-budget-social.png"],
+  "datePublished": "2026-10-17",
+  "dateModified": "2026-10-17",
+  "inLanguage": "en",
+  "author": {
+    "@type": "Organization",
+    "name": "Agent Lab Journal"
+  },
+  "publisher": {
+    "@type": "Organization",
+    "name": "Agent Lab Journal",
+    "url": "https://agentlabjournal.online/"
+  },
+  "mainEntityOfPage": {
+    "@type": "WebPage",
+    "@id": "https://agentlabjournal.online/en/gemini-managed-agents-environment-hooks.html"
+  }
+}
+</script>
+<link rel="stylesheet" href="../homepage.css"><link rel="stylesheet" href="../max-promo.css">  <meta property="og:image:alt" content="Environment hooks в Gemini Managed Agents: блокировка и аудит tool calls">
+</head>
+<body>
+
+<header class="site-header">
+  <a class="site-logo" href="../en/index.html">Agent Lab Journal</a>
+  <nav class="site-nav">
+    <a href="guides.html">Guides</a>
+    <a href="../glossary.html">Glossary</a>
+  </nav>
+</header>
+
+<main>
+<article class="reading">
+
+<h1>Environment hooks в Gemini Managed Agents: блокировка и аудит tool calls</h1>
+        <figure class="article-cover" data-editorial-cover="gemini-managed-agents-environment-hooks"><img src="../assets/covers/llm-context-window-budget.png" alt="Environment hooks в Gemini Managed Agents: блокировка и аудит tool calls" width="1280" height="720" fetchpriority="high"><figcaption>Temporary fallback cover; replace in editorial pass.</figcaption></figure>
+
+<div class="reading-meta">
+  <span>Level: advanced</span> ·
+  <span>Reading time: 45 minutes</span> ·
+  <span>Updated: <time datetime="2026-10-17">17 October 2026</time></span>
+</div>
+
+<p class="lead">A system prompt that says "never touch the config directory" is a request, not a rule. A remote agent running in a managed environment needs rules that apply <em>at the moment it calls a tool</em>: one check just before execution that can refuse the call, and one just after that records what happened and confirms the result. This guide builds both. By the end you will have a pre-execution hook that blocks a test file write, a post-execution hook that checks every allowed write automatically, and an audit log that shows if anyone edited it.</p>
+
+<aside class="note">
+  <p><strong>What this guide covers, and what it doesn't.</strong> All the hook logic, test events and the audit-chain check below are self-contained Python, and you can run them on your own machine with no cloud account. This guide does <strong>not</strong> reproduce the exact Gemini Managed Agents configuration schema: field names, payload format, timeout defaults or where hook processes run. Those depend on the platform version you use, so check them in the official documentation. The platform-side snippet in Step 6 is labelled as a <em>hypothetical shape</em> for mapping, not as working config. No test results from the managed platform appear in this article. The outputs shown are what the code should print given its logic, and you should confirm them yourself.</p>
+</aside>
+
+<h2>The concrete case</h2>
+
+<p>Picture a remote <a href="../glossary.html#ai-agent">AI agent</a> that writes reports into a workspace. It can call three tools: <code>read_file</code>, <code>write_file</code> and, through a misconfiguration, a general <code>shell</code> tool. The workspace has two areas:</p>
+
+<ul>
+  <li><code>out/</code>: where the agent is supposed to write results;</li>
+  <li><code>protected/</code>: settings the agent should never change.</li>
+</ul>
+
+<p>We want four guarantees, and we want to be able to check each one:</p>
+
+<ol>
+  <li>A write to <code>protected/settings.yaml</code> is refused <em>before</em> the tool runs, including tricks like <code>out/../protected/settings.yaml</code>.</li>
+  <li>Any tool the policy doesn't know (here, <code>shell</code>) is refused. If the event is malformed or the hook crashes, the call is refused too.</li>
+  <li>Every allowed <code>write_file</code> is checked after it runs. The file must exist, its content must match what was requested, and <code>.json</code> files must parse.</li>
+  <li>Every decision, allowed or denied, goes into an append-only <a href="../glossary.html#audit-log">audit log</a> whose entries are hash-chained, so a later edit shows up.</li>
+</ol>
+
+<h2>Why hooks and not just instructions</h2>
+
+<p>A <a href="../glossary.html#hook">hook</a> is code the runtime calls at a fixed point in the life of a <a href="../glossary.html#tool-call">tool call</a>. The model doesn't choose whether to run it. That is the whole difference. An instruction in the prompt can be ignored, misread or overridden by <a href="../glossary.html#prompt-injection">prompt injection</a> hidden in a document the agent reads. A pre-execution hook sees the actual tool name and arguments the runtime is about to execute, and it has the last word.</p>
+
+<p>The two hook points do different jobs:</p>
+
+<table>
+  <thead><tr><th>Hook point</th><th>Sees</th><th>Can do</th><th>Cannot do</th></tr></thead>
+  <tbody>
+    <tr><td>Pre-execution</td><td>Tool name, arguments, call ID</td><td>Allow or deny; record the decision</td><td>Know what the tool would actually have done</td></tr>
+    <tr><td>Post-execution</td><td>The same, plus the tool result</td><td>Check side effects, flag problems, record the outcome</td><td>Undo a side effect that already happened</td></tr>
+  </tbody>
+</table>
+
+<p>Because of the last column, anything that must not happen at all belongs in the pre-hook. The post-hook is for checking and evidence, not for prevention.</p>
+
+<h2>Step 0. Prerequisites and layout</h2>
+
+<p>You need Python 3.9 or later and nothing else. Make this layout:</p>
+
+<pre><code>hooks-lab/
+├── hooks/
+│   ├── audit.py            # shared hash-chained logger
+│   ├── pre_tool_guard.py   # pre-execution hook
+│   └── post_tool_audit.py  # post-execution hook
+├── events/                 # test tool-call events
+├── simulate.py             # local stand-in for the runtime
+├── verify_audit.py         # checks the log chain
+├── sandbox/                # the agent's workspace
+│   ├── out/
+│   └── protected/
+└── audit/                  # created on first run</code></pre>
+
+<pre><code>mkdir -p hooks-lab/{hooks,events,sandbox/out,sandbox/protected}
+cd hooks-lab
+printf 'debug: false\n' &gt; sandbox/protected/settings.yaml
+export WORKSPACE_ROOT=./sandbox
+export AUDIT_LOG=./audit/tool-calls.jsonl</code></pre>
+
+<p>The local <a href="../glossary.html#sandbox">sandbox</a> here is just a folder, not a security boundary. It lets you test the hook logic in a repeatable way before you attach the hooks to a remote environment.</p>
+
+<h2>Step 1. Define the hook contract</h2>
+
+<p>Before writing code, write down the contract. When the platform's real contract is different, you change one adapter instead of the policy.</p>
+
+<ul>
+  <li><strong>Input:</strong> one JSON object on stdin, shaped like <code>{"call_id": "...", "tool_name": "...", "arguments": {...}}</code>. The post-hook also gets <code>"result"</code>.</li>
+  <li><strong>Pre-hook output:</strong> one JSON line, <code>{"decision": "allow"|"deny", "reason": "..."}</code>. Exit code <code>0</code> means allow and <code>2</code> means deny.</li>
+  <li><strong>Post-hook output:</strong> <code>{"status": "ok"|"flag"|"error", "problems": [...]}</code>. Exit code <code>0</code> means ok, anything else means it needs attention.</li>
+  <li><strong>Failure rule:</strong> if the pre-hook can't decide (bad input, exception, timeout), the answer is deny. This is <a href="../glossary.html#fail-closed">fail-closed</a> behaviour, and it matters more than any single rule in the policy.</li>
+</ul>
+
+<h2>Step 2. A shared, tamper-evident audit logger</h2>
+
+<p>Each record stores the hash of the record before it, and its own hash is computed over everything except that field. If you edit, delete or reorder a line, the chain breaks from that point onward. The log does <strong>not</strong> store file contents, only a SHA-256 of the arguments, so secrets the agent writes don't end up in the audit trail.</p>
+
+<pre><code># hooks/audit.py
+import hashlib
+import json
+import os
+import time
+
+LOG = os.environ.get("AUDIT_LOG", "./audit/tool-calls.jsonl")
+GENESIS = "0" * 64
+
+
+def _digest(record):
+    canonical = json.dumps(record, sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
+
+def _last_hash():
+    try:
+        with open(LOG, encoding="utf-8") as f:
+            lines = [line for line in f if line.strip()]
+    except FileNotFoundError:
+        return GENESIS
+    return json.loads(lines[-1])["entry_hash"] if lines else GENESIS
+
+
+def append(phase, event, status, detail):
+    os.makedirs(os.path.dirname(LOG) or ".", exist_ok=True)
+    ev = event if isinstance(event, dict) else {}
+    args = json.dumps(ev.get("arguments"), sort_keys=True)
+    record = {
+        "ts": round(time.time(), 3),
+        "phase": phase,
+        "call_id": ev.get("call_id"),
+        "tool_name": ev.get("tool_name"),
+        "args_sha256": hashlib.sha256(args.encode("utf-8")).hexdigest(),
+        "status": status,
+        "detail": detail,
+        "prev_hash": _last_hash(),
+    }
+    record["entry_hash"] = _digest(record)
+    with open(LOG, "a", encoding="utf-8") as f:
+        f.write(json.dumps(record, sort_keys=True) + "\n")</code></pre>
+
+<h2>Step 3. The pre-execution hook: block before it runs</h2>
+
+<p>The policy is an allowlist. Read tools pass, write tools pass only inside <code>out/</code>, and everything else is denied. Paths are resolved with <code>realpath</code> and compared with <code>commonpath</code>, which closes the simple <a href="../glossary.html#path-traversal">path traversal</a> cases (<code>../</code>, absolute paths, symlinks that already exist).</p>
+
+<pre><code># hooks/pre_tool_guard.py
+import json
+import os
+import sys
+
+from audit import append
+
+ROOT = os.path.realpath(os.environ.get("WORKSPACE_ROOT", "./sandbox"))
+WRITABLE = [os.path.join(ROOT, "out")]
+READ_TOOLS = {"read_file", "list_dir"}
+WRITE_TOOLS = {"write_file"}
+
+
+def decide(event):
+    tool = event.get("tool_name")
+    args = event.get("arguments") or {}
+    if tool in READ_TOOLS:
+        return "allow", "read-only tool"
+    if tool not in WRITE_TOOLS:
+        return "deny", f"tool not in allowlist: {tool}"
+    raw = args.get("path")
+    if not isinstance(raw, str) or not raw:
+        return "deny", "missing path"
+    target = os.path.realpath(os.path.join(ROOT, raw))
+    for allowed in WRITABLE:
+        if os.path.commonpath([target, allowed]) == allowed:
+            return "allow", f"inside {os.path.relpath(allowed, ROOT)}/"
+    return "deny", f"write outside writable dirs: {os.path.relpath(target, ROOT)}"
+
+
+def main():
+    event = None
+    try:
+        event = json.loads(sys.stdin.read())
+        decision, reason = decide(event)
+    except Exception as exc:
+        decision, reason = "deny", f"hook error: {type(exc).__name__}"
+    try:
+        append("pre", event, decision, reason)
+    except Exception:
+        decision, reason = "deny", "audit write failed"
+    print(json.dumps({"decision": decision, "reason": reason}))
+    sys.exit(0 if decision == "allow" else 2)
+
+
+if __name__ == "__main__":
+    main()</code></pre>
+
+<p>Two design choices are worth noting. First, if the audit write fails, the call is denied. An allowed call with no record is exactly what an audit is supposed to rule out. Second, a non-object event such as <code>[]</code> raises <code>AttributeError</code> inside <code>decide</code>, which ends up as a deny rather than a crash that the runtime might read as "no objection".</p>
+
+<h2>Step 4. The post-execution hook: check what actually happened</h2>
+
+<pre><code># hooks/post_tool_audit.py
+import json
+import os
+import sys
+
+from audit import append
+
+ROOT = os.path.realpath(os.environ.get("WORKSPACE_ROOT", "./sandbox"))
+
+
+def check(event):
+    if event.get("tool_name") != "write_file":
+        return "ok", []
+    args = event["arguments"]
+    path = os.path.realpath(os.path.join(ROOT, args["path"]))
+    if not os.path.isfile(path):
+        return "flag", ["file not found after write"]
+    with open(path, "rb") as f:
+        data = f.read()
+    problems = []
+    if data != args.get("content", "").encode("utf-8"):
+        problems.append("content differs from requested")
+    if path.endswith(".json"):
+        try:
+            json.loads(data)
+        except ValueError:
+            problems.append("invalid JSON")
+    return ("flag" if problems else "ok"), problems
+
+
+def main():
+    event = None
+    try:
+        event = json.loads(sys.stdin.read())
+        status, problems = check(event)
+    except Exception as exc:
+        status, problems = "error", [f"hook error: {type(exc).__name__}"]
+    append("post", event, status, "; ".join(problems) or "checks passed")
+    print(json.dumps({"status": status, "problems": problems}))
+    sys.exit(0 if status == "ok" else 1)
+
+
+if __name__ == "__main__":
+    main()</code></pre>
+
+<p>Replace the JSON check with whatever "correct" means for your outputs: a schema validator, a linter, a unit test, a size limit. Keep it fast and deterministic, because it runs after every allowed call.</p>
+
+<h2>Step 5. A local runtime stand-in and test events</h2>
+
+<p><code>simulate.py</code> plays the role of the managed runtime. It sends the raw event to the pre-hook with a timeout, runs the tool only if the call is allowed, then runs the post-hook. The order is the same one you expect from the platform, so the policy can be tested without the platform.</p>
+
+<pre><code># simulate.py
+import json
+import os
+import subprocess
+import sys
+
+ROOT = os.path.realpath(os.environ.get("WORKSPACE_ROOT", "./sandbox"))
+TIMEOUT = 5
+
+
+def run_hook(script, payload):
+    proc = subprocess.run(
+        [sys.executable, script], input=payload,
+        capture_output=True, text=True, timeout=TIMEOUT,
+    )
+    return proc.returncode, proc.stdout.strip()
+
+
+def execute(event):
+    if event["tool_name"] != "write_file":
+        return {"ok": True, "note": "simulated"}
+    args = event["arguments"]
+    path = os.path.realpath(os.path.join(ROOT, args["path"]))
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path, "w", encoding="utf-8") as f:
+        f.write(args.get("content", ""))
+    return {"ok": True}
+
+
+raw = open(sys.argv[1], encoding="utf-8").read()
+try:
+    code, out = run_hook("hooks/pre_tool_guard.py", raw)
+except subprocess.TimeoutExpired:
+    code, out = 2, '{"decision": "deny", "reason": "pre-hook timeout"}'
+print("pre :", code, out)
+if code != 0:
+    sys.exit(2)
+
+event = json.loads(raw)
+result = execute(event)
+code, out = run_hook("hooks/post_tool_audit.py", json.dumps({**event, "result": result}))
+print("post:", code, out)
+sys.exit(code)</code></pre>
+
+<p>Now make six events. Each one targets one guarantee from the case above.</p>
+
+<pre><code>cat &gt; events/01-blocked.json &lt;&lt;'EOF'
+{"call_id": "t1", "tool_name": "write_file",
+ "arguments": {"path": "protected/settings.yaml", "content": "debug: true\n"}}
+EOF
+cat &gt; events/02-traversal.json &lt;&lt;'EOF'
+{"call_id": "t2", "tool_name": "write_file",
+ "arguments": {"path": "out/../protected/settings.yaml", "content": "debug: true\n"}}
+EOF
+cat &gt; events/03-allowed.json &lt;&lt;'EOF'
+{"call_id": "t3", "tool_name": "write_file",
+ "arguments": {"path": "out/report.json", "content": "{\"status\": \"ok\"}\n"}}
+EOF
+cat &gt; events/04-bad-json.json &lt;&lt;'EOF'
+{"call_id": "t4", "tool_name": "write_file",
+ "arguments": {"path": "out/broken.json", "content": "{status: ok"}}
+EOF
+printf 'this is not json' &gt; events/05-malformed.json
+cat &gt; events/06-unknown-tool.json &lt;&lt;'EOF'
+{"call_id": "t6", "tool_name": "shell", "arguments": {"cmd": "rm -rf out"}}
+EOF</code></pre>
+
+<p>Run them all:</p>
+
+<pre><code>for e in events/*.json; do
+  echo "== $e"; python3 simulate.py "$e"; echo "exit=$?"
+done</code></pre>
+
+<h3>Expected results</h3>
+
+<p>These are the outcomes the code above is written to produce. Compare them with what you actually see, and treat any mismatch as a bug to fix before you go further.</p>
+
+<table>
+  <thead><tr><th>Event</th><th>Pre-hook</th><th>Tool runs?</th><th>Post-hook</th><th>Final exit</th></tr></thead>
+  <tbody>
+    <tr><td>01-blocked</td><td>deny: write outside writable dirs: protected/settings.yaml</td><td>No</td><td>Not called</td><td>2</td></tr>
+    <tr><td>02-traversal</td><td>deny: same reason (path resolved first)</td><td>No</td><td>Not called</td><td>2</td></tr>
+    <tr><td>03-allowed</td><td>allow: inside out/</td><td>Yes</td><td>ok, no problems</td><td>0</td></tr>
+    <tr><td>04-bad-json</td><td>allow: inside out/</td><td>Yes</td><td>flag: invalid JSON</td><td>1</td></tr>
+    <tr><td>05-malformed</td><td>deny: hook error: JSONDecodeError</td><td>No</td><td>Not called</td><td>2</td></tr>
+    <tr><td>06-unknown-tool</td><td>deny: tool not in allowlist: shell</td><td>No</td><td>Not called</td><td>2</td></tr>
+  </tbody>
+</table>
+
+<p>Then confirm that the blocked write really didn't happen:</p>
+
+<pre><code>cat sandbox/protected/settings.yaml   # must still print: debug: false</code></pre>
+
+<p>Event 04 shows what the post-hook is for and where it stops. The bad file <em>was</em> written, because the post-hook can only report it. If invalid output must never land in <code>out/</code>, move that check into the pre-hook (validate <code>content</code> before the write), or have the agent write to a staging directory that a separate step promotes.</p>
+
+<h2>Step 6. Verify the audit chain</h2>
+
+<pre><code># verify_audit.py
+import json
+import sys
+
+sys.path.insert(0, "hooks")
+from audit import GENESIS, LOG, _digest
+
+prev, n = GENESIS, 0
+with open(LOG, encoding="utf-8") as f:
+    for n, line in enumerate(f, 1):
+        rec = json.loads(line)
+        claimed = rec.pop("entry_hash")
+        if rec["prev_hash"] != prev or _digest(rec) != claimed:
+            print(f"BROKEN at line {n}")
+            sys.exit(1)
+        prev = claimed
+print(f"OK: {n} entries")</code></pre>
+
+<pre><code>python3 verify_audit.py
+# expected after the six events: OK: 8 entries
+# (6 pre-hook records + 2 post-hook records for events 03 and 04)</code></pre>
+
+<p>Now break it on purpose, to prove the check works:</p>
+
+<pre><code>cp audit/tool-calls.jsonl /tmp/backup.jsonl
+sed -i '1s/"deny"/"allow"/' audit/tool-calls.jsonl
+python3 verify_audit.py        # expected: BROKEN at line 1
+cp /tmp/backup.jsonl audit/tool-calls.jsonl</code></pre>
+
+<p>Be precise about what this proves. The chain shows <em>edits</em> to the log. It does not stop someone with write access from rewriting the whole file and recomputing every hash. To protect against that, regularly copy the latest <code>entry_hash</code> somewhere the agent environment can't write: a separate storage bucket, a ticket, or a commit in another repository.</p>
+
+<h2>Step 7. Attach the hooks to the managed environment</h2>
+
+<p>This is where you need the platform documentation for your Gemini Managed Agents version. Before you wire anything, find answers to these questions there:</p>
+
+<ol>
+  <li>Where are pre- and post-execution hooks declared (environment config, agent definition, API field)?</li>
+  <li>What is the exact payload schema, and how does it name the tool, the arguments and the call ID?</li>
+  <li>How does a hook signal deny: exit code, response field, or both? What does the agent see when a call is denied?</li>
+  <li>What happens on hook timeout or crash? Is the default fail-open or fail-closed, and can you change it?</li>
+  <li>Do hooks run inside the same environment as the tools (where the agent could change them) or outside it?</li>
+  <li>Which tools go through hooks? Are built-in or platform tools also covered?</li>
+</ol>
+
+<p>Once you have the answers, write a thin adapter that converts the platform payload into the contract from Step 1, and leave the policy code as it is. The shape below is <strong>hypothetical</strong>. It shows where the pieces go, not real field names:</p>
+
+<pre><code># HYPOTHETICAL SHAPE — map to the real schema from the official docs
+environment:
+  hooks:
+    pre_tool_execution:
+      command: ["python3", "/opt/hooks/pre_tool_guard.py"]
+      timeout_seconds: 5
+      on_failure: deny          # confirm this option exists; if not, see Failure cases
+    post_tool_execution:
+      command: ["python3", "/opt/hooks/post_tool_audit.py"]
+      timeout_seconds: 10
+  env:
+    WORKSPACE_ROOT: /workspace
+    AUDIT_LOG: /var/log/agent/tool-calls.jsonl</code></pre>
+
+<p>Repeat the checks from Step 5 against the real environment: ask the agent to do each of the six actions in plain language, then read the audit log. A guarantee only counts as verified on the platform once you have seen it work there.</p>
+
+<h2>Failure cases to test on purpose</h2>
+
+<ul>
+  <li><strong>Hook timeout.</strong> Add <code>time.sleep(10)</code> to the pre-hook. In the simulator this turns into a deny. On the platform, check what happens. If the default lets the call through, you have a fail-open gap, and you can't close it from inside the hook.</li>
+  <li><strong>Hook not found or not executable.</strong> Rename the script. A runtime that treats "hook missing" as "no objection" quietly disables your policy.</li>
+  <li><strong>Symlink created after the check.</strong> <code>realpath</code> resolves links that exist at check time. If the agent can create a link inside <code>out/</code> pointing at <code>protected/</code> and then write through it, the hook alone won't catch it (this is a time-of-check to time-of-use race). Deny symlink creation too, or enforce write access at the filesystem level.</li>
+  <li><strong>Tool aliases.</strong> If a second tool such as <code>apply_patch</code> or <code>shell</code> can also write files, it gets around a rule that only knows <code>write_file</code>. The allowlist in Step 3 denies unknown tools for exactly this reason. Keep it that way.</li>
+  <li><strong>Parallel calls.</strong> <code>audit.py</code> reads the last hash and then appends, which isn't atomic. Two hooks running at once can fork the chain. Wrap the append in a file lock (<code>fcntl.flock</code>), or send records to a single writer process.</li>
+  <li><strong>Audit log inside the agent's reach.</strong> If the log path is writable by the agent's tools, put it outside <code>WORKSPACE_ROOT</code> and add a deny rule for it.</li>
+</ul>
+
+<h2>Limitations</h2>
+
+<ul>
+  <li>Hooks control tool calls. They don't control what the model says, and they don't cover side effects that happen outside the tools the hooks see.</li>
+  <li>The post-hook checks after the fact. It reports damage but doesn't undo it.</li>
+  <li>The path policy is only as strong as the runtime's guarantee that the path it checked is the path the tool uses. Filesystem permissions are still the backstop.</li>
+  <li>A hash chain shows edits to the log. It doesn't prevent a full rewrite unless you anchor hashes outside the environment.</li>
+  <li>Hook latency adds to every call. Measure it in your own environment rather than assuming it is negligible.</li>
+</ul>
+
+<h2>Checklist before you rely on it</h2>
+
+<ul>
+  <li>[ ] All six local events produce the expected results.</li>
+  <li>[ ] <code>protected/settings.yaml</code> is unchanged after the run.</li>
+  <li>[ ] <code>verify_audit.py</code> passes, and fails after a deliberate edit.</li>
+  <li>[ ] Platform behaviour on hook timeout, crash and missing hook is confirmed from the docs <em>and</em> by a test.</li>
+  <li>[ ] Every tool that can write is either covered by the policy or denied.</li>
+  <li>[ ] The audit log sits outside the agent's writable area, and its latest hash is copied somewhere else.</li>
+</ul>
+
+<p>For related work on controlling and testing agents, see the <a href="guides.html">guides index</a>. For the terms used here, see the <a href="../glossary.html">glossary</a>.</p>
+
+<section class="service-note">
+  <b>We publish what works for us—and implement the same solutions for your business.</b>
+  We design AI automation, Telegram bots, chats, and AI agents for real-world processes.
+  <a href="../contacts-en.html">Discuss your project →</a>
+</section>
+</article>
+</main>
+
+<footer class="site-footer">
+  <p>© 2026 Agent Lab Journal · <a href="guides.html">Guides</a> · <a href="../glossary.html">Glossary</a></p>
+</footer>
+
+</body>
+</html>
