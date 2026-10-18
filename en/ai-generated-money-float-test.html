@@ -1,0 +1,658 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Как не дать ИИ использовать float для денег: an exact money type and tests that reject floats | Agent Lab Journal</title>
+<meta name="description" content="Как не дать ИИ использовать float для денег: build an exact TypeScript money type on bigint minor units, plus compile-time and runtime tests that reject floats an AI assistant tries to slip in.">
+<link rel="canonical" href="https://agentlabjournal.online/en/ai-generated-money-float-test.html">
+<link rel="alternate" hreflang="en" href="https://agentlabjournal.online/en/ai-generated-money-float-test.html">
+<link rel="alternate" hreflang="ru" href="https://agentlabjournal.online/ai-generated-money-float-test.html">
+<link rel="stylesheet" href="../style.css">
+<link rel="stylesheet" href="../reading.css">
+
+<meta property="og:type" content="article">
+<meta property="og:site_name" content="Agent Lab Journal">
+<meta property="og:locale" content="en_US">
+<meta property="og:title" content="Как не дать ИИ использовать float для денег: an exact money type and tests that reject floats">
+<meta property="og:description" content="A reproducible TypeScript setup: bigint minor units, explicit rounding, and compile-time plus runtime guards that fail when AI-generated code uses floats for money.">
+<meta property="og:url" content="https://agentlabjournal.online/en/ai-generated-money-float-test.html">
+<meta property="og:image" content="https://agentlabjournal.online/assets/covers/llm-context-window-budget-social.png">
+<meta property="article:modified_time" content="2026-10-18">
+
+<meta name="twitter:card" content="summary_large_image">
+<meta name="twitter:title" content="Как не дать ИИ использовать float для денег: an exact money type and tests that reject floats">
+<meta name="twitter:description" content="bigint minor units, explicit rounding, and tests that reject floats at compile time and at runtime.">
+<meta name="twitter:image" content="https://agentlabjournal.online/assets/covers/llm-context-window-budget-social.png">
+
+<script type="application/ld+json">
+{
+  "@context": "https://schema.org",
+  "@type": "Article",
+  "headline": "Как не дать ИИ использовать float для денег: an exact money type and tests that reject floats",
+  "description": "Build an exact TypeScript money type on bigint minor units, plus compile-time and runtime tests that reject floats an AI assistant tries to slip in.",
+  "image": ["https://agentlabjournal.online/assets/covers/llm-context-window-budget-social.png"],
+  "dateModified": "2026-10-18",
+  "inLanguage": "en",
+  "author": {
+    "@type": "Organization",
+    "name": "Agent Lab Journal",
+    "url": "https://agentlabjournal.online/"
+  },
+  "publisher": {
+    "@type": "Organization",
+    "name": "Agent Lab Journal",
+    "url": "https://agentlabjournal.online/"
+  },
+  "mainEntityOfPage": {
+    "@type": "WebPage",
+    "@id": "https://agentlabjournal.online/en/ai-generated-money-float-test.html"
+  }
+}
+</script>
+<link rel="stylesheet" href="../homepage.css"><link rel="stylesheet" href="../max-promo.css">  <meta property="og:image:alt" content="Как не дать ИИ использовать float для денег">
+</head>
+<body>
+
+<header class="site-header">
+  <a class="site-logo" href="index.html">Agent Lab Journal</a>
+  <nav>
+    <a href="index.html">Home</a>
+    <a href="guides.html">Guides</a>
+    <a href="../glossary.html">Glossary</a>
+  </nav>
+</header>
+
+<main>
+<article class="reading">
+
+<h1>Как не дать ИИ использовать float для денег: an exact money type and tests that reject floats</h1>
+        <figure class="article-cover" data-editorial-cover="ai-generated-money-float-test"><img src="../assets/covers/llm-context-window-budget.png" alt="Как не дать ИИ использовать float для денег" width="1280" height="720" fetchpriority="high"><figcaption>Temporary fallback cover; replace in editorial pass.</figcaption></figure>
+
+<p class="reading-meta">Level: intermediate · Reading time: 30 minutes · Updated: 18 October 2026 · Stack: TypeScript, Node.js 22+</p>
+
+<p class="lead">Ask a coding assistant for a cart total and you will often get <code>price: number</code>, a <code>reduce</code> and a <code>toFixed(2)</code> at the end. It looks fine, passes a quick manual check, and gets money wrong in ways that only show up in comparisons, tie-rounding and long sums. Writing "please don't use float" in a prompt doesn't fix this. What works is a money type the compiler won't let a float into, runtime checks that catch floats smuggled through <code>any</code> or JSON, and a test suite that fails the moment someone weakens either. This guide builds all three. Allow about 30 minutes.</p>
+
+<aside class="note">
+<p><strong>What is verified here and what is not.</strong> Every command, file and assertion below is meant to be copied and run. We didn't run this exact project while preparing the article, so we report no pass/fail results. Where we show "expected output", it is what the assertions and code require, not a captured log. Facts about <a href="../glossary.html#floating-point">binary floating point</a> (for example <code>0.1 + 0.2 !== 0.3</code>) follow from <a href="../glossary.html#ieee-754">IEEE 754</a> double precision. They're included as test assertions, so you can confirm them on your own machine.</p>
+</aside>
+
+<h2 id="problem">1. The problem: plausible code, wrong cents</h2>
+
+<p>Here is an illustrative example of what an <a href="../glossary.html#ai-agent">AI coding assistant</a> commonly produces for "write a function that returns the cart total with tax". It's a composite of a common pattern, not a quote from a real incident:</p>
+
+<pre><code>// examples/ai-cart.ts — what an assistant typically produces
+type LineItem = { name: string; price: number; qty: number };
+
+export function cartTotal(items: LineItem[], taxRate: number): string {
+  const subtotal = items.reduce((sum, item) =&gt; sum + item.price * item.qty, 0);
+  const tax = subtotal * taxRate;
+  return (subtotal + tax).toFixed(2);
+}</code></pre>
+
+<p>Nothing here is a syntax error, and for many inputs the printed result is right. The trouble comes from three properties of JavaScript's <code>number</code>, a 64-bit binary float:</p>
+
+<ul>
+  <li><strong>Most decimal cents have no exact representation.</strong> <code>0.1 + 0.2</code> evaluates to <code>0.30000000000000004</code>. Adding <code>0.1</code> ten times gives <code>0.9999999999999999</code>, not <code>1</code>.</li>
+  <li><strong>Rounding at the end hides the error until it doesn't.</strong> <code>Math.round(1.005 * 100) / 100</code> returns <code>1</code>, because <code>1.005 * 100</code> is <code>100.49999999999999</code>. A "half-cent rounds up" rule silently rounds down.</li>
+  <li><strong>Intermediate values leak.</strong> Once a float subtotal is compared (<code>paid &gt;= subtotal</code>), stored, or sent to another service, the error is no longer cosmetic. A customer who paid exactly 1.00 can fail a check against 0.9999999999999999 in the other direction, or an invoice line and a ledger line can differ by one cent.</li>
+</ul>
+
+<p>Assistants reproduce this pattern because it dominates tutorials and snippets, and because it's the shortest code that "works". The fix isn't a better prompt alone. The fix is to make the wrong code fail to compile, fail at runtime, and fail in <a href="../glossary.html#ci">CI</a>.</p>
+
+<h2 id="design">2. Design: what "exact money" means here</h2>
+
+<p>The design choices, and why we made each one:</p>
+
+<ol>
+  <li><strong>Store <a href="../glossary.html#minor-units">minor units</a> as <code>bigint</code>.</strong> 19.99 USD is stored as <code>1999n</code> cents. Integers are exact, and <code>bigint</code> has no 2<sup>53</sup> ceiling. <code>bigint</code> and <code>number</code> also can't be mixed in arithmetic (<code>1n + 1</code> throws <code>TypeError</code>), which works in our favour.</li>
+  <li><strong>Accept amounts only as decimal strings or <code>bigint</code>.</strong> A <code>number</code> argument is a type error at compile time and a <code>TypeError</code> at runtime.</li>
+  <li><strong>Each currency defines its exponent.</strong> USD and EUR use 2 decimal places, JPY uses 0, KWD uses 3 (per ISO 4217). Extra precision is rejected rather than silently rounded.</li>
+  <li><strong>Make the <a href="../glossary.html#branded-type">branded type</a> impossible to forge.</strong> A plain <code>{ minor: 1999n, currency: "USD" }</code> object doesn't type-check as <code>Money</code>. Values come only from the constructors.</li>
+  <li><strong>Rounding is always explicit.</strong> Any operation that can produce a fraction of a minor unit takes a mandatory rounding mode: <a href="../glossary.html#bankers-rounding">half-even</a>, half-up or truncate.</li>
+  <li><strong>Allocation never loses a cent.</strong> Splitting 100.00 three ways gives 33.34 + 33.33 + 33.33.</li>
+  <li><strong>JSON carries strings.</strong> <code>{"amount":"19.99","currency":"USD"}</code>, never <code>19.99</code>.</li>
+</ol>
+
+<h2 id="setup">3. Project setup</h2>
+
+<p>You need Node.js 22.6 or newer, which can run TypeScript files directly through <a href="../glossary.html#type-stripping">type stripping</a>, and TypeScript 5.8 or newer for the <code>erasableSyntaxOnly</code> option. The only other dependency is <code>@types/node</code>.</p>
+
+<pre><code>mkdir money-guard &amp;&amp; cd money-guard
+npm init -y
+npm pkg set type=module
+npm install --save-dev typescript@^5.8 @types/node
+mkdir -p src test scripts examples</code></pre>
+
+<p>Create <code>tsconfig.json</code>:</p>
+
+<pre><code>{
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "NodeNext",
+    "moduleResolution": "NodeNext",
+    "strict": true,
+    "noEmit": true,
+    "allowImportingTsExtensions": true,
+    "verbatimModuleSyntax": true,
+    "erasableSyntaxOnly": true,
+    "types": ["node"]
+  },
+  "include": ["src", "test"]
+}</code></pre>
+
+<p><code>erasableSyntaxOnly</code> makes the compiler reject syntax that Node's type stripping can't run, such as <code>enum</code> or constructor parameter properties. The <code>examples</code> folder is deliberately excluded, because it will hold the "bad" code we want the tools to flag.</p>
+
+<p>Add the scripts:</p>
+
+<pre><code>npm pkg set scripts.typecheck="tsc -p ."
+npm pkg set scripts.test="node --experimental-strip-types --test \"test/*.test.ts\""
+npm pkg set scripts.lint:money="node scripts/forbid-float-money.mjs src"
+npm pkg set scripts.check="npm run typecheck &amp;&amp; npm run lint:money &amp;&amp; npm test"</code></pre>
+
+<p>On Node 23.6+ and recent 22.x releases, type stripping is on by default and the flag is harmless. On Node 22.6–22.17 you need the flag. Expect an "experimental" warning on some versions.</p>
+
+<h2 id="money-type">4. The money type</h2>
+
+<p>Create <code>src/money.ts</code>. The whole module is about 130 lines and has no dependencies.</p>
+
+<pre><code>// src/money.ts
+declare const MoneyBrand: unique symbol;
+
+export const EXPONENT = {
+  USD: 2,
+  EUR: 2,
+  RUB: 2,
+  JPY: 0,
+  KWD: 3,
+} as const;
+
+export type Currency = keyof typeof EXPONENT;
+export type RoundingMode = "half-even" | "half-up" | "truncate";
+
+export type Money = {
+  readonly minor: bigint;
+  readonly currency: Currency;
+  readonly [MoneyBrand]: true;
+};
+
+export type MoneyJSON = { amount: string; currency: Currency };
+
+const DECIMAL = /^(-)?(\d+)(?:\.(\d+))?$/;
+
+function assertCurrency(currency: unknown): asserts currency is Currency {
+  if (typeof currency !== "string" || !Object.hasOwn(EXPONENT, currency)) {
+    throw new TypeError(`Unknown currency: ${String(currency)}`);
+  }
+}
+
+function assertSameCurrency(a: Money, b: Money): void {
+  if (a.currency !== b.currency) {
+    throw new TypeError(`Currency mismatch: ${a.currency} vs ${b.currency}`);
+  }
+}
+
+// --- constructors -------------------------------------------------------
+
+export function fromMinor(minor: bigint, currency: Currency): Money {
+  if (typeof minor !== "bigint") {
+    throw new TypeError(`Money minor units must be bigint, got ${typeof minor}`);
+  }
+  assertCurrency(currency);
+  return Object.freeze({ minor, currency }) as Money;
+}
+
+export function parseMoney(input: string, currency: Currency): Money {
+  if (typeof input !== "string") {
+    throw new TypeError(`Money amounts must be decimal strings, got ${typeof input}`);
+  }
+  assertCurrency(currency);
+  const match = DECIMAL.exec(input);
+  if (!match) throw new TypeError(`Not a decimal amount: "${input}"`);
+  const [, sign, whole, fraction = ""] = match;
+  const exponent = EXPONENT[currency];
+  if (fraction.length &gt; exponent) {
+    throw new RangeError(
+      `"${input}" has more than ${exponent} fraction digits for ${currency}`,
+    );
+  }
+  const minor = BigInt(whole + fraction.padEnd(exponent, "0"));
+  return fromMinor(sign ? -minor : minor, currency);
+}
+
+// --- formatting and JSON ------------------------------------------------
+
+export function format(m: Money): string {
+  const exponent = EXPONENT[m.currency];
+  const negative = m.minor &lt; 0n;
+  const digits = (negative ? -m.minor : m.minor)
+    .toString()
+    .padStart(exponent + 1, "0");
+  const whole = digits.slice(0, digits.length - exponent);
+  const fraction = digits.slice(digits.length - exponent);
+  const body = exponent === 0 ? whole : `${whole}.${fraction}`;
+  return negative ? `-${body}` : body;
+}
+
+export function toJSON(m: Money): MoneyJSON {
+  return { amount: format(m), currency: m.currency };
+}
+
+export function fromJSON(value: unknown): Money {
+  if (typeof value !== "object" || value === null) {
+    throw new TypeError("Money JSON must be an object");
+  }
+  const { amount, currency } = value as Record&lt;string, unknown&gt;;
+  if (typeof amount !== "string") {
+    throw new TypeError(`Money JSON amount must be a string, got ${typeof amount}`);
+  }
+  assertCurrency(currency);
+  return parseMoney(amount, currency);
+}
+
+// --- arithmetic ---------------------------------------------------------
+
+export function add(a: Money, b: Money): Money {
+  assertSameCurrency(a, b);
+  return fromMinor(a.minor + b.minor, a.currency);
+}
+
+export function subtract(a: Money, b: Money): Money {
+  assertSameCurrency(a, b);
+  return fromMinor(a.minor - b.minor, a.currency);
+}
+
+export function sum(items: readonly Money[], currency: Currency): Money {
+  return items.reduce((acc, m) =&gt; add(acc, m), fromMinor(0n, currency));
+}
+
+export function multiplyQty(m: Money, qty: bigint): Money {
+  if (typeof qty !== "bigint") {
+    throw new TypeError(`Quantity must be bigint, got ${typeof qty}`);
+  }
+  return fromMinor(m.minor * qty, m.currency);
+}
+
+function divideRounded(n: bigint, d: bigint, mode: RoundingMode): bigint {
+  if (d === 0n) throw new RangeError("Division by zero");
+  if (d &lt; 0n) {
+    n = -n;
+    d = -d;
+  }
+  const q = n / d; // bigint division truncates toward zero
+  const r = n % d; // remainder has the sign of n
+  if (r === 0n) return q;
+  const away = n &lt; 0n ? -1n : 1n;
+  const twice = 2n * (r &lt; 0n ? -r : r);
+  switch (mode) {
+    case "truncate":
+      return q;
+    case "half-up": // half away from zero
+      return twice &gt;= d ? q + away : q;
+    case "half-even":
+      if (twice &gt; d) return q + away;
+      if (twice &lt; d) return q;
+      return q % 2n === 0n ? q : q + away;
+  }
+}
+
+function parseRate(rate: string): { num: bigint; den: bigint } {
+  if (typeof rate !== "string") {
+    throw new TypeError(`Rates must be decimal strings, got ${typeof rate}`);
+  }
+  const match = DECIMAL.exec(rate);
+  if (!match) throw new TypeError(`Not a decimal rate: "${rate}"`);
+  const [, sign, whole, fraction = ""] = match;
+  const num = BigInt(whole + fraction);
+  return { num: sign ? -num : num, den: 10n ** BigInt(fraction.length) };
+}
+
+export function multiply(m: Money, rate: string, mode: RoundingMode): Money {
+  const { num, den } = parseRate(rate);
+  return fromMinor(divideRounded(m.minor * num, den, mode), m.currency);
+}
+
+export function allocate(m: Money, weights: readonly bigint[]): Money[] {
+  if (weights.length === 0) throw new RangeError("No weights given");
+  if (weights.some((w) =&gt; typeof w !== "bigint" || w &lt; 0n)) {
+    throw new TypeError("Weights must be non-negative bigint values");
+  }
+  const total = weights.reduce((a, b) =&gt; a + b, 0n);
+  if (total === 0n) throw new RangeError("Weights sum to zero");
+
+  const shares = weights.map((w) =&gt; (m.minor * w) / total);
+  let remainder = m.minor - shares.reduce((a, b) =&gt; a + b, 0n);
+  const step = remainder &lt; 0n ? -1n : 1n;
+  for (let i = 0; remainder !== 0n; i = (i + 1) % shares.length) {
+    if (weights[i] === 0n) continue;
+    shares[i] += step;
+    remainder -= step;
+  }
+  return shares.map((minor) =&gt; fromMinor(minor, m.currency));
+}</code></pre>
+
+<p>A few details matter more than they look:</p>
+
+<ul>
+  <li><strong>Each guard sits on the boundary that a <code>number</code> could cross.</strong> <code>fromMinor</code>, <code>parseMoney</code>, <code>parseRate</code>, <code>multiplyQty</code>, <code>allocate</code> and <code>fromJSON</code> each check <code>typeof</code>. Inside the module everything is already <code>bigint</code>.</li>
+  <li><strong>The regex accepts no exponent notation, no <code>+</code>, no spaces and no thousands separators.</strong> Without the <code>typeof</code> check, <code>String(1e21)</code> would come through as <code>"1e+21"</code>. With the regex, it's rejected anyway.</li>
+  <li><strong>The rounding mode has no default.</strong> That's deliberate. An assistant that has to pick <code>"half-even"</code> or <code>"half-up"</code> leaves a visible decision in the diff for a reviewer.</li>
+  <li><strong>The allocation loop ends within one pass over the non-zero weights.</strong> Truncation leaves each share less than one minor unit short, so the remainder is smaller than the number of non-zero weights.</li>
+</ul>
+
+<h2 id="compile-time">5. Compile-time tests: <code>@ts-expect-error</code> as an assertion</h2>
+
+<p>A compile-time test is a file of calls that <em>must not</em> type-check. Each one is marked with <code>// @ts-expect-error</code>. If a later change makes any of those lines valid, for example someone widens <code>input: string</code> to <code>string | number</code> because an assistant suggested it, the directive is unused and <code>tsc</code> fails with error TS2578 ("Unused '@ts-expect-error' directive"). So the type contract itself is under test.</p>
+
+<p>Create <code>test/types.check.ts</code>. It's type-checked by <code>tsc</code> and never run; its name doesn't match the <code>*.test.ts</code> pattern.</p>
+
+<pre><code>// test/types.check.ts — compiled by `tsc`, never executed
+import { add, fromMinor, multiply, parseMoney, type Money } from "../src/money.ts";
+
+export function compileTimeGuards(): void {
+  const price = parseMoney("19.99", "USD");
+
+  // @ts-expect-error a float literal is not a decimal string
+  parseMoney(19.99, "USD");
+
+  // @ts-expect-error minor units must be bigint, not number
+  fromMinor(1999, "USD");
+
+  // @ts-expect-error rates are decimal strings, not floats
+  multiply(price, 0.0825, "half-even");
+
+  // @ts-expect-error the rounding mode is mandatory
+  multiply(price, "0.0825");
+
+  // @ts-expect-error Money is not a number: no arithmetic operators
+  const doubled = price * 2;
+
+  // @ts-expect-error a plain object cannot impersonate Money (brand missing)
+  const forged: Money = { minor: 1999n, currency: "USD" };
+
+  // @ts-expect-error unknown currency code
+  parseMoney("1.00", "XYZ");
+
+  add(price, price); // the legitimate path still compiles
+}</code></pre>
+
+<p>Run it:</p>
+
+<pre><code>npm run typecheck</code></pre>
+
+<p>Expected: no output and exit code 0. Each marked line has the error it claims to have, and the final <code>add</code> call is valid.</p>
+
+<h2 id="runtime">6. Runtime tests: floats that got past the compiler</h2>
+
+<p>The compiler can't see through <code>any</code>, <code>as unknown as</code>, <code>JSON.parse</code>, untyped JavaScript callers or a form field converted with <code>Number()</code>. The runtime suite proves that floats arriving through those routes are rejected too. Create <code>test/money.test.ts</code>:</p>
+
+<pre><code>// test/money.test.ts
+import { test } from "node:test";
+import assert from "node:assert/strict";
+import {
+  add, allocate, format, fromJSON, fromMinor,
+  multiply, multiplyQty, parseMoney, sum, toJSON,
+} from "../src/money.ts";
+
+const usd = (s: string) =&gt; parseMoney(s, "USD");
+
+test("baseline: binary floats cannot represent cents exactly", () =&gt; {
+  assert.notEqual(0.1 + 0.2, 0.3);
+  let tenDimes = 0;
+  for (let i = 0; i &lt; 10; i++) tenDimes += 0.1;
+  assert.notEqual(tenDimes, 1);
+  assert.equal(Math.round(1.005 * 100) / 100, 1); // "half up" went down
+});
+
+test("decimal strings add exactly", () =&gt; {
+  assert.equal(format(add(usd("0.10"), usd("0.20"))), "0.30");
+  const dimes = Array.from({ length: 10 }, () =&gt; usd("0.10"));
+  assert.equal(format(sum(dimes, "USD")), "1.00");
+});
+
+test("round-trips every cent value from 0.00 to 99.99", () =&gt; {
+  for (let cents = 0n; cents &lt; 10_000n; cents++) {
+    const m = fromMinor(cents, "USD");
+    assert.equal(parseMoney(format(m), "USD").minor, cents);
+  }
+});
+
+test("rejects floats at runtime even when types are bypassed", () =&gt; {
+  const smuggled: unknown = 19.99;
+  assert.throws(() =&gt; parseMoney(smuggled as string, "USD"), TypeError);
+  assert.throws(() =&gt; fromMinor(1999 as unknown as bigint, "USD"), TypeError);
+  assert.throws(
+    () =&gt; multiply(usd("1.00"), 0.5 as unknown as string, "half-even"),
+    TypeError,
+  );
+  assert.throws(() =&gt; multiplyQty(usd("1.00"), 3 as unknown as bigint), TypeError);
+  assert.throws(() =&gt; fromJSON({ amount: 19.99, currency: "USD" }), TypeError);
+  assert.throws(() =&gt; fromJSON(JSON.parse('{"amount":19.99,"currency":"USD"}')), TypeError);
+});
+
+test("rejects more precision than the currency allows", () =&gt; {
+  assert.throws(() =&gt; usd("1.005"), RangeError);
+  assert.throws(() =&gt; parseMoney("100.5", "JPY"), RangeError);
+  assert.equal(format(parseMoney("0.125", "KWD")), "0.125");
+  assert.equal(format(parseMoney("1500", "JPY")), "1500");
+});
+
+test("rejects malformed amounts", () =&gt; {
+  for (const bad of ["", "1,00", "1e2", "+1.00", " 1.00", "1.", ".5", "NaN"]) {
+    assert.throws(() =&gt; usd(bad), TypeError, `accepted ${JSON.stringify(bad)}`);
+  }
+});
+
+test("multiplication requires and respects a rounding mode", () =&gt; {
+  // 19.99 * 0.0825 = 1.649175 -&gt; 1.65
+  assert.equal(format(multiply(usd("19.99"), "0.0825", "half-even")), "1.65");
+  // exact tie: 0.25 * 0.5 = 0.125
+  assert.equal(format(multiply(usd("0.25"), "0.5", "half-even")), "0.12");
+  assert.equal(format(multiply(usd("0.25"), "0.5", "half-up")), "0.13");
+  assert.equal(format(multiply(usd("0.25"), "0.5", "truncate")), "0.12");
+  assert.equal(format(multiply(usd("-0.25"), "0.5", "half-up")), "-0.13");
+  assert.equal(format(multiply(usd("-0.25"), "0.5", "half-even")), "-0.12");
+});
+
+test("allocation never loses a cent", () =&gt; {
+  const parts = allocate(usd("100.00"), [1n, 1n, 1n]);
+  assert.deepEqual(parts.map(format), ["33.34", "33.33", "33.33"]);
+  assert.equal(format(sum(parts, "USD")), "100.00");
+
+  const refund = allocate(usd("-0.05"), [1n, 0n, 1n]);
+  assert.deepEqual(refund.map(format), ["-0.03", "0.00", "-0.02"]);
+});
+
+test("currency mismatch is an error, not a conversion", () =&gt; {
+  assert.throws(() =&gt; add(usd("1.00"), parseMoney("1.00", "EUR")), TypeError);
+});
+
+test("JSON uses strings, never numbers", () =&gt; {
+  const json = JSON.stringify(toJSON(usd("19.99")));
+  assert.equal(json, '{"amount":"19.99","currency":"USD"}');
+  assert.equal(format(fromJSON(JSON.parse(json))), "19.99");
+  // raw bigint cannot be serialized by accident
+  assert.throws(() =&gt; JSON.stringify({ total: 1999n }), TypeError);
+});</code></pre>
+
+<p>Run it:</p>
+
+<pre><code>npm test</code></pre>
+
+<p>Expected: every test reports <code>ok</code>, and the summary shows zero failures. To check the less obvious numbers yourself: 1999 × 825 = 1,649,175, and dividing by 10,000 leaves a remainder of 9,175, which is above half, so the result rounds to 165 cents. For −5 cents split by weights [1, 0, 1]: truncation gives −2, 0, −2. The remaining −1 goes to the first non-zero weight, giving −3, 0, −2.</p>
+
+<p>The baseline test is intentional. It documents in executable form <em>why</em> the module exists. If someone ever asks "do we really need this?", the answer is in the test output.</p>
+
+<h2 id="lint">7. A cheap static gate for AI-generated code elsewhere in the repo</h2>
+
+<p>The type and the tests protect the money module. They don't stop an assistant from writing <code>price: number</code> in a new file that never imports it. A small scanner catches the most common patterns. Create <code>scripts/forbid-float-money.mjs</code>:</p>
+
+<pre><code>// scripts/forbid-float-money.mjs
+import { readdirSync, readFileSync } from "node:fs";
+import { join } from "node:path";
+
+const roots = process.argv.slice(2);
+if (roots.length === 0) roots.push("src");
+
+const RULES = [
+  [/\bparseFloat\s*\(/, "parseFloat() on a money path"],
+  [/\.toFixed\s*\(/, "toFixed() rounds a binary float"],
+  [/\bMath\.(round|floor|ceil)\s*\(/, "Math rounding of a float"],
+  [/\b(amount|price|total|subtotal|balance|cost|fee|tax)\w*\??\s*:\s*number\b/i,
+    "money-like field typed as number"],
+];
+const ALLOW = "money-float-ok:";
+
+let failures = 0;
+for (const root of roots) {
+  for (const rel of readdirSync(root, { recursive: true })) {
+    const file = join(root, String(rel));
+    if (!/\.(ts|tsx|js|mjs|cjs)$/.test(file)) continue;
+    const lines = readFileSync(file, "utf8").split("\n");
+    lines.forEach((line, i) =&gt; {
+      if (line.includes(ALLOW)) return;
+      for (const [pattern, why] of RULES) {
+        if (pattern.test(line)) {
+          console.error(`${file}:${i + 1}: ${why}\n    ${line.trim()}`);
+          failures++;
+        }
+      }
+    });
+  }
+}
+
+if (failures &gt; 0) {
+  console.error(`\n${failures} float-money finding(s).`);
+  process.exit(1);
+}
+console.log("No float-money patterns found.");</code></pre>
+
+<p>Save the assistant's cart function from section 1 as <code>examples/ai-cart.ts</code>, then point the scanner at it:</p>
+
+<pre><code>node scripts/forbid-float-money.mjs examples</code></pre>
+
+<p>Given that file, the rules match three lines: line 2 (<code>price: number</code>), line 4 (<code>taxRate: number</code>) and line 7 (<code>toFixed</code>). The script should exit with code 1 and end with <code>3 float-money finding(s).</code> Then run it on the real code:</p>
+
+<pre><code>npm run lint:money</code></pre>
+
+<p>Expected: <code>No float-money patterns found.</code> The scanner only covers <code>src</code>, which is why the float baseline lives in <code>test</code>. For a legitimate non-money use, such as <code>Math.round</code> on a pixel width, add a trailing comment like <code>// money-float-ok: layout math</code>. The reason then shows up in review.</p>
+
+<p>This is a line-based heuristic, not a parser. It will miss <code>const p: number</code> and can flag a <code>taxonomy: number</code>. If you already use ESLint with typescript-eslint, move these rules into <code>no-restricted-syntax</code> selectors for better precision. The zero-dependency script is a starting point you can audit in a minute.</p>
+
+<h2 id="mutation">8. Prove the guards bite (do not skip this)</h2>
+
+<p>A passing suite proves nothing if it would also pass with the guards removed. Run three deliberate sabotage checks and revert each one afterwards:</p>
+
+<ol>
+  <li><strong>Widen the type.</strong> In <code>src/money.ts</code>, change <code>parseMoney(input: string, …)</code> to <code>parseMoney(input: string | number, …)</code>. Run <code>npm run typecheck</code>. Expected: error TS2578 on the <code>parseMoney(19.99, "USD")</code> line in <code>types.check.ts</code>. (You may also see an error inside <code>parseMoney</code>, because <code>DECIMAL.exec</code> expects a string.)</li>
+  <li><strong>Remove the runtime check.</strong> Delete the <code>typeof minor !== "bigint"</code> block in <code>fromMinor</code>. Run <code>npm test</code>. Expected: the "rejects floats at runtime" test fails on the <code>fromMinor(1999 as unknown as bigint, …)</code> assertion.</li>
+  <li><strong>Silently round instead of rejecting.</strong> Replace the <code>RangeError</code> branch in <code>parseMoney</code> with <code>fraction.slice(0, exponent)</code> truncation. Expected: "rejects more precision than the currency allows" fails.</li>
+</ol>
+
+<p>If any sabotage still passes, a guard is missing. Fix the test before trusting the suite. This is a hand-run form of <a href="../glossary.html#mutation-testing">mutation testing</a>. A tool such as Stryker can automate it later.</p>
+
+<h2 id="agent-rules">9. Tell the assistant, then do not rely on it</h2>
+
+<p>Put the contract where your coding agent reads project instructions (for example <code>AGENTS.md</code> or <code>CLAUDE.md</code> in the repo root). This reduces how often bad code gets generated. The checks above decide whether it gets merged.</p>
+
+<pre><code>## Money
+
+- All monetary values use `Money` from `src/money.ts`. Never use `number`,
+  `parseFloat`, `toFixed` or `Math.round` for amounts, prices, taxes or totals.
+- Create money with `parseMoney("19.99", "USD")` or `fromMinor(1999n, "USD")`.
+- Rates and percentages are decimal strings: `multiply(m, "0.0825", "half-even")`.
+  Always choose the rounding mode explicitly and mention it in the PR description.
+- Split amounts with `allocate`, never by dividing and rounding.
+- API and database boundaries carry amounts as strings or integer minor units.
+- Do not edit `test/types.check.ts` or remove `@ts-expect-error` lines to make
+  the build pass. A failing guard means the code is wrong, not the test.
+- Before finishing: run `npm run check` and report its real output.</code></pre>
+
+<p>The last two rules target a known <a href="../glossary.html#ai-agent">agent</a> failure mode: an agent that hits a red check can "fix" the test instead of the code. Protect <code>test/types.check.ts</code> with a CODEOWNERS entry or a required review, so the agent can't remove the guard without a human seeing it.</p>
+
+<h2 id="ci">10. Wire it into CI</h2>
+
+<p>A minimal GitHub Actions workflow, <code>.github/workflows/money.yml</code>:</p>
+
+<pre><code>name: money
+on: [push, pull_request]
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - run: npm ci
+      - run: npm run check</code></pre>
+
+<p><code>npm ci</code> needs the <code>package-lock.json</code> that <code>npm install</code> created in section 3, so commit it. Make the job a required status check on the main branch. Otherwise the gate is advisory.</p>
+
+<h2 id="boundaries">11. Boundaries where floats come back</h2>
+
+<p>Most float regressions don't enter through the money module. They enter at the edges:</p>
+
+<ul>
+  <li><strong>Incoming JSON.</strong> If a partner API sends <code>"amount": 19.99</code>, the float exists the moment <code>JSON.parse</code> runs. <code>fromJSON</code> rejects it. If you can't change the sender, read the raw body with a parser that keeps numbers as strings, or ask the provider for integer minor units. Don't convert with <code>String(19.99)</code> and hope.</li>
+  <li><strong>Databases.</strong> Store integer minor units in an integer column, or use an exact <code>NUMERIC</code>/<code>DECIMAL</code> column. Never use <code>REAL</code>/<code>FLOAT</code>/<code>DOUBLE</code>. Many Node drivers, including node-postgres by default, return <code>NUMERIC</code> as a string. Keep it that way and feed it to <code>parseMoney</code>. Don't install a type parser that turns it into a <code>number</code>.</li>
+  <li><strong>Forms.</strong> <code>&lt;input type="number"&gt;</code> and <code>valueAsNumber</code> give you a float. Read <code>.value</code> (a string), normalise the locale's decimal separator, and pass it to <code>parseMoney</code>. Show the user a validation error instead of guessing.</li>
+  <li><strong>Serialisation of bigint.</strong> <code>JSON.stringify</code> throws on <code>bigint</code>. That's useful, because it forces you through <code>toJSON</code>. Don't "fix" it with a global <code>BigInt.prototype.toJSON</code> that returns a <code>Number</code>.</li>
+  <li><strong>Analytics and charts.</strong> Converting to <code>number</code> for display or aggregation in a dashboard can be acceptable. Do it in a clearly named function outside <code>src</code> money paths, and never feed the result back into accounting.</li>
+</ul>
+
+<h2 id="failures">12. Failure cases and how to read them</h2>
+
+<table>
+  <thead>
+    <tr><th>Symptom</th><th>Likely cause</th><th>What to do</th></tr>
+  </thead>
+  <tbody>
+    <tr><td><code>TS2578: Unused '@ts-expect-error' directive</code></td><td>A signature was widened to accept <code>number</code> or made a parameter optional</td><td>Revert the widening; convert at the boundary instead</td></tr>
+    <tr><td><code>TypeError: Money amounts must be decimal strings, got number</code></td><td>A float reached <code>parseMoney</code> through <code>any</code>, JSON or JavaScript</td><td>Trace the caller and fix the source of the float, not the guard</td></tr>
+    <tr><td><code>RangeError: "1.005" has more than 2 fraction digits</code></td><td>An upstream computation produced sub-cent precision</td><td>Do the computation with <code>multiply</code> and an explicit rounding mode</td></tr>
+    <tr><td><code>TypeError: Currency mismatch</code></td><td>Mixed currencies in one sum</td><td>Convert explicitly with a rate and a rounding mode, then add</td></tr>
+    <tr><td>Node fails on <code>.ts</code> imports or reports unsupported syntax</td><td>Node older than 22.6, or <code>enum</code>/parameter properties in source</td><td>Upgrade Node; keep <code>erasableSyntaxOnly</code> on so <code>tsc</code> catches the syntax first</td></tr>
+    <tr><td>Scanner flags a non-money line</td><td>Line-based heuristic</td><td>Add <code>// money-float-ok: reason</code> or rename the identifier</td></tr>
+  </tbody>
+</table>
+
+<h2 id="limitations">13. Limitations</h2>
+
+<ul>
+  <li><strong>Compile-time checks stop at <code>any</code>.</strong> <code>// @ts-ignore</code>, <code>as any</code> and plain JavaScript bypass them. That's why the runtime guards exist. Consider the typescript-eslint rules that restrict <code>any</code> and ts-comments.</li>
+  <li><strong>The currency table is a sample.</strong> Five currencies are hard-coded. A production system needs a maintained ISO 4217 table and a decision about currencies whose minor unit differs from the cash-rounding rules in practice.</li>
+  <li><strong>Strictness can annoy.</strong> <code>"1.500"</code> for USD is rejected even though the value is exact. You can relax this to "strip trailing zeros", but do it deliberately.</li>
+  <li><strong>No exchange rates, interest or tax law.</strong> <code>multiply</code> applies one rate with one rounding step. Real tax rules may round per line, per invoice, or per jurisdiction. Encode that rule in your domain code, using this type.</li>
+  <li><strong><code>bigint</code> has a cost.</strong> It's slower than <code>number</code> arithmetic. For typical business workloads that rarely matters. If you process very large batches, measure before you optimise, and keep any optimisation exact (for example, integer <code>number</code> minor units with <code>Number.isSafeInteger</code> checks).</li>
+  <li><strong>The static scanner is a heuristic.</strong> Treat it as a tripwire for common assistant output, not a proof.</li>
+</ul>
+
+<h2 id="checklist">14. Final checklist</h2>
+
+<ol>
+  <li><code>npm run typecheck</code> passes, and fails with TS2578 when you widen a signature to <code>number</code>.</li>
+  <li><code>npm test</code> passes, and fails when you remove a <code>typeof</code> guard.</li>
+  <li><code>node scripts/forbid-float-money.mjs examples</code> flags the AI cart sample; <code>npm run lint:money</code> passes on <code>src</code>.</li>
+  <li>Amounts cross API and database boundaries as strings or integer minor units.</li>
+  <li>The agent instructions forbid editing guard tests, and CI runs <code>npm run check</code> as a required check.</li>
+</ol>
+
+<p>Once this is in place, the answer to "Как не дать ИИ использовать float для денег" is no longer a prompt you hope the assistant follows. It's a red build the assistant can't argue with.</p>
+
+<p class="reading-next">More practical walkthroughs: <a href="guides.html">all guides</a> · Terms used in this article: <a href="../glossary.html">glossary</a>.</p>
+
+<section class="service-note">
+  <b>We publish what works for us—and implement the same solutions for your business.</b>
+  We design AI automation, Telegram bots, chats, and AI agents for real-world processes.
+  <a href="../contacts-en.html">Discuss your project →</a>
+</section>
+</article>
+</main>
+
+<footer class="site-footer">
+  <p>© 2026 Agent Lab Journal · <a href="guides.html">Guides</a> · <a href="../glossary.html">Glossary</a> · <a href="index.html">Home</a></p>
+</footer>
+
+</body>
+</html>
