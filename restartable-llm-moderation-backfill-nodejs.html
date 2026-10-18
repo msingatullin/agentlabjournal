@@ -1,0 +1,380 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Перезапускаемый LLM-бэкфилл модерации на Node.js | Agent Lab Journal</title>
+  <meta name="description" content="Перезапускаемый LLM-бэкфилл модерации на Node.js: JSONL-конвейер с устойчивыми ключами, контрольными точками, учётом токенов по арендаторам и проверкой изоляции.">
+  <link rel="canonical" href="https://agentlabjournal.online/restartable-llm-moderation-backfill-nodejs.html">
+  <link rel="stylesheet" href="style.css">
+  <link rel="stylesheet" href="reading.css">
+
+  <meta property="og:type" content="article">
+  <meta property="og:site_name" content="Agent Lab Journal">
+  <meta property="og:locale" content="ru_RU">
+  <meta property="og:title" content="Перезапускаемый LLM-бэкфилл модерации на Node.js">
+  <meta property="og:description" content="Собираем тестовый JSONL-конвейер: устойчивые ключи, контрольные точки, учёт токенов и проверка изоляции арендаторов.">
+  <meta property="og:url" content="https://agentlabjournal.online/restartable-llm-moderation-backfill-nodejs.html">
+
+  <meta name="twitter:card" content="summary">
+  <meta name="twitter:title" content="Перезапускаемый LLM-бэкфилл модерации на Node.js">
+  <meta name="twitter:description" content="JSONL-конвейер, который переживает падения, не тратит токены повторно и считает расходы по арендаторам.">
+
+  <script type="application/ld+json">
+  {
+    "@context": "https://schema.org",
+    "@type": "Article",
+    "headline": "Перезапускаемый LLM-бэкфилл модерации на Node.js",
+    "description": "Перезапускаемый LLM-бэкфилл модерации на Node.js: JSONL-конвейер с устойчивыми ключами, контрольными точками, учётом токенов по арендаторам и проверкой изоляции.",
+    "inLanguage": "ru",
+    "datePublished": "2026-10-18",
+    "dateModified": "2026-10-18",
+    "mainEntityOfPage": "https://agentlabjournal.online/restartable-llm-moderation-backfill-nodejs.html",
+    "author": { "@type": "Organization", "name": "Agent Lab Journal" },
+    "publisher": { "@type": "Organization", "name": "Agent Lab Journal" },
+    "keywords": "LLM, модерация, бэкфилл, Node.js, JSONL, идемпотентность, мультиарендность, учёт токенов"
+  }
+  </script>
+<link rel="stylesheet" href="homepage.css"><link rel="stylesheet" href="max-promo.css">  <meta property="og:image" content="https://agentlabjournal.online/assets/covers/llm-context-window-budget-social.png">
+  <meta property="og:image:alt" content="Перезапускаемый LLM-бэкфилл модерации на Node.js">
+  <meta name="twitter:image" content="https://agentlabjournal.online/assets/covers/llm-context-window-budget-social.png">
+</head>
+<body>
+  <header class="site-header">
+    <a href="index.html">Agent Lab Journal</a>
+    <nav>
+      <a href="guides.html">Гайды</a>
+      <a href="glossary.html">Глоссарий</a>
+    </nav>
+  </header>
+
+  <main>
+    <article class="reading">
+<a href="https://max.ru/channel_AgentLab?utm_source=agentlabjournal&utm_medium=article&utm_campaign=max_channel&utm_content=article_footer" class="max-promo-block" target="_blank" rel="noopener noreferrer" aria-label="Самое важное из мира AI в канале MAX AgentLab">
+  <span class="max-promo-block__icon" aria-hidden="true"></span>
+  <span class="max-promo-block__content"><span class="max-promo-block__title">Самое важное из мира AI — в канале MAX AgentLab</span><span class="max-promo-block__desc">Отдельные разборы, инструменты и практические схемы</span></span>
+  <span class="max-promo-block__arrow" aria-hidden="true">→</span>
+</a>
+<a href="https://t.me/pelmenews?utm_source=agentlabjournal&utm_medium=article&utm_campaign=telegram_channel&utm_content=article_intro" class="telegram-promo-block" target="_blank" rel="noopener noreferrer" aria-label="Читайте Agent Lab в Telegram">
+  <span class="telegram-promo-block__icon" aria-hidden="true"></span>
+  <span class="telegram-promo-block__content">
+    <span class="telegram-promo-block__title">Читайте Agent Lab в Telegram</span>
+    <span class="telegram-promo-block__desc">Разборы, кейсы и новости о практических AI-агентах без лишней воды.</span>
+  </span>
+  <span class="telegram-promo-block__arrow" aria-hidden="true">→</span>
+</a>
+      <h1>Перезапускаемый LLM-бэкфилл модерации на Node.js</h1>
+        <figure class="article-cover" data-editorial-cover="restartable-llm-moderation-backfill-nodejs"><img src="assets/covers/llm-context-window-budget.png" alt="Перезапускаемый LLM-бэкфилл модерации на Node.js" width="1280" height="720" fetchpriority="high"><figcaption>Temporary fallback cover; replace in editorial pass.</figcaption></figure>
+      <p class="reading-meta">Уровень: продвинутый · Чтение: до 12 минут · Обновлено: 18 октября 2026</p>
+
+      <p>Когда в продукт добавляют LLM-модерацию, новые публикации проверяются на лету, а старые остаются непроверенными. Их прогоняют разовым <a href="glossary.html">бэкфиллом</a> — пакетной классификацией архива. На практике такой скрипт падает на середине из-за таймаута, лимита запросов или перезапуска контейнера. После повторного запуска он снова отправляет уже обработанные тексты и снова за них платит. Если в одной базе лежат данные нескольких арендаторов, к этому добавляется вопрос, чьи токены были потрачены и не попал ли результат одного клиента в выдачу другого.</p>
+
+      <p>В статье соберём небольшой, но честный стенд: Node.js-скрипт читает JSONL с публикациями, вызывает классификатор, пишет результаты в журнал только на добавление и переживает падение в любой момент. Затем проверим четыре свойства: повторный запуск не делает лишних вызовов, оборванная запись не ломает журнал, токены считаются по арендаторам, а подмена арендатора в результатах обнаруживается автоматически.</p>
+
+      <p><strong>Важно:</strong> классификатор в примере — детерминированная заглушка. Её «токены» — грубая оценка по длине текста, а не показания реального токенизатора. Это пример для проверки механики конвейера, а не замер стоимости или качества модерации.</p>
+
+      <h2>Архитектура в трёх файлах</h2>
+      <ul>
+        <li><code>key.mjs</code> — устойчивый ключ записи. Ключ одинаков при любом запуске, если не изменились арендатор, публикация, текст, версия промпта и модель.</li>
+        <li><code>backfill.mjs</code> — конвейер. Источник истины — журнал <code>out/results.jsonl</code>; файл <code>out/checkpoint.json</code> показывает прогресс.</li>
+        <li><code>check.mjs</code> — независимая проверка: дубликаты, неизвестные ключи, изоляция арендаторов, сводка токенов.</li>
+      </ul>
+
+      <p>Главное решение — не доверять номеру строки как контрольной точке. Если входной файл перевыгрузили, отсортировали иначе или дописали, номер строки начнёт указывать на другую публикацию. Поэтому пропуск решается по ключу из журнала, а <code>checkpoint.json</code> нужен человеку и мониторингу, а не логике возобновления.</p>
+
+      <h2>Шаг 1. Подготовка стенда</h2>
+      <p>Нужен Node.js 18 или новее; внешние пакеты не используются. Все команды работают только внутри новой папки.</p>
+<pre><code>mkdir llm-backfill-lab &amp;&amp; cd llm-backfill-lab
+mkdir -p data
+node --version</code></pre>
+
+      <p>Тестовые данные вымышлены: два условных арендатора, совпадающие <code>post_id</code> у разных арендаторов и одна дублирующаяся строка.</p>
+<pre><code>cat &gt; data/posts.jsonl &lt;&lt;'EOF'
+{"tenant_id":"tenant-a","post_id":"p1","text":"Отличная статья, спасибо"}
+{"tenant_id":"tenant-a","post_id":"p2","text":"Заходите в наше казино, бонус каждый день"}
+{"tenant_id":"tenant-a","post_id":"p3","text":"Ты идиот и ничего не понимаешь"}
+{"tenant_id":"tenant-b","post_id":"p1","text":"Где купить запчасти для велосипеда?"}
+{"tenant_id":"tenant-b","post_id":"p2","text":"Спам-рассылка: заработок без вложений"}
+{"tenant_id":"tenant-b","post_id":"p3","text":"Хорошая подборка, добавлю в закладки"}
+{"tenant_id":"tenant-a","post_id":"p1","text":"Отличная статья, спасибо"}
+{"tenant_id":"tenant-b","post_id":"p4","text":"Ненавижу понедельники"}
+EOF</code></pre>
+      <p>Во входе восемь строк, но уникальных ключей семь: седьмая строка повторяет первую.</p>
+
+      <h2>Шаг 2. Устойчивый ключ</h2>
+      <p>Ключ — идемпотентный идентификатор работы: «эту публикацию этого арендатора этим промптом этой моделью уже классифицировали». В ключ входит хэш текста, поэтому отредактированная публикация будет проверена заново. Версия промпта и модель тоже входят в ключ: после смены правил модерации бэкфилл честно пройдёт архив ещё раз, а не будет молча использовать старые ярлыки.</p>
+<pre><code>cat &gt; key.mjs &lt;&lt;'EOF'
+import { createHash } from 'node:crypto';
+
+export const PROMPT_VERSION = 'moderation-v1';
+
+export const sha256 = (s) =&gt; createHash('sha256').update(s, 'utf8').digest('hex');
+
+// Разделитель \u0000 не встречается в идентификаторах, поэтому
+// пары вида ("a", "bc") и ("ab", "c") не дадут одинаковый ключ.
+export function stableKey(post, model) {
+  return sha256(
+    [post.tenant_id, post.post_id, sha256(post.text), PROMPT_VERSION, model].join('\u0000')
+  );
+}
+EOF</code></pre>
+      <p><code>tenant_id</code> стоит в ключе первым не для красоты. У обоих арендаторов есть <code>p1</code>, и без арендатора в ключе результат одного из них затёр бы результат другого.</p>
+
+      <h2>Шаг 3. Конвейер с журналом и контрольной точкой</h2>
+<pre><code>cat &gt; backfill.mjs &lt;&lt;'EOF'
+import {
+  createReadStream, existsSync, readFileSync, writeFileSync, renameSync,
+  openSync, writeSync, fsyncSync, closeSync, truncateSync, mkdirSync,
+} from 'node:fs';
+import { createInterface } from 'node:readline';
+import { stableKey, PROMPT_VERSION } from './key.mjs';
+
+const INPUT = process.env.INPUT ?? 'data/posts.jsonl';
+const OUT_DIR = process.env.OUT_DIR ?? 'out';
+const RESULTS = `${OUT_DIR}/results.jsonl`;
+const CHECKPOINT = `${OUT_DIR}/checkpoint.json`;
+const MODEL = process.env.MODEL ?? 'mock';
+const CRASH_AFTER = Number(process.env.CRASH_AFTER ?? 0);
+const MAX_TOKENS_PER_TENANT = Number(process.env.MAX_TOKENS_PER_TENANT ?? Infinity);
+
+mkdirSync(OUT_DIR, { recursive: true });
+
+function addUsage(usage, tenant, u) {
+  const t = usage.get(tenant) ?? { input_tokens: 0, output_tokens: 0 };
+  t.input_tokens += u.input_tokens;
+  t.output_tokens += u.output_tokens;
+  usage.set(tenant, t);
+}
+
+const spent = (usage, tenant) =&gt; {
+  const t = usage.get(tenant);
+  return t ? t.input_tokens + t.output_tokens : 0;
+};
+
+// Журнал — источник истины. Запись без завершающего \n считается
+// оборванной при падении и отрезается до последней целой строки.
+function loadLedger() {
+  const done = new Set();
+  const usage = new Map();
+  if (!existsSync(RESULTS)) return { done, usage };
+  const buf = readFileSync(RESULTS);
+  const complete = buf.lastIndexOf(0x0a) + 1;
+  if (complete &lt; buf.length) {
+    console.warn(`ledger: отрезаю неполный хвост ${buf.length - complete} байт`);
+    truncateSync(RESULTS, complete);
+  }
+  for (const line of buf.subarray(0, complete).toString('utf8').split('\n')) {
+    if (!line) continue;
+    const r = JSON.parse(line);
+    done.add(r.key);
+    addUsage(usage, r.tenant_id, r.usage);
+  }
+  return { done, usage };
+}
+
+function appendDurable(path, obj) {
+  const fd = openSync(path, 'a');
+  try {
+    writeSync(fd, JSON.stringify(obj) + '\n');
+    fsyncSync(fd);
+  } finally {
+    closeSync(fd);
+  }
+}
+
+// Атомарная замена: читатель видит либо старый, либо новый файл целиком.
+function writeCheckpoint(state) {
+  const tmp = `${CHECKPOINT}.tmp`;
+  writeFileSync(tmp, JSON.stringify({ ...state, at: new Date().toISOString() }));
+  renameSync(tmp, CHECKPOINT);
+}
+
+// Заглушка. Для реального провайдера верните сюда ярлык и счётчики
+// токенов из ответа API — не оценку по длине текста.
+async function classify(post) {
+  if (MODEL !== 'mock') throw new Error('Подключите реальный клиент в classify()');
+  const text = post.text.toLowerCase();
+  const label = /спам|казино/.test(text) ? 'spam'
+    : /идиот|ненавиж/.test(text) ? 'abuse'
+    : 'ok';
+  return {
+    label,
+    usage: { input_tokens: Math.ceil(post.text.length / 4) + 50, output_tokens: 5 },
+  };
+}
+
+const { done, usage } = loadLedger();
+let calls = 0, skipped = 0, deferred = 0, lineNo = 0;
+
+const rl = createInterface({ input: createReadStream(INPUT), crlfDelay: Infinity });
+for await (const line of rl) {
+  lineNo++;
+  if (!line.trim()) continue;
+  const post = JSON.parse(line);
+  if (!post.tenant_id || !post.post_id || typeof post.text !== 'string') {
+    throw new Error(`строка ${lineNo}: нужны tenant_id, post_id и text`);
+  }
+  const key = stableKey(post, MODEL);
+  if (done.has(key)) { skipped++; continue; }
+  if (spent(usage, post.tenant_id) &gt;= MAX_TOKENS_PER_TENANT) { deferred++; continue; }
+
+  const { label, usage: u } = await classify(post);
+  appendDurable(RESULTS, {
+    key, tenant_id: post.tenant_id, post_id: post.post_id, label,
+    prompt_version: PROMPT_VERSION, model: MODEL, usage: u, at: new Date().toISOString(),
+  });
+  done.add(key);
+  addUsage(usage, post.tenant_id, u);
+  calls++;
+  writeCheckpoint({ input_line: lineNo, calls, skipped, deferred });
+
+  if (CRASH_AFTER &amp;&amp; calls &gt;= CRASH_AFTER) {
+    console.error(`имитация падения после ${calls} вызовов`);
+    process.exit(137);
+  }
+}
+
+writeCheckpoint({ input_line: lineNo, calls, skipped, deferred, finished: true });
+console.log(JSON.stringify({ calls, skipped, deferred, usage: Object.fromEntries(usage) }));
+EOF</code></pre>
+
+      <p>Порядок операций выбран так, чтобы падение в любой точке было безопасным:</p>
+      <ol>
+        <li><strong>Падение до записи в журнал.</strong> Вызов модели потерян, ключа в журнале нет, при перезапуске публикация будет классифицирована снова. Это единственный сценарий повторной оплаты, и он ограничен одной записью.</li>
+        <li><strong>Падение посреди записи.</strong> В журнале остаётся строка без <code>\n</code>. <code>loadLedger()</code> отрезает её, и публикация обрабатывается заново.</li>
+        <li><strong>Падение между журналом и контрольной точкой.</strong> <code>checkpoint.json</code> отстаёт на одну запись, но пропуск решается по ключу, поэтому лишнего вызова не будет.</li>
+      </ol>
+      <p>Бюджет на арендатора — мягкий. Проверка стоит перед вызовом, поэтому последний вызов может превысить лимит на размер одного ответа. Отложенные публикации не пишутся в журнал и подхватываются следующим запуском с бо́льшим бюджетом.</p>
+
+      <h2>Шаг 4. Независимая проверка</h2>
+      <p>Проверка не использует состояние конвейера: она заново читает вход, заново вычисляет ключи и сверяет с ними каждую запись журнала.</p>
+<pre><code>cat &gt; check.mjs &lt;&lt;'EOF'
+import { readFileSync } from 'node:fs';
+import { stableKey } from './key.mjs';
+
+const INPUT = process.env.INPUT ?? 'data/posts.jsonl';
+const RESULTS = process.env.RESULTS ?? 'out/results.jsonl';
+const MODEL = process.env.MODEL ?? 'mock';
+
+const readJsonl = (p) =&gt;
+  readFileSync(p, 'utf8').split('\n').filter(Boolean).map((l) =&gt; JSON.parse(l));
+
+const byKey = new Map(readJsonl(INPUT).map((p) =&gt; [stableKey(p, MODEL), p]));
+const errors = [];
+const seen = new Set();
+const tokens = {};
+
+for (const r of readJsonl(RESULTS)) {
+  const short = r.key.slice(0, 12);
+  if (seen.has(r.key)) errors.push(`дубликат ключа ${short}`);
+  seen.add(r.key);
+
+  const src = byKey.get(r.key);
+  if (!src) { errors.push(`ключ ${short} не найден во входе`); continue; }
+  if (src.tenant_id !== r.tenant_id || src.post_id !== r.post_id) {
+    errors.push(`изоляция: ${short} записан как ${r.tenant_id}/${r.post_id}, во входе ${src.tenant_id}/${src.post_id}`);
+  }
+
+  const t = (tokens[r.tenant_id] ??= { calls: 0, input_tokens: 0, output_tokens: 0 });
+  t.calls++;
+  t.input_tokens += r.usage.input_tokens;
+  t.output_tokens += r.usage.output_tokens;
+}
+
+const missing = [...byKey.keys()].filter((k) =&gt; !seen.has(k)).length;
+console.log(JSON.stringify({ results: seen.size, expected: byKey.size, missing, tokens }, null, 2));
+if (errors.length) {
+  console.error(errors.join('\n'));
+  process.exit(1);
+}
+EOF</code></pre>
+
+      <h2>Шаг 5. Проверка результата</h2>
+
+      <h3>5.1. Падение и возобновление</h3>
+      <p>Каталог <code>out</code> создаёт сам скрипт. При повторных прогонах удаляйте только его.</p>
+<pre><code>CRASH_AFTER=3 node backfill.mjs; echo "exit=$?"
+cat out/checkpoint.json; echo
+node backfill.mjs</code></pre>
+      <p>Ожидаемое поведение на этих данных: первый запуск делает 3 вызова и завершается с кодом 137. Второй запуск пропускает 4 строки (три уже обработанные и дубль) и делает ещё 4 вызова: <code>"calls":4,"skipped":4</code>.</p>
+
+      <h3>5.2. Идемпотентность</h3>
+<pre><code>node backfill.mjs
+node check.mjs; echo "exit=$?"</code></pre>
+      <p>Третий запуск обязан показать <code>"calls":0,"skipped":8</code>. Проверка должна вернуть <code>"results": 7, "expected": 7, "missing": 0</code>, разбивку токенов по <code>tenant-a</code> и <code>tenant-b</code> и <code>exit=0</code>.</p>
+
+      <h3>5.3. Оборванная запись</h3>
+<pre><code>printf '{"key":"broken' &gt;&gt; out/results.jsonl
+node backfill.mjs
+node check.mjs; echo "exit=$?"</code></pre>
+      <p>Скрипт предупредит, что отрезает неполный хвост, сделает 0 вызовов, и проверка снова пройдёт.</p>
+
+      <h3>5.4. Негативный тест изоляции</h3>
+      <p>Создаём отдельную копию журнала, где первая запись приписана чужому арендатору. Исходный журнал при этом не меняется.</p>
+<pre><code>node -e "const fs=require('fs');const l=fs.readFileSync('out/results.jsonl','utf8').trim().split('\n');const r=JSON.parse(l[0]);r.tenant_id='tenant-b';l[0]=JSON.stringify(r);fs.writeFileSync('out/tampered.jsonl',l.join('\n')+'\n')"
+RESULTS=out/tampered.jsonl node check.mjs; echo "exit=$?"</code></pre>
+      <p>Ожидается строка <code>изоляция: … записан как tenant-b/p1, во входе tenant-a/p1</code> и <code>exit=1</code>. Если проверка прошла, значит, она не защищает от главного риска и ей нельзя доверять.</p>
+
+      <h3>5.5. Бюджет по арендатору</h3>
+<pre><code>OUT_DIR=out-budget MAX_TOKENS_PER_TENANT=100 node backfill.mjs
+RESULTS=out-budget/results.jsonl node check.mjs</code></pre>
+      <p>При оценке токенов из заглушки каждый арендатор получает по два вызова, после чего лимит исчерпан. Ожидаемый итог: <code>"calls":4,"deferred":3,"skipped":1</code>, а в проверке <code>"missing": 3</code>. Это не ошибка: отложенные публикации доберёт запуск с бо́льшим лимитом в тот же <code>OUT_DIR</code>.</p>
+
+      <h2>Подключение реальной модели</h2>
+      <p>Замените тело <code>classify()</code> вызовом своего провайдера и запускайте с <code>MODEL=&lt;идентификатор модели&gt;</code>. Модель входит в ключ, поэтому результаты заглушки не смешаются с настоящими. Соблюдайте три правила:</p>
+      <ul>
+        <li>Берите <code>usage</code> из ответа API. Оценка по длине годится только для стенда.</li>
+        <li>Отправляйте в один запрос публикации только одного арендатора. В этом конвейере каждая публикация идёт отдельным вызовом. Если перейдёте на пакеты, группируйте их по <code>tenant_id</code>, иначе текст одного клиента окажется в контексте модели при классификации другого.</li>
+        <li>Повторы при сетевых ошибках и 429 делайте внутри <code>classify()</code> с экспоненциальной паузой. Если ошибка постоянная, лучше дать процессу упасть: перезапуск продолжит с места остановки.</li>
+      </ul>
+      <p>Ключи API передавайте через переменные окружения или менеджер секретов. Не записывайте их в журнал и в <code>checkpoint.json</code>.</p>
+
+      <h2>Типовые ошибки</h2>
+      <ul>
+        <li><strong>Ключ без <code>tenant_id</code>.</strong> Одинаковые <code>post_id</code> у разных арендаторов перетирают друг друга. Негативный тест 5.4 ловит подмену, но не сломанную схему ключа, поэтому держите в данных совпадающие идентификаторы.</li>
+        <li><strong>Возобновление по номеру строки.</strong> После перевыгрузки входа скрипт пропускает не те публикации. Номер строки годится для отчёта о прогрессе, но не для решения «делать или нет».</li>
+        <li><strong>Ключ без версии промпта.</strong> После изменения правил модерации архив остаётся размечен по старым правилам, и это никак не видно.</li>
+        <li><strong>Запись в журнал без <code>fsync</code>.</strong> При сбое питания запись может пропасть уже после оплаты вызова. Это не ломает корректность, но увеличивает повторную оплату.</li>
+        <li><strong>Два процесса на один журнал.</strong> Оба не видят ключей друг друга и делают двойные вызовы. Запускайте один процесс на <code>OUT_DIR</code> или шардируйте вход по арендаторам с отдельными каталогами.</li>
+        <li><strong>Учёт токенов по логам приложения.</strong> Логи теряются и дублируются. Считайте затраты по журналу результатов: каждая строка содержит ровно один оплаченный вызов.</li>
+      </ul>
+
+      <h2>Ограничения</h2>
+      <ul>
+        <li>Конвейер последовательный. Для больших архивов нужен пул с ограничением параллелизма. Тогда <code>done</code> надо помечать до вызова, а журнал писать из одного места.</li>
+        <li>Журнал целиком загружается в память при старте. Для миллионов записей лучше хранить ключи в SQLite или в таблице с уникальным индексом.</li>
+        <li>Вызов, завершившийся до записи в журнал, оплачивается повторно. Устранить это полностью можно, только если провайдер поддерживает идемпотентные запросы.</li>
+        <li>Бюджет мягкий и действует в рамках одного <code>OUT_DIR</code>. Это не замена биллингу и квотам на стороне провайдера.</li>
+        <li>Заглушка ничего не говорит о качестве модерации. Её ярлыки (например, «Ненавижу понедельники» → <code>abuse</code>) показывают только работу механики.</li>
+      </ul>
+
+      <h2>Что дальше</h2>
+      <p>Другие практические разборы собраны в <a href="guides.html">гайдах</a>. Термины из статьи — бэкфилл, идемпотентность, мультиарендность — объяснены в <a href="glossary.html">глоссарии</a>.</p>
+<aside class="service-note" aria-label="Связаться по проекту">
+  <div class="service-note__copy">
+    <p class="service-note__label">Связь с Agent Lab</p>
+    <p class="service-note__title">Внедрим такой контур в ваш процесс</p>
+    <p class="service-note__text">Напишите инженеру Agent Lab в Telegram: опишите задачу, бота или интеграцию — предложим пилот с проверками и понятными границами.</p>
+  </div>
+  <a class="service-note__link" href="https://t.me/msrzn007?utm_source=journal&amp;utm_medium=article&amp;utm_campaign=service_note" target="_blank" rel="noopener">Написать в Telegram
+    <svg viewBox="0 0 16 16" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"><path d="M3 13 13 3M6 3h7v7"/></svg>
+  </a>
+</aside>
+<aside class="service-note service-note--sitevisor" aria-label="Экспресс-аудит сайта">
+  <div class="service-note__copy">
+    <p class="service-note__label">SiteVisor</p>
+    <p class="service-note__title">Проверьте техническое состояние и готовность вашего сайта к рекламе</p>
+    <p class="service-note__text">Экспресс-аудит на SiteVisor.pro: индексация, скорость, разметка, аналитика и точки конверсии.</p>
+  </div>
+  <a class="service-note__link" href="https://sitevisor.pro/?utm_source=journal&amp;utm_medium=article&amp;utm_campaign=leadmagnet" target="_blank" rel="noopener">Экспресс-аудит на SiteVisor.pro
+    <svg viewBox="0 0 16 16" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"><path d="M3 13 13 3M6 3h7v7"/></svg>
+  </a>
+</aside>
+</article>
+  </main>
+
+  <footer class="site-footer">
+    <p>© 2026 Agent Lab Journal · <a href="guides.html">Гайды</a> · <a href="glossary.html">Глоссарий</a></p>
+  </footer>
+</body>
+</html>
