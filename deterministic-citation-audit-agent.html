@@ -1,0 +1,366 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Детерминированная проверка ссылок в исследовательском агенте — Agent Lab Journal</title>
+<meta name="description" content="Детерминированная проверка ссылок в исследовательском агенте: минимальный конвейер, который разрешает DOI через Crossref, сверяет метаданные и цитаты с источником и выдаёт отчёт об ошибках.">
+<link rel="canonical" href="https://agentlabjournal.online/deterministic-citation-audit-agent.html">
+<link rel="stylesheet" href="style.css">
+<link rel="stylesheet" href="reading.css">
+<meta property="og:type" content="article">
+<meta property="og:locale" content="ru_RU">
+<meta property="og:site_name" content="Agent Lab Journal">
+<meta property="og:title" content="Детерминированная проверка ссылок в исследовательском агенте">
+<meta property="og:description" content="Минимальный конвейер: разрешение DOI, сверка метаданных, проверка цитат по снимку источника и машиночитаемый отчёт об ошибках.">
+<meta property="og:url" content="https://agentlabjournal.online/deterministic-citation-audit-agent.html">
+<meta name="twitter:card" content="summary">
+<meta name="twitter:title" content="Детерминированная проверка ссылок в исследовательском агенте">
+<meta name="twitter:description" content="Как не пропустить в отчёт агента несуществующие источники и цитаты, которых нет в тексте статьи.">
+<script type="application/ld+json">
+{
+  "@context": "https://schema.org",
+  "@type": "Article",
+  "headline": "Детерминированная проверка ссылок в исследовательском агенте",
+  "description": "Минимальный конвейер, который разрешает библиографические записи через DOI, проверяет соответствие цитат источнику и формирует отчёт об ошибках.",
+  "inLanguage": "ru",
+  "datePublished": "2026-10-19",
+  "dateModified": "2026-10-19",
+  "mainEntityOfPage": "https://agentlabjournal.online/deterministic-citation-audit-agent.html",
+  "author": {"@type": "Organization", "name": "Agent Lab Journal"},
+  "publisher": {"@type": "Organization", "name": "Agent Lab Journal"}
+}
+</script>
+<link rel="stylesheet" href="homepage.css"><link rel="stylesheet" href="max-promo.css">  <meta property="og:image" content="https://agentlabjournal.online/assets/covers/llm-context-window-budget-social.png">
+  <meta property="og:image:alt" content="Детерминированная проверка ссылок в исследовательском агенте">
+  <meta name="twitter:image" content="https://agentlabjournal.online/assets/covers/llm-context-window-budget-social.png">
+</head>
+<body>
+<header class="site-header">
+  <a class="site-logo" href="index.html">Agent Lab Journal</a>
+  <nav>
+    <a href="guides.html">Руководства</a>
+    <a href="glossary.html">Глоссарий</a>
+  </nav>
+</header>
+
+<main>
+<article class="reading">
+<a href="https://max.ru/channel_AgentLab?utm_source=agentlabjournal&utm_medium=article&utm_campaign=max_channel&utm_content=article_footer" class="max-promo-block" target="_blank" rel="noopener noreferrer" aria-label="Самое важное из мира AI в канале MAX AgentLab">
+  <span class="max-promo-block__icon" aria-hidden="true"></span>
+  <span class="max-promo-block__content"><span class="max-promo-block__title">Самое важное из мира AI — в канале MAX AgentLab</span><span class="max-promo-block__desc">Отдельные разборы, инструменты и практические схемы</span></span>
+  <span class="max-promo-block__arrow" aria-hidden="true">→</span>
+</a>
+<a href="https://t.me/pelmenews?utm_source=agentlabjournal&utm_medium=article&utm_campaign=telegram_channel&utm_content=article_intro" class="telegram-promo-block" target="_blank" rel="noopener noreferrer" aria-label="Читайте Agent Lab в Telegram">
+  <span class="telegram-promo-block__icon" aria-hidden="true"></span>
+  <span class="telegram-promo-block__content">
+    <span class="telegram-promo-block__title">Читайте Agent Lab в Telegram</span>
+    <span class="telegram-promo-block__desc">Разборы, кейсы и новости о практических AI-агентах без лишней воды.</span>
+  </span>
+  <span class="telegram-promo-block__arrow" aria-hidden="true">→</span>
+</a>
+  <h1>Детерминированная проверка ссылок в исследовательском агенте</h1>
+        <figure class="article-cover" data-editorial-cover="deterministic-citation-audit-agent"><img src="assets/covers/llm-context-window-budget.png" alt="Детерминированная проверка ссылок в исследовательском агенте" width="1280" height="720" fetchpriority="high"><figcaption>Temporary fallback cover; replace in editorial pass.</figcaption></figure>
+  <p class="reading-meta">Уровень: продвинутый · Чтение: около 11 минут · Опубликовано: 19 октября 2026</p>
+
+  <p>Модель пишет гладко и уверенно, и это хорошо видно на примере <a href="glossary.html">исследовательского агента</a>: он может выдать связный обзор, где у статьи правильный на вид DOI, но не тот год, или где «цитата» вообще не встречается в источнике. Если отдать проверку другой модели, это не решает проблему, а просто добавляет ещё одно мнение. Нужна проверка, которая на одних и тех же входных данных всегда даёт один и тот же ответ и которую можно запустить в CI.</p>
+
+  <p>В статье соберём минимальный конвейер на Python, только со стандартной библиотекой. Он:</p>
+  <ul>
+    <li>разрешает каждую ссылку через внешний идентификатор (DOI) в публичном API Crossref и кэширует ответ;</li>
+    <li>сравнивает название, год и первого автора с тем, что написал агент;</li>
+    <li>ищет цитату дословно, после нормализации, в зафиксированном снимке текста источника;</li>
+    <li>проверяет, что числа из утверждения есть в цитате;</li>
+    <li>пишет <code>report.json</code> и завершается с ненулевым кодом, если найдены ошибки.</li>
+  </ul>
+
+  <h2>Что значит «детерминированная» и где её граница</h2>
+  <p>Сеть сама по себе недетерминирована: запись в реестре могут исправить, сервис может не ответить. Поэтому детерминированность здесь обеспечивается разделением этапов. Сначала один раз и явно собираются <strong>фиксированные данные</strong>: кэш метаданных и снимки текстов. Потом поверх них выполняются <strong>чистые проверки</strong>. В режиме <code>--offline</code> конвейер в сеть не обращается совсем. При одинаковых <code>claims.json</code>, кэше и снимках отчёт совпадает байт в байт.</p>
+  <p>Граница метода такая: скрипт доказывает, что источник существует, что метаданные совпадают и что процитированный фрагмент действительно есть в тексте. Он <em>не</em> доказывает, что фрагмент подтверждает утверждение по смыслу. Эта часть остаётся за человеком или за отдельной недетерминированной проверкой, и в отчёте их нужно разделять.</p>
+
+  <h2>Шаг 1. Контракт вывода агента</h2>
+  <p>Проверять можно только структурированные данные. Попросите агента возвращать, помимо текста, файл с утверждениями. Каждое утверждение ссылается на источник через DOI и приводит дословную цитату:</p>
+<pre><code>{
+  "claims": [
+    {
+      "id": "c1",
+      "text": "Утверждение в том виде, в каком оно стоит в отчёте",
+      "citations": [
+        {
+          "doi": "10.xxxx/...",
+          "title": "Название статьи",
+          "year": 2024,
+          "first_author": "Фамилия",
+          "quote": "Дословный фрагмент из источника"
+        }
+      ]
+    }
+  ]
+}</code></pre>
+  <p>Если утверждение без ссылок, это тоже ошибка (<code>E_UNCITED</code>). Если агенту можно писать собственные выводы без источника, помечайте их отдельным типом и не кладите в этот файл.</p>
+
+  <h2>Шаг 2. Подготовка каталога</h2>
+<pre><code>mkdir citation-audit &amp;&amp; cd citation-audit
+mkdir cache sources
+python3 --version   # нужен Python 3.8+</code></pre>
+  <p>Ставить зависимости не нужно. В <code>cache/</code> лежат ответы реестра, в <code>sources/</code> лежат снимки текстов, которые вы добыли сами.</p>
+
+  <h2>Шаг 3. Скрипт проверки</h2>
+  <p>Сохраните как <code>citation_audit.py</code>:</p>
+<pre><code>#!/usr/bin/env python3
+"""Детерминированный аудит ссылок исследовательского агента."""
+import argparse, hashlib, json, pathlib, re, sys, unicodedata
+import urllib.error, urllib.parse, urllib.request
+
+DOI_RE = re.compile(r"^10\.\d{4,9}/\S+$")
+NUM_RE = re.compile(r"\d+(?:[.,]\d+)?")
+MIN_QUOTE = 30
+
+
+def norm(text):
+    text = unicodedata.normalize("NFKC", text or "").casefold()
+    text = re.sub(r"[\u2010-\u2015]", "-", text)
+    text = re.sub(r"[\"'«»“”„‘’]", "", text)
+    return re.sub(r"\s+", " ", text).strip()
+
+
+def norm_doi(doi):
+    doi = (doi or "").strip().lower()
+    return re.sub(r"^(https?://(dx\.)?doi\.org/|doi:\s*)", "", doi)
+
+
+def slug(doi):
+    return re.sub(r"[^a-z0-9._-]", "_", doi)
+
+
+def numbers(text):
+    return {n.replace(",", ".") for n in NUM_RE.findall(text or "")}
+
+
+def fetch_crossref(doi, mailto):
+    url = "https://api.crossref.org/works/" + urllib.parse.quote(doi, safe="")
+    if mailto:
+        url += "?mailto=" + urllib.parse.quote(mailto)
+    req = urllib.request.Request(url, headers={"User-Agent": "citation-audit/0.1"})
+    try:
+        with urllib.request.urlopen(req, timeout=20) as resp:
+            msg = json.load(resp)["message"]
+    except urllib.error.HTTPError as err:
+        if err.code == 404:
+            return {"status": "not_found"}
+        raise  # временные сбои не кэшируем
+    parts = (msg.get("issued") or {}).get("date-parts") or [[None]]
+    return {
+        "status": "found",
+        "title": (msg.get("title") or [""])[0],
+        "year": parts[0][0],
+        "authors": [a.get("family", "") for a in msg.get("author", [])],
+    }
+
+
+def resolve(doi, args):
+    path = args.cache / f"{slug(doi)}.json"
+    if path.exists():
+        return json.loads(path.read_text("utf-8"))
+    if args.offline:
+        return {"status": "not_cached"}
+    record = fetch_crossref(doi, args.mailto)
+    args.cache.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(record, ensure_ascii=False, sort_keys=True, indent=2), "utf-8")
+    return record
+
+
+def check_citation(claim_text, cit, args):
+    doi = norm_doi(cit.get("doi"))
+    if not DOI_RE.match(doi):
+        return ["E_DOI_SYNTAX"]
+    rec = resolve(doi, args)
+    if rec["status"] == "not_found":
+        return ["E_DOI_NOT_FOUND"]
+    if rec["status"] == "not_cached":
+        return ["E_NOT_CACHED"]
+
+    errors = []
+    if norm(cit.get("title")) != norm(rec["title"]):
+        errors.append("E_TITLE_MISMATCH")
+    if str(cit.get("year")) != str(rec["year"]):
+        errors.append("E_YEAR_MISMATCH")
+    if norm(cit.get("first_author")) not in [norm(a) for a in rec["authors"]]:
+        errors.append("E_AUTHOR_MISMATCH")
+
+    quote = norm(cit.get("quote"))
+    snapshot = args.sources / f"{slug(doi)}.txt"
+    if len(quote) &lt; MIN_QUOTE:
+        errors.append("E_QUOTE_TOO_SHORT")
+    elif not snapshot.exists():
+        errors.append("E_NO_SNAPSHOT")
+    elif quote not in norm(snapshot.read_text("utf-8")):
+        errors.append("E_QUOTE_NOT_FOUND")
+
+    missing = sorted(numbers(claim_text) - numbers(cit.get("quote")))
+    if missing:
+        errors.append("E_NUMBER_UNSUPPORTED:" + ",".join(missing))
+    return errors
+
+
+def main():
+    ap = argparse.ArgumentParser()
+    ap.add_argument("claims", type=pathlib.Path)
+    ap.add_argument("--cache", type=pathlib.Path, default=pathlib.Path("cache"))
+    ap.add_argument("--sources", type=pathlib.Path, default=pathlib.Path("sources"))
+    ap.add_argument("--offline", action="store_true")
+    ap.add_argument("--mailto", default="")
+    ap.add_argument("--out", type=pathlib.Path, default=pathlib.Path("report.json"))
+    args = ap.parse_args()
+
+    raw = args.claims.read_bytes()
+    data = json.loads(raw)
+    results = []
+    for claim in sorted(data["claims"], key=lambda c: c["id"]):
+        cits = claim.get("citations") or []
+        if not cits:
+            results.append({"claim": claim["id"], "doi": None, "errors": ["E_UNCITED"]})
+        for cit in cits:
+            results.append({
+                "claim": claim["id"],
+                "doi": norm_doi(cit.get("doi")),
+                "errors": check_citation(claim["text"], cit, args),
+            })
+
+    failed = [r for r in results if r["errors"]]
+    report = {
+        "input_sha256": hashlib.sha256(raw).hexdigest(),
+        "checked": len(results),
+        "failed": len(failed),
+        "results": results,
+    }
+    args.out.write_text(
+        json.dumps(report, ensure_ascii=False, sort_keys=True, indent=2) + "\n", "utf-8")
+    print(f"checked={len(results)} failed={len(failed)} report={args.out}")
+    return 1 if failed else 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())</code></pre>
+
+  <p>Несколько решений, которые здесь сделаны сознательно:</p>
+  <ul>
+    <li><strong>DOI нормализуется.</strong> DOI нечувствительны к регистру, а агенты пишут их и как URL, и с префиксом <code>doi:</code>. Без приведения к одному виду вы получите ложные расхождения и дубли в кэше.</li>
+    <li><strong>Кэшируется только окончательный ответ.</strong> Ответ 404 записывается как <code>not_found</code>. Таймауты и ошибки 5xx пробрасываются наружу, чтобы временный сбой не превратился в постоянный вердикт «источника нет».</li>
+    <li><strong>Цитата ищется как подстрока, без нечёткого сравнения.</strong> Fuzzy-matching с порогом даёт «почти совпало», а именно так модель и искажает цитаты: меняет одно слово или отрицание. Нормализуются только пробелы, регистр, кавычки, дефисы и Unicode-формы.</li>
+    <li><strong>Есть минимальная длина цитаты.</strong> Фрагмент из трёх слов найдётся почти в любом тексте, и проверка потеряет смысл.</li>
+    <li><strong>Отчёт без времени запуска.</strong> В нём хэш входного файла и отсортированные ключи, поэтому два запуска легко сравнить через <code>diff</code>.</li>
+  </ul>
+
+  <h2>Шаг 4. Офлайн-проверка на учебных данных</h2>
+  <p>Чтобы убедиться, что всё работает, сеть не нужна. Ниже <strong>вымышленный</strong> пример: DOI <code>10.0000/demo.1</code>, название, авторы и текст придуманы только для проверки скрипта и ни на какую реальную публикацию не ссылаются.</p>
+<pre><code>cat &gt; cache/10.0000_demo.1.json &lt;&lt;'EOF'
+{"status": "found", "title": "Demo Paper on Retrieval Grounding",
+ "year": 2024, "authors": ["Ivanova", "Petrov"]}
+EOF
+
+cat &gt; sources/10.0000_demo.1.txt &lt;&lt;'EOF'
+В наших экспериментах привязка каждого утверждения к найденному фрагменту
+снизила число неподтверждённых утверждений с 18 до 7 на сотню ответов.
+EOF
+
+cat &gt; claims.json &lt;&lt;'EOF'
+{"claims": [
+  {"id": "c1",
+   "text": "Привязка к фрагментам снизила число неподтверждённых утверждений с 18 до 7 на сотню ответов.",
+   "citations": [{"doi": "https://doi.org/10.0000/DEMO.1",
+     "title": "Demo Paper on Retrieval Grounding", "year": 2024, "first_author": "Ivanova",
+     "quote": "снизила число неподтверждённых утверждений с 18 до 7 на сотню ответов"}]},
+  {"id": "c2",
+   "text": "Метод снижает ошибки в 3 раза.",
+   "citations": [{"doi": "10.0000/demo.1",
+     "title": "Demo Paper on Retrieval Grounding", "year": 2023, "first_author": "Ivanova",
+     "quote": "привязка каждого утверждения устраняет все ошибки"}]},
+  {"id": "c3",
+   "text": "Аналогичный эффект показан в другой работе.",
+   "citations": [{"doi": "10.0000/demo.2", "title": "Other", "year": 2024,
+     "first_author": "Sidorov", "quote": "аналогичный эффект наблюдался и в нашей выборке"}]},
+  {"id": "c4", "text": "Утверждение без источника.", "citations": []}
+]}
+EOF
+
+python3 citation_audit.py claims.json --offline
+echo "exit=$?"</code></pre>
+
+  <h2>Проверка результата</h2>
+  <p>Вывод в терминале должен быть таким:</p>
+<pre><code>checked=4 failed=3 report=report.json
+exit=1</code></pre>
+  <p>Откройте <code>report.json</code> (например, <code>python3 -m json.tool report.json</code>) и сверьте ошибки:</p>
+  <ul>
+    <li><code>c1</code>: пустой список ошибок. DOI в виде URL и в верхнем регистре корректно нормализован, цитата найдена, числа 18 и 7 в ней есть.</li>
+    <li><code>c2</code>: <code>E_YEAR_MISMATCH</code>, <code>E_QUOTE_NOT_FOUND</code>, <code>E_NUMBER_UNSUPPORTED:3</code>. Это классический случай: источник настоящий, а цитата и цифра придуманы.</li>
+    <li><code>c3</code>: <code>E_NOT_CACHED</code>. В офлайн-режиме неизвестный DOI не считается ни найденным, ни несуществующим.</li>
+    <li><code>c4</code>: <code>E_UNCITED</code>.</li>
+  </ul>
+  <p>Запустите команду ещё раз и сравните: <code>cp report.json r1.json &amp;&amp; python3 citation_audit.py claims.json --offline; diff r1.json report.json</code>. Если <code>diff</code> ничего не выводит, отчёт воспроизводим.</p>
+
+  <h2>Шаг 5. Работа с реальными DOI</h2>
+  <p>Заполнение кэша выделите в отдельный, явный шаг. API Crossref просит указывать контактный адрес в параметре <code>mailto</code>. Подставьте свой адрес вместо примера:</p>
+<pre><code>python3 citation_audit.py claims.json --mailto you@example.org
+git add cache/ &amp;&amp; git commit -m "Зафиксировать метаданные источников"</code></pre>
+  <p>Наружу уходят только DOI из вашего файла, ни текст отчёта, ни ключи туда не попадают. После фиксации кэша все последующие запуски, в том числе в CI, делайте с <code>--offline</code>.</p>
+  <p>Снимки текстов в <code>sources/</code> готовит человек или отдельный проверяемый загрузчик, но не тот агент, чью работу вы проверяете. Скачайте статью доступным вам легальным способом, извлеките текст, сохраните его как <code>sources/&lt;slug DOI&gt;.txt</code> и закоммитьте. Тогда изменение снимка будет видно в истории.</p>
+
+  <h2>Шаг 6. Встраивание в цикл агента</h2>
+  <ol>
+    <li>Агент пишет отчёт и <code>claims.json</code>.</li>
+    <li>Оркестратор запускает аудит. Код 0 означает, что отчёт идёт дальше, на смысловое ревью.</li>
+    <li>Код 1 означает, что агенту возвращается <code>report.json</code> с инструкцией: исправить или удалить утверждения с ошибками, не трогая остальные.</li>
+    <li>Число итераций ограничено, например двумя. Если ошибки остались, отчёт уходит человеку вместе с аудитом.</li>
+  </ol>
+  <p>Главное правило: у агента нет права записи в <code>cache/</code> и <code>sources/</code>. Иначе самый короткий путь пройти проверку для него — дописать нужную цитату в снимок.</p>
+
+  <h2>Типовые ошибки</h2>
+  <ul>
+    <li><strong>Кэшировать сетевые сбои.</strong> Один таймаут, и источник навсегда считается несуществующим. Кэшируйте только 200 и 404.</li>
+    <li><strong>Строго сравнивать названия из Crossref.</strong> В названиях встречаются HTML-теги (<code>&lt;i&gt;</code>), подзаголовки, другой регистр. Сначала посмотрите на свои данные. Если расхождений много, понизьте <code>E_TITLE_MISMATCH</code> до предупреждения, но не убирайте.</li>
+    <li><strong>Брать текст из PDF как есть.</strong> Переносы со знаком дефиса, лигатуры и колонтитулы рвут цитаты. NFKC справляется с лигатурами, но переносы нужно склеить при извлечении текста.</li>
+    <li><strong>Проверять цитату по аннотации.</strong> Если агент цитирует основной текст, а у вас в снимке только аннотация, вы получите ложный <code>E_QUOTE_NOT_FOUND</code>. В снимке должен быть тот объём текста, по которому агент работал.</li>
+    <li><strong>Считать числовую проверку смысловой.</strong> <code>E_NUMBER_UNSUPPORTED</code> срабатывает и на год в утверждении, и на «2 из 3», переписанное как «67%». Это сигнал посмотреть внимательнее, а не приговор.</li>
+  </ul>
+
+  <h2>Ограничения</h2>
+  <ul>
+    <li>Найденная цитата не означает, что утверждение подтверждено. Фрагмент мог быть вырван из контекста или относиться к другому условию эксперимента.</li>
+    <li>Скрипт знает только Crossref. DOI других агентств регистрации (например, DataCite) и препринты без DOI потребуют отдельного резолвера с тем же интерфейсом <code>resolve()</code>.</li>
+    <li>Кэш устаревает. Отзыв статьи или исправление метаданных после фиксации кэша скрипт не заметит. Перезаполняйте кэш по расписанию и смотрите <code>git diff</code>.</li>
+    <li><code>slug()</code> теоретически может склеить два разных DOI в одно имя файла. Для большого корпуса добавьте к имени короткий хэш.</li>
+    <li>Сверяется только первый автор и год. Если агент перепутал соавторов или журнал, ошибка пройдёт.</li>
+  </ul>
+
+  <h2>Что дальше</h2>
+  <p>Связанные материалы о проверке агентов собраны в <a href="guides.html">руководствах</a>, а термины из статьи объяснены в <a href="glossary.html">глоссарии</a>. Следующий логичный шаг: добавить смысловую проверку «цитата подтверждает утверждение» отдельной стадией с отдельным полем в отчёте, чтобы её вероятностный вердикт не смешивался с детерминированными ошибками.</p>
+<aside class="service-note" aria-label="Связаться по проекту">
+  <div class="service-note__copy">
+    <p class="service-note__label">Связь с Agent Lab</p>
+    <p class="service-note__title">Внедрим такой контур в ваш процесс</p>
+    <p class="service-note__text">Напишите инженеру Agent Lab в Telegram: опишите задачу, бота или интеграцию — предложим пилот с проверками и понятными границами.</p>
+  </div>
+  <a class="service-note__link" href="https://t.me/msrzn007?utm_source=journal&amp;utm_medium=article&amp;utm_campaign=service_note" target="_blank" rel="noopener">Написать в Telegram
+    <svg viewBox="0 0 16 16" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"><path d="M3 13 13 3M6 3h7v7"/></svg>
+  </a>
+</aside>
+<aside class="service-note service-note--sitevisor" aria-label="Экспресс-аудит сайта">
+  <div class="service-note__copy">
+    <p class="service-note__label">SiteVisor</p>
+    <p class="service-note__title">Проверьте техническое состояние и готовность вашего сайта к рекламе</p>
+    <p class="service-note__text">Экспресс-аудит на SiteVisor.pro: индексация, скорость, разметка, аналитика и точки конверсии.</p>
+  </div>
+  <a class="service-note__link" href="https://sitevisor.pro/?utm_source=journal&amp;utm_medium=article&amp;utm_campaign=leadmagnet" target="_blank" rel="noopener">Экспресс-аудит на SiteVisor.pro
+    <svg viewBox="0 0 16 16" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"><path d="M3 13 13 3M6 3h7v7"/></svg>
+  </a>
+</aside>
+</article>
+</main>
+
+<footer class="site-footer">
+  <p>© 2026 Agent Lab Journal · <a href="guides.html">Руководства</a> · <a href="glossary.html">Глоссарий</a></p>
+</footer>
+</body>
+</html>
