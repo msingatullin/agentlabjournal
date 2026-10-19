@@ -1,0 +1,558 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Проверяем Specification Frame на реальной задаче: a reproducible A/B test of a structured prompt</title>
+<meta name="description" content="Проверяем Specification Frame на реальной задаче: build a structured prompt from context, constraints, an output contract and checks, then score it against a short prompt with a reproducible pytest checklist.">
+<link rel="canonical" href="https://agentlabjournal.online/en/specification-frame-prompt-ab-test.html">
+<link rel="stylesheet" href="../style.css">
+<link rel="stylesheet" href="../reading.css">
+
+<meta property="og:type" content="article">
+<meta property="og:site_name" content="Agent Lab Journal">
+<meta property="og:locale" content="en_US">
+<meta property="og:title" content="Проверяем Specification Frame на реальной задаче">
+<meta property="og:description" content="A from-scratch, reproducible A/B test: short prompt vs. Specification Frame on a money-allocation task, graded by an eight-item pytest checklist.">
+<meta property="og:url" content="https://agentlabjournal.online/en/specification-frame-prompt-ab-test.html">
+<meta property="og:image" content="https://agentlabjournal.online/assets/covers/llm-context-window-budget-social.png">
+<meta property="article:modified_time" content="2026-10-19">
+
+<meta name="twitter:card" content="summary_large_image">
+<meta name="twitter:title" content="Проверяем Specification Frame на реальной задаче">
+<meta name="twitter:description" content="Context, constraints, output contract and checks: how to write a structured prompt and measure whether it actually helps.">
+<meta name="twitter:image" content="https://agentlabjournal.online/assets/covers/llm-context-window-budget-social.png">
+
+<script type="application/ld+json">
+{
+  "@context": "https://schema.org",
+  "@type": "Article",
+  "headline": "Проверяем Specification Frame на реальной задаче",
+  "description": "Build a structured prompt from context, constraints, an output contract and checks, then score it against a short prompt with a reproducible pytest checklist.",
+  "image": ["https://agentlabjournal.online/assets/covers/llm-context-window-budget-social.png"],
+  "dateModified": "2026-10-19",
+  "inLanguage": "en",
+  "author": {
+    "@type": "Organization",
+    "name": "Agent Lab Journal"
+  },
+  "publisher": {
+    "@type": "Organization",
+    "name": "Agent Lab Journal",
+    "url": "https://agentlabjournal.online/"
+  },
+  "mainEntityOfPage": {
+    "@type": "WebPage",
+    "@id": "https://agentlabjournal.online/en/specification-frame-prompt-ab-test.html"
+  }
+}
+</script>
+<link rel="stylesheet" href="../homepage.css"><link rel="stylesheet" href="../max-promo.css">  <meta property="og:image:alt" content="Проверяем Specification Frame на реальной задаче">
+</head>
+<body>
+
+<header class="site-header">
+  <a class="site-logo" href="index.html">Agent Lab Journal</a>
+  <nav>
+    <a href="index.html">Home</a>
+    <a href="guides.html">Guides</a>
+    <a href="../glossary.html">Glossary</a>
+  </nav>
+</header>
+
+<main>
+<article class="reading">
+
+<h1>Проверяем Specification Frame на реальной задаче</h1>
+        <figure class="article-cover" data-editorial-cover="specification-frame-prompt-ab-test"><img src="../assets/covers/llm-context-window-budget.png" alt="Проверяем Specification Frame на реальной задаче" width="1280" height="720" fetchpriority="high"><figcaption>Temporary fallback cover; replace in editorial pass.</figcaption></figure>
+<p class="reading-meta">25 min read · Level: from scratch · Updated October 19, 2026</p>
+
+<p class="lead">"Write a function that splits a discount across invoice lines" is one sentence. A <a href="../glossary.html#llm">large language model</a> will answer it with code that looks correct, passes the example you have in your head, and still loses a cent on one invoice in a few hundred. The sentence never said "integer cents", "the sum must match exactly", or "what happens when the discount exceeds the total". In this article we turn that sentence into a <a href="../glossary.html#specification-frame">Specification Frame</a>, a <a href="../glossary.html#prompt">prompt</a> with four explicit blocks: context, constraints, output contract and checks. Then we build a small harness that compares it with the short prompt on the same task, using the same tests and an eight-item checklist you can rerun yourself.</p>
+
+<aside class="note">
+<p><strong>What this article does and does not claim.</strong> All code listings are complete and meant to be run. We do <em>not</em> publish pass rates here. Results depend on the model, its version, the date and sampling. The harness produces your own numbers. Where we describe failure modes of the short prompt, we present them as hypotheses that the tests are designed to detect, not as measured outcomes.</p>
+</aside>
+
+<h2>1. The problem: short prompts drop requirements silently</h2>
+
+<p>A short request carries only the requirements the author wrote down. Everything else is filled in by the model's defaults. For most business code, the defaults are where the bugs live:</p>
+<ul>
+  <li><strong>Units and types.</strong> If nobody says "cents as integers", <code>float</code> and <code>round()</code> are a perfectly plausible choice.</li>
+  <li><strong>Invariants.</strong> "Proportionally" does not say that the parts must add up to the whole. Rounding each part independently breaks that.</li>
+  <li><strong>Error behaviour.</strong> Negative amounts, a discount above the total, empty input: the model picks something, and every run may pick differently.</li>
+  <li><strong>Result format.</strong> Without a format, you get prose, several alternatives or a code block with extra demo code that runs on import.</li>
+  <li><strong>Done criteria.</strong> Without stated checks, neither the model nor the reviewer has a shared definition of "correct".</li>
+</ul>
+<p>The code that comes back is <em>plausible</em>, and plausible code is exactly what slips through review. The fix is not a longer prompt for its own sake. It is a prompt that states the requirements you would otherwise check in your head, in a form that maps one-to-one onto tests.</p>
+
+<h2>2. The concrete case: allocating a discount in cents</h2>
+
+<p>The task is small enough to read in one sitting and strict enough to have one correct answer:</p>
+<blockquote>
+<p>An invoice has line amounts in integer cents. A promo discount (also in cents) must be split across the lines proportionally to their amounts, so that refunds and taxes can be computed per line. The per-line discounts are written to an accounting ledger.</p>
+</blockquote>
+<p>The hidden requirements a finance team would insist on:</p>
+<ol>
+  <li>Integer arithmetic only. No floats anywhere.</li>
+  <li>The sum of line discounts equals the invoice discount <em>exactly</em>.</li>
+  <li>No line receives a negative discount or more than its own amount.</li>
+  <li>The leftover cents after flooring are distributed by a deterministic rule. We use the <a href="../glossary.html#largest-remainder-method">largest remainder method</a>: one cent each to the lines with the largest remainder, with ties going to the lower index.</li>
+  <li>Invalid input raises <code>ValueError</code>, and the input list is never mutated.</li>
+</ol>
+<p>The short prompt contains none of this. The Specification Frame contains all of it. The <a href="../glossary.html#ab-test">A/B test</a> asks a narrow question: <em>when the requirements are written down in a structured frame, does the generated code satisfy more of them?</em> That is a test of how well a prompt transfers requirements. It is not a test of model intelligence.</p>
+
+<h2>3. Anatomy of a Specification Frame</h2>
+
+<p>The frame has four blocks. Each block answers one question the model would otherwise have to guess.</p>
+<table>
+  <thead><tr><th>Block</th><th>Question it answers</th><th>Typical content</th></tr></thead>
+  <tbody>
+    <tr><td>Context</td><td>Why does this code exist and what breaks if it is wrong?</td><td>Domain, consumer of the result, cost of failure</td></tr>
+    <tr><td>Constraints</td><td>What is not allowed?</td><td>Language/version, dependencies, types, forbidden constructs, error handling</td></tr>
+    <tr><td><a href="../glossary.html#output-contract">Output contract</a></td><td>What exactly must come back?</td><td>Signature, invariants, algorithm rules, response format</td></tr>
+    <tr><td>Checks</td><td>How will we know it is correct?</td><td>Concrete input/output pairs and properties: the <a href="../glossary.html#acceptance-criteria">acceptance criteria</a></td></tr>
+  </tbody>
+</table>
+<p>A useful rule of thumb: <strong>every sentence in the constraints and contract blocks should correspond to at least one test.</strong> If a sentence cannot be tested, it is either context or noise.</p>
+
+<h2>4. Set up the lab</h2>
+
+<p>You need Python 3.11+ and, for automatic generation, an API key for a model provider. The generation script below uses the Anthropic SDK. You can also paste prompts into any chat interface by hand and save the answers as files. The grading step does not care where the code came from.</p>
+
+<pre><code>mkdir spec-frame-lab &amp;&amp; cd spec-frame-lab
+python3 -m venv .venv
+. .venv/bin/activate
+pip install pytest anthropic
+mkdir prompts candidates raw reports
+touch candidates/__init__.py</code></pre>
+
+<p>Final layout:</p>
+<pre><code>spec-frame-lab/
+├── prompts/
+│   ├── short.md        # variant A
+│   └── frame.md        # variant B: Specification Frame
+├── reference.py        # known-correct implementation
+├── test_allocate.py    # the checklist as tests (c1–c8)
+├── generate.py         # asks the model N times per variant
+├── grade.py            # runs tests per candidate, writes results.csv
+├── candidates/         # one .py file per generated answer
+├── raw/                # full model responses, for audit
+└── reports/            # JUnit XML per candidate</code></pre>
+
+<h2>5. Variant A: the short prompt</h2>
+
+<p>To keep the comparison fair, the short prompt still names the function and its arguments. Otherwise we would mostly be measuring whether the model guessed the name.</p>
+
+<p><code>prompts/short.md</code>:</p>
+<pre><code>Write a Python function allocate_discount(lines, discount) that distributes
+a discount across invoice lines proportionally to their amounts and returns
+the per-line discounts as a list.</code></pre>
+
+<h2>6. Variant B: the Specification Frame</h2>
+
+<p><code>prompts/frame.md</code>:</p>
+<pre><code>## Context
+We run a billing service. Invoice line amounts are stored as integer cents
+(minor currency units). A promo discount must be split across the lines so
+that refunds and taxes can be computed per line. The result goes into an
+accounting ledger: if the per-line discounts do not sum to the invoice
+discount to the cent, month-end reconciliation is blocked.
+
+## Task
+Implement allocate_discount(lines, discount) in Python 3.11, standard
+library only.
+
+## Constraints
+- lines: list[int], amounts in cents, each &gt;= 0.
+- discount: int, amount in cents.
+- Integer arithmetic only. Do not use float, Decimal, round() or division
+  with "/".
+- Do not mutate the input list.
+- bool values are invalid (bool is a subclass of int).
+- Raise ValueError if: any element of lines or discount is not an int or is
+  a bool; discount &lt; 0; any line &lt; 0; discount &gt; sum(lines).
+- No I/O, no printing, no code that runs on import.
+
+## Output contract
+- Return a list[int] with the same length as lines.
+- sum(result) == discount exactly.
+- 0 &lt;= result[i] &lt;= lines[i] for every i.
+- Base share of line i: (discount * lines[i]) // total, where total = sum(lines).
+- Leftover cents (discount - sum of base shares) go one each to the lines
+  with the largest remainder (discount * lines[i]) % total; ties go to the
+  lower index.
+- If discount == 0, return a list of zeros (this also covers lines == []
+  and total == 0).
+- Response format: exactly one ```python code block containing the whole
+  module and nothing else. No text outside the code block.
+
+## Checks
+Before answering, verify your code against these cases:
+- allocate_discount([100, 200, 300], 100) == [17, 33, 50]
+- allocate_discount([1, 1, 1], 2) == [1, 1, 0]
+- allocate_discount([10**18, 10**18 + 1], 10**18) sums to exactly 10**18
+- allocate_discount([100], 101) raises ValueError
+- allocate_discount([True, 2], 1) raises ValueError
+- allocate_discount([], 0) == []</code></pre>
+
+<p>Notice what the frame does <em>not</em> contain: no "you are an expert", no motivational filler. Every constraint and contract line maps onto a test in section 8.</p>
+
+<h2>7. A reference implementation and a negative control</h2>
+
+<p>Before trusting a test suite to grade model output, you need to show that it passes correct code and fails plausible wrong code. This step is easy to skip, and skipping it means you cannot interpret your numbers.</p>
+
+<p><code>reference.py</code>, the positive control:</p>
+<pre><code>def allocate_discount(lines, discount):
+    for x in [*lines, discount]:
+        if type(x) is not int:
+            raise ValueError("amounts must be int cents")
+    if discount &lt; 0 or any(x &lt; 0 for x in lines):
+        raise ValueError("amounts must be non-negative")
+    total = sum(lines)
+    if discount &gt; total:
+        raise ValueError("discount exceeds invoice total")
+    if discount == 0:
+        return [0] * len(lines)
+    base = [discount * x // total for x in lines]
+    rems = [discount * x % total for x in lines]
+    leftover = discount - sum(base)
+    order = sorted(range(len(lines)), key=lambda i: (-rems[i], i))
+    for i in order[:leftover]:
+        base[i] += 1
+    return base</code></pre>
+
+<p>Why the bounds hold: since <code>discount &lt;= total</code>, each base share is at most <code>lines[i]</code>. A line only gets an extra cent if its remainder is positive, which means its exact share was not an integer. In that case floor + 1 still does not exceed <code>lines[i]</code>. The leftover is always smaller than the number of lines with a positive remainder, so extra cents never go to lines whose share was exact.</p>
+
+<p>Negative control: the kind of code a short prompt can plausibly produce. Save it as <code>candidates/negctl_1.py</code>:</p>
+<pre><code>def allocate_discount(lines, discount):
+    total = sum(lines)
+    return [round(discount * x / total) for x in lines]</code></pre>
+
+<p>This version returns <code>[17, 33, 50]</code> for the obvious example, because 16.67, 33.33 and 50.0 round to the right numbers. That is the trap: it passes the happy path. On <code>[1, 1, 1]</code> with a discount of 2, every line rounds 0.67 up to 1 and the total becomes 3.</p>
+
+<p>Copy the reference in as the positive control:</p>
+<pre><code>cp reference.py candidates/posctl_1.py</code></pre>
+
+<h2>8. The checklist as tests</h2>
+
+<p>Each test name starts with a checklist ID (<code>c1</code>…<code>c8</code>). The grader uses that ID to score items. A parametrized item passes only if all of its cases pass. The test file contains its own <a href="../glossary.html#test-oracle">test oracle</a>: an independent copy of the allocation rule used for randomized comparison.</p>
+
+<p><code>test_allocate.py</code>:</p>
+<pre><code>import importlib
+import os
+import random
+
+import pytest
+
+mod = importlib.import_module(os.environ.get("CANDIDATE", "reference"))
+allocate = mod.allocate_discount
+
+
+def oracle(lines, discount):
+    # Same rules as the output contract, kept independent of the candidate.
+    total = sum(lines)
+    if discount == 0:
+        return [0] * len(lines)
+    base = [discount * x // total for x in lines]
+    rems = [discount * x % total for x in lines]
+    order = sorted(range(len(lines)), key=lambda i: (-rems[i], i))
+    for i in order[: discount - sum(base)]:
+        base[i] += 1
+    return base
+
+
+def random_case(rng):
+    lines = [rng.randint(0, 10_000) for _ in range(rng.randint(1, 8))]
+    return lines, rng.randint(0, sum(lines))
+
+
+def test_c1_basic_example():
+    assert allocate([100, 200, 300], 100) == [17, 33, 50]
+
+
+def test_c2_sum_is_exact_on_large_values():
+    lines = [10**18, 10**18 + 1, 3]
+    result = allocate(lines, 10**18)
+    assert sum(result) == 10**18
+    assert result == oracle(lines, 10**18)
+
+
+def test_c3_returns_ints_only():
+    result = allocate([333, 333, 334], 100)
+    assert all(type(x) is int for x in result)
+
+
+def test_c4_length_and_bounds():
+    rng = random.Random(7)
+    for _ in range(300):
+        lines, discount = random_case(rng)
+        result = allocate(lines, discount)
+        assert len(result) == len(lines)
+        assert sum(result) == discount, (lines, discount)
+        assert all(0 &lt;= a &lt;= b for a, b in zip(result, lines)), (lines, discount)
+
+
+def test_c5_remainder_rule_and_ties():
+    assert allocate([1, 1, 1], 2) == [1, 1, 0]
+    rng = random.Random(42)
+    for _ in range(500):
+        lines, discount = random_case(rng)
+        assert allocate(lines, discount) == oracle(lines, discount), (lines, discount)
+
+
+@pytest.mark.parametrize(
+    "lines, discount",
+    [
+        ([100], 101),
+        ([100], -1),
+        ([-5, 10], 1),
+        ([True, 2], 1),
+        ([1.5, 2], 1),
+        ([100], 1.0),
+        ([], 1),
+    ],
+)
+def test_c6_rejects_invalid_input(lines, discount):
+    with pytest.raises(ValueError):
+        allocate(lines, discount)
+
+
+def test_c7_edge_cases():
+    assert allocate([], 0) == []
+    assert allocate([0, 0], 0) == [0, 0]
+    assert allocate([0, 500], 100) == [0, 100]
+
+
+def test_c8_does_not_mutate_input():
+    lines = [100, 200, 300]
+    snapshot = list(lines)
+    allocate(lines, 100)
+    assert lines == snapshot</code></pre>
+
+<p>The checklist in plain words, so it can also be used in manual code review:</p>
+<table>
+  <thead><tr><th>ID</th><th>Requirement</th><th>Hidden from the short prompt?</th></tr></thead>
+  <tbody>
+    <tr><td>c1</td><td>Obvious example is correct</td><td>No (it is the "happy path")</td></tr>
+    <tr><td>c2</td><td>Exact sum on values where floats lose precision</td><td>Yes</td></tr>
+    <tr><td>c3</td><td>Result contains <code>int</code> only, not <code>float</code></td><td>Yes</td></tr>
+    <tr><td>c4</td><td>Same length, exact sum, each share within <code>[0, line]</code></td><td>Partly</td></tr>
+    <tr><td>c5</td><td>Deterministic largest-remainder rule with index tie-break</td><td>Yes</td></tr>
+    <tr><td>c6</td><td>Invalid input raises <code>ValueError</code></td><td>Yes</td></tr>
+    <tr><td>c7</td><td>Empty and all-zero invoices</td><td>Yes</td></tr>
+    <tr><td>c8</td><td>Input list is not mutated</td><td>Yes</td></tr>
+  </tbody>
+</table>
+
+<h3>Validate the tests before using them</h3>
+<pre><code>CANDIDATE=reference python -m pytest -q test_allocate.py
+CANDIDATE=candidates.negctl_1 python -m pytest -q --tb=line test_allocate.py</code></pre>
+<p>Expected behaviour, which you should confirm on your machine: the reference passes everything. The negative control passes <code>c1</code> and fails at least <code>c3</code>, <code>c5</code>, <code>c6</code> and <code>c7</code>. It fails <code>c3</code> because <code>round()</code> of a float division returns an int in Python 3, but <code>[True, 2]</code>-style inputs are not rejected, and <code>[0, 0]</code> divides by zero. Trace each failure to a line of the negative control before you go on. If the reference fails anything, fix the tests first. Never "fix" the reference to match the tests.</p>
+
+<aside class="note">
+<p>A note on <code>c3</code>: in Python 3, <code>round(x)</code> with one argument returns an <code>int</code>. So the negative control may actually <em>pass</em> <code>c3</code>. Float leakage shows up in <code>c2</code> instead, where <code>10**18</code>-scale values lose precision. <code>c3</code> still catches code that returns <code>discount * x / total</code> unrounded, or that uses <code>math.floor</code> on Decimal-to-float conversions. Treat this as an example of why you check controls item by item instead of assuming.</p>
+</aside>
+
+<h2>9. Generate candidates</h2>
+
+<p><code>generate.py</code> asks the model <code>RUNS</code> times per variant and saves both the extracted code and the raw response. The API key is read from the environment by the SDK. Never put it in the script or the article.</p>
+<pre><code>import os
+import pathlib
+import re
+
+import anthropic
+
+MODEL = os.environ.get("MODEL", "claude-sonnet-5-5")
+RUNS = int(os.environ.get("RUNS", "10"))
+
+client = anthropic.Anthropic()  # reads ANTHROPIC_API_KEY
+code_dir = pathlib.Path("candidates")
+raw_dir = pathlib.Path("raw")
+
+for variant in ("short", "frame"):
+    prompt = pathlib.Path(f"prompts/{variant}.md").read_text()
+    for i in range(1, RUNS + 1):
+        msg = client.messages.create(
+            model=MODEL,
+            max_tokens=4000,
+            messages=[{"role": "user", "content": prompt}],
+        )
+        text = "".join(b.text for b in msg.content if b.type == "text")
+        (raw_dir / f"{variant}_{i}.md").write_text(text)
+        match = re.search(r"```(?:python)?\n(.*?)```", text, re.S)
+        code = match.group(1) if match else text
+        (code_dir / f"{variant}_{i}.py").write_text(code)
+        print(f"{variant}_{i}: {'code block' if match else 'NO code block'}")</code></pre>
+
+<pre><code>export ANTHROPIC_API_KEY=...   # set in your shell, not in files
+MODEL=claude-sonnet-5-5 RUNS=10 python generate.py</code></pre>
+
+<p>Both variants use the same model, the same <code>max_tokens</code> and default sampling. Write down the model ID and the date of the run. A later rerun against an updated model is a different experiment.</p>
+
+<h2>10. Grade: run the checklist for every candidate</h2>
+
+<p><strong>Generated code is untrusted code.</strong> The grader runs it, so run grading in a throwaway container or VM, with no network and no secrets in the environment. The script also strips the API key from the subprocess environment, so that a candidate cannot read it.</p>
+
+<p><code>grade.py</code>:</p>
+<pre><code>import csv
+import os
+import pathlib
+import re
+import subprocess
+import sys
+import xml.etree.ElementTree as ET
+from collections import defaultdict
+
+ITEMS = [f"c{i}" for i in range(1, 9)]
+rows = []
+
+for path in sorted(pathlib.Path("candidates").glob("*_*.py")):
+    if path.name.startswith("__"):
+        continue
+    variant = path.stem.rsplit("_", 1)[0]
+    report = pathlib.Path("reports") / f"{path.stem}.xml"
+    report.unlink(missing_ok=True)
+    env = {**os.environ, "CANDIDATE": f"candidates.{path.stem}"}
+    env.pop("ANTHROPIC_API_KEY", None)
+    try:
+        subprocess.run(
+            [sys.executable, "-m", "pytest", "-q", "--tb=no", "-p", "no:cacheprovider",
+             f"--junitxml={report}", "test_allocate.py"],
+            env=env, capture_output=True, timeout=120,
+        )
+    except subprocess.TimeoutExpired:
+        pass
+
+    passed = {item: True for item in ITEMS}
+    seen = set()
+    if report.exists():
+        for case in ET.parse(report).iter("testcase"):
+            m = re.match(r"test_(c\d+)_", case.get("name", ""))
+            if not m:
+                continue
+            seen.add(m.group(1))
+            if any(case.find(tag) is not None for tag in ("failure", "error", "skipped")):
+                passed[m.group(1)] = False
+    for item in ITEMS:
+        if item not in seen:  # import error, timeout, missing function
+            passed[item] = False
+
+    rows.append({"candidate": path.stem, "variant": variant,
+                 **{k: int(v) for k, v in passed.items()},
+                 "score": sum(passed.values())})
+
+with open("results.csv", "w", newline="") as f:
+    writer = csv.DictWriter(f, fieldnames=["candidate", "variant", *ITEMS, "score"])
+    writer.writeheader()
+    writer.writerows(rows)
+
+by_variant = defaultdict(list)
+for row in rows:
+    by_variant[row["variant"]].append(row)
+for variant, group in sorted(by_variant.items()):
+    n = len(group)
+    items = "  ".join(f"{k}:{sum(r[k] for r in group)}/{n}" for k in ITEMS)
+    full = sum(r["score"] == len(ITEMS) for r in group)
+    print(f"{variant:8} n={n:2}  {items}  all-pass:{full}/{n}")</code></pre>
+
+<pre><code>unset ANTHROPIC_API_KEY
+python grade.py</code></pre>
+
+<p>Output has one line per variant: <code>negctl</code>, <code>posctl</code>, <code>short</code>, <code>frame</code>. Check the controls first. <code>posctl</code> must be all-pass and <code>negctl</code> must not be. If either is off, your numbers for <code>short</code> and <code>frame</code> mean nothing.</p>
+
+<h2>11. Record and read the results</h2>
+
+<p>Fill this table from your own <code>results.csv</code>. We leave it empty on purpose.</p>
+<table>
+  <thead><tr><th>Item</th><th>short (x / N)</th><th>frame (x / N)</th></tr></thead>
+  <tbody>
+    <tr><td>c1 basic example</td><td></td><td></td></tr>
+    <tr><td>c2 exact sum, large values</td><td></td><td></td></tr>
+    <tr><td>c3 ints only</td><td></td><td></td></tr>
+    <tr><td>c4 length and bounds</td><td></td><td></td></tr>
+    <tr><td>c5 remainder rule</td><td></td><td></td></tr>
+    <tr><td>c6 rejects invalid input</td><td></td><td></td></tr>
+    <tr><td>c7 edge cases</td><td></td><td></td></tr>
+    <tr><td>c8 no mutation</td><td></td><td></td></tr>
+    <tr><td>All eight pass</td><td></td><td></td></tr>
+    <tr><td>Format failures (no code block)</td><td></td><td></td></tr>
+  </tbody>
+</table>
+<p>Also record: model ID, date, <code>RUNS</code>, SDK version (<code>pip show anthropic</code>), and the git hash or checksum of both prompt files.</p>
+
+<p>How to read it without overclaiming:</p>
+<ul>
+  <li><strong>Report counts, not percentages, for small N.</strong> "7/10 vs 10/10" is honest. "70% vs 100%" invites more confidence than ten samples support.</li>
+  <li><strong>Look per item, not only at the total.</strong> The useful finding is <em>which</em> requirement the short prompt drops, for example the tie-break rule or input validation, because that tells you what to put in future frames.</li>
+  <li><strong>Read the failing code.</strong> Open <code>raw/</code> for every failed item. A <code>TypeError</code> instead of <code>ValueError</code> is a different problem from a wrong sum.</li>
+  <li><strong>Expect the short prompt to fail some items "by design".</strong> It was never told about <code>ValueError</code> or the tie-break. A failure there shows the requirement was not transferred, and that is the effect we are measuring. It is not evidence that the model is weak.</li>
+</ul>
+
+<h2>12. Score the prompt itself</h2>
+
+<p>The tests grade the code. The following checklist grades the <em>prompt</em> before you spend API calls on it. Score each line 0 or 1. Two reviewers should arrive at the same score, and if they disagree, the line is ambiguous and needs rewording.</p>
+<ol>
+  <li>Context states who consumes the result and what a failure costs.</li>
+  <li>Language, version and allowed dependencies are named.</li>
+  <li>Units and types of every input are explicit.</li>
+  <li>Forbidden constructs are listed (here: float, Decimal, <code>round()</code>, <code>/</code>).</li>
+  <li>Every error condition names the exception type.</li>
+  <li>The return type and length are stated.</li>
+  <li>Every invariant is written as a checkable expression (for example <code>sum(result) == discount</code>).</li>
+  <li>Any ambiguous algorithm choice (rounding, ties, ordering) is resolved.</li>
+  <li>The response format is specified precisely enough to parse automatically.</li>
+  <li>At least one check covers an edge case, not only the happy path.</li>
+  <li>Each constraint/contract sentence maps to at least one test ID.</li>
+  <li>The prompt contains no secrets, customer data or real account identifiers.</li>
+</ol>
+<p>The short prompt in section 5 scores at most 1/12 (item 12). The frame in section 6 is designed to score 12/12. Re-score it yourself instead of taking that on trust.</p>
+
+<h2>13. Failure cases and how to handle them</h2>
+<ul>
+  <li><strong>No code block in the answer.</strong> <code>generate.py</code> falls back to the full text, the import fails and every item scores 0. Count these separately as format failures. Mixing them into "logic failures" hides a different problem.</li>
+  <li><strong>Demo code on import.</strong> A candidate with <code>print(allocate_discount(...))</code> at module level still imports. Code that reads <code>input()</code> blocks until timeout. The 120-second timeout plus a closed stdin (from <code>capture_output</code>) keeps the grader moving.</li>
+  <li><strong>Wrong exception type.</strong> <code>TypeError</code> for <code>[1.5, 2]</code> fails <code>c6</code>. That is correct per the contract. If you think <code>TypeError</code> should be acceptable, change the contract <em>and</em> the test together, then rerun both variants.</li>
+  <li><strong>Different but valid tie-break.</strong> A candidate that gives leftover cents to the largest lines instead of the largest remainders can still satisfy <code>c4</code> and fail <code>c5</code>. The contract chose one rule because ledgers need reproducibility. A different rule is a requirement miss, not a bug in the test.</li>
+  <li><strong>Rate limits or API errors.</strong> If generation stops halfway, the variants end up with unequal N. Rerun the missing indices instead of comparing 10 against 6.</li>
+  <li><strong>Executing untrusted code.</strong> The grader runs whatever the model wrote. Run it in an isolated environment with no network and no credentials. <code>env.pop</code> removes one key, but it is not a sandbox.</li>
+  <li><strong>Prompt injection via your own inputs.</strong> If you later build frames from tickets or user text, that text can carry instructions. Keep untrusted material inside a clearly delimited context block and never let it override constraints. See the <a href="guide-prompt-injection.html">prompt injection guide</a>.</li>
+</ul>
+
+<h2>14. Limitations of this experiment</h2>
+<ul>
+  <li><strong>One task, one domain.</strong> Money allocation has a single correct answer, which makes it easy to grade. Tasks with several acceptable designs need rubric-based review on top of tests.</li>
+  <li><strong>Overlap between prompt and tests.</strong> The frame's checks literally contain the <code>c1</code> and <code>c5</code> tie examples. Some improvement may come from the model copying examples rather than understanding rules. To separate the two, add a third variant <code>frame_noex</code> with the Checks block removed, and compare.</li>
+  <li><strong>Same author for frame and tests.</strong> Whoever writes both can unconsciously "teach to the test". Ask someone else to write extra hidden tests from the context paragraph alone.</li>
+  <li><strong>Sampling variance and model drift.</strong> Small N and default sampling mean results shift between runs. A model update can change everything. Treat results as dated observations.</li>
+  <li><strong>Prompt length is a confound.</strong> The frame is both longer and more structured. This setup cannot tell you whether the structure or simply the extra information is responsible. A fair follow-up is the same requirements written as an unstructured paragraph.</li>
+</ul>
+
+<h2>15. Reusing the method on your own task</h2>
+<ol>
+  <li>Write the one-sentence request you would normally send.</li>
+  <li>List the requirements a reviewer would check. Each becomes a checklist ID.</li>
+  <li>Write the tests and a reference implementation. Validate them with a positive and a negative control.</li>
+  <li>Write the frame: context, constraints, output contract, checks. Map each sentence to a test ID.</li>
+  <li>Score the prompt with the 12-item checklist.</li>
+  <li>Generate N candidates per variant with the same model and settings, then grade in isolation.</li>
+  <li>Read failures per item, update the frame, and rerun. Keep old prompt versions in git so each result can be traced to an exact prompt.</li>
+</ol>
+
+<p>The point is not that structured prompts are magic. Requirements that are not written down cannot be met reliably, and requirements that are written down but never tested cannot be shown to be met. A Specification Frame paired with a checklist covers both.</p>
+
+<p>Further reading: browse the <a href="guides.html">practical guides</a>, including <a href="guide-agent-testing.html">testing AI agents</a>. Look up any term in the <a href="../glossary.html">glossary</a>.</p>
+
+<section class="service-note">
+  <b>We publish what works for us—and implement the same solutions for your business.</b>
+  We design AI automation, Telegram bots, chats, and AI agents for real-world processes.
+  <a href="../contacts-en.html">Discuss your project →</a>
+</section>
+</article>
+</main>
+
+<footer class="site-footer">
+  <p>© 2026 Agent Lab Journal · <a href="guides.html">Guides</a> · <a href="../glossary.html">Glossary</a></p>
+</footer>
+
+</body>
+</html>
