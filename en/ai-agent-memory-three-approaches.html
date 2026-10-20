@@ -1,0 +1,672 @@
+<!DOCTYPE html>
+<!--
+  Editor's note (remove before publishing): the repository could not be read during drafting because every
+  shell/read command returned empty output. These items are therefore unverified and must be checked by hand:
+  (1) the glossary anchors (#ai-agent, #agent-memory, #context-window, #mcp, #full-text-search, #bm25,
+      #recall-at-k, #latency, #stdio-transport, #tool-call, #prompt-injection) exist in ../glossary.html;
+  (2) the og:image / JSON-LD image path /images/og/ai-agent-memory-three-approaches.png exists;
+  (3) the header/footer markup matches the other pages in /en/.
+  No measurements in this article were run by the editor. The results table is deliberately left blank.
+-->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Память AI-агента: сравниваем файлы, локальное хранилище и MCP-сервис — a reproducible comparison | Agent Lab Journal</title>
+<meta name="description" content="Память AI-агента: сравниваем файлы, локальное хранилище и MCP-сервис. Build three minimal memory backends for an agent and measure retrieval accuracy, latency, portability and data control with one shared test harness.">
+<link rel="canonical" href="https://agentlabjournal.online/en/ai-agent-memory-three-approaches.html">
+<link rel="stylesheet" href="../style.css">
+<link rel="stylesheet" href="../reading.css">
+
+<meta property="og:type" content="article">
+<meta property="og:site_name" content="Agent Lab Journal">
+<meta property="og:title" content="Память AI-агента: сравниваем файлы, локальное хранилище и MCP-сервис">
+<meta property="og:description" content="Three minimal memory backends for an AI agent — Markdown files, SQLite FTS5 and an MCP server — compared with one reproducible harness.">
+<meta property="og:url" content="https://agentlabjournal.online/en/ai-agent-memory-three-approaches.html">
+<meta property="og:image" content="https://agentlabjournal.online/assets/covers/llm-context-window-budget-social.png">
+<meta property="og:locale" content="en_US">
+<meta property="article:modified_time" content="2026-10-20">
+
+<meta name="twitter:card" content="summary_large_image">
+<meta name="twitter:title" content="Память AI-агента: сравниваем файлы, локальное хранилище и MCP-сервис">
+<meta name="twitter:description" content="Files vs SQLite vs an MCP memory service: build all three, then measure recall, latency, portability and data control yourself.">
+<meta name="twitter:image" content="https://agentlabjournal.online/assets/covers/llm-context-window-budget-social.png">
+
+<script type="application/ld+json">
+{
+  "@context": "https://schema.org",
+  "@type": "Article",
+  "headline": "Память AI-агента: сравниваем файлы, локальное хранилище и MCP-сервис",
+  "description": "Build three minimal memory backends for an AI agent — Markdown files, a local SQLite FTS5 store and an MCP service — and compare them on retrieval accuracy, latency, portability and data control with one shared harness.",
+  "image": ["https://agentlabjournal.online/assets/covers/llm-context-window-budget-social.png"],
+  "datePublished": "2026-10-20",
+  "dateModified": "2026-10-20",
+  "inLanguage": "en",
+  "author": {
+    "@type": "Organization",
+    "name": "Agent Lab Journal"
+  },
+  "publisher": {
+    "@type": "Organization",
+    "name": "Agent Lab Journal",
+    "url": "https://agentlabjournal.online/"
+  },
+  "mainEntityOfPage": {
+    "@type": "WebPage",
+    "@id": "https://agentlabjournal.online/en/ai-agent-memory-three-approaches.html"
+  }
+}
+</script>
+<link rel="stylesheet" href="../homepage.css"><link rel="stylesheet" href="../max-promo.css">  <meta property="og:image:alt" content="Память AI-агента: сравниваем файлы, локальное хранилище и MCP-сервис">
+</head>
+<body>
+
+<header class="site-header">
+  <a class="site-logo" href="../index.html">Agent Lab Journal</a>
+  <nav class="site-nav">
+    <a href="guides.html">Guides</a>
+    <a href="../glossary.html">Glossary</a>
+  </nav>
+</header>
+
+<main>
+<article class="reading">
+
+<h1>Память AI-агента: сравниваем файлы, локальное хранилище и MCP-сервис</h1>
+        <figure class="article-cover" data-editorial-cover="ai-agent-memory-three-approaches"><img src="../assets/covers/llm-context-window-budget.png" alt="Память AI-агента: сравниваем файлы, локальное хранилище и MCP-сервис" width="1280" height="720" fetchpriority="high"><figcaption>Temporary fallback cover; replace in editorial pass.</figcaption></figure>
+<p class="reading-meta">Level: intermediate · Reading time: 40 minutes · Updated: 20 October 2026</p>
+
+<p class="lead">Every <a href="../glossary.html#ai-agent">AI agent</a> eventually hits the same wall: the session ends and everything it learned about your project disappears. The obvious fix — "just save notes" — creates a new problem within weeks: a pile of half-true, outdated notes that the agent dutifully retrieves and trusts. This article builds three minimal <a href="../glossary.html#agent-memory">agent memory</a> backends — plain files, a local SQLite store and an MCP service — and gives you one test harness to compare them on retrieval accuracy, latency, portability and data control. You run the measurements; we do not hand you numbers we did not produce.</p>
+
+<h2>What this article is and is not</h2>
+
+<p>Everything below is a recipe. The code is short enough to read in full and was written to be run, but <strong>the editor did not run the benchmark for this article</strong>, so there is no "winner" table with figures. The results table at the end is a blank template. That is deliberate: memory performance depends heavily on your data, your hardware and how your agent phrases queries, and borrowed numbers would mislead you more than they would help.</p>
+
+<p>What you will have after working through it:</p>
+<ul>
+  <li>three interchangeable backends behind one tiny interface (<code>remember</code> / <code>recall</code>);</li>
+  <li>a dataset format for memories and test queries, including deliberately stale facts;</li>
+  <li>a harness that reports recall@3, mean reciprocal rank, staleness errors and latency percentiles;</li>
+  <li>a checklist for the two properties you cannot measure with a stopwatch: portability and data control.</li>
+</ul>
+
+<h2>The concrete case</h2>
+
+<p>The running example is a coding assistant that works on one repository over many sessions. Between sessions it should keep things like:</p>
+<ul>
+  <li>"Tests run with <code>make test</code>, not <code>pytest</code> directly — the Makefile sets env vars."</li>
+  <li>"The user prefers small PRs, one concern each."</li>
+  <li>"The staging database URL moved from host A to host B on 2026-09-01."</li>
+</ul>
+
+<p>The third item is the interesting one. If the agent stored the old host in August and the new host in September, a naive memory returns <em>both</em>, and the agent may pick the wrong one. A memory that does not handle supersession is not just noisy — it is actively harmful. So our test set explicitly checks for it.</p>
+
+<p>Why not put everything in the <a href="../glossary.html#context-window">context window</a> each session? Because it does not scale: a project accumulates hundreds of facts, most irrelevant to any given task, and stuffing them all in costs tokens and dilutes attention. The point of memory is <em>selective</em> recall.</p>
+
+<h2>Design rules that apply to all three backends</h2>
+
+<p>Before writing any storage code, fix the data model. Most memory rot comes from a bad model, not a bad database.</p>
+
+<ol>
+  <li><strong>One fact per record.</strong> A record about "test commands" should not also contain "PR style". Mixed records match too many queries and are hard to update.</li>
+  <li><strong>Every record has a stable <code>key</code>.</strong> Writing a record with an existing key <em>replaces</em> it. This is the whole staleness strategy in one line: new facts overwrite old ones instead of piling up next to them.</li>
+  <li><strong>Every record has <code>updated</code>.</strong> An ISO date. It lets you audit, expire and tie-break.</li>
+  <li><strong>Optional <code>expires</code>.</strong> For facts you know are temporary ("release freeze until Friday"). Expired records are filtered at read time.</li>
+  <li><strong>Records are written by deliberate <a href="../glossary.html#tool-call">tool calls</a>, not by logging whole transcripts.</strong> Transcript dumps are the fastest way to an unusable archive.</li>
+</ol>
+
+<p>The shared record shape, as JSON Lines:</p>
+
+<pre><code>{"key": "test-command", "topic": "testing", "body": "Run tests with `make test`; the Makefile sets DJANGO_SETTINGS_MODULE.", "updated": "2026-08-14", "expires": null}</code></pre>
+
+<h2>Step 0: project layout and the test dataset</h2>
+
+<pre><code>mkdir agent-memory-bench &amp;&amp; cd agent-memory-bench
+python3 -m venv .venv &amp;&amp; . .venv/bin/activate
+pip install "mcp[cli]"
+mkdir data</code></pre>
+
+<p>Python 3.10 or newer is assumed. The file and SQLite backends use only the standard library; the <code>mcp</code> package is needed only for the third backend.</p>
+
+<p>Create <code>data/memories.jsonl</code>. The records below are <strong>invented examples</strong> for the walkthrough; replace them with real (non-secret) facts from your own project before drawing conclusions. Note that <code>staging-db</code> appears twice — that is the staleness trap.</p>
+
+<pre><code>{"key": "test-command", "topic": "testing", "body": "Run tests with make test; the Makefile sets DJANGO_SETTINGS_MODULE.", "updated": "2026-08-14", "expires": null}
+{"key": "pr-style", "topic": "workflow", "body": "User prefers small pull requests with one concern each.", "updated": "2026-08-02", "expires": null}
+{"key": "staging-db", "topic": "infrastructure", "body": "Staging database host is db-a.internal.example.", "updated": "2026-08-10", "expires": null}
+{"key": "lint", "topic": "testing", "body": "Linting uses ruff; run make lint before committing.", "updated": "2026-08-20", "expires": null}
+{"key": "migrations", "topic": "database", "body": "Never edit an applied migration; create a new one instead.", "updated": "2026-08-21", "expires": null}
+{"key": "freeze", "topic": "release", "body": "Release freeze: no merges to main until the freeze is lifted.", "updated": "2026-09-05", "expires": "2026-09-12"}
+{"key": "logging", "topic": "code-style", "body": "Use the structlog logger, not print, in application code.", "updated": "2026-08-25", "expires": null}
+{"key": "ci", "topic": "workflow", "body": "CI runs on every push; the slow integration suite runs nightly only.", "updated": "2026-08-30", "expires": null}
+{"key": "staging-db", "topic": "infrastructure", "body": "Staging database host moved to db-b.internal.example.", "updated": "2026-09-01", "expires": null}
+{"key": "secrets", "topic": "security", "body": "Secrets live in the vault; never write them into memory or code.", "updated": "2026-09-03", "expires": null}</code></pre>
+
+<p>Create <code>data/queries.jsonl</code>. Each query lists the key that <em>should</em> come back. Queries with <code>"must_contain"</code> also check the body text, which is how we detect a stale answer: the right key with the wrong content is a staleness error. Queries are phrased the way an agent would phrase them, not copied from the records — otherwise every backend looks perfect.</p>
+
+<pre><code>{"q": "how do I run the test suite", "expected": "test-command"}
+{"q": "what size should pull requests be", "expected": "pr-style"}
+{"q": "staging database hostname", "expected": "staging-db", "must_contain": "db-b"}
+{"q": "which linter do we use", "expected": "lint"}
+{"q": "can I modify an old migration", "expected": "migrations"}
+{"q": "is there a release freeze right now", "expected": null}
+{"q": "how should I log errors", "expected": "logging"}
+{"q": "when does the integration suite run", "expected": "ci"}
+{"q": "where are API keys stored", "expected": "secrets"}</code></pre>
+
+<p>The freeze query expects <code>null</code>: assuming you run the benchmark after 2026-09-12, the freeze record has expired and returning it counts as a staleness error. Adjust dates if you run it earlier.</p>
+
+<h2>Step 1: the shared interface and scoring</h2>
+
+<p>All three backends implement the same two methods. Create <code>memory_api.py</code>:</p>
+
+<pre><code>import datetime as dt
+import re
+from typing import Protocol
+
+TOKEN = re.compile(r"[a-z0-9]+")
+STOP = {"the", "a", "an", "do", "i", "we", "is", "are", "how", "what",
+        "which", "where", "when", "should", "can", "to", "of", "in", "on",
+        "there", "right", "now", "use", "my", "our"}
+
+
+def tokens(text: str) -&gt; list[str]:
+    return [t for t in TOKEN.findall(text.lower()) if t not in STOP]
+
+
+def is_live(record: dict, today: dt.date | None = None) -&gt; bool:
+    exp = record.get("expires")
+    if not exp:
+        return True
+    today = today or dt.date.today()
+    return dt.date.fromisoformat(exp) &gt;= today
+
+
+class Memory(Protocol):
+    def remember(self, record: dict) -&gt; None: ...
+    def recall(self, query: str, k: int = 3) -&gt; list[dict]: ...</code></pre>
+
+<p>The stop-word list is crude on purpose. It is the same for every backend, so it does not bias the comparison, and you can see exactly what it does.</p>
+
+<h2>Step 2: backend A — plain Markdown files</h2>
+
+<p>The simplest memory: one Markdown file per key in a directory. You can open it in any editor, commit it to git and review it in a pull request. Retrieval is a keyword-overlap score over all files.</p>
+
+<p>Create <code>backend_files.py</code>:</p>
+
+<pre><code>import json
+import pathlib
+import re
+
+from memory_api import is_live, tokens
+
+SAFE_KEY = re.compile(r"^[a-z0-9][a-z0-9-]{0,63}$")
+
+
+class FileMemory:
+    def __init__(self, root: str = "store_files"):
+        self.root = pathlib.Path(root)
+        self.root.mkdir(exist_ok=True)
+
+    def _path(self, key: str) -&gt; pathlib.Path:
+        if not SAFE_KEY.match(key):
+            raise ValueError(f"unsafe key: {key!r}")
+        return self.root / f"{key}.md"
+
+    def remember(self, record: dict) -&gt; None:
+        meta = {k: record.get(k) for k in ("key", "topic", "updated", "expires")}
+        text = "---\n" + json.dumps(meta) + "\n---\n" + record["body"] + "\n"
+        self._path(record["key"]).write_text(text, encoding="utf-8")
+
+    def _load(self, path: pathlib.Path) -&gt; dict:
+        _, meta, body = path.read_text(encoding="utf-8").split("---\n", 2)
+        rec = json.loads(meta)
+        rec["body"] = body.strip()
+        return rec
+
+    def recall(self, query: str, k: int = 3) -&gt; list[dict]:
+        q = set(tokens(query))
+        scored = []
+        for path in self.root.glob("*.md"):
+            rec = self._load(path)
+            if not is_live(rec):
+                continue
+            doc = set(tokens(rec["topic"] + " " + rec["body"] + " " + rec["key"]))
+            score = len(q &amp; doc)
+            if score:
+                scored.append((score, rec["updated"], rec))
+        scored.sort(key=lambda s: (s[0], s[1]), reverse=True)
+        return [rec for _, _, rec in scored[:k]]</code></pre>
+
+<p>Things to notice:</p>
+<ul>
+  <li><strong>Supersession is free.</strong> The second <code>staging-db</code> write overwrites the file. There is no old version to retrieve — unless you need history, in which case git is your history.</li>
+  <li><strong>The key is validated.</strong> If the agent controls the key, an unvalidated key like <code>../../.bashrc</code> becomes a path traversal. This is not hypothetical paranoia: memory writes are agent-controlled input.</li>
+  <li><strong>Search is a full scan.</strong> Every <code>recall</code> reads every file. Fine for hundreds of records; you will feel it at tens of thousands.</li>
+</ul>
+
+<h2>Step 3: backend B — local SQLite with FTS5</h2>
+
+<p>The second backend keeps everything in one SQLite file and uses the FTS5 extension for <a href="../glossary.html#full-text-search">full-text search</a> with <a href="../glossary.html#bm25">BM25</a> ranking. It is still local, still a single file you can copy, but search no longer scans everything in Python.</p>
+
+<p>Check that your Python's SQLite build includes FTS5:</p>
+
+<pre><code>python3 -c "import sqlite3; c=sqlite3.connect(':memory:'); c.execute('create virtual table t using fts5(x)'); print('fts5 ok')"</code></pre>
+
+<p>If that raises <code>no such module: fts5</code>, your SQLite was built without it; install a Python build that bundles a recent SQLite before continuing.</p>
+
+<p>Create <code>backend_sqlite.py</code>:</p>
+
+<pre><code>import sqlite3
+
+from memory_api import is_live, tokens
+
+
+class SqliteMemory:
+    def __init__(self, path: str = "store.db"):
+        self.con = sqlite3.connect(path)
+        self.con.execute(
+            "CREATE TABLE IF NOT EXISTS records ("
+            " key TEXT PRIMARY KEY, topic TEXT, body TEXT,"
+            " updated TEXT, expires TEXT)"
+        )
+        self.con.execute(
+            "CREATE VIRTUAL TABLE IF NOT EXISTS records_fts USING fts5("
+            " key, topic, body, content='records', content_rowid='rowid')"
+        )
+        self.con.commit()
+
+    def remember(self, record: dict) -&gt; None:
+        cur = self.con.cursor()
+        old = cur.execute(
+            "SELECT rowid, key, topic, body FROM records WHERE key = ?",
+            (record["key"],),
+        ).fetchone()
+        if old:
+            cur.execute(
+                "INSERT INTO records_fts(records_fts, rowid, key, topic, body)"
+                " VALUES ('delete', ?, ?, ?, ?)", old,
+            )
+            cur.execute("DELETE FROM records WHERE key = ?", (record["key"],))
+        cur.execute(
+            "INSERT INTO records(key, topic, body, updated, expires)"
+            " VALUES (?, ?, ?, ?, ?)",
+            (record["key"], record["topic"], record["body"],
+             record["updated"], record.get("expires")),
+        )
+        cur.execute(
+            "INSERT INTO records_fts(rowid, key, topic, body)"
+            " VALUES (?, ?, ?, ?)",
+            (cur.lastrowid, record["key"], record["topic"], record["body"]),
+        )
+        self.con.commit()
+
+    def recall(self, query: str, k: int = 3) -&gt; list[dict]:
+        toks = tokens(query)
+        if not toks:
+            return []
+        match = " OR ".join(f'"{t}"' for t in toks)
+        rows = self.con.execute(
+            "SELECT r.key, r.topic, r.body, r.updated, r.expires"
+            " FROM records_fts f JOIN records r ON r.rowid = f.rowid"
+            " WHERE records_fts MATCH ?"
+            " ORDER BY bm25(records_fts) LIMIT ?",
+            (match, k * 3),
+        ).fetchall()
+        cols = ("key", "topic", "body", "updated", "expires")
+        recs = [dict(zip(cols, row)) for row in rows]
+        return [r for r in recs if is_live(r)][:k]</code></pre>
+
+<p>Notes on the choices:</p>
+<ul>
+  <li><strong>External-content FTS table.</strong> The text lives once in <code>records</code>; the FTS index references it by rowid. The price is that you must keep the index in sync manually — hence the explicit <code>'delete'</code> command before replacing a record. Forget that and the index returns ghosts of old facts.</li>
+  <li><strong>Query sanitising.</strong> FTS5 has its own query syntax. Passing raw agent text straight into <code>MATCH</code> breaks on characters like <code>"</code>, <code>-</code> or <code>:</code> and can change query meaning. Tokenising and quoting each term avoids both problems.</li>
+  <li><strong>Over-fetch, then filter.</strong> We fetch <code>k * 3</code> rows and drop expired ones in Python, so an expired record does not silently eat a slot in the top-k.</li>
+  <li><strong>Parameterised SQL everywhere.</strong> The agent writes these strings; treat them as untrusted.</li>
+</ul>
+
+<h2>Step 4: backend C — an MCP memory service</h2>
+
+<p>The third option exposes memory through the <a href="../glossary.html#mcp">Model Context Protocol (MCP)</a>. The agent no longer imports your Python class; it calls <code>remember</code> and <code>recall</code> as tools on a separate server. That separation is the whole point: any MCP-capable client — a different agent framework, a desktop app, a teammate's setup — can use the same memory.</p>
+
+<p>To keep the comparison honest, the MCP server below wraps the <em>same</em> SQLite backend. Any difference you measure between B and C is therefore the cost (or benefit) of the protocol and process boundary, not of a different search algorithm.</p>
+
+<p>Create <code>mcp_memory_server.py</code>:</p>
+
+<pre><code>from mcp.server.fastmcp import FastMCP
+
+from backend_sqlite import SqliteMemory
+
+mcp = FastMCP("agent-memory")
+store = SqliteMemory("store_mcp.db")
+
+
+@mcp.tool()
+def remember(key: str, topic: str, body: str, updated: str,
+             expires: str | None = None) -&gt; str:
+    """Store one fact. Writing an existing key replaces the old fact."""
+    store.remember({"key": key, "topic": topic, "body": body,
+                    "updated": updated, "expires": expires})
+    return f"stored {key}"
+
+
+@mcp.tool()
+def recall(query: str, k: int = 3) -&gt; list[dict]:
+    """Return up to k live facts relevant to the query."""
+    return store.recall(query, k)
+
+
+if __name__ == "__main__":
+    mcp.run()</code></pre>
+
+<p><code>mcp.run()</code> defaults to the <a href="../glossary.html#stdio-transport">stdio transport</a>: the client starts the server as a subprocess and talks to it over standard input and output. Nothing listens on the network. You can inspect the tools interactively with the MCP inspector shipped in the <code>mcp[cli]</code> extra:</p>
+
+<pre><code>mcp dev mcp_memory_server.py</code></pre>
+
+<p>For the harness we need a programmatic client. Create <code>backend_mcp.py</code>, which adapts the MCP tools to our <code>Memory</code> interface:</p>
+
+<pre><code>import asyncio
+import json
+
+from mcp import ClientSession, StdioServerParameters
+from mcp.client.stdio import stdio_client
+
+
+class McpMemory:
+    """Synchronous adapter over an MCP memory server, for benchmarking."""
+
+    def __init__(self, script: str = "mcp_memory_server.py"):
+        self.params = StdioServerParameters(command="python", args=[script])
+        self.loop = asyncio.new_event_loop()
+        self._ctx = None
+        self.session = None
+        self.loop.run_until_complete(self._open())
+
+    async def _open(self):
+        self._ctx = stdio_client(self.params)
+        read, write = await self._ctx.__aenter__()
+        self._sess_ctx = ClientSession(read, write)
+        self.session = await self._sess_ctx.__aenter__()
+        await self.session.initialize()
+
+    def close(self):
+        async def _close():
+            await self._sess_ctx.__aexit__(None, None, None)
+            await self._ctx.__aexit__(None, None, None)
+        self.loop.run_until_complete(_close())
+        self.loop.close()
+
+    def _call(self, name: str, args: dict):
+        return self.loop.run_until_complete(self.session.call_tool(name, args))
+
+    def remember(self, record: dict) -&gt; None:
+        self._call("remember", record)
+
+    def recall(self, query: str, k: int = 3) -&gt; list[dict]:
+        result = self._call("recall", {"query": query, "k": k})
+        if result.structuredContent and "result" in result.structuredContent:
+            return result.structuredContent["result"]
+        out = []
+        for item in result.content:
+            if getattr(item, "type", None) == "text":
+                parsed = json.loads(item.text)
+                out.extend(parsed if isinstance(parsed, list) else [parsed])
+        return out</code></pre>
+
+<p>Two honest caveats about this adapter. First, how a list return value is serialised (one structured result versus several text items) has varied across versions of the Python MCP SDK, which is why <code>recall</code> handles both shapes; if your version returns something else, print <code>result</code> once and adjust. Second, the session is opened once and reused. If you open a new session per call, you will be measuring process start-up, not memory lookup — sometimes that is the number you care about, but label it as such.</p>
+
+<h2>Step 5: the harness</h2>
+
+<p>Create <code>bench.py</code>. It loads the dataset into a backend, runs every query several times, and reports accuracy and <a href="../glossary.html#latency">latency</a>.</p>
+
+<pre><code>import argparse
+import json
+import pathlib
+import shutil
+import statistics
+import time
+
+QUERIES = [json.loads(l) for l in open("data/queries.jsonl", encoding="utf-8")]
+MEMORIES = [json.loads(l) for l in open("data/memories.jsonl", encoding="utf-8")]
+
+
+def fresh(name: str):
+    if name == "files":
+        shutil.rmtree("store_files", ignore_errors=True)
+        from backend_files import FileMemory
+        return FileMemory()
+    if name == "sqlite":
+        pathlib.Path("store.db").unlink(missing_ok=True)
+        from backend_sqlite import SqliteMemory
+        return SqliteMemory()
+    if name == "mcp":
+        pathlib.Path("store_mcp.db").unlink(missing_ok=True)
+        from backend_mcp import McpMemory
+        return McpMemory()
+    raise SystemExit(f"unknown backend {name}")
+
+
+def pct(values, p):
+    values = sorted(values)
+    idx = min(len(values) - 1, round(p / 100 * (len(values) - 1)))
+    return values[idx]
+
+
+def run(name: str, repeats: int, k: int):
+    mem = fresh(name)
+    for rec in MEMORIES:          # file order = write order, so later wins
+        mem.remember(rec)
+
+    hits = 0
+    rr = []
+    stale = 0
+    latencies = []
+    graded = [q for q in QUERIES if q["expected"]]
+
+    for q in QUERIES:
+        for i in range(repeats):
+            t0 = time.perf_counter()
+            res = mem.recall(q["q"], k)
+            latencies.append((time.perf_counter() - t0) * 1000)
+        keys = [r["key"] for r in res]
+
+        if q["expected"] is None:
+            if any(r.get("expires") for r in res):
+                stale += 1
+            continue
+        if q["expected"] in keys:
+            hits += 1
+            rr.append(1 / (keys.index(q["expected"]) + 1))
+            body = res[keys.index(q["expected"])]["body"]
+            if "must_contain" in q and q["must_contain"] not in body:
+                stale += 1
+        else:
+            rr.append(0.0)
+            print(f"  MISS [{name}] {q['q']!r} -&gt; {keys}")
+
+    if hasattr(mem, "close"):
+        mem.close()
+
+    print(f"{name:7s} recall@{k}={hits}/{len(graded)}"
+          f"  MRR={statistics.mean(rr):.2f}"
+          f"  stale={stale}"
+          f"  p50={pct(latencies, 50):.2f}ms"
+          f"  p95={pct(latencies, 95):.2f}ms"
+          f"  n={len(latencies)}")
+
+
+if __name__ == "__main__":
+    ap = argparse.ArgumentParser()
+    ap.add_argument("backends", nargs="+", choices=["files", "sqlite", "mcp"])
+    ap.add_argument("--repeats", type=int, default=50)
+    ap.add_argument("-k", type=int, default=3)
+    args = ap.parse_args()
+    for b in args.backends:
+        run(b, args.repeats, args.k)</code></pre>
+
+<p>Run it:</p>
+
+<pre><code>python bench.py files sqlite mcp --repeats 50</code></pre>
+
+<p>What the metrics mean:</p>
+<ul>
+  <li><strong><a href="../glossary.html#recall-at-k">recall@k</a></strong> — for how many graded queries the expected record appears anywhere in the top k. This is the number that tells you whether the agent <em>can</em> see the right fact.</li>
+  <li><strong>MRR</strong> (mean reciprocal rank) — rewards putting the right record first. An agent tends to trust the top result most, so rank matters.</li>
+  <li><strong>stale</strong> — count of answers that are present but outdated: the right key with superseded content, or an expired record that was returned. For the stated goal of this article, this is the most important column. A backend with perfect recall and non-zero stale count is worse than useless.</li>
+  <li><strong>p50 / p95</strong> — median and tail latency of a single <code>recall</code>, in milliseconds, measured in-process from the caller's point of view.</li>
+</ul>
+
+<h2>Step 6: verification before you trust the numbers</h2>
+
+<p>A benchmark that silently tests the wrong thing is worse than no benchmark. Before reading results, check:</p>
+
+<ol>
+  <li><strong>Supersession actually happened.</strong> After a run:
+<pre><code>cat store_files/staging-db.md
+sqlite3 store.db "SELECT key, body FROM records WHERE key='staging-db';"
+sqlite3 store.db "SELECT count(*) FROM records_fts WHERE records_fts MATCH 'staging';"</code></pre>
+  Each should show exactly one record mentioning <code>db-b</code>. If the FTS count is 2, the index still holds the old row — the delete-sync in <code>remember</code> is broken.</li>
+  <li><strong>The MCP backend is really going through MCP.</strong> Temporarily add <code>import sys; print("recall called", file=sys.stderr)</code> inside the server's <code>recall</code> tool. You should see the line in your terminal for each call. If you don't, your adapter is importing the store directly somewhere.</li>
+  <li><strong>Expiry is evaluated as you expect.</strong> Run once with today's date; then temporarily change the freeze record's <code>expires</code> to a future date and confirm the freeze query now <em>does</em> return it (and is therefore counted as a miss against <code>expected: null</code> — that is the correct behaviour for the test as written).</li>
+  <li><strong>Latency is stable.</strong> Run the whole benchmark three times. If p50 swings by more than you are prepared to call a difference, increase <code>--repeats</code> or close other workloads. Report the spread, not the best run.</li>
+  <li><strong>Misses are inspected, not just counted.</strong> The harness prints each miss with what came back instead. Read them. A miss is usually a vocabulary mismatch ("API keys" vs "secrets"), and that tells you more about keyword memory than any aggregate.</li>
+</ol>
+
+<h2>Step 7: the dimensions a stopwatch cannot measure</h2>
+
+<p>Accuracy and latency come out of the harness. Portability and data control need a checklist. Answer each question for each backend, with a yes/no and one sentence of evidence from your setup.</p>
+
+<h3>Portability</h3>
+<ul>
+  <li>Can a different agent framework read the memory without your Python code?</li>
+  <li>Can a human read and edit it with standard tools?</li>
+  <li>Can it be moved to another machine by copying, and does it survive a version upgrade of its dependencies?</li>
+  <li>Can it be diffed and reviewed in a pull request?</li>
+</ul>
+
+<h3>Data control</h3>
+<ul>
+  <li>Where physically does the data live, and who can read it?</li>
+  <li>Can you delete one specific fact and prove it is gone (including from indexes and backups)?</li>
+  <li>Who can write to it — only your agent, or anything that can reach the service?</li>
+  <li>Is there an audit trail of what was written and when?</li>
+</ul>
+
+<p>For orientation, here is how the three minimal implementations in <em>this article</em> answer those questions by construction. These are properties of the code above, not measurements:</p>
+
+<table>
+  <thead>
+    <tr><th></th><th>A: Files</th><th>B: SQLite FTS5</th><th>C: MCP service (stdio, wrapping B)</th></tr>
+  </thead>
+  <tbody>
+    <tr><td>Human-readable</td><td>Yes, any editor</td><td>Via <code>sqlite3</code> CLI or a viewer</td><td>Same as B, plus via tools</td></tr>
+    <tr><td>Reviewable in git</td><td>Yes, line diffs</td><td>Binary file; diffs are not meaningful</td><td>Same as B</td></tr>
+    <tr><td>Usable by other agent frameworks</td><td>If they can read files</td><td>If they can read SQLite</td><td>Any MCP client, without your code</td></tr>
+    <tr><td>Where data lives</td><td>Local directory</td><td>Local file</td><td>Local file (stdio); moves wherever the server runs if you switch to a network transport</td></tr>
+    <tr><td>Precise deletion</td><td>Delete the file (and git history if committed)</td><td>Delete the row and the FTS entry; then <code>VACUUM</code> to drop freed pages</td><td>Needs a <code>forget</code> tool, which this minimal server does not have</td></tr>
+    <tr><td>Audit trail</td><td>git log, if committed</td><td>None in this version</td><td>None in this version; the server is a natural place to add one</td></tr>
+    <tr><td>Who can write</td><td>Anything with filesystem access</td><td>Anything with filesystem access</td><td>The client that launched the server, plus filesystem access to the DB</td></tr>
+  </tbody>
+</table>
+
+<h2>Step 8: record your results</h2>
+
+<p>Fill this in from your own runs. Leave the hardware line in: latency numbers without it are not comparable to anyone else's.</p>
+
+<table>
+  <thead>
+    <tr><th>Backend</th><th>recall@3</th><th>MRR</th><th>Stale</th><th>p50, ms</th><th>p95, ms</th><th>Notes</th></tr>
+  </thead>
+  <tbody>
+    <tr><td>A: Files</td><td>—</td><td>—</td><td>—</td><td>—</td><td>—</td><td></td></tr>
+    <tr><td>B: SQLite FTS5</td><td>—</td><td>—</td><td>—</td><td>—</td><td>—</td><td></td></tr>
+    <tr><td>C: MCP (stdio)</td><td>—</td><td>—</td><td>—</td><td>—</td><td>—</td><td></td></tr>
+  </tbody>
+</table>
+<p><em>Hardware / OS / Python / SQLite / mcp versions: ____ · Records: ____ · Repeats: ____ · Runs: ____</em></p>
+
+<p>What to <em>expect</em> qualitatively, so you can spot a broken run (these are reasoned expectations, not results):</p>
+<ul>
+  <li>B and C should have <strong>identical accuracy</strong>, because C wraps B. If they differ, the adapter is mangling results — fix that before anything else.</li>
+  <li>C should be <strong>slower than B</strong> per call, because each call adds serialisation and an inter-process round trip. The interesting question is whether the difference matters next to a model call that takes far longer.</li>
+  <li>A and B may <strong>rank differently</strong>: A counts overlapping terms; B weights rare terms higher via BM25. Neither understands synonyms.</li>
+  <li>With ten records, A may well be fast enough. To see where full scans start to hurt, scale the dataset (next section).</li>
+</ul>
+
+<h2>Scaling the test</h2>
+
+<p>Ten records tell you about correctness, not scale. To probe latency growth, generate filler records that do not collide with the graded keys, then re-run:</p>
+
+<pre><code>python - &lt;&lt;'EOF'
+import json, random
+random.seed(0)
+words = "alpha beta gamma delta parser cache queue worker deploy schema index token".split()
+with open("data/memories.jsonl", "a", encoding="utf-8") as f:
+    for i in range(5000):
+        body = " ".join(random.choices(words, k=12))
+        f.write(json.dumps({"key": f"filler-{i}", "topic": "filler", "body": body,
+                            "updated": "2026-08-01", "expires": None}) + "\n")
+EOF
+python bench.py files sqlite mcp --repeats 20</code></pre>
+
+<p>Keep a copy of the original ten-record file so you can return to the correctness test. Synthetic filler shares no vocabulary with the real queries, so it tests scan cost but under-states ranking difficulty; real project notes overlap far more.</p>
+
+<h2>Failure cases you will meet</h2>
+
+<h3>The stale fact wins</h3>
+<p>Symptom: <code>stale &gt; 0</code> for <code>staging-db</code>. Causes: memories were written with a new key each time (e.g. <code>staging-db-2</code>) so nothing was superseded; or in B, the FTS index was not updated on replace. Fix the key discipline first — it is the cause in most real systems.</p>
+
+<h3>Vocabulary mismatch</h3>
+<p>Symptom: "where are API keys stored" misses <code>secrets</code>. Keyword search cannot know that "API keys" are secrets. Options, in order of cost: write a broader <code>topic</code> when saving ("security, secrets, api keys, credentials"); let the agent rewrite the query before recall; add embedding-based search. Only the last changes the architecture, and it brings its own model, index and versioning problems.</p>
+
+<h3>The memory becomes a transcript dump</h3>
+<p>Symptom: hundreds of records, many near-duplicates, recall drowning in partial matches. Cause: the agent was allowed to "remember" freely. Fix: require a key and topic, cap body length, and periodically list all records and have a human (or a supervised agent pass) merge and delete.</p>
+
+<h3>Memory as an injection channel</h3>
+<p>Anything written to memory is replayed into future prompts. If an agent saves text it read from an untrusted web page or email, that text can carry <a href="../glossary.html#prompt-injection">prompt injection</a> into every later session. Mitigations: store facts in the agent's own words rather than verbatim quotes, mark the source of each record, and do not let content from untrusted sources be written without review. The <code>secrets</code> example record is there for a reason: credentials must never be saved to memory, in any backend.</p>
+
+<h3>MCP session start-up dominates</h3>
+<p>Symptom: C's p95 is wildly higher than its p50. Usually the first call includes import and initialisation time. Either warm up with one discarded call before timing, or report cold-start separately — both are legitimate numbers, they just answer different questions.</p>
+
+<h3>FTS5 query errors</h3>
+<p>Symptom: <code>sqlite3.OperationalError: fts5: syntax error</code>. Raw query text reached <code>MATCH</code>. The <code>tokens()</code>-and-quote step in <code>recall</code> prevents this; if you change it, keep the quoting.</p>
+
+<h2>Limitations of this comparison</h2>
+
+<ul>
+  <li><strong>No numbers are published here.</strong> The editor did not execute the benchmark for this article. Treat every expectation above as a hypothesis for your run to confirm or refute.</li>
+  <li><strong>Keyword search only.</strong> None of the backends uses embeddings. That keeps the comparison about storage and access, but semantic recall would likely change the accuracy picture.</li>
+  <li><strong>Tiny graded set.</strong> Nine queries can reveal bugs and gross differences, not small ones. For decisions, write at least several dozen queries from real sessions.</li>
+  <li><strong>Local MCP only.</strong> A remote MCP service over a network transport adds network latency, authentication and a very different data-control profile. The stdio numbers do not transfer.</li>
+  <li><strong>Single writer.</strong> No concurrency is tested. Two agents writing to the file backend at once can interleave; SQLite handles concurrent access better but still has a single writer at a time.</li>
+  <li><strong>Retrieval, not usefulness.</strong> The harness checks that the right fact comes back. Whether the agent then <em>uses</em> it correctly is a separate test with a model in the loop.</li>
+</ul>
+
+<h2>How to choose</h2>
+
+<p>Once your table is filled in, a reasonable default reading is:</p>
+<ul>
+  <li><strong>Files</strong> if the memory is small, belongs with the code, and humans should review changes. Git review is the strongest staleness control of the three.</li>
+  <li><strong>Local SQLite</strong> if the record count grows past what a full scan handles comfortably, or you need ranked search, and the memory is used by one agent setup.</li>
+  <li><strong>MCP service</strong> if several clients or frameworks must share the same memory, or you want one choke point to add auditing, access control and a <code>forget</code> tool. You pay for that in a process boundary and in more moving parts.</li>
+</ul>
+
+<p>Whichever you pick, the data model from the start of this article — one fact per record, stable keys that supersede, dates, expiry, deliberate writes — matters more than the storage engine. A well-keyed folder of Markdown files will outperform a sophisticated service full of duplicates.</p>
+
+<h2>Next steps</h2>
+
+<p>More step-by-step material is collected in the <a href="guides.html">guides</a>, and every term used above is defined in the <a href="../glossary.html">glossary</a>.</p>
+
+<section class="service-note">
+  <b>We publish what works for us—and implement the same solutions for your business.</b>
+  We design AI automation, Telegram bots, chats, and AI agents for real-world processes.
+  <a href="../contacts-en.html">Discuss your project →</a>
+</section>
+</article>
+</main>
+
+<footer class="site-footer">
+  <p>© 2026 Agent Lab Journal · <a href="guides.html">Guides</a> · <a href="../glossary.html">Glossary</a></p>
+</footer>
+
+</body>
+</html>
