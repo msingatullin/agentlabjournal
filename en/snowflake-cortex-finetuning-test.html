@@ -1,0 +1,604 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Дообучение LLM в Snowflake Cortex: практический тест через SQL | Agent Lab Journal</title>
+<meta name="description" content="Дообучение LLM в Snowflake Cortex: практический тест через SQL. A reproducible protocol: prepare prompt/completion data, run CORTEX.FINETUNE, call the tuned model through COMPLETE and compare it with the base model on a held-out set.">
+<link rel="canonical" href="https://agentlabjournal.online/en/snowflake-cortex-finetuning-test.html">
+<link rel="stylesheet" href="../style.css">
+<link rel="stylesheet" href="../reading.css">
+
+<meta property="og:type" content="article">
+<meta property="og:site_name" content="Agent Lab Journal">
+<meta property="og:title" content="Дообучение LLM в Snowflake Cortex: практический тест через SQL">
+<meta property="og:description" content="Run fine-tuning inside Snowflake with SQL only, call the result through COMPLETE, and measure it against a prompted base model on a held-out set.">
+<meta property="og:url" content="https://agentlabjournal.online/en/snowflake-cortex-finetuning-test.html">
+<meta property="og:image" content="https://agentlabjournal.online/assets/covers/llm-context-window-budget-social.png">
+<meta property="og:locale" content="en_US">
+<meta property="article:modified_time" content="2026-10-20">
+
+<meta name="twitter:card" content="summary_large_image">
+<meta name="twitter:title" content="Дообучение LLM в Snowflake Cortex: практический тест через SQL">
+<meta name="twitter:description" content="A SQL-only protocol for fine-tuning in Snowflake Cortex and a fair held-out comparison against the base model.">
+<meta name="twitter:image" content="https://agentlabjournal.online/assets/covers/llm-context-window-budget-social.png">
+
+<script type="application/ld+json">
+{
+  "@context": "https://schema.org",
+  "@type": "Article",
+  "headline": "Дообучение LLM в Snowflake Cortex: практический тест через SQL",
+  "description": "A reproducible protocol: prepare prompt/completion data, run CORTEX.FINETUNE, call the tuned model through COMPLETE and compare it with the base model on a held-out set.",
+  "image": ["https://agentlabjournal.online/assets/covers/llm-context-window-budget-social.png"],
+  "datePublished": "2026-10-20",
+  "dateModified": "2026-10-20",
+  "inLanguage": "en",
+  "author": {
+    "@type": "Organization",
+    "name": "Agent Lab Journal"
+  },
+  "publisher": {
+    "@type": "Organization",
+    "name": "Agent Lab Journal",
+    "url": "https://agentlabjournal.online/"
+  },
+  "mainEntityOfPage": {
+    "@type": "WebPage",
+    "@id": "https://agentlabjournal.online/en/snowflake-cortex-finetuning-test.html"
+  }
+}
+</script>
+<link rel="stylesheet" href="../homepage.css"><link rel="stylesheet" href="../max-promo.css">  <meta property="og:image:alt" content="Дообучение LLM в Snowflake Cortex: практический тест через SQL">
+</head>
+<body>
+
+<header class="site-header">
+  <a class="site-logo" href="../index.html">Agent Lab Journal</a>
+  <nav class="site-nav">
+    <a href="guides.html">Guides</a>
+    <a href="../glossary.html">Glossary</a>
+  </nav>
+</header>
+
+<main>
+<article class="reading">
+
+<h1>Дообучение LLM в Snowflake Cortex: практический тест через SQL</h1>
+        <figure class="article-cover" data-editorial-cover="snowflake-cortex-finetuning-test"><img src="../assets/covers/llm-context-window-budget.png" alt="Дообучение LLM в Snowflake Cortex: практический тест через SQL" width="1280" height="720" fetchpriority="high"><figcaption>Temporary fallback cover; replace in editorial pass.</figcaption></figure>
+<p class="reading-meta">Level: intermediate · Reading time: 35 minutes · Updated: 2026-10-20</p>
+
+<p class="lead"><strong>Fine-tuning a model on warehouse data without standing up GPUs, a training cluster or an export pipeline sounds like the obvious win. It is only a win if the tuned model beats a well-written prompt on data it has never seen.</strong> This guide gives you a SQL-only protocol for Snowflake Cortex: build a training set from a table, launch the job with <code>SNOWFLAKE.CORTEX.FINETUNE</code>, call the resulting model through <code>COMPLETE</code>, and compare it with the base model on a held-out set — with the decision rule written down before you look at the numbers.</p>
+
+<aside class="note">
+<p><strong>What this article is and is not.</strong> It is a test protocol with runnable SQL. It does <em>not</em> report results from our own account: every number below is either a placeholder you fill in or an explicit example. Function signatures, supported base models, region availability and billing rules for Cortex change over time; check the current Snowflake documentation for your account before running anything that costs credits. No prices are quoted here on purpose.</p>
+</aside>
+
+<h2 id="problem">The problem: "should we fine-tune?" is an empirical question</h2>
+
+<p>Teams usually arrive at <a href="../glossary.html#fine-tuning">fine-tuning</a> with a reasonable intuition: "We have thousands of labelled rows in Snowflake, the general model keeps getting our categories slightly wrong, a model trained on our data should do better." Sometimes that is true. Sometimes a better <a href="../glossary.html#prompt">prompt</a> with a list of labels and two examples closes most of the gap at zero training cost. Sometimes the fine-tuned model is more accurate but emits output that breaks your parser on edge cases.</p>
+
+<p>You cannot settle this by argument. You settle it by running both options on the same <a href="../glossary.html#holdout-set">held-out set</a>, with the same scoring code, and agreeing up front what difference would justify the extra moving part. Snowflake Cortex is convenient for this because data preparation, training, inference and scoring all stay in SQL inside one account — there is no export step where test rows can quietly leak into training.</p>
+
+<h2 id="case">The concrete case: support ticket routing</h2>
+
+<p>We use one task throughout, because a vague task makes any comparison meaningless.</p>
+
+<ul>
+  <li><strong>Input:</strong> a support ticket's subject and body (free text).</li>
+  <li><strong>Output:</strong> exactly one label from a fixed set, for example <code>billing</code>, <code>login_access</code>, <code>bug_report</code>, <code>feature_request</code>, <code>data_export</code>, <code>other</code>.</li>
+  <li><strong>Source:</strong> a table of historical tickets where a human agent already assigned the final category.</li>
+  <li><strong>Metric:</strong> exact-match accuracy on the held-out test split, plus the rate of invalid outputs (anything that is not one of the six labels).</li>
+</ul>
+
+<p>This is a good first fine-tuning target: the output is short and checkable, the labels encode company-specific conventions a general model cannot know (what your team calls "data export" vs "bug report"), and the scoring is deterministic. Open-ended generation tasks — summaries, replies — are much harder to evaluate and should not be your first experiment.</p>
+
+<p>The table names below (<code>SUPPORT_TICKETS</code>, schema <code>AGENTLAB.EVAL</code>) are examples. Replace them with your own; keep the column roles.</p>
+
+<h2 id="prereqs">Prerequisites</h2>
+
+<ol>
+  <li><strong>A Snowflake account in a region where Cortex fine-tuning is available.</strong> Availability is region-dependent and has changed over time; confirm it in the documentation or by running <code>SNOWFLAKE.CORTEX.FINETUNE('SHOW')</code> (step 6) — an "unsupported" error answers the question quickly.</li>
+  <li><strong>Privileges.</strong> The role that runs the job needs the <code>SNOWFLAKE.CORTEX_USER</code> database role, <code>USAGE</code> on the database and schema, <code>CREATE MODEL</code> on the schema where the tuned model will live, and <code>SELECT</code> on the source tables. Calling the tuned model later requires <code>USAGE</code> on that model object.</li>
+  <li><strong>A warehouse</strong> for the data preparation and scoring queries. The fine-tuning job itself runs on Snowflake-managed compute; inference through <code>COMPLETE</code> is billed per <a href="../glossary.html#token">token</a>. Look up the current consumption table rather than estimating from this article.</li>
+  <li><strong>Labelled data.</strong> A few hundred clean examples per task is a common starting point for classification; more matters less than consistency. If two agents would label the same ticket differently, the model will learn that noise too.</li>
+</ol>
+
+<pre><code>-- Run as an administrator once; role and object names are examples.
+CREATE ROLE IF NOT EXISTS FT_EXPERIMENTER;
+GRANT DATABASE ROLE SNOWFLAKE.CORTEX_USER TO ROLE FT_EXPERIMENTER;
+GRANT USAGE ON DATABASE AGENTLAB TO ROLE FT_EXPERIMENTER;
+GRANT USAGE ON SCHEMA AGENTLAB.EVAL TO ROLE FT_EXPERIMENTER;
+GRANT CREATE MODEL ON SCHEMA AGENTLAB.EVAL TO ROLE FT_EXPERIMENTER;
+GRANT CREATE TABLE, CREATE VIEW ON SCHEMA AGENTLAB.EVAL TO ROLE FT_EXPERIMENTER;
+GRANT SELECT ON TABLE AGENTLAB.RAW.SUPPORT_TICKETS TO ROLE FT_EXPERIMENTER;
+GRANT USAGE ON WAREHOUSE EVAL_WH TO ROLE FT_EXPERIMENTER;
+GRANT ROLE FT_EXPERIMENTER TO USER &lt;your_user&gt;;</code></pre>
+
+<pre><code>USE ROLE FT_EXPERIMENTER;
+USE WAREHOUSE EVAL_WH;
+USE SCHEMA AGENTLAB.EVAL;</code></pre>
+
+<h2 id="decision-rule">Step 0. Write the decision rule before you train</h2>
+
+<p>The most common failure in this kind of test is not technical. It is looking at the results first and then deciding what counts as "better". Write the rule into a table or a ticket before step 6, for example:</p>
+
+<blockquote>
+<p>We adopt the fine-tuned model if, on the test split, (1) its accuracy is at least 5 percentage points higher than the best prompted <a href="../glossary.html#baseline">baseline</a>, (2) its invalid-output rate is not higher than the baseline's, and (3) no single category drops by more than 10 points. Otherwise we keep the prompt.</p>
+</blockquote>
+
+<p>The thresholds above are an example. Pick yours based on what an error costs in your routing process. The point is that they are fixed in advance.</p>
+
+<h2 id="data">Step 1. Inspect and clean the source data</h2>
+
+<p>Start by looking at the labels you actually have, not the ones you think you have.</p>
+
+<pre><code>SELECT category, COUNT(*) AS n
+FROM AGENTLAB.RAW.SUPPORT_TICKETS
+GROUP BY category
+ORDER BY n DESC;</code></pre>
+
+<p>Typical things this query reveals: label spelling variants (<code>Billing</code>, <code>billing </code>, <code>BILLING</code>), retired categories, and a long tail of rare labels. Normalise them into a clean view and drop rows you cannot trust:</p>
+
+<pre><code>CREATE OR REPLACE VIEW TICKETS_CLEAN AS
+SELECT
+    ticket_id,
+    TRIM(subject)                         AS subject,
+    LEFT(TRIM(body), 4000)                AS body,      -- cap very long bodies
+    LOWER(TRIM(category))                 AS label
+FROM AGENTLAB.RAW.SUPPORT_TICKETS
+WHERE body IS NOT NULL
+  AND LENGTH(TRIM(body)) &gt; 20
+  AND LOWER(TRIM(category)) IN
+      ('billing','login_access','bug_report','feature_request','data_export','other');</code></pre>
+
+<p><strong>Personal data.</strong> Ticket bodies often contain names, emails, phone numbers and account IDs. Fine-tuning a model on raw text means the model can reproduce fragments of it. Decide with your data owner whether to mask before training. A minimal masking pass in SQL:</p>
+
+<pre><code>CREATE OR REPLACE VIEW TICKETS_MASKED AS
+SELECT
+    ticket_id,
+    REGEXP_REPLACE(subject, '[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\\.[A-Za-z]{2,}', '&lt;EMAIL&gt;') AS subject,
+    REGEXP_REPLACE(
+        REGEXP_REPLACE(body, '[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\\.[A-Za-z]{2,}', '&lt;EMAIL&gt;'),
+        '\\+?[0-9][0-9 ()-]{7,}[0-9]', '&lt;PHONE&gt;')                               AS body,
+    label
+FROM TICKETS_CLEAN;</code></pre>
+
+<p>Regex masking is incomplete by nature; treat it as a floor, not a guarantee. If your organisation already uses a classification or masking policy in Snowflake, use that instead.</p>
+
+<h2 id="split">Step 2. Make a deterministic three-way split</h2>
+
+<p>You need three disjoint sets:</p>
+
+<ul>
+  <li><strong>train</strong> — what the model learns from;</li>
+  <li><strong>validation</strong> — passed to the fine-tuning job so it can track loss on unseen rows;</li>
+  <li><strong>test</strong> — touched only once, for the final comparison. Neither the training job nor your prompt engineering may see it.</li>
+</ul>
+
+<p>Use a hash of a stable key rather than <code>RANDOM()</code>, so the split is identical every time you rerun the query:</p>
+
+<pre><code>CREATE OR REPLACE TABLE TICKETS_SPLIT AS
+SELECT
+    t.*,
+    CASE
+        WHEN MOD(ABS(HASH(ticket_id)), 10) &lt; 8 THEN 'train'
+        WHEN MOD(ABS(HASH(ticket_id)), 10) = 8 THEN 'validation'
+        ELSE 'test'
+    END AS split
+FROM TICKETS_MASKED t;</code></pre>
+
+<p>If your tickets have strong time effects (a new product launched, a pricing change), consider a time-based split instead: train on older tickets, test on the most recent month. That is a harder and more honest test of whether the model will hold up next month.</p>
+
+<h3>Leakage checks</h3>
+
+<p>Duplicate tickets are common: the same customer re-sends a message, or an automated alert creates near-identical rows. If one copy lands in train and another in test, the fine-tuned model gets an unfair advantage.</p>
+
+<pre><code>-- Exact duplicates of body text that cross split boundaries
+SELECT body_hash, ARRAY_AGG(DISTINCT split) AS splits, COUNT(*) AS n
+FROM (SELECT split, HASH(LOWER(REGEXP_REPLACE(body, '\\s+', ' '))) AS body_hash
+      FROM TICKETS_SPLIT)
+GROUP BY body_hash
+HAVING COUNT(DISTINCT split) &gt; 1
+ORDER BY n DESC
+LIMIT 50;</code></pre>
+
+<p>If this returns rows, either deduplicate before splitting or assign the split by the body hash instead of the ticket ID, so all copies land in the same set. Near-duplicates (same template, different order number) will not be caught by an exact hash; spot-check them manually.</p>
+
+<h3>Distribution check</h3>
+
+<pre><code>SELECT split, label, COUNT(*) AS n,
+       ROUND(100 * RATIO_TO_REPORT(COUNT(*)) OVER (PARTITION BY split), 1) AS pct
+FROM TICKETS_SPLIT
+GROUP BY split, label
+ORDER BY label, split;</code></pre>
+
+<p>The label proportions should be similar across the three splits. If a category has only a handful of rows in test, its per-class accuracy will be too noisy to interpret — note that in your report rather than drawing conclusions from it.</p>
+
+<h2 id="prompt-format">Step 3. Fix one prompt template for training and inference</h2>
+
+<p>Cortex fine-tuning learns from pairs of columns named <code>prompt</code> and <code>completion</code> (you can alias any columns to those names in the training query). Whatever text you put in <code>prompt</code> during training is what you must send at inference time. A mismatch here is the single easiest way to make a good fine-tuned model look bad.</p>
+
+<p>Keep the template in one place — a view — and reuse it everywhere:</p>
+
+<pre><code>CREATE OR REPLACE VIEW FT_PAIRS AS
+SELECT
+    ticket_id,
+    split,
+    'Classify the support ticket into one category.\n'
+    || 'Subject: ' || COALESCE(subject, '') || '\n'
+    || 'Body: '    || body                  || '\n'
+    || 'Category:'                                   AS prompt,
+    label                                            AS completion
+FROM TICKETS_SPLIT;</code></pre>
+
+<p>Notice that this training prompt does <em>not</em> list the allowed labels. That is deliberate: one of the questions we are testing is whether the model can learn the label vocabulary from examples, so the inference prompt can stay short. You could include the label list as well; just keep it identical between training and inference.</p>
+
+<h3>Check prompt lengths</h3>
+
+<p>Fine-tuning jobs have context limits that depend on the base model, and rows that are too long may be truncated or rejected. Cortex provides a token counting function; run it on a sample to see your distribution:</p>
+
+<pre><code>SELECT
+    APPROX_PERCENTILE(n_tokens, 0.5)  AS p50,
+    APPROX_PERCENTILE(n_tokens, 0.95) AS p95,
+    MAX(n_tokens)                     AS max_tokens
+FROM (
+    SELECT SNOWFLAKE.CORTEX.COUNT_TOKENS('llama3.1-8b', prompt || ' ' || completion) AS n_tokens
+    FROM FT_PAIRS
+    SAMPLE (500 ROWS)
+);</code></pre>
+
+<p>If <code>COUNT_TOKENS</code> is not available for your chosen model or region, approximate with character length and stay well under the documented context limit. If p95 is close to the limit, shorten the body cap in step 1.</p>
+
+<h2 id="baseline">Step 4. Measure the baselines first</h2>
+
+<p>Run the baselines before training. If a prompted base model already meets your target, you can stop here and save the training cost.</p>
+
+<p>We measure two baselines on the <strong>test split only</strong>:</p>
+
+<ul>
+  <li><strong>B0 — same prompt, base model.</strong> The exact training prompt, sent to the untuned base model. This isolates the effect of training.</li>
+  <li><strong>B1 — engineered prompt, base model.</strong> A prompt with the label list, one-line definitions and the instruction to answer with the label only. This is the fair competitor: it is what you would deploy if you did not fine-tune.</li>
+</ul>
+
+<p>Use the array form of <code>COMPLETE</code> so you can set <code>temperature</code> to 0 and reduce run-to-run variation. Before running on the full test set, call it on one row and look at the raw response shape; the parsing below assumes the response is a JSON object with a <code>choices</code> array whose first element has a <code>messages</code> field.</p>
+
+<pre><code>SELECT SNOWFLAKE.CORTEX.COMPLETE(
+    'llama3.1-8b',
+    [{'role': 'user', 'content': 'Reply with the single word: ok'}],
+    {'temperature': 0, 'max_tokens': 10}
+) AS raw_response;</code></pre>
+
+<p>If the structure differs in your account (for example because a newer function such as <code>AI_COMPLETE</code> is the recommended entry point), adjust the extraction path in the queries below and keep it identical for all three variants.</p>
+
+<h3>B0</h3>
+
+<pre><code>CREATE OR REPLACE TABLE RESULTS_B0 AS
+SELECT
+    ticket_id,
+    completion AS gold,
+    SNOWFLAKE.CORTEX.COMPLETE(
+        'llama3.1-8b',
+        [{'role': 'user', 'content': prompt}],
+        {'temperature': 0, 'max_tokens': 10}
+    ):choices[0]:messages::STRING AS raw_output
+FROM FT_PAIRS
+WHERE split = 'test';</code></pre>
+
+<h3>B1</h3>
+
+<pre><code>CREATE OR REPLACE TABLE RESULTS_B1 AS
+SELECT
+    ticket_id,
+    label AS gold,
+    SNOWFLAKE.CORTEX.COMPLETE(
+        'llama3.1-8b',
+        [{'role': 'system', 'content':
+            'You route customer support tickets. Answer with exactly one label and nothing else.\n'
+         || 'Labels:\n'
+         || 'billing - invoices, charges, refunds, payment methods\n'
+         || 'login_access - passwords, 2FA, locked accounts, SSO\n'
+         || 'bug_report - something in the product behaves incorrectly\n'
+         || 'feature_request - asks for new functionality\n'
+         || 'data_export - exporting, downloading or migrating data\n'
+         || 'other - anything else'},
+         {'role': 'user', 'content':
+            'Subject: ' || COALESCE(subject, '') || '\nBody: ' || body}],
+        {'temperature': 0, 'max_tokens': 10}
+    ):choices[0]:messages::STRING AS raw_output
+FROM TICKETS_SPLIT
+WHERE split = 'test';</code></pre>
+
+<p>Write the label definitions from your own team's routing guidelines. If you iterate on the B1 prompt, iterate on the <strong>validation</strong> split, not the test split — otherwise you are tuning the prompt to the test set and the comparison becomes unfair in the baseline's favour.</p>
+
+<h2 id="finetune">Step 5. Launch the fine-tuning job</h2>
+
+<p>The job is created with a single function call. Arguments, in order: the operation (<code>'CREATE'</code>), the fully qualified name for the new model, the base model, a query returning the training rows, and a query returning the validation rows. An optional object sets training options such as the number of epochs.</p>
+
+<pre><code>SELECT SNOWFLAKE.CORTEX.FINETUNE(
+    'CREATE',
+    'AGENTLAB.EVAL.TICKET_ROUTER_FT_V1',
+    'llama3.1-8b',
+    'SELECT prompt, completion FROM AGENTLAB.EVAL.FT_PAIRS WHERE split = ''train''',
+    'SELECT prompt, completion FROM AGENTLAB.EVAL.FT_PAIRS WHERE split = ''validation''',
+    {'max_epochs': 3}
+) AS job_id;</code></pre>
+
+<p>Points that matter here:</p>
+
+<ul>
+  <li><strong>Use the same base model as the baselines.</strong> Otherwise you are comparing model families, not the effect of training.</li>
+  <li><strong>Fully qualify the table names</strong> inside the query strings. The job resolves them in its own context.</li>
+  <li><strong>Double the single quotes</strong> inside the query strings, as shown.</li>
+  <li><strong>The test split is not referenced anywhere in this call.</strong> Read the two query strings once more to confirm.</li>
+  <li><strong>Version the model name</strong> (<code>_V1</code>). You will almost certainly run a second job; overwriting names makes results tables ambiguous.</li>
+  <li>The list of supported base models and allowed option values changes; check the documentation. If you pass an unsupported model, the call fails immediately rather than after hours.</li>
+</ul>
+
+<p>Save the returned job ID somewhere durable — a results log table is better than a worksheet tab:</p>
+
+<pre><code>CREATE TABLE IF NOT EXISTS FT_RUN_LOG (
+    job_id      STRING,
+    model_name  STRING,
+    base_model  STRING,
+    train_rows  NUMBER,
+    val_rows    NUMBER,
+    options     VARIANT,
+    created_at  TIMESTAMP_LTZ DEFAULT CURRENT_TIMESTAMP()
+);
+
+INSERT INTO FT_RUN_LOG (job_id, model_name, base_model, train_rows, val_rows, options)
+SELECT '&lt;job_id from above&gt;', 'AGENTLAB.EVAL.TICKET_ROUTER_FT_V1', 'llama3.1-8b',
+       (SELECT COUNT(*) FROM FT_PAIRS WHERE split = 'train'),
+       (SELECT COUNT(*) FROM FT_PAIRS WHERE split = 'validation'),
+       PARSE_JSON('{"max_epochs": 3}');</code></pre>
+
+<h2 id="monitor">Step 6. Monitor the job</h2>
+
+<pre><code>-- One job
+SELECT SNOWFLAKE.CORTEX.FINETUNE('DESCRIBE', '&lt;job_id&gt;');
+
+-- All jobs visible to your role
+SELECT SNOWFLAKE.CORTEX.FINETUNE('SHOW');
+
+-- Stop a job you launched by mistake
+SELECT SNOWFLAKE.CORTEX.FINETUNE('CANCEL', '&lt;job_id&gt;');</code></pre>
+
+<p><code>DESCRIBE</code> returns a JSON document with the job status (values such as pending, in progress, success, error, cancelled), progress information and, on failure, an error message. Duration depends on data size, base model and queue; do not plan around a specific number. When the status reaches success, the model appears as a schema object:</p>
+
+<pre><code>SHOW MODELS IN SCHEMA AGENTLAB.EVAL;</code></pre>
+
+<p>If the job reports training and validation loss, record them in your log. A validation loss that stops falling (or rises) while training loss keeps falling is the classic sign of <a href="../glossary.html#overfitting">overfitting</a>; with a small dataset, fewer epochs is often the better next experiment.</p>
+
+<h2 id="inference">Step 7. Call the fine-tuned model through COMPLETE</h2>
+
+<p>A tuned model is called exactly like a base model; you pass its fully qualified name instead of a model identifier. Send the same <code>prompt</code> column that was used for training.</p>
+
+<pre><code>-- Smoke test on a single validation row first
+SELECT prompt, completion,
+       SNOWFLAKE.CORTEX.COMPLETE(
+           'AGENTLAB.EVAL.TICKET_ROUTER_FT_V1',
+           [{'role': 'user', 'content': prompt}],
+           {'temperature': 0, 'max_tokens': 10}
+       ):choices[0]:messages::STRING AS raw_output
+FROM FT_PAIRS
+WHERE split = 'validation'
+LIMIT 1;</code></pre>
+
+<p>If the smoke test returns a sensible label, run the test split:</p>
+
+<pre><code>CREATE OR REPLACE TABLE RESULTS_FT AS
+SELECT
+    ticket_id,
+    completion AS gold,
+    SNOWFLAKE.CORTEX.COMPLETE(
+        'AGENTLAB.EVAL.TICKET_ROUTER_FT_V1',
+        [{'role': 'user', 'content': prompt}],
+        {'temperature': 0, 'max_tokens': 10}
+    ):choices[0]:messages::STRING AS raw_output
+FROM FT_PAIRS
+WHERE split = 'test';</code></pre>
+
+<p>Other roles can only call the model if they have <code>USAGE</code> on it. If a colleague gets "model does not exist", check grants before suspecting the job.</p>
+
+<h2 id="scoring">Step 8. Score all three variants with the same code</h2>
+
+<p>Put the three result tables into one long table and normalise outputs with a single rule. Any output that is not one of the six labels after normalisation counts as <code>INVALID</code> — and as wrong.</p>
+
+<pre><code>CREATE OR REPLACE VIEW RESULTS_ALL AS
+WITH unioned AS (
+    SELECT 'B0' AS variant, ticket_id, gold, raw_output FROM RESULTS_B0
+    UNION ALL
+    SELECT 'B1', ticket_id, gold, raw_output FROM RESULTS_B1
+    UNION ALL
+    SELECT 'FT', ticket_id, gold, raw_output FROM RESULTS_FT
+),
+normalised AS (
+    SELECT *,
+           LOWER(TRIM(REGEXP_REPLACE(raw_output, '[^A-Za-z_]', ' '))) AS cleaned
+    FROM unioned
+)
+SELECT
+    variant, ticket_id, gold, raw_output,
+    CASE WHEN SPLIT_PART(cleaned, ' ', 1) IN
+              ('billing','login_access','bug_report','feature_request','data_export','other')
+         THEN SPLIT_PART(cleaned, ' ', 1)
+         ELSE 'INVALID'
+    END AS pred
+FROM normalised;</code></pre>
+
+<p>This takes the first word of the cleaned output. That is lenient toward a model that answers "billing." or "Billing - the user asks about a refund", and strict toward one that answers "The category is billing". Choose your rule, document it, and apply it identically to all variants. If you change it later, rescore everything.</p>
+
+<h3>Overall accuracy and invalid rate</h3>
+
+<pre><code>SELECT
+    variant,
+    COUNT(*)                                             AS n,
+    ROUND(100 * AVG(IFF(pred = gold, 1, 0)), 1)          AS accuracy_pct,
+    ROUND(100 * AVG(IFF(pred = 'INVALID', 1, 0)), 1)     AS invalid_pct
+FROM RESULTS_ALL
+GROUP BY variant
+ORDER BY variant;</code></pre>
+
+<p>All three rows must have the same <code>n</code>. If they don't, some calls failed or returned NULL; find them before interpreting anything:</p>
+
+<pre><code>SELECT variant, COUNT(*) AS null_outputs
+FROM RESULTS_ALL
+WHERE raw_output IS NULL
+GROUP BY variant;</code></pre>
+
+<h3>Per-category accuracy</h3>
+
+<pre><code>SELECT
+    gold AS category,
+    variant,
+    COUNT(*) AS n,
+    ROUND(100 * AVG(IFF(pred = gold, 1, 0)), 1) AS accuracy_pct
+FROM RESULTS_ALL
+GROUP BY gold, variant
+ORDER BY category, variant;</code></pre>
+
+<p>This is where fine-tuning often shows its real character: large gains on categories that depend on internal conventions, flat or worse results on rare categories with few training examples.</p>
+
+<h3>Confusion matrix for the tuned model</h3>
+
+<pre><code>SELECT gold, pred, COUNT(*) AS n
+FROM RESULTS_ALL
+WHERE variant = 'FT'
+GROUP BY gold, pred
+ORDER BY gold, n DESC;</code></pre>
+
+<h3>Paired comparison: FT vs B1</h3>
+
+<p>Both variants were scored on the same tickets, so compare them pairwise. What matters is the number of tickets where one is right and the other is wrong; tickets where both are right or both wrong say nothing about the difference.</p>
+
+<pre><code>WITH paired AS (
+    SELECT
+        f.ticket_id,
+        IFF(f.pred = f.gold, 1, 0) AS ft_ok,
+        IFF(b.pred = b.gold, 1, 0) AS b1_ok
+    FROM RESULTS_ALL f
+    JOIN RESULTS_ALL b
+      ON f.ticket_id = b.ticket_id AND f.variant = 'FT' AND b.variant = 'B1'
+)
+SELECT
+    SUM(IFF(ft_ok = 1 AND b1_ok = 0, 1, 0)) AS ft_only_right,
+    SUM(IFF(ft_ok = 0 AND b1_ok = 1, 1, 0)) AS b1_only_right,
+    SUM(IFF(ft_ok = 1 AND b1_ok = 1, 1, 0)) AS both_right,
+    SUM(IFF(ft_ok = 0 AND b1_ok = 0, 1, 0)) AS both_wrong
+FROM paired;</code></pre>
+
+<p>If <code>ft_only_right</code> and <code>b1_only_right</code> are both small (say, a dozen each), the accuracy difference is within noise no matter how it looks in percentages. You can run a McNemar test on these two counts if you want a formal p-value; for a go/no-go decision, the raw counts plus a read of the disagreeing tickets are usually more informative.</p>
+
+<h3>Read the disagreements</h3>
+
+<pre><code>SELECT f.ticket_id, f.gold, f.pred AS ft_pred, b.pred AS b1_pred,
+       LEFT(t.body, 300) AS body_preview
+FROM RESULTS_ALL f
+JOIN RESULTS_ALL b ON f.ticket_id = b.ticket_id AND b.variant = 'B1'
+JOIN TICKETS_SPLIT t ON t.ticket_id = f.ticket_id
+WHERE f.variant = 'FT' AND f.pred &lt;&gt; b.pred
+ORDER BY f.gold
+LIMIT 100;</code></pre>
+
+<p>Read at least a few dozen. You will usually find a mix of genuine model errors, ambiguous tickets that no model can get "right", and gold labels that are simply wrong. If a large share of disagreements are label errors, your accuracy numbers have a ceiling below 100% and small differences between variants mean even less.</p>
+
+<h2 id="report">Step 9. Fill in the report</h2>
+
+<p>The table below is a template. Leave the cells empty until your queries fill them; do not copy example numbers from anywhere, including this page.</p>
+
+<table>
+  <thead>
+    <tr><th>Variant</th><th>Model</th><th>Prompt</th><th>Test n</th><th>Accuracy, %</th><th>Invalid, %</th><th>Worst category, %</th></tr>
+  </thead>
+  <tbody>
+    <tr><td>B0</td><td>llama3.1-8b</td><td>training template</td><td>…</td><td>…</td><td>…</td><td>…</td></tr>
+    <tr><td>B1</td><td>llama3.1-8b</td><td>engineered, label list</td><td>…</td><td>…</td><td>…</td><td>…</td></tr>
+    <tr><td>FT</td><td>TICKET_ROUTER_FT_V1</td><td>training template</td><td>…</td><td>…</td><td>…</td><td>…</td></tr>
+  </tbody>
+</table>
+
+<p>Alongside the table, record: the job ID, base model, epochs, train/validation/test row counts, the date of the run, the normalisation rule, and the paired counts from step 8. Then apply the decision rule from step 0 literally. "FT is better by 2 points but the rule said 5" means you keep the prompt — or you write a new rule for a new experiment, not a retroactive one.</p>
+
+<h3>How to read typical outcome patterns</h3>
+
+<ul>
+  <li><strong>B0 low, B1 and FT close.</strong> The model mostly needed to know the label set. A prompt solves it; fine-tuning buys little.</li>
+  <li><strong>B0 low, B1 medium, FT clearly higher.</strong> Your categories encode conventions the label definitions don't capture. Fine-tuning is earning its place — check that the gain holds on a fresh time-based slice before deploying.</li>
+  <li><strong>FT higher on accuracy but invalid rate is not zero.</strong> Keep output validation in your pipeline regardless. A tuned model is not a schema guarantee.</li>
+  <li><strong>FT better overall, much worse on one category.</strong> Usually a category with few training rows. Add examples for it or merge it into a neighbour, then retrain.</li>
+  <li><strong>FT worse than B1.</strong> Check the template match (step 3) and leakage (step 2) before concluding that training failed. Then look at label noise.</li>
+</ul>
+
+<h2 id="failures">Failure cases and how to diagnose them</h2>
+
+<dl>
+  <dt>The <code>CREATE</code> call fails immediately</dt>
+  <dd>Usually privileges (missing <code>CORTEX_USER</code> or <code>CREATE MODEL</code>), an unsupported base model or region, an unqualified table name inside the query string, or unescaped single quotes. Run the two query strings on their own first; they must return columns named exactly <code>prompt</code> and <code>completion</code>.</dd>
+
+  <dt>The job ends in an error state</dt>
+  <dd>Read the error from <code>DESCRIBE</code>. Common causes: rows exceeding the context limit, NULL prompts or completions, too few rows. Filter NULLs and long rows in the view, not in an ad-hoc query you will forget.</dd>
+
+  <dt>The tuned model returns long sentences instead of labels</dt>
+  <dd>The inference prompt differs from the training prompt, or <code>max_tokens</code> is not set. Compare the exact strings byte for byte; trailing newlines and the final <code>Category:</code> cue matter.</dd>
+
+  <dt>Accuracy on test is suspiciously close to 100%</dt>
+  <dd>Look for leakage first: duplicates across splits, a column in the prompt that encodes the label (an internal queue name, an auto-tag), or tickets created by templates that contain the category word.</dd>
+
+  <dt>Results change between runs</dt>
+  <dd>Set <code>temperature</code> to 0 in every variant. If small variation remains, run each variant twice and report both; a difference smaller than the run-to-run spread is not a difference.</dd>
+
+  <dt>Some <code>COMPLETE</code> calls return NULL or errors in a large batch</dt>
+  <dd>Rate or quota limits, or individual inputs that exceed the context window. Re-run only the failed <code>ticket_id</code>s and merge, so all variants end with the same <code>n</code>.</dd>
+
+  <dt>A colleague cannot call the model</dt>
+  <dd>Grant <code>USAGE</code> on the model object and on its database and schema to their role.</dd>
+</dl>
+
+<h2 id="limitations">Limitations of this protocol</h2>
+
+<ul>
+  <li><strong>One task, one base model.</strong> A result on ticket routing with an 8B model says nothing about summarisation or about a larger base model. Rerun the protocol per task.</li>
+  <li><strong>Exact-match scoring fits classification only.</strong> For generation tasks you need a different evaluation (human review, rubric scoring, an <a href="../glossary.html#llm-as-judge">LLM-as-judge</a> setup with its own validation) and much more care.</li>
+  <li><strong>Gold labels are not ground truth.</strong> They are past human decisions, with their own error rate. The best possible score is bounded by their quality.</li>
+  <li><strong>Static snapshot.</strong> The test split is drawn from the same period as training unless you use a time-based split. Production drift — new products, new complaint types — will erode any model; plan periodic re-evaluation on fresh labelled rows.</li>
+  <li><strong>Cost is not measured here.</strong> Training and per-token inference are billed according to Snowflake's current consumption rules. Compare the tuned model's per-call cost and latency with the base model's on your own account before deciding; a shorter prompt can partly offset a higher per-token rate, or not.</li>
+  <li><strong>Platform details move.</strong> Function names, response formats, supported models and options in Cortex have changed before and will again. Everything marked "check the documentation" above is a place where this article may already be out of date by the time you read it.</li>
+</ul>
+
+<h2 id="checklist">Reproduction checklist</h2>
+
+<ol>
+  <li>Decision rule written and dated before training.</li>
+  <li>Clean, masked view of the source data; label set fixed.</li>
+  <li>Deterministic split; duplicate and distribution checks passed.</li>
+  <li>One prompt template view used for training and FT inference.</li>
+  <li>Token lengths checked against the base model's limit.</li>
+  <li>B0 and B1 run on test with <code>temperature = 0</code>; B1 tuned only on validation.</li>
+  <li>Fine-tuning job launched with the same base model; job ID logged.</li>
+  <li>Tuned model smoke-tested, then run on test.</li>
+  <li>All variants scored by the same view; equal <code>n</code> confirmed.</li>
+  <li>Per-category accuracy, confusion matrix and paired counts reviewed.</li>
+  <li>At least a few dozen disagreements read by a human.</li>
+  <li>Decision rule applied as written; report saved with all run metadata.</li>
+</ol>
+
+<h2 id="next">Where to go next</h2>
+
+<p>If the tuned model wins, the next work is operational: output validation in the calling pipeline, a scheduled re-evaluation on newly labelled tickets, and a rollback path to the prompted baseline. If it does not win, you have a well-measured prompt baseline — which is a result in itself and cheaper to maintain.</p>
+
+<p>More step-by-step material is in the <a href="guides.html">Agent Lab Journal guides</a>, and the terms used here are defined in the <a href="../glossary.html">glossary</a>.</p>
+
+<section class="service-note">
+  <b>We publish what works for us—and implement the same solutions for your business.</b>
+  We design AI automation, Telegram bots, chats, and AI agents for real-world processes.
+  <a href="../contacts-en.html">Discuss your project →</a>
+</section>
+</article>
+</main>
+
+<footer class="site-footer">
+  <p>© 2026 Agent Lab Journal · <a href="guides.html">Guides</a> · <a href="../glossary.html">Glossary</a></p>
+</footer>
+
+</body>
+</html>
