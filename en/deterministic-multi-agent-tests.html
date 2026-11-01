@@ -1,0 +1,815 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Reproducible Multi-Agent Scenarios and Property-Based Testing</title>
+  <meta name="description" content="Reproducible Multi-Agent Scenarios and Property-Based Testing: build a deterministic scenario engine, define invariants, and verify multi-agent behavior with repeatable tests.">
+  <link rel="canonical" href="https://agentlabjournal.online/en/deterministic-multi-agent-tests.html">
+  <link rel="stylesheet" href="../style.css">
+  <link rel="stylesheet" href="../reading.css">
+
+  <meta property="og:type" content="article">
+  <meta property="og:title" content="Reproducible Multi-Agent Scenarios and Property-Based Testing">
+  <meta property="og:description" content="A practical guide to deterministic multi-agent scenarios, seeded randomness, invariants, and property-based tests.">
+  <meta property="og:url" content="https://agentlabjournal.online/en/deterministic-multi-agent-tests.html">
+  <meta property="og:image" content="https://agentlabjournal.online/assets/covers/llm-context-window-budget-social.png">
+  <meta property="og:site_name" content="Agent Lab Journal">
+
+  <meta name="twitter:card" content="summary_large_image">
+  <meta name="twitter:title" content="Reproducible Multi-Agent Scenarios and Property-Based Testing">
+  <meta name="twitter:description" content="Build and verify deterministic multi-agent simulations with explicit randomness, event logs, and invariant checks.">
+  <meta name="twitter:image" content="https://agentlabjournal.online/assets/covers/llm-context-window-budget-social.png">
+
+  <script type="application/ld+json">
+  {
+    "@context": "https://schema.org",
+    "@type": "Article",
+    "headline": "Reproducible Multi-Agent Scenarios and Property-Based Testing",
+    "description": "A practical guide to deterministic multi-agent scenarios, seeded randomness, invariants, and property-based tests.",
+    "image": ["https://agentlabjournal.online/assets/covers/llm-context-window-budget-social.png"],
+    "dateModified": "2026-11-01",
+    "author": {
+      "@type": "Organization",
+      "name": "Agent Lab Journal"
+    },
+    "publisher": {
+      "@type": "Organization",
+      "name": "Agent Lab Journal"
+    },
+    "mainEntityOfPage": {
+      "@type": "WebPage",
+      "@id": "https://agentlabjournal.online/en/deterministic-multi-agent-tests.html"
+    }
+  }
+  </script>
+<link rel="stylesheet" href="../homepage.css"><link rel="stylesheet" href="../max-promo.css">  <meta property="og:image:alt" content="Воспроизводимые мультиагентные сценарии и property-based testing">
+</head>
+<body>
+  <header class="site-header">
+    <a href="../index.html" class="site-logo">Agent Lab Journal</a>
+    <nav aria-label="Primary navigation">
+      <a href="../guides.html">Guides</a>
+      <a href="../glossary.html">Glossary</a>
+    </nav>
+  </header>
+
+  <main>
+    <article class="reading">
+      <header class="reading-header">
+        <p class="reading-meta">Advanced · 50 min read · Engineering</p>
+        <h1>Reproducible Multi-Agent Scenarios and Property-Based Testing</h1>
+        <figure class="article-cover" data-editorial-cover="deterministic-multi-agent-tests"><img src="../assets/covers/llm-context-window-budget.png" alt="Воспроизводимые мультиагентные сценарии и property-based testing" width="1280" height="720" fetchpriority="high"><figcaption>Temporary fallback cover; replace in editorial pass.</figcaption></figure>
+        <p class="reading-dek">
+          Randomized multi-agent demos are useful for discovery, but they are poor evidence when the same input can produce a different event sequence on every run. This article develops a deterministic scenario engine, makes randomness explicit, and verifies behavior with
+          <a href="../glossary.html#property-based-testing">property-based testing</a>
+          and
+          <a href="../glossary.html#invariant">invariants</a>.
+        </p>
+      </header>
+
+      <section>
+        <h2>The problem: a plausible run is not a reproducible result</h2>
+
+        <p>
+          A multi-agent demonstration usually has a story: several agents receive a task, exchange messages, make decisions, and produce an outcome. The story becomes difficult to trust when it depends on hidden randomness, wall-clock time, unordered iteration, or an external service that changes between runs.
+        </p>
+
+        <p>
+          Suppose an orchestrator assigns work to three agents. One run finishes in six turns. Another takes nine. A third produces the same final answer but uses a different allocation path. Without a complete record of the inputs and choices, it is hard to tell whether the differences are expected variation, a regression, or a formula error.
+        </p>
+
+        <p>
+          The practical target is not “make every agent intelligent in exactly the same way.” The target is narrower and more useful:
+        </p>
+
+        <ul>
+          <li>the same scenario specification and seed produce the same observable trace;</li>
+          <li>the trace can be saved, inspected, and replayed;</li>
+          <li>system rules are expressed as executable invariants;</li>
+          <li>generated scenarios search for edge cases that hand-written examples miss;</li>
+          <li>failures identify a seed and a minimal scenario rather than only reporting “flaky.”</li>
+        </ul>
+
+        <aside class="reading-note">
+          <strong>Evidence boundary.</strong>
+          The code in this article is a self-contained teaching example. No test command is claimed to have been run for this article. The verification sections describe checks to perform and the results that would count as evidence.
+        </aside>
+      </section>
+
+      <section>
+        <h2>A small concrete case</h2>
+
+        <p>
+          Consider a dispatch simulation. A coordinator receives jobs and assigns each job to one of several workers. Each worker has a capacity. Jobs have a positive workload. The coordinator may use a randomized tie-breaker when workers have equal remaining capacity.
+        </p>
+
+        <p>The example has four observable rules:</p>
+
+        <ol>
+          <li>every job is assigned at most once;</li>
+          <li>an assignment never exceeds the worker’s remaining capacity;</li>
+          <li>the sum of assigned workload equals the sum of completed job workload;</li>
+          <li>given the same scenario and seed, the event trace is identical.</li>
+        </ol>
+
+        <p>
+          The fourth rule is a reproducibility property. The first three are domain invariants. Keeping them separate matters: a run can be deterministic and still be wrong, or correct for one input while remaining nondeterministic.
+        </p>
+
+        <h3>Scenario input</h3>
+
+        <pre><code>{
+  "seed": 184467,
+  "workers": [
+    {"id": "w0", "capacity": 7},
+    {"id": "w1", "capacity": 5},
+    {"id": "w2", "capacity": 4}
+  ],
+  "jobs": [
+    {"id": "j0", "work": 3},
+    {"id": "j1", "work": 2},
+    {"id": "j2", "work": 4},
+    {"id": "j3", "work": 1}
+  ]
+}</code></pre>
+
+        <p>
+          This is an example fixture, not a measured production workload. Its purpose is to make the state transition and its checks easy to inspect.
+        </p>
+      </section>
+
+      <section>
+        <h2>Design the deterministic boundary first</h2>
+
+        <p>
+          A reproducible engine starts by making all sources of variation visible. The engine should receive or construct these dependencies explicitly:
+        </p>
+
+        <ul>
+          <li>a seed or a random-number generator instance;</li>
+          <li>an explicit input order for workers and jobs;</li>
+          <li>a clock abstraction, if time affects behavior;</li>
+          <li>an event sink that records decisions;</li>
+          <li>stable serialization for scenario and trace data.</li>
+        </ul>
+
+        <p>
+          Do not call a process-global random function from deep inside an agent. That creates an invisible dependency. Do not use the current time as an implicit tie-breaker. Do not rely on a hash-map iteration order unless the runtime contract makes that order part of the design.
+        </p>
+
+        <h3>One random stream, one owner</h3>
+
+        <p>
+          A useful first rule is that the scenario runner owns the random stream. Agents may ask for a random decision through a narrow interface, but they should not create their own unseeded generator.
+        </p>
+
+        <pre><code>from dataclasses import dataclass
+import random
+from typing import Any
+
+@dataclass(frozen=True)
+class Job:
+    id: str
+    work: int
+
+@dataclass
+class Worker:
+    id: str
+    capacity: int
+    remaining: int
+
+@dataclass(frozen=True)
+class Event:
+    kind: str
+    payload: dict[str, Any]
+
+class Scenario:
+    def __init__(self, seed: int):
+        self.seed = seed
+        self.rng = random.Random(seed)
+        self.events: list[Event] = []
+
+    def record(self, kind: str, **payload: Any) -&gt; None:
+        self.events.append(Event(kind=kind, payload=payload))
+
+    def choose(self, values: list[str]) -&gt; str:
+        if not values:
+            raise ValueError("cannot choose from an empty list")
+        return self.rng.choice(values)</code></pre>
+
+        <p>
+          Python’s local generator is sufficient for this example because the generator is created from an explicit seed and is used by one scenario. The reproducibility guarantee still depends on using a fixed runtime and preserving the same sequence of random calls.
+        </p>
+
+        <h3>Stable ordering is part of the input</h3>
+
+        <p>
+          A seed does not compensate for an unstable candidate list. If the list passed to <code>choice</code> changes order, the same random index can select a different worker. Normalize ordering at the boundary:
+        </p>
+
+        <pre><code>def ordered_workers(raw_workers: list[dict]) -&gt; list[Worker]:
+    workers = [
+        Worker(
+            id=item["id"],
+            capacity=item["capacity"],
+            remaining=item["capacity"],
+        )
+        for item in raw_workers
+    ]
+    return sorted(workers, key=lambda worker: worker.id)</code></pre>
+
+        <p>
+          Whether sorting is the right domain rule depends on the application. The important point is that the rule is explicit. If input order is meaningful, preserve it and record it. If it is not meaningful, canonicalize it.
+        </p>
+      </section>
+
+      <section>
+        <h2>Build the smallest useful engine</h2>
+
+        <p>
+          The engine below assigns jobs one at a time. It first computes feasible workers, then chooses among them using the scenario-owned random stream. Every state-changing decision emits an event.
+        </p>
+
+        <pre><code>def run_dispatch(
+    seed: int,
+    raw_workers: list[dict],
+    raw_jobs: list[dict],
+) -&gt; list[dict]:
+    scenario = Scenario(seed)
+    workers = ordered_workers(raw_workers)
+    jobs = [
+        Job(id=item["id"], work=item["work"])
+        for item in sorted(raw_jobs, key=lambda item: item["id"])
+    ]
+
+    scenario.record(
+        "scenario_started",
+        seed=seed,
+        workers=[worker.id for worker in workers],
+        jobs=[job.id for job in jobs],
+    )
+
+    assigned: set[str] = set()
+
+    for job in jobs:
+        feasible = [
+            worker for worker in workers
+            if worker.remaining &gt;= job.work
+        ]
+
+        if not feasible:
+            scenario.record(
+                "job_rejected",
+                job_id=job.id,
+                work=job.work,
+                reason="no_capacity",
+            )
+            continue
+
+        candidates = [worker.id for worker in feasible]
+        selected_id = scenario.choose(candidates)
+        selected = next(
+            worker for worker in feasible
+            if worker.id == selected_id
+        )
+
+        selected.remaining -= job.work
+        assigned.add(job.id)
+
+        scenario.record(
+            "job_assigned",
+            job_id=job.id,
+            worker_id=selected.id,
+            work=job.work,
+            remaining=selected.remaining,
+        )
+
+    scenario.record(
+        "scenario_finished",
+        assigned=sorted(assigned),
+        remaining={
+            worker.id: worker.remaining
+            for worker in workers
+        },
+    )
+
+    return [
+        {"kind": event.kind, "payload": event.payload}
+        for event in scenario.events
+    ]</code></pre>
+
+        <p>
+          This implementation deliberately favors traceability over abstraction. A production engine may have richer agent policies, message queues, retries, and asynchronous scheduling. The same boundary principles still apply: explicit dependencies, stable inputs, and observable transitions.
+        </p>
+      </section>
+
+      <section>
+        <h2>Define invariants as executable checks</h2>
+
+        <p>
+          An invariant is a condition that must remain true for every valid state or completed trace. It is stronger than checking one expected output because it describes a class of acceptable outcomes.
+        </p>
+
+        <p>
+          For this example, the trace is the source of evidence. The checker reconstructs assignments from events and compares them with the declared inputs.
+        </p>
+
+        <pre><code>def check_dispatch_invariants(
+    raw_workers: list[dict],
+    raw_jobs: list[dict],
+    trace: list[dict],
+) -&gt; None:
+    jobs = {
+        item["id"]: item["work"]
+        for item in raw_jobs
+    }
+    capacities = {
+        item["id"]: item["capacity"]
+        for item in raw_workers
+    }
+
+    assignments = [
+        event["payload"]
+        for event in trace
+        if event["kind"] == "job_assigned"
+    ]
+
+    assigned_ids = [item["job_id"] for item in assignments]
+
+    assert len(assigned_ids) == len(set(assigned_ids)), (
+        "a job was assigned more than once"
+    )
+
+    used_by_worker: dict[str, int] = {}
+
+    for item in assignments:
+        job_id = item["job_id"]
+        worker_id = item["worker_id"]
+        work = item["work"]
+
+        assert job_id in jobs, "trace references an unknown job"
+        assert worker_id in capacities, "trace references an unknown worker"
+        assert work == jobs[job_id], "trace changed the job workload"
+
+        used_by_worker[worker_id] = (
+            used_by_worker.get(worker_id, 0) + work
+        )
+
+    for worker_id, used in used_by_worker.items():
+        assert used &lt;= capacities[worker_id], (
+            f"worker {worker_id} exceeded capacity"
+        )
+
+    assigned_work = sum(item["work"] for item in assignments)
+    completed_work = sum(jobs[job_id] for job_id in assigned_ids)
+
+    assert assigned_work == completed_work, (
+        "assigned work does not match completed work"
+    )</code></pre>
+
+        <p>
+          The assertions above check consistency between the event trace and the input. They do not prove that the dispatch policy is optimal, fair, or appropriate for a real operation. Those are separate properties requiring separate definitions.
+        </p>
+      </section>
+
+      <section>
+        <h2>Make reproducibility a first-class test</h2>
+
+        <p>
+          The most direct reproducibility check runs the same scenario twice and compares canonical traces.
+        </p>
+
+        <pre><code>import json
+
+def canonical(value: object) -&gt; str:
+    return json.dumps(
+        value,
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+
+def test_same_seed_replays_same_trace() -&gt; None:
+    workers = [
+        {"id": "w0", "capacity": 7},
+        {"id": "w1", "capacity": 5},
+        {"id": "w2", "capacity": 4},
+    ]
+    jobs = [
+        {"id": "j0", "work": 3},
+        {"id": "j1", "work": 2},
+        {"id": "j2", "work": 4},
+        {"id": "j3", "work": 1},
+    ]
+
+    first = run_dispatch(184467, workers, jobs)
+    second = run_dispatch(184467, workers, jobs)
+
+    assert canonical(first) == canonical(second)</code></pre>
+
+        <p>
+          A useful companion test checks that changing the seed is allowed to change the trace. It should not require a difference for every input: some scenarios have only one feasible choice. The correct property is that the engine does not claim seed independence when alternatives exist.
+        </p>
+
+        <pre><code>def assigned_worker_ids(trace: list[dict]) -&gt; list[str]:
+    return [
+        event["payload"]["worker_id"]
+        for event in trace
+        if event["kind"] == "job_assigned"
+    ]
+
+def test_seed_can_select_different_valid_paths() -&gt; None:
+    workers = [
+        {"id": "w0", "capacity": 3},
+        {"id": "w1", "capacity": 3},
+    ]
+    jobs = [{"id": "j0", "work": 1}]
+
+    traces = {
+        canonical(run_dispatch(seed, workers, jobs))
+        for seed in range(32)
+    }
+
+    # This is a diagnostic expectation for this fixture, not a
+    # universal property of every dispatch problem.
+    assert len(traces) &gt; 1</code></pre>
+      </section>
+
+      <section>
+        <h2>Property-based testing: test families, not anecdotes</h2>
+
+        <p>
+          Hand-written examples are valuable because they explain intent. They are weak at exploring combinations: empty inputs, duplicate identifiers, capacity boundaries, unusually large workloads, and many possible assignment orders.
+        </p>
+
+        <p>
+          <a href="../glossary.html#property-based-testing">Property-based testing</a>
+          generates many inputs and checks a property for each one. When a property fails, the framework attempts to shrink the input to a smaller counterexample. That counterexample is often more useful than a long random trace because it exposes the smallest combination that violates the rule.
+        </p>
+
+        <p>
+          The following example uses Hypothesis. The command is a reproducible setup instruction; it is not a claim that the command has been executed here.
+        </p>
+
+        <pre><code>python -m pip install hypothesis pytest
+pytest -q</code></pre>
+
+        <h3>Generating valid scenarios</h3>
+
+        <p>
+          Start with generators that produce valid identifiers and non-negative capacities. The first property should cover conservation and uniqueness, not policy quality.
+        </p>
+
+        <pre><code>from hypothesis import given, strategies as st
+
+def worker_strategy():
+    return st.fixed_dictionaries({
+        "id": st.text(
+            alphabet=st.characters(
+                whitelist_categories=("Ll", "Nd")
+            ),
+            min_size=1,
+            max_size=4,
+        ),
+        "capacity": st.integers(min_value=0, max_value=20),
+    })
+
+def job_strategy():
+    return st.fixed_dictionaries({
+        "id": st.text(
+            alphabet=st.characters(
+                whitelist_categories=("Ll", "Nd")
+            ),
+            min_size=1,
+            max_size=4,
+        ),
+        "work": st.integers(min_value=0, max_value=10),
+    })
+
+def unique_records(strategy, key: str, max_size: int = 8):
+    return st.lists(
+        strategy,
+        min_size=0,
+        max_size=max_size,
+    ).map(
+        lambda records: list({
+            record[key]: record for record in records
+        }.values())
+    )
+
+scenario_inputs = st.fixed_dictionaries({
+    "workers": unique_records(worker_strategy(), "id"),
+    "jobs": unique_records(job_strategy(), "id"),
+    "seed": st.integers(min_value=0, max_value=2**32 - 1),
+})</code></pre>
+
+        <p>
+          The generator above intentionally permits zero capacity and zero workload. Whether those values are valid depends on the domain. If they are invalid, reject them in the strategy or add a separate negative-input test. Do not silently assume that a generator’s domain matches the application’s domain.
+        </p>
+
+        <h3>Checking the invariant across generated scenarios</h3>
+
+        <pre><code>@given(scenario_inputs)
+def test_generated_scenarios_preserve_invariants(case):
+    trace = run_dispatch(
+        seed=case["seed"],
+        raw_workers=case["workers"],
+        raw_jobs=case["jobs"],
+    )
+
+    check_dispatch_invariants(
+        raw_workers=case["workers"],
+        raw_jobs=case["jobs"],
+        trace=trace,
+    )
+
+@given(scenario_inputs)
+def test_generated_scenarios_are_replayable(case):
+    first = run_dispatch(
+        seed=case["seed"],
+        raw_workers=case["workers"],
+        raw_jobs=case["jobs"],
+    )
+    second = run_dispatch(
+        seed=case["seed"],
+        raw_workers=case["workers"],
+        raw_jobs=case["jobs"],
+    )
+
+    assert canonical(first) == canonical(second)</code></pre>
+
+        <p>
+          These tests say something precise: for every generated case accepted by the strategy, the trace satisfies the stated invariants and repeats under the same seed. They do not say that the engine is correct for inputs outside the strategy, that the random generator is stable across all Python versions, or that the policy is fair.
+        </p>
+      </section>
+
+      <section>
+        <h2>Test formulas independently from orchestration</h2>
+
+        <p>
+          Formula errors often hide inside apparently successful scenarios. A worker may report remaining capacity that looks plausible while violating conservation by one unit. Put arithmetic in small pure functions and test the functions directly.
+        </p>
+
+        <pre><code>def remaining_capacity(capacity: int, assigned_work: list[int]) -&gt; int:
+    if capacity &lt; 0:
+        raise ValueError("capacity must be non-negative")
+    if any(work &lt; 0 for work in assigned_work):
+        raise ValueError("work must be non-negative")
+
+    remaining = capacity - sum(assigned_work)
+
+    if remaining &lt; 0:
+        raise ValueError("capacity exceeded")
+
+    return remaining</code></pre>
+
+        <p>
+          The useful properties include conservation, monotonicity, and boundary behavior:
+        </p>
+
+        <pre><code>@given(
+    st.integers(min_value=0, max_value=100),
+    st.lists(
+        st.integers(min_value=0, max_value=10),
+        max_size=10,
+    ),
+)
+def test_remaining_capacity_conserves_work(capacity, parts):
+    total = sum(parts)
+    if total &lt;= capacity:
+        result = remaining_capacity(capacity, parts)
+        assert result + total == capacity
+
+@given(
+    st.integers(min_value=0, max_value=100),
+    st.lists(
+        st.integers(min_value=0, max_value=10),
+        max_size=10,
+    ),
+    st.integers(min_value=0, max_value=10),
+)
+def test_remaining_capacity_does_not_increase_after_more_work(
+    capacity,
+    parts,
+    extra,
+):
+    before_total = sum(parts)
+    if before_total + extra &lt;= capacity:
+        before = remaining_capacity(capacity, parts)
+        after = remaining_capacity(capacity, parts + [extra])
+        assert after &lt;= before</code></pre>
+
+        <p>
+          Keep formula tests close to the formula. An end-to-end test may detect the symptom, but a small property test usually makes the defect easier to localize.
+        </p>
+      </section>
+
+      <section>
+        <h2>Trace format and replay</h2>
+
+        <p>
+          A useful trace contains enough information to explain a decision without exposing secrets or unnecessary personal data. For the example, that means event type, stable identifiers, workloads, remaining capacity, and the seed. It does not require prompts, credentials, private messages, or raw customer records.
+        </p>
+
+        <pre><code>{
+  "schema_version": 1,
+  "seed": 184467,
+  "input_hash": "computed-by-the-runner",
+  "events": [
+    {
+      "kind": "scenario_started",
+      "payload": {
+        "workers": ["w0", "w1", "w2"],
+        "jobs": ["j0", "j1", "j2", "j3"]
+      }
+    },
+    {
+      "kind": "job_assigned",
+      "payload": {
+        "job_id": "j0",
+        "worker_id": "w1",
+        "work": 3,
+        "remaining": 2
+      }
+    }
+  ]
+}</code></pre>
+
+        <p>
+          The hash field is a placeholder for a value computed by the runner. Do not copy a fabricated digest into a real fixture. In a working implementation, canonicalize the input first, then hash the canonical bytes with the algorithm selected by the project.
+        </p>
+
+        <p>
+          Replay should validate the input hash before executing. If the scenario definition changed, report a mismatch rather than presenting a new trace as a replay of the old one.
+        </p>
+
+        <pre><code>def replay(seed, workers, jobs, expected_trace):
+    actual_trace = run_dispatch(seed, workers, jobs)
+
+    if canonical(actual_trace) != canonical(expected_trace):
+        raise AssertionError(
+            "replay mismatch: compare the first differing event"
+        )
+
+    return actual_trace</code></pre>
+      </section>
+
+      <section>
+        <h2>Failure cases worth designing for</h2>
+
+        <h3>Hidden randomness</h3>
+        <p>
+          <strong>Symptom:</strong> repeated runs differ even though the seed is unchanged.<br>
+          <strong>Likely cause:</strong> an agent, helper, library, or external service uses another random source.<br>
+          <strong>Response:</strong> inventory random calls, inject the generator, and record decisions at the boundary.
+        </p>
+
+        <h3>Unstable iteration</h3>
+        <p>
+          <strong>Symptom:</strong> the same choices appear to be available, but a different worker is selected.<br>
+          <strong>Likely cause:</strong> candidate order depends on an unordered collection or concurrent completion order.<br>
+          <strong>Response:</strong> define a stable ordering or record the ordering as part of the scenario input.
+        </p>
+
+        <h3>Clock-dependent behavior</h3>
+        <p>
+          <strong>Symptom:</strong> a timeout, expiry, or scheduled action changes between runs.<br>
+          <strong>Likely cause:</strong> code reads wall-clock time directly.<br>
+          <strong>Response:</strong> inject a clock and use a fixed time in tests. If elapsed time matters, use a controlled monotonic clock.
+        </p>
+
+        <h3>Concurrency races</h3>
+        <p>
+          <strong>Symptom:</strong> event order changes even with identical inputs and seed.<br>
+          <strong>Likely cause:</strong> scheduling order is uncontrolled.<br>
+          <strong>Response:</strong> separate logical decisions from execution scheduling, or make the scheduler deterministic in the test harness. If nondeterminism is a real system property, test order-independent invariants rather than asserting one exact trace.
+        </p>
+
+        <h3>Overly strict snapshots</h3>
+        <p>
+          <strong>Symptom:</strong> harmless metadata changes break every fixture.<br>
+          <strong>Likely cause:</strong> the snapshot contains volatile fields such as timestamps or generated identifiers.<br>
+          <strong>Response:</strong> canonicalize and exclude fields that are not part of the behavior under test.
+        </p>
+
+        <h3>Invalid generated data</h3>
+        <p>
+          <strong>Symptom:</strong> property tests fail in input validation rather than in the intended property.<br>
+          <strong>Likely cause:</strong> the strategy generates combinations the domain forbids.<br>
+          <strong>Response:</strong> decide whether invalid inputs should be rejected, then encode that decision explicitly with valid and invalid strategies.
+        </p>
+      </section>
+
+      <section>
+        <h2>Verification workflow</h2>
+
+        <p>
+          A reproducible verification workflow should make failures portable between machines and contributors.
+        </p>
+
+        <ol>
+          <li>Record the interpreter or runtime version and dependency lockfile.</li>
+          <li>Run deterministic unit tests for formulas and state transitions.</li>
+          <li>Run replay tests using committed fixtures.</li>
+          <li>Run property-based tests with a fixed test configuration.</li>
+          <li>When a generated case fails, save the seed and shrunk input.</li>
+          <li>Re-run only the saved counterexample before changing the implementation.</li>
+          <li>After a fix, keep the counterexample as a regression fixture.</li>
+        </ol>
+
+        <p>
+          Example commands for a Python project might look like this:
+        </p>
+
+        <pre><code>python --version
+python -m pip freeze &gt; verification-environment.txt
+pytest -q tests/test_dispatch.py
+pytest -q tests/test_properties.py --hypothesis-show-statistics</code></pre>
+
+        <p>
+          These commands are examples of a verification record. They are not reported results from this article. A real report should include the command output, the environment, the commit identifier, and any relevant configuration.
+        </p>
+
+        <h3>What counts as evidence?</h3>
+
+        <p>
+          A strong result can answer all of these questions:
+        </p>
+
+        <ul>
+          <li>Which exact scenario input was tested?</li>
+          <li>Which seed and runtime were used?</li>
+          <li>Which invariants were checked?</li>
+          <li>Was the trace compared byte-for-byte or after canonicalization?</li>
+          <li>How many generated examples were completed?</li>
+          <li>Can another person replay the failing or representative case?</li>
+        </ul>
+
+        <p>
+          Avoid replacing these details with broad claims such as “the agents were tested thoroughly.” The latter does not identify a repeatable procedure.
+        </p>
+      </section>
+
+      <section>
+        <h2>Limitations</h2>
+
+        <p>
+          Determinism is not the same as realism. A deterministic scheduler can hide production races. A seeded pseudo-random generator is not a model of every possible agent behavior. A passing invariant suite does not establish that an allocation policy is fair, efficient, safe, or suitable for a regulated workflow.
+        </p>
+
+        <p>
+          Exact replay can also be sensitive to implementation changes. Changing the random-number algorithm, changing the order of random calls, upgrading a runtime, or modifying serialization can change the trace even when the domain behavior remains acceptable. Treat the trace format and runtime assumptions as versioned interfaces.
+        </p>
+
+        <p>
+          For systems that intentionally permit concurrency, prefer a layered strategy: deterministic tests for pure decisions, invariant checks for all valid schedules, controlled schedule exploration for selected races, and a smaller set of integration tests against real services. Each layer answers a different question.
+        </p>
+      </section>
+
+      <section>
+        <h2>A practical implementation checklist</h2>
+
+        <ul>
+          <li>Give every scenario an explicit seed.</li>
+          <li>Keep random-number generation under scenario ownership.</li>
+          <li>Inject clocks, identifiers, and external responses.</li>
+          <li>Define stable input and candidate ordering.</li>
+          <li>Emit events for state-changing decisions.</li>
+          <li>Canonicalize traces before comparison.</li>
+          <li>Write invariants for uniqueness, conservation, bounds, and lifecycle states.</li>
+          <li>Use generated scenarios to explore valid edge cases.</li>
+          <li>Save shrunk counterexamples as regression fixtures.</li>
+          <li>Record runtime, dependencies, seed, input, and trace schema.</li>
+          <li>Separate deterministic replay tests from order-independent concurrency tests.</li>
+          <li>Keep secrets and personal data out of fixtures and traces.</li>
+        </ul>
+      </section>
+
+      <section>
+        <h2>Conclusion</h2>
+
+        <p>
+          Reproducible Multi-Agent Scenarios and Property-Based Testing becomes practical when reproducibility is treated as an architectural boundary rather than a test-afterthought. Make randomness, time, ordering, and external responses explicit. Record decisions as a stable trace. Express business rules as invariants. Then use generated scenarios to search the spaces that examples do not cover.
+        </p>
+
+        <p>
+          The expected result is not a claim that every multi-agent run will be identical forever. It is a system where identical declared inputs can be replayed under declared assumptions, where deviations are visible, and where formula errors fail close to their source.
+        </p>
+      </section>
+
+      <footer class="reading-footer">
+        <p>Continue with the <a href="../guides.html">Agent Lab Journal guides</a> or look up terms in the <a href="../glossary.html">glossary</a>.</p>
+      </footer>
+    <section class="service-note">
+  <b>We publish what works for us—and implement the same solutions for your business.</b>
+  We design AI automation, Telegram bots, chats, and AI agents for real-world processes.
+  <a href="../contacts-en.html">Discuss your project →</a>
+</section>
+</article>
+  </main>
+
+  <footer class="site-footer">
+    <p>&copy; Agent Lab Journal</p>
+  </footer>
+</body>
+</html>
