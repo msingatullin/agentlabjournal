@@ -164,6 +164,11 @@ try:
     if not html:
         raise RuntimeError("editor returned empty output")
 except (subprocess.TimeoutExpired, RuntimeError, OSError) as error:
+    # No template stand-in any more: a placeholder article hurt the journal (86 RU pages by 2026-11-01).
+    # The run fails, the cycle reports it to Telegram and the topic stays for the next run.
+    if os.environ.get("AGENTLAB_ALLOW_TEMPLATE_FALLBACK") != "1":
+        print(f"EDITOR_FAILED: no article written ({error})", file=sys.stderr)
+        raise SystemExit(3)
     print(f"EDITOR_FALLBACK: deterministic HTML used ({error})", file=sys.stderr)
     html = fallback_html()
 
