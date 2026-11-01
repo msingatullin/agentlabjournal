@@ -153,16 +153,9 @@ def fallback_html() -> str:
     return f'''<!doctype html><html lang="{'en' if args.language == 'en' else 'ru'}"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">{stylesheets}<title>{title}</title><meta name="description" content="{lead}"><link rel="canonical" href="{canonical}"><meta property="og:type" content="article"><meta property="og:title" content="{title}"><meta property="og:description" content="{lead}"><meta property="og:url" content="{canonical}"><meta property="og:image" content="{cover}"><meta name="twitter:card" content="summary_large_image"><meta name="twitter:title" content="{title}"><meta name="twitter:description" content="{lead}"><meta name="twitter:image" content="{cover}"><script type="application/ld+json">{{"@context":"https://schema.org","@type":"Article","headline":{json.dumps(title,ensure_ascii=False)},"description":{json.dumps(lead,ensure_ascii=False)},"image":"{cover}","dateModified":"2026-08-04","author":{{"@type":"Organization","name":"Agent Lab Journal"}},"publisher":{{"@type":"Organization","name":"Agent Lab Journal"}},"mainEntityOfPage":{{"@type":"WebPage","@id":"{canonical}"}}}}</script></head><body>{EN_SITE_HEADER if args.language == 'en' else RU_SITE_HEADER}<main><article class="reading"><header class="article-header"><p class="eyebrow">PRACTICE / AGENT LAB</p><h1>{title}</h1><p class="reading-meta">Practice · 12 minutes · 4 August 2026</p><p class="lead">{lead}</p></header>{'' if args.language == 'en' else MAX_PROMO + TELEGRAM_PROMO}{body}<h2>{related_heading}</h2><p>{related}</p><p><a href="{stylesheet_prefix}guides.html">{guides_label}</a> · <a href="{stylesheet_prefix}glossary.html">{glossary_label}</a></p>{EN_SERVICE_NOTE if args.language == 'en' else SERVICE_NOTES}</article></main>{EN_SITE_FOOTER if args.language == 'en' else RU_SITE_FOOTER}</body></html>'''
 
 try:
-    result = subprocess.run(
-        ["claude", "-p", "--output-format", "text", "--no-session-persistence", "--tools", ""],
-        input=prompt, cwd=ROOT, text=True, capture_output=True,
-        timeout=int(os.environ.get("AGENTLAB_GENERATION_TIMEOUT", "300")),
-    )
-    if result.returncode:
-        raise RuntimeError((result.stderr or result.stdout)[-1000:] or f"editor exit code {result.returncode}")
-    html = result.stdout.strip()
-    if not html:
-        raise RuntimeError("editor returned empty output")
+    sys.path.insert(0, str(Path(__file__).resolve().parent))
+    from editor_cli import run_editor
+    html = run_editor(prompt, ROOT, int(os.environ.get("AGENTLAB_GENERATION_TIMEOUT", "300")))
 except (subprocess.TimeoutExpired, RuntimeError, OSError) as error:
     # No template stand-in any more: a placeholder article hurt the journal (86 RU pages by 2026-11-01).
     # The run fails, the cycle reports it to Telegram and the topic stays for the next run.

@@ -62,12 +62,14 @@ every article in Russian and English). Write the Russian fields in Russian. Retu
 CANDIDATES:
 """ + json.dumps(pending, ensure_ascii=False)
 
-run = subprocess.run(["claude", "-p", "--output-format", "text", "--no-session-persistence", "--tools", ""], input=prompt, cwd=ROOT, capture_output=True, text=True, timeout=600)
-if run.returncode:
-    state_path.write_text(json.dumps({'status': 'blocked', 'reason': 'claude_triage_failed'}, ensure_ascii=False) + '\n')
-    print(run.stderr or run.stdout, file=sys.stderr)
-    raise SystemExit(run.returncode)
-raw = run.stdout.strip()
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from editor_cli import run_editor
+try:
+    raw = run_editor(prompt, ROOT, 600)
+except Exception as error:
+    state_path.write_text(json.dumps({'status': 'blocked', 'reason': 'editor_triage_failed'}, ensure_ascii=False) + '\n')
+    print(str(error)[:1000], file=sys.stderr)
+    raise SystemExit(1)
 
 try:
     approved = json.loads(re.sub(r"^```(?:json)?\s*|\s*```$", "", raw, flags=re.I))
