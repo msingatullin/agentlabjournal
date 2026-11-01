@@ -31,7 +31,8 @@ def normalized_title(value):
 
 known_titles = {normalized_title(x.get('title')) for x in topics if x.get('title')}
 pending = []
-for candidate in sources:
+# Freshest first: a topic found today is worth more than one waiting since August.
+for candidate in sorted(sources, key=lambda item: item.get('discovered_at') or '', reverse=True):
     if candidate.get('status') != 'needs_review':
         continue
     candidate['source_quality'] = source_quality(candidate)
@@ -55,7 +56,8 @@ known_platform sources; unknown sources require explicit verification and should
 as the sole basis for a factual claim.
 Return ONLY a JSON array. Each approved object must have: slug, title, problem, level
 (one of: с нуля, средний, продвинутый), minutes (integer), result, summary, source_url,
-category. Return [] when none qualify.
+category, and the English versions en_title, en_problem, en_result, en_summary (the journal publishes
+every article in Russian and English). Write the Russian fields in Russian. Return [] when none qualify.
 
 CANDIDATES:
 """ + json.dumps(pending, ensure_ascii=False)

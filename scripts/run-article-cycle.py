@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Generate, validate, commit and push one queued article."""
+"""Find a fresh topic, generate, validate, commit and push one article."""
 import json
 import os
 import subprocess
@@ -81,6 +81,31 @@ def wait_until_public(topic, attempts=40, delay=15):
             time.sleep(delay)
     raise RuntimeError(f"canonical URL is not publicly available after {attempts * delay}s: {url}")
 queue_path = ROOT / "article-topics.json"
+
+def discover_fresh_topics():
+    """Find today's topics right before writing: collect fresh sources, let the editor pick from the newest,
+    commit the refreshed queue. Returns the slugs added in this run (empty when nothing new qualified)."""
+    if os.environ.get("AGENTLAB_SKIP_DISCOVERY") == "1":
+        return []
+    before = {item["slug"] for item in json.loads(queue_path.read_text())}
+    for script, limit in (("collect-article-sources.py", 300), ("triage-article-sources.py", 900)):
+        try:
+            run = subprocess.run([sys.executable, str(ROOT / "scripts" / script)], cwd=ROOT, timeout=limit)
+        except subprocess.TimeoutExpired:
+            print(f"ARTICLE_CYCLE: {script} timed out; using the existing queue")
+            break
+        if run.returncode:
+            print(f"ARTICLE_CYCLE: {script} exit {run.returncode}; using the existing queue")
+            break
+    tracked = ["article-source-candidates.json", "article-topics.json", "article-triage-state.json"]
+    subprocess.run(["git", "add", *tracked], cwd=ROOT, check=True)
+    if subprocess.run(["git", "diff", "--cached", "--quiet"], cwd=ROOT).returncode:
+        subprocess.run(["git", "commit", "-m", "Refresh article topics from fresh sources"], cwd=ROOT, check=True)
+    fresh = [item["slug"] for item in json.loads(queue_path.read_text()) if item["slug"] not in before]
+    print(f"ARTICLE_CYCLE: fresh topics found: {len(fresh)}")
+    return fresh
+
+fresh_slugs = discover_fresh_topics()
 topics = json.loads(queue_path.read_text())
 cover_map = json.loads((ROOT / "homepage-covers.json").read_text())
 
@@ -100,8 +125,11 @@ def has_approved_cover(candidate):
     return True
 
 unpublished = [topic for topic in topics if not (ROOT / f"{topic['slug']}.html").exists()]
+# Topics found in this run go first, newest last-added first; the old queue is only a fallback.
+unpublished.sort(key=lambda item: (item["slug"] not in fresh_slugs, -fresh_slugs.index(item["slug"]) if item["slug"] in fresh_slugs else 0))
 if not unpublished:
     print("ARTICLE_CYCLE: queue exhausted")
+    notify_error("поиск темы", "свежих тем не нашлось, а старая очередь пуста; статья в этот запуск не вышла")
     raise SystemExit(0)
 
 topic = None
