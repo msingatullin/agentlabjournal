@@ -1,0 +1,261 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Git Infrastructure for AI-Agent Scale: Per-Reference Quorums and Independent Read Scaling</title>
+  <meta name="description" content="Git Infrastructure for AI-Agent Scale: Per-Reference Quorums and Independent Read Scaling — a reproducible architecture for durable refs, scalable object reads, verification, and failure handling.">
+  <link rel="canonical" href="https://agentlabjournal.online/en/git-infrastructure-for-ai-agents.html">
+  <link rel="stylesheet" href="../style.css">
+  <link rel="stylesheet" href="../reading.css">
+
+  <meta property="og:type" content="article">
+  <meta property="og:title" content="Git Infrastructure for AI-Agent Scale: Per-Reference Quorums and Independent Read Scaling">
+  <meta property="og:description" content="A practical architecture for durable Git references and independently scalable object reads in large AI-agent workloads.">
+  <meta property="og:url" content="https://agentlabjournal.online/en/git-infrastructure-for-ai-agents.html">
+  <meta property="og:image" content="https://agentlabjournal.online/assets/covers/llm-context-window-budget-social.png">
+
+  <meta name="twitter:card" content="summary_large_image">
+  <meta name="twitter:title" content="Git Infrastructure for AI-Agent Scale: Per-Reference Quorums and Independent Read Scaling">
+  <meta name="twitter:description" content="A practical architecture for durable Git references and independently scalable object reads in large AI-agent workloads.">
+  <meta name="twitter:image" content="https://agentlabjournal.online/assets/covers/llm-context-window-budget-social.png">
+
+  <script type="application/ld+json">
+  {
+    "@context": "https://schema.org",
+    "@type": "Article",
+    "headline": "Git Infrastructure for AI-Agent Scale: Per-Reference Quorums and Independent Read Scaling",
+    "description": "A practical architecture for durable Git references and independently scalable object reads in large AI-agent workloads.",
+    "image": ["https://agentlabjournal.online/assets/covers/llm-context-window-budget-social.png"],
+    "dateModified": "2026-11-02",
+    "author": {
+      "@type": "Organization",
+      "name": "Agent Lab Journal"
+    },
+    "publisher": {
+      "@type": "Organization",
+      "name": "Agent Lab Journal",
+      "url": "https://agentlabjournal.online/"
+    },
+    "mainEntityOfPage": {
+      "@type": "WebPage",
+      "@id": "https://agentlabjournal.online/en/git-infrastructure-for-ai-agents.html"
+    }
+  }
+  </script>
+<link rel="stylesheet" href="../homepage.css"><link rel="stylesheet" href="../max-promo.css">  <meta property="og:image:alt" content="Инфраструктура Git для масштаба AI-агентов: кворумы ссылок и независимое масштабирование чтения">
+</head>
+<body>
+  <header class="site-header">
+    <a href="../index.html">Agent Lab Journal</a>
+    <nav aria-label="Primary navigation">
+      <a href="../guides.html">Guides</a>
+      <a href="../glossary.html">Glossary</a>
+    </nav>
+  </header>
+
+  <main>
+    <article class="reading">
+      <div class="reading-meta">
+        <span>Advanced</span>
+        <span>8 min read</span>
+        <time datetime="2026-11-02">Updated November 2, 2026</time>
+      </div>
+
+      <h1>Git Infrastructure for AI-Agent Scale: Per-Reference Quorums and Independent Read Scaling</h1>
+        <figure class="article-cover" data-editorial-cover="git-infrastructure-for-ai-agents"><img src="../assets/covers/llm-context-window-budget.png" alt="Инфраструктура Git для масштаба AI-агентов: кворумы ссылок и независимое масштабирование чтения" width="1280" height="720" fetchpriority="high"><figcaption>Temporary fallback cover; replace in editorial pass.</figcaption></figure>
+
+      <p class="lead">Large AI-agent fleets do not stress Git in one uniform way. They create many short-lived branches, repeatedly read the same base commits, and publish updates concurrently. The useful architectural split is to protect references with a small, explicit write quorum while serving immutable Git objects from a separately scalable read layer.</p>
+
+      <p>This article describes a design for <a href="../glossary.html#git">Git</a> infrastructure in which each important reference has its own durability policy. A protected release branch can require more acknowledgements than an ephemeral agent branch. Once the reference is durable, clone and fetch traffic can scale through <a href="../glossary.html#object-storage">object storage</a> and read replicas without making every read participate in reference replication.</p>
+
+      <h2>The problem: references and objects have different workloads</h2>
+
+      <p>A Git repository contains two categories of state that should not be scaled identically:</p>
+
+      <ul>
+        <li><strong>References</strong> are mutable names such as <code>refs/heads/main</code>. They answer “which commit is current?”</li>
+        <li><strong>Objects</strong> are commits, trees, blobs, and tags addressed by content. After publication, an object is normally immutable.</li>
+      </ul>
+
+      <p>Agent workloads amplify both sides differently. A coordinator may create thousands of branch references, while workers repeatedly fetch a shared base commit. A merge service may update one protected branch frequently, while most consumers only need read access to already-published objects.</p>
+
+      <p>If every read node also owns a fully synchronous copy of every mutable reference, read capacity becomes coupled to write coordination. If references are treated as ordinary cache data, a failover can expose an old branch tip even when all required objects are present. The design target is therefore:</p>
+
+      <ol>
+        <li>Make the durability rule for each reference explicit.</li>
+        <li>Publish objects before publishing the reference that points to them.</li>
+        <li>Scale object reads independently from reference writes.</li>
+        <li>Make stale reads visible and bounded rather than silently authoritative.</li>
+      </ol>
+
+      <h2>Architecture: a reference plane and an object plane</h2>
+
+      <p>The proposed system has two logical planes:</p>
+
+      <ul>
+        <li><strong>Reference plane:</strong> a strongly coordinated metadata service that stores reference values, generations, policies, and acknowledgement state.</li>
+        <li><strong>Object plane:</strong> durable <a href="../glossary.html#content-addressed-storage">content-addressed storage</a> plus horizontally scalable HTTP or smart-HTTP read workers.</li>
+      </ul>
+
+      <p>The reference plane is authoritative for names. The object plane is authoritative for the bytes identified by object IDs, but it is populated before a reference becomes visible. Read workers may be numerous and disposable; the reference service remains smaller and is protected by quorum rules.</p>
+
+      <pre><code>agent
+  │
+  ├── push objects ──&gt; object ingress ──&gt; durable object replicas
+  │                                           │
+  └── update ref ───&gt; reference coordinator ──┴── quorum acknowledgement
+                              │
+                              └── publish generation
+                                           │
+                         read workers fetch objects independently</code></pre>
+
+      <p>A <a href="../glossary.html#per-reference-quorum">per-reference quorum</a> means that the acknowledgement requirement belongs to the reference, not just to the repository. For example, an illustrative policy could be:</p>
+
+  <pre><code>refs/heads/main       quorum: 3 of 5   visibility: protected
+refs/tags/release-*   quorum: 3 of 5   visibility: protected
+refs/heads/agent/*    quorum: 2 of 3   visibility: ephemeral
+refs/merge-requests/* quorum: 2 of 3   visibility: ephemeral</code></pre>
+
+  <p>These numbers are examples, not measured recommendations. Select them from the failure tolerance, latency budget, and operational topology of the deployment. A quorum must be large enough to preserve the required state across the failures the system claims to tolerate.</p>
+
+      <h2>Write protocol: objects first, reference second</h2>
+
+      <p>The critical ordering rule is simple: a reference update must not become readable before the objects reachable from its new value have met the object durability policy.</p>
+
+      <ol>
+        <li>Receive the packfile or object set from the writer.</li>
+        <li>Validate object hashes and connectivity according to the repository policy.</li>
+        <li>Write objects to the required durable backends.</li>
+        <li>Wait for the configured object acknowledgement threshold.</li>
+        <li>Submit the reference update with an expected old value or generation.</li>
+        <li>Commit the reference only after its per-reference quorum is satisfied.</li>
+        <li>Publish the new reference generation to read workers.</li>
+      </ol>
+
+      <p>The expected old value prevents two agents from silently overwriting one another. A failed compare-and-swap should return a conflict to the caller, who can fetch the new tip and retry using an explicit policy.</p>
+
+      <pre><code># Illustrative local validation
+git fsck --full --connectivity-only
+
+# Inspect the reference that a coordinator intends to change
+git show-ref refs/heads/agent/example
+
+# Update only if the old value is still the expected commit
+git update-ref refs/heads/agent/example NEW_COMMIT OLD_COMMIT</code></pre>
+
+      <p>The commands above demonstrate local Git operations; they do not implement distributed quorum coordination. In production, the coordinator must wrap the equivalent compare-and-swap operation with durable acknowledgements, fencing, retries, and audit records.</p>
+
+      <h2>Independent read scaling</h2>
+
+      <p><a href="../glossary.html#independent-read-scaling">Independent read scaling</a> works because most object reads do not mutate repository state. Read workers can be added according to clone, fetch, archive, or blob-download demand while the reference coordinator remains sized for metadata operations.</p>
+
+      <p>A practical read path is:</p>
+
+      <ol>
+        <li>Resolve the requested reference through the reference plane.</li>
+        <li>Return its commit ID and generation to the read worker.</li>
+        <li>Serve the packfile or objects from a nearby cache or object backend.</li>
+        <li>Attach the resolved generation to internal logs and, where useful, response headers.</li>
+      </ol>
+
+      <p>Do not let a cache invent reference truth. A cache may serve an object by ID, but a reference lookup should include a freshness rule. For protected references, a read worker can require the latest generation from the coordinator or a signed snapshot whose validity interval has not expired. For ephemeral references, a bounded stale-read window may be acceptable if callers understand that the branch is advisory.</p>
+
+      <p>Object storage should be treated as a durability and distribution layer, not as a replacement for reference consensus. Garbage collection also needs coordination: an object must not be deleted merely because it is absent from one temporarily stale reference snapshot.</p>
+
+      <h2>A reproducible design exercise</h2>
+
+      <p>The following exercise uses a local bare repository to make the ordering and verification steps concrete. It does not simulate network failures or prove a distributed quorum implementation.</p>
+
+      <pre><code>set -eu
+
+rm -rf /tmp/git-agent-scale-demo
+mkdir -p /tmp/git-agent-scale-demo
+cd /tmp/git-agent-scale-demo
+
+git init --bare origin.git
+git clone origin.git work
+cd work
+
+git config user.name "Example Agent"
+git config user.email "agent@example.invalid"
+
+printf 'base\n' &gt; README.md
+git add README.md
+git commit -m "Create base"
+git push origin HEAD:refs/heads/main
+
+BASE=$(git rev-parse HEAD)
+printf 'base commit: %s\n' "$BASE"
+
+git switch -c agent/example
+printf 'agent change\n' &gt; change.txt
+git add change.txt
+git commit -m "Agent change"
+AGENT_COMMIT=$(git rev-parse HEAD)
+git push origin HEAD:refs/heads/agent/example
+
+printf 'agent commit: %s\n' "$AGENT_COMMIT"
+git ls-remote origin refs/heads/main refs/heads/agent/example</code></pre>
+
+      <p>To adapt this exercise to a distributed implementation, place an object-ingress acknowledgement between the commit and the reference update. Record at least the object set, acknowledgement set, old reference value, new reference value, policy name, and committed generation. Then verify from an independent reader that the resolved commit can be fetched from the object plane.</p>
+
+      <h2>Verification checklist</h2>
+
+      <p>Verification should test both planes and their ordering:</p>
+
+      <ul>
+        <li>For every committed reference generation, confirm that the new commit ID exists in each required object backend.</li>
+        <li>For a compare-and-swap conflict, confirm that the old value remains unchanged and the caller receives a retryable conflict.</li>
+        <li>Stop one reference replica and verify that a quorum-protected update either commits safely or fails closed according to policy.</li>
+        <li>Stop one object read worker and confirm that reads can be routed to another worker without changing reference state.</li>
+        <li>Serve a deliberately stale snapshot and confirm that protected-reference freshness rules reject or label it.</li>
+        <li>Run repository integrity checks on a representative restored object set.</li>
+      </ul>
+
+      <p>Useful evidence includes coordinator audit logs, reference generations, object-backend acknowledgement records, fetch traces, and the exact policy applied to each update. A successful client push alone is not enough evidence that every intended durability layer has acknowledged the data.</p>
+
+      <h2>Failure cases and recovery behavior</h2>
+
+      <h3>Object acknowledgement succeeds, reference commit fails</h3>
+      <p>The objects are now candidates for reuse, but no new reference is authoritative. Retry the reference update with the original expected old value only if the operation is still valid. Otherwise, leave the objects subject to normal retention and garbage-collection rules.</p>
+
+      <h3>Reference quorum is unavailable</h3>
+      <p>Fail closed for protected references. Returning success without the required quorum creates an ambiguity that downstream agents cannot safely resolve. An ephemeral branch may use a weaker policy, but that exception must be explicit and observable.</p>
+
+      <h3>Read worker has stale reference data</h3>
+      <p>Do not silently advertise stale data as current for protected references. Refresh from the reference plane, reject the request, or return a clearly bounded stale result if the API supports that distinction.</p>
+
+      <h3>Concurrent agent updates race</h3>
+      <p>Use generation checks or expected-old-value comparisons. A retry must re-read the reference and decide whether to rebase, merge, create a new branch, or abandon the update. Blindly replaying the same write can turn a transient race into data loss.</p>
+
+      <h2>Limitations</h2>
+
+      <p>This architecture does not remove the cost of pack generation, repository negotiation, large-file transfer, or merge computation. It also does not make every branch equally durable. Per-reference policies add operational complexity: policy changes need versioning, auditability, and a clear migration rule.</p>
+
+      <p>Independent read scaling can expose consistency trade-offs. A reader may resolve a new reference generation while an edge cache still lacks the corresponding packfile. The protocol must handle that state with retries or a temporary “objects not ready” response; it must not reinterpret the missing object as a deleted commit.</p>
+
+      <p>Finally, quorum size is not a universal constant. Network partitions, correlated failures, storage durability, recovery objectives, and regulatory requirements all affect the correct policy. The examples here are a starting point for a testable design, not production capacity planning.</p>
+
+      <h2>Conclusion</h2>
+
+      <p>For large AI-agent workloads, Git infrastructure is easier to reason about when mutable references and immutable objects have separate scaling and durability controls. Per-reference quorums protect the names that coordinate work. Object storage and independent read workers absorb clone and fetch demand. The essential invariant is ordering: durable objects first, authoritative reference second, independently scalable reads third.</p>
+
+      <p>Continue with the <a href="../guides.html">Guides</a> section or look up terms in the <a href="../glossary.html">Glossary</a>.</p>
+    <section class="service-note">
+  <b>We publish what works for us—and implement the same solutions for your business.</b>
+  We design AI automation, Telegram bots, chats, and AI agents for real-world processes.
+  <a href="../contacts-en.html">Discuss your project →</a>
+</section>
+</article>
+  </main>
+
+  <footer class="site-footer">
+    <p>&copy; 2026 Agent Lab Journal</p>
+    <nav aria-label="Footer navigation">
+      <a href="../guides.html">Guides</a>
+      <a href="../glossary.html">Glossary</a>
+    </nav>
+  </footer>
+</body>
+</html>
