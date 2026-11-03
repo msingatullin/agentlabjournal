@@ -1,0 +1,357 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Weight-space programming: как воспроизвести эксперимент редактирования весов модели</title>
+  <meta name="description" content="Weight-space programming: как воспроизвести эксперимент редактирования весов модели — практическое руководство по harness, forward-pass сервису, бюджетам и проверке на отдельном наборе задач.">
+  <link rel="canonical" href="https://agentlabjournal.online/weight-space-programming-reproduction.html">
+  <link rel="stylesheet" href="style.css">
+  <link rel="stylesheet" href="reading.css">
+
+  <meta property="og:type" content="article">
+  <meta property="og:title" content="Weight-space programming: как воспроизвести эксперимент редактирования весов модели">
+  <meta property="og:description" content="Практическое руководство по воспроизведению эксперимента редактирования весов модели без градиентного обучения.">
+  <meta property="og:url" content="https://agentlabjournal.online/weight-space-programming-reproduction.html">
+  <meta property="og:site_name" content="Agent Lab Journal">
+
+  <meta name="twitter:card" content="summary">
+  <meta name="twitter:title" content="Weight-space programming: как воспроизвести эксперимент редактирования весов модели">
+  <meta name="twitter:description" content="Как разобрать harness, запустить forward-pass цикл, зафиксировать бюджет и проверить перенос результата.">
+
+  <script type="application/ld+json">
+  {
+    "@context": "https://schema.org",
+    "@type": "Article",
+    "headline": "Weight-space programming: как воспроизвести эксперимент редактирования весов модели",
+    "description": "Практическое руководство по воспроизведению эксперимента редактирования весов модели без градиентного обучения.",
+    "mainEntityOfPage": {
+      "@type": "WebPage",
+      "@id": "https://agentlabjournal.online/weight-space-programming-reproduction.html"
+    },
+    "publisher": {
+      "@type": "Organization",
+      "name": "Agent Lab Journal",
+      "url": "https://agentlabjournal.online/"
+    },
+    "inLanguage": "ru"
+  }
+  </script>
+<link rel="stylesheet" href="homepage.css"><link rel="stylesheet" href="max-promo.css">  <meta property="og:image" content="https://agentlabjournal.online/assets/covers/llm-context-window-budget-social.png">
+  <meta property="og:image:alt" content="Weight-space programming: как воспроизвести эксперимент редактирования весов модели">
+  <meta name="twitter:image" content="https://agentlabjournal.online/assets/covers/llm-context-window-budget-social.png">
+</head>
+<body>
+  <header class="site-header">
+    <div class="container">
+      <a class="site-brand" href="index.html">Agent Lab Journal</a>
+      <nav aria-label="Основная навигация">
+        <a href="guides.html">Guides</a>
+        <a href="glossary.html">Glossary</a>
+      </nav>
+    </div>
+  </header>
+
+  <main>
+    <article class="reading">
+      <header class="reading-header">
+        <p class="reading-kicker">Эксперименты · Воспроизводимость</p>
+        <h1>Weight-space programming: как воспроизвести эксперимент редактирования весов модели</h1>
+        <figure class="article-cover" data-editorial-cover="weight-space-programming-reproduction"><img src="assets/covers/llm-context-window-budget.png" alt="Weight-space programming: как воспроизвести эксперимент редактирования весов модели" width="1280" height="720" fetchpriority="high"><figcaption>Temporary fallback cover; replace in editorial pass.</figcaption></figure>
+        <div class="reading-meta">
+          <span>Продвинутый уровень</span>
+          <span>Чтение: до 12 минут</span>
+          <span>Практическое руководство</span>
+        </div>
+      </header>
+<a href="https://max.ru/channel_AgentLab?utm_source=agentlabjournal&utm_medium=article&utm_campaign=max_channel&utm_content=article_footer" class="max-promo-block" target="_blank" rel="noopener noreferrer" aria-label="Самое важное из мира AI в канале MAX AgentLab">
+  <span class="max-promo-block__icon" aria-hidden="true"></span>
+  <span class="max-promo-block__content"><span class="max-promo-block__title">Самое важное из мира AI — в канале MAX AgentLab</span><span class="max-promo-block__desc">Отдельные разборы, инструменты и практические схемы</span></span>
+  <span class="max-promo-block__arrow" aria-hidden="true">→</span>
+</a>
+<a href="https://t.me/pelmenews?utm_source=agentlabjournal&utm_medium=article&utm_campaign=telegram_channel&utm_content=article_intro" class="telegram-promo-block" target="_blank" rel="noopener noreferrer" aria-label="Читайте Agent Lab в Telegram">
+  <span class="telegram-promo-block__icon" aria-hidden="true"></span>
+  <span class="telegram-promo-block__content">
+    <span class="telegram-promo-block__title">Читайте Agent Lab в Telegram</span>
+    <span class="telegram-promo-block__desc">Разборы, кейсы и новости о практических AI-агентах без лишней воды.</span>
+  </span>
+  <span class="telegram-promo-block__arrow" aria-hidden="true">→</span>
+</a>
+
+      <section>
+        <p><a href="glossary.html#weight-space-programming">Weight-space programming</a> — это способ программировать поведение модели через прямое изменение её параметров или промежуточных представлений, не запуская обычный цикл градиентного обучения. В типичном эксперименте агент получает доступ к модели через сервис forward pass, предлагает изменения весов, проверяет их на задачах и оставляет только те варианты, которые улучшают заданную метрику.</p>
+
+        <p>Главная сложность воспроизведения здесь не в том, чтобы получить похожий график. Нужно восстановить сам экспериментальный цикл: какие веса доступны, сколько запросов разрешено, как считается качество, какие данные видит агент и на каком наборе проверяется итоговый вариант. Если хотя бы один из этих элементов не зафиксирован, результат нельзя честно сравнивать с заявленным.</p>
+
+        <aside class="callout">
+          <strong>Граница утверждений.</strong>
+          В этой статье описан воспроизводимый каркас эксперимента. Конкретные значения качества, стоимость запуска и выводы о превосходстве метода нельзя считать установленными без исходного harness, версии модели, конфигурации и независимого прогона.
+        </aside>
+      </section>
+
+      <section>
+        <h2>Что именно нужно воспроизвести</h2>
+
+        <p>До запуска разделите публикацию или репозиторий на четыре слоя:</p>
+
+        <ol>
+          <li><strong>Объект редактирования.</strong> Полная модель, отдельный слой, матрица, bias, low-rank-представление или внешний файл дельт.</li>
+          <li><strong>Интерфейс оценки.</strong> Forward pass, логиты, вероятности, ответы на заранее заданные промпты или агрегированная метрика.</li>
+          <li><strong>Контур поиска.</strong> Код, который предлагает изменения, выбирает кандидатов и решает, принять ли новую версию.</li>
+          <li><strong>Протокол измерения.</strong> Набор задач, seed, число итераций, лимиты запросов, критерии остановки и holdout-набор.</li>
+        </ol>
+
+        <p>Полезно вести отдельную таблицу конфигурации. В ней должны быть указаны идентификатор модели, точность вычислений, устройство, размер редактируемой области, начальное состояние, seed, лимит forward pass, лимит токенов агента и точная формула метрики.</p>
+      </section>
+
+      <section>
+        <h2>Минимальная архитектура harness</h2>
+
+        <p>Для безопасного воспроизведения достаточно пяти изолированных компонентов:</p>
+
+        <pre><code>model/
+  checkpoint/
+  candidate_state/
+harness/
+  forward_service.py
+  evaluator.py
+  search_loop.py
+  budget.py
+data/
+  train_tasks.jsonl
+  holdout_tasks.jsonl
+runs/
+  config.json
+  events.jsonl
+  summary.json</code></pre>
+
+        <p><code>forward_service</code> загружает модель и принимает запрос вида «состояние весов + входной текст». Он не должен сам решать, какой кандидат лучше. <code>evaluator</code> превращает ответы в числовую метрику. <code>search_loop</code> управляет предложениями агента и применением дельт. <code>budget</code> централизованно запрещает превышение лимитов.</p>
+
+        <p>Такое разделение важно для аудита: можно заменить агента на случайный поиск или вручную заданные дельты и проверить, не скрывается ли улучшение в оценщике или в особенностях сервиса.</p>
+      </section>
+
+      <section>
+        <h2>Шаг 1. Зафиксируйте окружение и исходное состояние</h2>
+
+        <p>Начинайте с чистого окружения и не скачивайте произвольные скрипты в каталог проекта. Команды ниже являются шаблоном: имена файлов и зависимости нужно сверить с опубликованным harness.</p>
+
+        <pre><code>python -m venv .venv
+. .venv/bin/activate
+python -m pip install --upgrade pip
+python -m pip install -r requirements.txt
+
+python --version
+python -m pip freeze > runs/pip-freeze.txt
+git rev-parse HEAD</code></pre>
+
+        <p>Проверьте контрольную сумму исходного checkpoint и сохраните конфигурацию в отдельном файле. Не изменяйте оригинальные веса на месте:</p>
+
+        <pre><code>cp config.example.json runs/config.json
+cp -a model/checkpoint model/checkpoint.original
+sha256sum model/checkpoint/* > runs/checkpoint.sha256</code></pre>
+
+        <p>Если checkpoint состоит из большого числа файлов или хранится в другом формате, используйте штатную утилиту проекта. Цель шага — иметь возможность доказать, что baseline и все кандидаты стартовали из одного состояния.</p>
+      </section>
+
+      <section>
+        <h2>Шаг 2. Поднимите forward-pass сервис</h2>
+
+        <p>Сервис должен быть максимально простым и детерминированным. Он принимает вход, применяет указанную дельту к копии состояния или загружает версию кандидата, выполняет forward pass и возвращает только необходимые выходы. В production-среде такой API требует аутентификации и ограничения размера запроса; для локального эксперимента не публикуйте его наружу.</p>
+
+        <pre><code>python harness/forward_service.py \
+  --model model/checkpoint.original \
+  --host 127.0.0.1 \
+  --port 8000 \
+  --dtype bf16</code></pre>
+
+        <p>В отдельном терминале выполните health-check, если он предусмотрен harness:</p>
+
+        <pre><code>curl --fail --silent http://127.0.0.1:8000/health</code></pre>
+
+        <p>Затем отправьте один фиксированный тестовый запрос. Сохраните ответ и время выполнения в журнал. Повторный запрос с теми же параметрами должен давать тот же результат или документированно отличаться из-за недетерминированности GPU.</p>
+
+        <aside class="callout">
+          <strong>Не смешивайте режимы.</strong>
+          Если сервис возвращает сэмплированный текст, зафиксируйте seed, temperature и top-p. Для оценки редактирования предпочтительнее режим без сэмплирования, когда это совместимо с задачей.
+        </aside>
+      </section>
+
+      <section>
+        <h2>Шаг 3. Восстановите цикл предложения и проверки</h2>
+
+        <p>Общий цикл выглядит так:</p>
+
+        <ol>
+          <li>Агент получает описание разрешённой области редактирования и текущую метрику.</li>
+          <li>Агент предлагает дельту или новое состояние параметров.</li>
+          <li>Harness проверяет форму, dtype, диапазон и размер дельты.</li>
+          <li>Forward-pass сервис считает ответы на рабочем наборе.</li>
+          <li>Оценщик вычисляет метрику и записывает все входы и выходы.</li>
+          <li>Правило принятия сохраняет кандидата или отклоняет его.</li>
+        </ol>
+
+        <p>В журнале каждой итерации должны быть как минимум:</p>
+
+        <pre><code>{
+  "iteration": 7,
+  "candidate_id": "cand-0007",
+  "parent_id": "cand-0006",
+  "edited_tensors": ["layer.12.mlp.down_proj.weight"],
+  "forward_passes_used": 18,
+  "metric_before": 0.42,
+  "metric_after": 0.47,
+  "accepted": true,
+  "reason": "improved_train_metric",
+  "seed": 1234
+}</code></pre>
+
+        <p>Не записывайте в общий журнал секреты, токены доступа и полные пользовательские данные. Для отладки достаточно идентификаторов задач, хешей входов и агрегированных результатов.</p>
+      </section>
+
+      <section>
+        <h2>Как зафиксировать бюджет</h2>
+
+        <p>Бюджет должен быть частью кода, а не договорённостью в README. Минимальный набор ограничений:</p>
+
+        <ul>
+          <li>максимальное число forward pass;</li>
+          <li>максимальное число итераций поиска;</li>
+          <li>максимальное число токенов или вызовов агента;</li>
+          <li>максимальный размер дельты и число редактируемых параметров;</li>
+          <li>лимит времени и памяти;</li>
+          <li>фиксированное число повторов для оценки.</li>
+        </ul>
+
+        <pre><code>python harness/search_loop.py \
+  --config runs/config.json \
+  --max-iterations 100 \
+  --max-forward-passes 2000 \
+  --max-delta-elements 100000 \
+  --seed 1234 \
+  --run-dir runs/experiment-001</code></pre>
+
+        <p>Принудительно завершённый процесс не должен считаться успешным. В <code>summary.json</code> явно указывайте причину остановки: <code>budget_exhausted</code>, <code>converged</code>, <code>error</code> или <code>completed</code>.</p>
+      </section>
+
+      <section>
+        <h2>Как проверять результат</h2>
+
+        <p>Проверка должна идти в три прохода.</p>
+
+        <h3>1. Baseline</h3>
+
+        <p>Прогоните исходную модель на рабочем и holdout-наборе. Это отвечает на вопрос, было ли вообще что улучшать. Если baseline уже считается с ошибкой или меняется между запусками, продолжать поиск рано.</p>
+
+        <h3>2. Рабочий набор</h3>
+
+        <p>Оцените кандидатов на задачах, которые разрешены алгоритму поиска. Сравнивайте не только лучший результат, но и кривую качества по бюджету: сколько forward pass потребовалось до первого улучшения и сколько кандидатов было отвергнуто.</p>
+
+        <h3>3. Отдельный holdout</h3>
+
+        <p>После выбора финального кандидата заморозьте его и один раз запустите на отдельном наборе. Агент и правило принятия не должны видеть эти примеры во время поиска. Сохраните список идентификаторов задач, версию оценщика и конфигурацию запуска.</p>
+
+        <pre><code>python harness/evaluator.py \
+  --model model/checkpoint.original \
+  --candidate runs/experiment-001/final \
+  --tasks data/holdout_tasks.jsonl \
+  --output runs/experiment-001/holdout.json \
+  --seed 1234</code></pre>
+
+        <p>Если улучшение есть только на рабочем наборе, это не доказательство успешного редактирования. Возможны переобучение на формулировки, утечка задач в промпт агента или слишком гибкое правило остановки.</p>
+      </section>
+
+      <section>
+        <h2>Что считать воспроизведением</h2>
+
+        <p>Разумно различать три уровня результата:</p>
+
+        <ol>
+          <li><strong>Запущен код.</strong> Harness выполняется, сервис отвечает, журналы создаются.</li>
+          <li><strong>Воспроизведён протокол.</strong> Совпадают модель, данные, бюджет, seed, область редактирования и правила оценки.</li>
+          <li><strong>Воспроизведён эффект.</strong> На независимом наборе наблюдается сопоставимое изменение метрики с оговорённой вариативностью.</li>
+        </ol>
+
+        <p>Первый уровень не подтверждает второй, а второй не гарантирует третий. Если исходные данные, checkpoint или закрытый компонент недоступны, честный результат — «протокол частично восстановлен», а не «эксперимент повторён».</p>
+      </section>
+
+      <section>
+        <h2>Типовые ошибки</h2>
+
+        <dl>
+          <dt>Агент редактирует не те веса</dt>
+          <dd>Проверьте имена тензоров после загрузки, форму матриц и хеш состояния до и после применения дельты.</dd>
+
+          <dt>Метрика растёт из-за оценщика</dt>
+          <dd>Запустите оценщик на сохранённых ответах и сравните его с независимой реализацией хотя бы на небольшой выборке.</dd>
+
+          <dt>Holdout оказался частью поиска</dt>
+          <dd>Разделите файлы задач на уровне процесса и запретите агенту получать их содержимое, даже через сообщения об ошибках.</dd>
+
+          <dt>Бюджет считается неполно</dt>
+          <dd>Учитывайте повторные forward pass, ретраи, warm-up и вызовы для проверки кандидата. Счётчик должен находиться рядом с клиентом сервиса.</dd>
+
+          <dt>Результат нельзя повторить</dt>
+          <dd>Сохраните seed, версии библиотек, dtype, параметры генерации, порядок задач и финальную дельту. Для GPU отдельно отметьте режимы детерминизма.</dd>
+
+          <dt>Процесс повреждает baseline</dt>
+          <dd>Работайте с копиями или неизменяемыми snapshot-файлами. Финальный кандидат должен ссылаться на родительское состояние.</dd>
+        </dl>
+      </section>
+
+      <section>
+        <h2>Ограничения метода и эксперимента</h2>
+
+        <p>Редактирование весов без градиентного обучения не означает отсутствия оптимизационного поиска. Агент всё равно тратит вычислительный бюджет на подбор и проверку кандидатов. При малом бюджете поиск может не найти рабочую дельту; при большом — переобучиться на рабочий набор.</p>
+
+        <p>Кроме того, изменение одного слоя может непредсказуемо затронуть другие способности модели. Нельзя делать вывод о «редактировании знания» по одной метрике или нескольким демонстрационным ответам. Нужны тесты на целевое поведение, сохранность соседних навыков, устойчивость к перефразированию и перенос на независимые задачи.</p>
+
+        <p>Наконец, forward-pass сервис скрывает часть стоимости эксперимента. Логи, сериализация дельт, загрузка checkpoint и повторные запуски могут быть существенны даже тогда, когда в статье учитывается только число запросов к модели.</p>
+      </section>
+
+      <section>
+        <h2>Итоговый чек-лист</h2>
+
+        <ul>
+          <li>Исходный checkpoint идентифицирован и не изменяется.</li>
+          <li>Область редактирования и формат дельты задокументированы.</li>
+          <li>Forward-pass сервис работает локально или защищён от внешнего доступа.</li>
+          <li>Рабочий и holdout-наборы физически разделены.</li>
+          <li>Лимиты forward pass, токенов, итераций и времени считаются кодом.</li>
+          <li>Каждый кандидат имеет родителя, хеш и запись решения.</li>
+          <li>Baseline измерен до поиска.</li>
+          <li>Финальный кандидат проверен на независимом наборе.</li>
+          <li>Ограничения и недоступные части исходного эксперимента перечислены явно.</li>
+        </ul>
+
+        <p>Для соседних тем см. <a href="guides.html">раздел guides</a> и <a href="glossary.html">глоссарий Agent Lab Journal</a>.</p>
+      </section>
+<aside class="service-note" aria-label="Связаться по проекту">
+  <div class="service-note__copy">
+    <p class="service-note__label">Связь с Agent Lab</p>
+    <p class="service-note__title">Внедрим такой контур в ваш процесс</p>
+    <p class="service-note__text">Напишите инженеру Agent Lab в Telegram: опишите задачу, бота или интеграцию — предложим пилот с проверками и понятными границами.</p>
+  </div>
+  <a class="service-note__link" href="https://t.me/msrzn007?utm_source=journal&amp;utm_medium=article&amp;utm_campaign=service_note" target="_blank" rel="noopener">Написать в Telegram
+    <svg viewBox="0 0 16 16" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"><path d="M3 13 13 3M6 3h7v7"/></svg>
+  </a>
+</aside>
+<aside class="service-note service-note--sitevisor" aria-label="Экспресс-аудит сайта">
+  <div class="service-note__copy">
+    <p class="service-note__label">SiteVisor</p>
+    <p class="service-note__title">Проверьте техническое состояние и готовность вашего сайта к рекламе</p>
+    <p class="service-note__text">Экспресс-аудит на SiteVisor.pro: индексация, скорость, разметка, аналитика и точки конверсии.</p>
+  </div>
+  <a class="service-note__link" href="https://sitevisor.pro/?utm_source=journal&amp;utm_medium=article&amp;utm_campaign=leadmagnet" target="_blank" rel="noopener">Экспресс-аудит на SiteVisor.pro
+    <svg viewBox="0 0 16 16" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"><path d="M3 13 13 3M6 3h7v7"/></svg>
+  </a>
+</aside>
+</article>
+  </main>
+
+  <footer class="site-footer">
+    <div class="container">
+      <p>Agent Lab Journal · Практика воспроизводимых экспериментов с AI-агентами</p>
+    </div>
+  </footer>
+</body>
+</html>

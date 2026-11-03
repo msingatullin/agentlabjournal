@@ -1,0 +1,508 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Weight-Space Programming: Reproducing an Experiment in Model Weight Editing</title>
+  <meta name="description" content="Weight-Space Programming: Reproducing an Experiment in Model Weight Editing — a practical, evidence-bounded guide to rebuilding the loop, tracking budgets, and evaluating edits on held-out tasks.">
+  <link rel="canonical" href="https://agentlabjournal.online/en/weight-space-programming-reproduction.html">
+  <link rel="stylesheet" href="../style.css">
+  <link rel="stylesheet" href="../reading.css">
+
+  <meta property="og:type" content="article">
+  <meta property="og:title" content="Weight-Space Programming: Reproducing an Experiment in Model Weight Editing">
+  <meta property="og:description" content="A practical, evidence-bounded guide to rebuilding a weight-editing experiment and evaluating it on separate tasks.">
+  <meta property="og:url" content="https://agentlabjournal.online/en/weight-space-programming-reproduction.html">
+  <meta property="og:image" content="https://agentlabjournal.online/assets/covers/llm-context-window-budget-social.png">
+  <meta property="og:site_name" content="Agent Lab Journal">
+
+  <meta name="twitter:card" content="summary_large_image">
+  <meta name="twitter:title" content="Weight-Space Programming: Reproducing an Experiment in Model Weight Editing">
+  <meta name="twitter:description" content="Rebuild the loop, record constraints, and test whether model-weight edits generalize beyond the demonstrations.">
+  <meta name="twitter:image" content="https://agentlabjournal.online/assets/covers/llm-context-window-budget-social.png">
+
+  <meta name="reading-time" content="90 minutes">
+  <meta name="reading-level" content="Advanced">
+  <meta name="article:section" content="Reproducibility">
+  <meta name="article:modified_time" content="2026-11-03">
+
+  <script type="application/ld+json">
+  {
+    "@context": "https://schema.org",
+    "@type": "Article",
+    "headline": "Weight-Space Programming: Reproducing an Experiment in Model Weight Editing",
+    "description": "A practical, evidence-bounded guide to rebuilding a weight-editing experiment, recording its constraints, and evaluating the result on a separate task set.",
+    "image": ["https://agentlabjournal.online/assets/covers/llm-context-window-budget-social.png"],
+    "dateModified": "2026-11-03",
+    "author": {
+      "@type": "Organization",
+      "name": "Agent Lab Journal"
+    },
+    "publisher": {
+      "@type": "Organization",
+      "name": "Agent Lab Journal",
+      "url": "https://agentlabjournal.online/"
+    },
+    "mainEntityOfPage": {
+      "@type": "WebPage",
+      "@id": "https://agentlabjournal.online/en/weight-space-programming-reproduction.html"
+    }
+  }
+  </script>
+<link rel="stylesheet" href="../homepage.css"><link rel="stylesheet" href="../max-promo.css">  <meta property="og:image:alt" content="Weight-space programming: как воспроизвести эксперимент редактирования весов модели">
+</head>
+<body>
+  <header class="site-header">
+    <div class="site-header__inner">
+      <a class="site-header__brand" href="../index.html">Agent Lab Journal</a>
+      <nav class="site-nav" aria-label="Primary navigation">
+        <a href="../index.html">Home</a>
+        <a href="guides.html">Guides</a>
+        <a href="../glossary.html">Glossary</a>
+      </nav>
+    </div>
+  </header>
+
+  <main>
+    <article class="reading">
+      <header class="reading-header">
+        <p class="reading-kicker">Reproducibility · Advanced</p>
+        <h1>Weight-Space Programming: Reproducing an Experiment in Model Weight Editing</h1>
+        <figure class="article-cover" data-editorial-cover="weight-space-programming-reproduction"><img src="../assets/covers/llm-context-window-budget.png" alt="Weight-space programming: как воспроизвести эксперимент редактирования весов модели" width="1280" height="720" fetchpriority="high"><figcaption>Temporary fallback cover; replace in editorial pass.</figcaption></figure>
+        <p class="reading-dek">
+          An evidence-bounded field guide to rebuilding an agent that changes another model’s parameters through forward-pass feedback, without gradient training, and then checking whether the change survives outside the examples that produced it.
+        </p>
+        <div class="reading-meta" aria-label="Article metadata">
+          <span>Reading time: 90 minutes</span>
+          <span>Level: Advanced</span>
+          <span>Updated: 3 November 2026</span>
+        </div>
+      </header>
+
+      <div class="reading-body">
+        <p class="lead">
+          A claim that an AI agent can “program” a model by editing its weights is easy to misunderstand. It may describe a genuine parameter-changing experiment, a prompt-only procedure that leaves the model untouched, or a result reported only on the examples used to drive the search. These are different claims. Reproducing the work means separating them, rebuilding the actual loop, measuring the resources it consumed, and testing the resulting checkpoint on tasks that were not used during editing.
+        </p>
+
+        <p>
+          This article uses <a href="../glossary.html#weight-space-programming">weight-space programming</a> as a working name for an agent-controlled process that proposes and applies changes in a model’s parameter space. The term is useful, but it is not a guarantee of capability. The experiment must still establish what changed, how the change was selected, and whether the observed behavior is more than memorization of the editing set.
+        </p>
+
+        <aside class="reading-callout">
+          <strong>Evidence boundary.</strong>
+          No released harness, repository, checkpoint, credentials, or external experiment log was supplied with this article request or present in the working directory. The commands and configurations below are therefore a reconstruction template. They are not evidence that a particular published implementation ran successfully, and they contain no fabricated test results.
+        </aside>
+
+        <h2>1. What is being reproduced?</h2>
+
+        <p>
+          The object of study is <a href="../glossary.html#model-weight-editing">model weight editing</a>: changing selected tensors in a model checkpoint so that the model exhibits a desired behavior. In ordinary fine-tuning, an optimizer uses gradients computed from a loss function and updates parameters over training steps. In the experiment considered here, the outer agent may instead inspect outputs, propose an edit, call the model again, and keep or reject the edit according to an evaluation signal.
+        </p>
+
+        <p>
+          The inner model is treated as a <a href="../glossary.html#forward-pass-service">forward-pass service</a>. It receives inputs and returns outputs, while a separate controller owns candidate checkpoints, edit operations, measurements, and stopping rules. The controller may be a language-model agent, a program synthesizer, or a deterministic search procedure. The defining constraint is operational: the controller must not receive or use gradients from the target model if the experiment is claiming gradient-free editing.
+        </p>
+
+        <pre><code>task examples
+     │
+     ▼
+controller proposes an edit
+     │
+     ▼
+candidate checkpoint ──► forward-pass service
+     │                         │
+     └──────────── score ◄─────┘
+                   │
+          accept / reject / continue
+                   │
+             final checkpoint</code></pre>
+
+        <p>
+          A reproducible account must specify whether the controller can read raw weights, which tensors it may modify, whether it can execute arbitrary code, and whether the score is computed from exact-match answers, a learned judge, a loss, or another metric. Without those details, “the agent edited the model” is only a summary.
+        </p>
+
+        <h2>2. The minimum claim that can be tested</h2>
+
+        <p>
+          Start with a narrow hypothesis. For example:
+        </p>
+
+        <blockquote>
+          Given a fixed base checkpoint, a fixed editing set, a fixed budget, and access only to forward-pass outputs, a controller can produce a modified checkpoint that improves the target behavior while preserving predefined unrelated behaviors.
+        </blockquote>
+
+        <p>
+          This hypothesis has four separately testable parts:
+        </p>
+
+        <ul>
+          <li><strong>Parameter change:</strong> the final checkpoint differs from the base checkpoint in the permitted tensors.</li>
+          <li><strong>Target improvement:</strong> performance increases on the behavior the controller was asked to change.</li>
+          <li><strong>Locality:</strong> specified unrelated behaviors do not degrade beyond an agreed threshold.</li>
+          <li><strong>Generalization:</strong> the improvement appears on held-out examples, not only on the editing prompts.</li>
+        </ul>
+
+        <p>
+          If one of these parts is missing, report the narrower result. For example, “the procedure found a checkpoint that passed the editing examples” is defensible when no separate task set was evaluated. “The procedure learned the behavior” is stronger and requires evidence beyond the editing set.
+        </p>
+
+        <h2>3. Freeze the experiment before running it</h2>
+
+        <p>
+          Reproduction becomes difficult when the protocol changes after seeing results. Write a short run specification before launching the controller. It should identify:
+        </p>
+
+        <ul>
+          <li>the exact base model identifier and revision;</li>
+          <li>the tokenizer and generation settings;</li>
+          <li>the tensors or layer ranges that may be edited;</li>
+          <li>the editing examples and their provenance;</li>
+          <li>the held-out task set and its separation rule;</li>
+          <li>the score, acceptance rule, and stopping condition;</li>
+          <li>limits on forward passes, wall-clock time, memory, storage, and controller calls;</li>
+          <li>the random seed and any nondeterministic operations;</li>
+          <li>the checkpoint format and hash recorded at each accepted edit.</li>
+        </ul>
+
+        <p>
+          The separation rule matters. Do not select held-out examples after inspecting candidate outputs. If the controller or evaluator sees an example during proposal, ranking, debugging, or failure analysis, classify it as part of the editing or development set.
+        </p>
+
+        <h3>Example run manifest</h3>
+
+        <pre><code>run_id: wsp-reconstruction-001
+base_model:
+  id: YOUR_MODEL_ID
+  revision: YOUR_REVISION_OR_DIGEST
+  tokenizer_revision: YOUR_TOKENIZER_REVISION
+
+access:
+  gradients: false
+  raw_weights_visible_to_controller: false
+  allowed_edit_scope:
+    - transformer.layers[EDIT_START:EDIT_END].mlp
+  arbitrary_code_execution: false
+
+data:
+  edit_set: data/edit.jsonl
+  heldout_set: data/heldout.jsonl
+  preservation_set: data/preservation.jsonl
+
+budget:
+  max_forward_passes: 10000
+  max_controller_calls: 500
+  max_wall_time_seconds: 3600
+  max_candidate_checkpoints: 64
+
+evaluation:
+  decoding: greedy
+  max_new_tokens: 64
+  primary_metric: exact_match
+  acceptance_rule: "target_score improves and preservation_score stays above threshold"
+
+reproducibility:
+  seed: 7
+  save_every_accepted_edit: true
+  record_environment: true</code></pre>
+
+        <p>
+          Values such as the pass count, layer range, and seed above are examples, not verified settings from a particular release. Replace them with the protocol you are actually reproducing.
+        </p>
+
+        <h2>4. Reconstruct the harness</h2>
+
+        <p>
+          A useful harness has four explicit interfaces: a base-checkpoint loader, a forward-pass service, an edit operator, and an evaluator. Keeping them separate prevents accidental leakage and makes it possible to replace one component without silently changing the experiment.
+        </p>
+
+        <h3>4.1 Forward-pass service</h3>
+
+        <p>
+          The service should accept a request containing a checkpoint reference and a batch of inputs, then return outputs plus enough metadata to audit the call. A minimal response might include a request identifier, model revision, decoding configuration, output text, token counts, and an error field.
+        </p>
+
+        <pre><code>POST /generate
+{
+  "checkpoint": "candidate-0003",
+  "inputs": ["input one", "input two"],
+  "generation": {
+    "temperature": 0,
+    "do_sample": false,
+    "max_new_tokens": 64
+  }
+}
+
+200 OK
+{
+  "checkpoint": "candidate-0003",
+  "outputs": ["...", "..."],
+  "model_revision": "record-the-real-revision",
+  "request_id": "record-a-unique-id"
+}</code></pre>
+
+        <p>
+          Determinism is preferable for the first reproduction. Use greedy decoding or a documented random seed, pin the tokenizer, and record hardware or kernel differences when they can affect outputs. If the service batches requests, verify that batching does not change scores compared with single-example inference.
+        </p>
+
+        <h3>4.2 Edit operator</h3>
+
+        <p>
+          The edit operator should receive a base or candidate checkpoint and a structured edit description. It should reject out-of-scope tensors, shape mismatches, non-finite values, and edits that exceed the declared magnitude limit. It should write a new immutable candidate rather than overwrite the base.
+        </p>
+
+        <pre><code>{
+  "parent": "base",
+  "edits": [
+    {
+      "tensor": "MODEL_LAYER_PARAMETER",
+      "operation": "add_delta",
+      "delta_ref": "artifacts/delta-0001.safetensors",
+      "max_abs_delta": "record-the-limit"
+    }
+  ]
+}</code></pre>
+
+        <p>
+          The exact tensor name and operation are model-specific. Do not infer them from a paper summary. Inspect the released code or model architecture, then record the resolved names in the manifest. If no release is available, label the implementation as a reconstruction rather than a reproduction of the original harness.
+        </p>
+
+        <h3>4.3 Evaluator</h3>
+
+        <p>
+          Make the evaluator independent from the controller where possible. It should load the task files, call the forward-pass service, normalize outputs according to a fixed rule, and write per-example results. A single aggregate score is not enough to diagnose regressions.
+        </p>
+
+        <pre><code>example_id,split,checkpoint,expected,observed,correct
+edit-001,edit,candidate-0003,A,A,1
+hold-014,heldout,candidate-0003,B,C,0
+pres-007,preservation,candidate-0003,yes,yes,1</code></pre>
+
+        <p>
+          If a language model judges open-ended outputs, save the judge prompt, model revision, temperature, raw judgment, and adjudication rule. A judge score without those artifacts is difficult to reproduce and may hide evaluator drift.
+        </p>
+
+        <h2>5. The experimental loop</h2>
+
+        <p>
+          The loop can be implemented with a controller that proposes edits from structured observations. The controller should not be allowed to see the held-out set, preservation labels that are outside the declared protocol, or hidden evaluator state.
+        </p>
+
+        <pre><code>base = load_checkpoint(BASE)
+state = evaluate(base, edit_set, preservation_set)
+
+for step in range(MAX_STEPS):
+    proposal = controller.propose(
+        observations=state.summary,
+        constraints=manifest.allowed_edit_scope,
+        remaining_budget=budget.remaining()
+    )
+
+    candidate = edit_operator.apply(parent=state.checkpoint,
+                                     proposal=proposal)
+
+    result = evaluate(candidate, edit_set, preservation_set)
+    log(step, proposal, candidate, result, budget.snapshot())
+
+    if accept(result, state.result):
+        state = result
+        save_checkpoint(candidate)
+    else:
+        discard_or_archive(candidate)
+
+    if stop(state, budget):
+        break
+
+evaluate(state.checkpoint, heldout_set)</code></pre>
+
+        <p>
+          The final held-out evaluation should happen after the controller is stopped. If held-out scores are fed back into proposal generation, the set is no longer held out. For stronger evidence, reserve a second untouched confirmation set or run the protocol once with a sealed evaluator.
+        </p>
+
+        <h2>6. Budget accounting is part of the result</h2>
+
+        <p>
+          A gradient-free procedure may avoid backpropagation while still consuming substantial computation. Record at least:
+        </p>
+
+        <ul>
+          <li>number of forward passes, including failed and repeated requests;</li>
+          <li>number of candidate checkpoints created and retained;</li>
+          <li>controller calls and input/output token counts, if applicable;</li>
+          <li>peak memory and storage used by checkpoints and deltas;</li>
+          <li>elapsed time and parallelism;</li>
+          <li>retries, cache hits, and evaluator calls;</li>
+          <li>the number of examples evaluated at each stage.</li>
+        </ul>
+
+        <p>
+          Report both the nominal budget and actual consumption. “No gradients” describes one resource dimension; it does not imply that the method is cheap, fast, or accessible on a particular hardware configuration.
+        </p>
+
+        <h2>7. Verification checklist</h2>
+
+        <p>
+          Before interpreting the result, verify the run mechanically.
+        </p>
+
+        <ol>
+          <li>Hash the base checkpoint before the first edit and compare it with the manifest.</li>
+          <li>Confirm that the base file is unchanged after the run.</li>
+          <li>Compare the final checkpoint against the base and list changed tensors.</li>
+          <li>Check that every changed tensor is inside the permitted edit scope.</li>
+          <li>Check for NaN, infinite, or unexpectedly large values.</li>
+          <li>Re-run the edit set from the saved final checkpoint.</li>
+          <li>Run the preservation set without sending its outputs to the controller.</li>
+          <li>Run the held-out set with the frozen evaluator.</li>
+          <li>Recompute the reported aggregates from the per-example log.</li>
+          <li>Archive the manifest, environment, service configuration, logs, hashes, and evaluator version.</li>
+        </ol>
+
+        <p>
+          A reproduction report should distinguish “verified from artifacts” from “reported by the original authors” and from “not checked.” If an artifact is missing, say so plainly.
+        </p>
+
+        <h2>8. Failure cases that change the interpretation</h2>
+
+        <h3>Prompt-only improvement</h3>
+
+        <p>
+          If the controller changes prompts, demonstrations, retrieval context, or decoding settings but does not write a new checkpoint, the result is not weight editing. It may still be a valuable agent experiment, but it tests a different mechanism.
+        </p>
+
+        <h3>Evaluation leakage</h3>
+
+        <p>
+          If held-out examples enter the controller’s context, ranking function, debugging transcript, or stopping rule, they are development data. Rename the split or repeat the run with a sealed evaluator.
+        </p>
+
+        <h3>Hidden gradient use</h3>
+
+        <p>
+          An API may hide gradients while exposing a loss, gradient norm, or optimization endpoint. Decide in advance whether those signals violate the intended constraint. If the claim is “forward-pass only,” log the service interface and audit the controller’s available fields.
+        </p>
+
+        <h3>Checkpoint aliasing</h3>
+
+        <p>
+          A candidate name is not proof of an independent checkpoint. Confirm that the edit operation created new immutable artifacts and that later edits did not mutate earlier candidates.
+        </p>
+
+        <h3>Judge instability</h3>
+
+        <p>
+          Open-ended grading can vary with judge revision, prompt wording, and order effects. Preserve raw outputs and judge inputs. Prefer exact-match or task-specific automated metrics where the task permits them.
+        </p>
+
+        <h3>Selective reporting</h3>
+
+        <p>
+          Search procedures often produce many candidates. Reporting only the best candidate without the number of attempts, failed runs, or selection rule can exaggerate expected performance. Include the full candidate-selection protocol.
+        </p>
+
+        <h2>9. What counts as a successful reproduction?</h2>
+
+        <p>
+          There are several useful levels of success:
+        </p>
+
+        <ul>
+          <li><strong>Protocol reconstruction:</strong> the interfaces, constraints, and evaluation procedure are implemented, even if no comparable result is obtained.</li>
+          <li><strong>Artifact reproduction:</strong> the released harness and inputs run from a documented environment and produce the released artifacts or compatible outputs.</li>
+          <li><strong>Behavioral replication:</strong> an independent implementation shows the same direction and approximate scale of change under a matched protocol.</li>
+          <li><strong>Robustness evidence:</strong> the edit improves held-out tasks, preserves unrelated tasks, and remains within a stated budget across more than one run or seed.</li>
+        </ul>
+
+        <p>
+          These levels should not be collapsed. A successful protocol reconstruction is useful even when a behavioral replication fails, because it can reveal that the original result depended on an unavailable checkpoint, an undocumented evaluator, a particular hardware stack, or a hidden selection step.
+        </p>
+
+        <h2>10. Limitations and open questions</h2>
+
+        <p>
+          A forward-pass-only controller may still exploit broad information available through outputs. “Gradient-free” therefore does not mean information-free. The controller can spend many queries, search over large edit spaces, or use a powerful evaluator. Comparisons should match query budgets and evaluation access, not only the presence or absence of backpropagation.
+        </p>
+
+        <p>
+          Weight edits can also be brittle. A behavior may depend on a narrow activation pattern, a particular prompt format, or a decoding choice. Test paraphrases, formatting changes, neighboring tasks, and adversarially chosen counterexamples when the claim concerns a concept rather than a fixed string.
+        </p>
+
+        <p>
+          Finally, a changed checkpoint is not automatically interpretable. A small parameter delta may have a large behavioral effect, while a large delta may be irrelevant to the measured task. Record both parameter-level changes and behavioral outcomes, but do not infer causality from either one alone.
+        </p>
+
+        <h2>11. A compact reproduction report template</h2>
+
+        <pre><code># Weight-space programming reproduction
+
+## Claim tested
+[One sentence, including the no-gradient and held-out constraints.]
+
+## Artifacts
+- Base model:
+- Revision or digest:
+- Harness source and revision:
+- Evaluator revision:
+- Environment:
+
+## Protocol
+- Edit set:
+- Preservation set:
+- Held-out set:
+- Allowed tensors:
+- Controller access:
+- Stopping rule:
+
+## Budget
+- Forward passes:
+- Controller calls:
+- Wall time:
+- Peak memory:
+- Candidate checkpoints:
+
+## Verification
+- Base hash unchanged: [yes/no/not checked]
+- Changed tensors in scope: [yes/no/not checked]
+- Non-finite values: [none/found/not checked]
+- Held-out evaluation sealed: [yes/no]
+
+## Results
+- Edit-set result: [record per-example and aggregate]
+- Preservation result: [record per-example and aggregate]
+- Held-out result: [record per-example and aggregate]
+- Failed or excluded runs:
+- Uncertainty and limitations:
+
+## Evidence classification
+- Verified from local artifacts:
+- Reconstructed:
+- Reported but not independently checked:</code></pre>
+
+        <h2>Conclusion</h2>
+
+        <p>
+          The central discipline is to treat weight-space programming as an experiment with interfaces, budgets, artifacts, and held-out evidence—not as a persuasive description of an agent’s behavior. Rebuild the forward-pass boundary, make edits immutable and auditable, freeze the evaluator, count every query, and report what was actually verified. If the released harness is unavailable, the honest outcome is a documented reconstruction protocol, not an invented replication result.
+        </p>
+
+        <p>
+          For related practical material, continue with the <a href="guides.html">Agent Lab Journal guides</a> or consult the <a href="../glossary.html">glossary</a>.
+        </p>
+      </div>
+    <section class="service-note">
+  <b>We publish what works for us—and implement the same solutions for your business.</b>
+  We design AI automation, Telegram bots, chats, and AI agents for real-world processes.
+  <a href="../contacts-en.html">Discuss your project →</a>
+</section>
+</article>
+  </main>
+
+  <footer class="site-footer">
+    <div class="site-footer__inner">
+      <p>&copy; 2026 Agent Lab Journal</p>
+      <nav aria-label="Footer navigation">
+        <a href="guides.html">Guides</a>
+        <a href="../glossary.html">Glossary</a>
+      </nav>
+    </div>
+  </footer>
+</body>
+</html>
