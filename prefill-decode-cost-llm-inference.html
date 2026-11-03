@@ -1,0 +1,362 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Почему длинный prompt тормозит генерацию: расчёт стоимости prefill и decode</title>
+  <meta name="description" content="Почему длинный prompt тормозит генерацию: расчёт стоимости prefill и decode — практическая модель для H100 и Llama 3.1 70B с chunked prefill и раздельными пулами.">
+  <link rel="canonical" href="https://agentlabjournal.online/prefill-decode-cost-llm-inference.html">
+  <link rel="stylesheet" href="style.css">
+  <link rel="stylesheet" href="reading.css">
+
+  <meta property="og:type" content="article">
+  <meta property="og:title" content="Почему длинный prompt тормозит генерацию: расчёт стоимости prefill и decode">
+  <meta property="og:description" content="Расчётная модель влияния длинных документов на задержку и пропускную способность LLM-сервера.">
+  <meta property="og:url" content="https://agentlabjournal.online/prefill-decode-cost-llm-inference.html">
+  <meta property="og:site_name" content="Agent Lab Journal">
+  <meta property="og:locale" content="ru_RU">
+
+  <meta name="twitter:card" content="summary">
+  <meta name="twitter:title" content="Почему длинный prompt тормозит генерацию: расчёт стоимости prefill и decode">
+  <meta name="twitter:description" content="Модель для сравнения prefill, decode, chunked prefill и раздельных пулов на H100 и Llama 3.1 70B.">
+
+  <meta name="reading-meta" content="Уровень: продвинутый; Время чтения: до 12 минут; Тема: LLM inference">
+  <script type="application/ld+json">
+  {
+    "@context": "https://schema.org",
+    "@type": "Article",
+    "headline": "Почему длинный prompt тормозит генерацию: расчёт стоимости prefill и decode",
+    "description": "Практическая расчётная модель влияния длинных входных документов на задержку и пропускную способность LLM-сервера.",
+    "url": "https://agentlabjournal.online/prefill-decode-cost-llm-inference.html",
+    "inLanguage": "ru-RU",
+    "publisher": {
+      "@type": "Organization",
+      "name": "Agent Lab Journal",
+      "url": "https://agentlabjournal.online/"
+    },
+    "mainEntityOfPage": {
+      "@type": "WebPage",
+      "@id": "https://agentlabjournal.online/prefill-decode-cost-llm-inference.html"
+    }
+  }
+  </script>
+<link rel="stylesheet" href="homepage.css"><link rel="stylesheet" href="max-promo.css">  <meta property="og:image" content="https://agentlabjournal.online/assets/covers/llm-context-window-budget-social.png">
+  <meta property="og:image:alt" content="Почему длинный prompt тормозит генерацию: расчёт стоимости prefill и decode">
+  <meta name="twitter:image" content="https://agentlabjournal.online/assets/covers/llm-context-window-budget-social.png">
+</head>
+<body>
+  <header class="site-header">
+    <div class="container">
+      <a class="site-brand" href="index.html">Agent Lab Journal</a>
+      <nav aria-label="Основная навигация">
+        <a href="guides.html">Guides</a>
+        <a href="glossary.html">Glossary</a>
+      </nav>
+    </div>
+  </header>
+
+  <main>
+    <article class="reading">
+      <header class="reading-header">
+        <p class="eyebrow">Inference / Performance</p>
+        <h1>Почему длинный prompt тормозит генерацию: расчёт стоимости prefill и decode</h1>
+        <figure class="article-cover" data-editorial-cover="prefill-decode-cost-llm-inference"><img src="assets/covers/llm-context-window-budget.png" alt="Почему длинный prompt тормозит генерацию: расчёт стоимости prefill и decode" width="1280" height="720" fetchpriority="high"><figcaption>Temporary fallback cover; replace in editorial pass.</figcaption></figure>
+        <p class="reading-meta">Продвинутый уровень · до 12 минут чтения · Расчётная модель для H100 и Llama 3.1 70B</p>
+        <p class="lede">Длинный входной документ расходует вычислительный бюджет до того, как модель начнёт выдавать первый токен. Чтобы оценить эффект до нагрузочного теста, разделите запрос на две разные фазы — <a href="glossary.html#prefill">prefill</a> и decode — и считайте их отдельно.</p>
+      </header>
+<a href="https://max.ru/channel_AgentLab?utm_source=agentlabjournal&utm_medium=article&utm_campaign=max_channel&utm_content=article_footer" class="max-promo-block" target="_blank" rel="noopener noreferrer" aria-label="Самое важное из мира AI в канале MAX AgentLab">
+  <span class="max-promo-block__icon" aria-hidden="true"></span>
+  <span class="max-promo-block__content"><span class="max-promo-block__title">Самое важное из мира AI — в канале MAX AgentLab</span><span class="max-promo-block__desc">Отдельные разборы, инструменты и практические схемы</span></span>
+  <span class="max-promo-block__arrow" aria-hidden="true">→</span>
+</a>
+<a href="https://t.me/pelmenews?utm_source=agentlabjournal&utm_medium=article&utm_campaign=telegram_channel&utm_content=article_intro" class="telegram-promo-block" target="_blank" rel="noopener noreferrer" aria-label="Читайте Agent Lab в Telegram">
+  <span class="telegram-promo-block__icon" aria-hidden="true"></span>
+  <span class="telegram-promo-block__content">
+    <span class="telegram-promo-block__title">Читайте Agent Lab в Telegram</span>
+    <span class="telegram-promo-block__desc">Разборы, кейсы и новости о практических AI-агентах без лишней воды.</span>
+  </span>
+  <span class="telegram-promo-block__arrow" aria-hidden="true">→</span>
+</a>
+
+      <section>
+        <h2>Короткий ответ</h2>
+        <p>В фазе prefill сервер обрабатывает все входные токены и строит KV-кэш. В фазе decode он последовательно генерирует выходные токены, используя уже построенный кэш. Длинный prompt увеличивает:</p>
+        <ul>
+          <li>время до первого токена (TTFT);</li>
+          <li>занятость GPU до начала генерации;</li>
+          <li>объём KV-кэша и давление на память;</li>
+          <li>вероятность того, что decode одного запроса будет ждать prefill другого.</li>
+        </ul>
+        <p>Для грубой оценки полезно считать не «стоимость запроса» целиком, а две величины:</p>
+        <pre><code>C<sub>prefill</sub> = N<sub>in</sub> / R<sub>prefill</sub>
+C<sub>decode</sub>  = N<sub>out</sub> / R<sub>decode</sub>
+T<sub>request</sub> ≈ C<sub>prefill</sub> + C<sub>decode</sub></code></pre>
+        <p>Здесь <code>N<sub>in</sub></code> — число входных токенов, <code>N<sub>out</sub></code> — число сгенерированных токенов, а <code>R</code> — измеренная производительность конкретной конфигурации в токенах в секунду.</p>
+      </section>
+
+      <section>
+        <h2>Почему один показатель tokens/s вводит в заблуждение</h2>
+        <p>Число tokens/s обычно смешивает два режима с разной вычислительной структурой. Prefill хорошо векторизуется: GPU обрабатывает большой блок токенов параллельно. Decode, напротив, автогрессивен: следующий токен зависит от предыдущего, а при батчинге растёт стоимость чтения KV-кэшей.</p>
+        <p>Поэтому сервер может показать высокую скорость обработки длинного входа и одновременно иметь плохой time-to-first-token или низкую скорость выдачи при большом числе конкурентных запросов. Для пользователя это выглядит как «модель долго думает», хотя часть времени уже потрачена на входной документ.</p>
+
+        <aside class="callout">
+          <strong>Практическое правило.</strong>
+          <p>Сравнивайте хотя бы четыре метрики отдельно: prefill throughput, decode throughput, TTFT и inter-token latency. Среднее значение tokens/s без разбиения по фазам мало говорит о поведении сервиса.</p>
+        </aside>
+      </section>
+
+      <section>
+        <h2>Расчётная модель</h2>
+        <h3>1. Время prefill</h3>
+        <p>Пусть:</p>
+        <ul>
+          <li><code>L</code> — длина входа в токенах;</li>
+          <li><code>r<sub>p</sub></code> — наблюдаемая скорость prefill, токенов/с;</li>
+          <li><code>α</code> — коэффициент накладных расходов планировщика, копирования и очереди.</li>
+        </ul>
+        <p>Тогда:</p>
+        <pre><code>T<sub>p</sub> = α · L / r<sub>p</sub></code></pre>
+        <p>Если запрос обрабатывается в батче, используйте не только скорость одного запроса: фактический <code>r<sub>p</sub></code> зависит от размера батча, длины последовательностей и того, как сервер смешивает prefill с decode.</p>
+
+        <h3>2. Время decode</h3>
+        <p>Пусть <code>G</code> — длина ответа в токенах, а <code>r<sub>d</sub></code> — скорость decode для выбранной конкуренции:</p>
+        <pre><code>T<sub>d</sub> = G / r<sub>d</sub></code></pre>
+        <p>Полное время до последнего токена в простом приближении:</p>
+        <pre><code>T<sub>e2e</sub> = T<sub>queue</sub> + T<sub>p</sub> + T<sub>d</sub></code></pre>
+        <p>Для первого токена decode почти не добавляет полной стоимости: обычно учитывают prefill, планирование и вычисление первого шага генерации. Поэтому TTFT особенно чувствителен к <code>L</code>.</p>
+
+        <h3>3. Пропускная способность</h3>
+        <p>Если сервер последовательно занят одним запросом, верхняя оценка по запросам в секунду:</p>
+        <pre><code>Q ≈ 1 / (T<sub>p</sub> + T<sub>d</sub>)</code></pre>
+        <p>А по токенам можно считать отдельно:</p>
+        <pre><code>Throughput<sub>in</sub>  ≈ L · Q
+Throughput<sub>out</sub> ≈ G · Q</code></pre>
+        <p>Это не закон производительности GPU, а модель очереди. Она полезна для сравнения вариантов при одинаковых условиях. Реальный сервер может выиграть за счёт continuous batching или проиграть из-за памяти, фрагментации и конфликтов фаз.</p>
+      </section>
+
+      <section>
+        <h2>Пример для H100 и Llama 3.1 70B</h2>
+        <p>Ниже — не измерение и не обещание производительности, а воспроизводимый числовой пример. Значения <code>r<sub>p</sub></code>, <code>r<sub>d</sub></code> и <code>α</code> нужно заменить результатами собственного бенчмарка.</p>
+
+        <table>
+          <caption>Исходные допущения примера</caption>
+          <thead>
+            <tr>
+              <th>Параметр</th>
+              <th>Значение</th>
+              <th>Комментарий</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td>GPU</td>
+              <td>H100</td>
+              <td>Конкретный вариант памяти и число GPU не заданы</td>
+            </tr>
+            <tr>
+              <td>Модель</td>
+              <td>Llama 3.1 70B</td>
+              <td>Квантование, параллелизм и runtime нужно указать отдельно</td>
+            </tr>
+            <tr>
+              <td><code>r<sub>p</sub></code></td>
+              <td>8 000 токенов/с</td>
+              <td>Условное число для примера</td>
+            </tr>
+            <tr>
+              <td><code>r<sub>d</sub></code></td>
+              <td>80 токенов/с</td>
+              <td>Условное число для одного активного decode-потока</td>
+            </tr>
+            <tr>
+              <td><code>α</code></td>
+              <td>1,15</td>
+              <td>Условный запас на накладные расходы</td>
+            </tr>
+          </tbody>
+        </table>
+
+        <p>Рассмотрим запрос с <code>L = 32 000</code> входных токенов и ответом <code>G = 800</code> токенов:</p>
+        <pre><code>T<sub>p</sub> = 1,15 · 32 000 / 8 000 = 4,6 с
+T<sub>d</sub> = 800 / 80 = 10 с
+T<sub>e2e</sub> ≈ 14,6 с</code></pre>
+        <p>Для входа в 4 000 токенов при том же ответе:</p>
+        <pre><code>T<sub>p</sub> = 1,15 · 4 000 / 8 000 = 0,575 с
+T<sub>e2e</sub> ≈ 10,575 с</code></pre>
+        <p>В этом конкретном примере длинный документ добавил около 4 секунд к времени запроса и почти в восемь раз увеличил время prefill. Если ответы короткие, доля prefill становится ещё заметнее. Если ответы длинные, доминирует decode, но длинный вход всё равно съедает ёмкость очереди и KV-кэша.</p>
+      </section>
+
+      <section>
+        <h2>Как учитывать KV-кэш</h2>
+        <p>KV-кэш хранит промежуточные ключи и значения attention для уже обработанных токенов. Его размер зависит от длины контекста, числа слоёв, числа KV-heads и точности хранения. Упрощённо:</p>
+        <pre><code>Memory<sub>KV</sub> ≈ L · layers · 2 · KV_heads · head_dim · bytes_per_element</code></pre>
+        <p>Множитель 2 отражает ключи и значения. Формула опускает детали упаковки, выравнивания и реализации runtime, поэтому используйте её как оценку порядка величины.</p>
+        <p>Для длинных документов важен не только один запрос. При одновременной обработке <code>B</code> последовательностей:</p>
+        <pre><code>Memory<sub>KV,total</sub> ≈ Σ Memory<sub>KV,i</sub>, i = 1…B</code></pre>
+        <p>Когда KV-кэш приближается к доступной памяти, сервер уменьшает размер батча, чаще вытесняет запросы или начинает дольше ждать свободного слота. В этот момент линейная модель времени перестаёт быть точной: задержка растёт ступенчато.</p>
+      </section>
+
+      <section>
+        <h2>Chunked prefill: как не блокировать decode</h2>
+        <p>Chunked prefill разбивает длинный вход на части. Вместо одного блока из <code>L</code> токенов планировщик обрабатывает чанки размером <code>C</code>, перемежая их с decode-шагами других запросов.</p>
+        <pre><code>chunks = ceil(L / C)
+T<sub>p</sub> ≈ Σ α · C<sub>i</sub> / r<sub>p</sub></code></pre>
+        <p>В идеализированной модели сумма остаётся примерно той же. Выигрыш появляется в очереди: decode небольшого ответа может получить GPU между чанками, а не ждать окончания всего prefill.</p>
+
+        <table>
+          <caption>Что меняется при chunked prefill</caption>
+          <thead>
+            <tr>
+              <th>Свойство</th>
+              <th>Большой prefill без разбиения</th>
+              <th>Chunked prefill</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td>TTFT текущего длинного запроса</td>
+              <td>Может быть меньше из-за меньшего числа переключений</td>
+              <td>Может вырасти из-за пауз между чанками</td>
+            </tr>
+            <tr>
+              <td>Задержка уже генерируемых запросов</td>
+              <td>Риск блокировки на время большого prefill</td>
+              <td>Обычно легче ограничить паузу</td>
+            </tr>
+            <tr>
+              <td>Управление очередью</td>
+              <td>Проще</td>
+              <td>Требует настройки размера чанка и политики планирования</td>
+            </tr>
+            <tr>
+              <td>Общее число вычислений</td>
+              <td>Базовая величина</td>
+              <td>Не обязано уменьшаться</td>
+            </tr>
+          </tbody>
+        </table>
+
+        <p>Размер чанка выбирают по SLO. Если важнее p99 inter-token latency для коротких ответов, начните с меньшего чанка и проверьте влияние на TTFT длинных запросов. Если важнее максимальный throughput документов, слишком мелкие чанки могут добавить лишние переключения.</p>
+      </section>
+
+      <section>
+        <h2>Раздельные prefill- и decode-пулы</h2>
+        <p>При disaggregated serving prefill и decode выполняются на разных пулах GPU. Prefill-пул быстро обрабатывает вход и передаёт состояние, а decode-пул продолжает генерацию. Это не делает вычисления бесплатными, но разделяет конкурирующие профили нагрузки.</p>
+        <p>Для двух пулов полезна следующая оценка:</p>
+        <pre><code>T<sub>e2e</sub> ≈ T<sub>queue,p</sub> + T<sub>p</sub> + T<sub>transfer</sub>
+          + T<sub>queue,d</sub> + T<sub>d</sub></code></pre>
+        <p>Новая статья расходов — передача состояния и координация. Её нельзя игнорировать: длинный контекст означает большой объём данных, который может пройти через сетевую или внутрисистемную связь.</p>
+        <p>Преимущество пулов появляется, когда профили нагрузки устойчиво различаются. Например, входы длинные, ответы короткие — тогда prefill-пул можно масштабировать по TTFT, а decode-пул — по числу одновременных генераций. Если нагрузка непредсказуема или transfer дорог, единый пул с continuous batching может оказаться проще и эффективнее.</p>
+      </section>
+
+      <section>
+        <h2>Воспроизводимый способ получить свои коэффициенты</h2>
+        <p>Сначала зафиксируйте конфигурацию: точную модель, формат весов, число GPU, tensor/pipeline parallelism, максимальный контекст, размер батча, runtime и параметры scheduler. Без этого значения скорости нельзя переносить между серверами.</p>
+
+        <h3>Шаг 1. Подготовьте матрицу входов</h3>
+        <p>Используйте несколько длин, например 1k, 4k, 8k, 16k и 32k токенов, а длину ответа зафиксируйте на одном или нескольких уровнях. Важно измерять именно токены, а не символы.</p>
+
+        <h3>Шаг 2. Снимите prefill</h3>
+        <p>Запустите только измерительный прогон и соберите TTFT и число обработанных входных токенов. Не публикуйте секретные документы: используйте синтетический текст или локальный безопасный набор.</p>
+        <pre><code># Безопасный локальный шаблон: не вставляйте реальные секреты
+python - &lt;&lt;'PY'
+for n in [1000, 4000, 8000, 16000, 32000]:
+    print(f"prompt_tokens={n}")
+PY</code></pre>
+        <p>Команда лишь печатает план эксперимента и ничего не отправляет в сеть. Конкретный вызов inference-сервера зависит от используемого API и поэтому должен быть добавлен отдельно, без включения ключей доступа в shell history или логи.</p>
+
+        <h3>Шаг 3. Снимите decode</h3>
+        <p>Зафиксируйте входной контекст и измерьте скорость выдачи при разных значениях concurrency. Записывайте среднее и p50/p95/p99, а не только один лучший прогон.</p>
+
+        <h3>Шаг 4. Повторите для chunked prefill</h3>
+        <p>Меняйте только размер чанка. Для каждого значения сравните TTFT длинных запросов, inter-token latency коротких запросов, GPU utilization и пиковое потребление памяти.</p>
+
+        <h3>Шаг 5. Подставьте измеренные значения</h3>
+        <p>Возьмите устойчивый участок графика, а не случайный пик:</p>
+        <pre><code>prefill_cost = input_tokens / measured_prefill_tps
+decode_cost  = output_tokens / measured_decode_tps
+request_time = queue_time + prefill_cost + decode_cost</code></pre>
+        <p>Если скорость зависит от длины контекста, используйте таблицу или кусочно-линейную модель вместо одной константы.</p>
+      </section>
+
+      <section>
+        <h2>Проверка результата</h2>
+        <p>Расчёт считается полезным, если он объясняет порядок величин и помогает выбрать эксперимент. Проверьте его по четырём направлениям:</p>
+        <ol>
+          <li>Сравните предсказанный TTFT с измеренным на тех же длинах входа.</li>
+          <li>Проверьте, что увеличение числа входных токенов не скрыто в токенизаторе или шаблоне чата.</li>
+          <li>Сверьте прогноз KV-кэша с фактическим пиковым потреблением памяти.</li>
+          <li>Проверьте p95/p99 при смешанной нагрузке: короткий prompt + длинный prompt + активный decode.</li>
+        </ol>
+        <p>Если одиночный запрос совпадает с моделью, а p99 под нагрузкой — нет, проблема обычно находится в очереди, планировщике, batching или памяти, а не в самой формуле.</p>
+      </section>
+
+      <section>
+        <h2>Типовые ошибки</h2>
+        <ul>
+          <li><strong>Считать prompt в символах.</strong> Стоимость определяется токенами конкретного токенизатора.</li>
+          <li><strong>Использовать decode throughput для оценки TTFT.</strong> Это разные фазы и разные режимы загрузки GPU.</li>
+          <li><strong>Сравнивать разные форматы весов.</strong> Квантование меняет память и скорость.</li>
+          <li><strong>Игнорировать шаблон чата.</strong> Системные инструкции и служебные токены входят в <code>N<sub>in</sub></code>.</li>
+          <li><strong>Умножать одиночную скорость на число пользователей.</strong> При конкуренции меняются batching, KV-кэш и скорость decode.</li>
+          <li><strong>Считать chunked prefill бесплатным.</strong> Он меняет планирование и задержки, но не обязан уменьшать объём работы.</li>
+          <li><strong>Смешивать TTFT и end-to-end latency.</strong> Для длинного ответа доминировать может decode.</li>
+          <li><strong>Не учитывать передачу состояния между пулами.</strong> В раздельной архитектуре это отдельная задержка и потребление канала.</li>
+        </ul>
+      </section>
+
+      <section>
+        <h2>Ограничения модели</h2>
+        <p>Формулы выше не заменяют нагрузочный тест. Они предполагают стабильные скорости и не моделируют полностью:</p>
+        <ul>
+          <li>динамическое continuous batching;</li>
+          <li>конфликты за GPU и память;</li>
+          <li>фрагментацию KV-кэша;</li>
+          <li>спекулятивную декодировку;</li>
+          <li>кэширование префиксов;</li>
+          <li>сетевые задержки и сериализацию;</li>
+          <li>различия между ядрами attention и реализациями runtime.</li>
+        </ul>
+        <p>Особенно осторожно переносите пример на другой H100-конфиг или другую версию runtime. Название GPU и модели не определяет итоговую скорость без параметров параллелизма, точности и scheduler.</p>
+      </section>
+
+      <section>
+        <h2>Итог</h2>
+        <p>Ответ на вопрос «Почему длинный prompt тормозит генерацию: расчёт стоимости prefill и decode» начинается с раздельного учёта фаз. Сначала оцените <code>T<sub>p</sub> = L / r<sub>p</sub></code>, затем <code>T<sub>d</sub> = G / r<sub>d</sub></code>, добавьте очередь и проверьте память KV-кэша.</p>
+        <p>Если длинные входы блокируют короткие ответы, исследуйте chunked prefill. Если prefill и decode имеют устойчиво разные профили нагрузки, рассмотрите раздельные пулы и включите стоимость передачи состояния. Во всех случаях заменяйте условные коэффициенты измеренными значениями конкретной H100-конфигурации и Llama 3.1 70B.</p>
+        <p>Дополнительные материалы: <a href="guides.html">практические guides</a> и <a href="glossary.html">глоссарий терминов</a>.</p>
+      </section>
+<aside class="service-note" aria-label="Связаться по проекту">
+  <div class="service-note__copy">
+    <p class="service-note__label">Связь с Agent Lab</p>
+    <p class="service-note__title">Внедрим такой контур в ваш процесс</p>
+    <p class="service-note__text">Напишите инженеру Agent Lab в Telegram: опишите задачу, бота или интеграцию — предложим пилот с проверками и понятными границами.</p>
+  </div>
+  <a class="service-note__link" href="https://t.me/msrzn007?utm_source=journal&amp;utm_medium=article&amp;utm_campaign=service_note" target="_blank" rel="noopener">Написать в Telegram
+    <svg viewBox="0 0 16 16" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"><path d="M3 13 13 3M6 3h7v7"/></svg>
+  </a>
+</aside>
+<aside class="service-note service-note--sitevisor" aria-label="Экспресс-аудит сайта">
+  <div class="service-note__copy">
+    <p class="service-note__label">SiteVisor</p>
+    <p class="service-note__title">Проверьте техническое состояние и готовность вашего сайта к рекламе</p>
+    <p class="service-note__text">Экспресс-аудит на SiteVisor.pro: индексация, скорость, разметка, аналитика и точки конверсии.</p>
+  </div>
+  <a class="service-note__link" href="https://sitevisor.pro/?utm_source=journal&amp;utm_medium=article&amp;utm_campaign=leadmagnet" target="_blank" rel="noopener">Экспресс-аудит на SiteVisor.pro
+    <svg viewBox="0 0 16 16" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"><path d="M3 13 13 3M6 3h7v7"/></svg>
+  </a>
+</aside>
+</article>
+  </main>
+
+  <footer class="site-footer">
+    <div class="container">
+      <p>© Agent Lab Journal</p>
+      <nav aria-label="Навигация в подвале">
+        <a href="guides.html">Guides</a>
+        <a href="glossary.html">Glossary</a>
+      </nav>
+    </div>
+  </footer>
+</body>
+</html>

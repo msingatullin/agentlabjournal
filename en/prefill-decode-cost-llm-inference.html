@@ -1,0 +1,534 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Why Long Prompts Slow Generation: Estimating Prefill and Decode Cost</title>
+  <meta name="description" content="Why Long Prompts Slow Generation: Estimating Prefill and Decode Cost with a reproducible calculation model for H100 systems running Llama 3.1 70B.">
+  <link rel="canonical" href="https://agentlabjournal.online/en/prefill-decode-cost-llm-inference.html">
+  <link rel="stylesheet" href="../style.css">
+  <link rel="stylesheet" href="../reading.css">
+
+  <meta property="og:type" content="article">
+  <meta property="og:locale" content="en_US">
+  <meta property="og:title" content="Why Long Prompts Slow Generation: Estimating Prefill and Decode Cost">
+  <meta property="og:description" content="A reproducible calculation model for estimating prefill, decode, chunked prefill, and disaggregated serving costs on H100 systems with Llama 3.1 70B.">
+  <meta property="og:url" content="https://agentlabjournal.online/en/prefill-decode-cost-llm-inference.html">
+  <meta property="og:image" content="https://agentlabjournal.online/assets/covers/llm-context-window-budget-social.png">
+  <meta property="og:site_name" content="Agent Lab Journal">
+
+  <meta name="twitter:card" content="summary_large_image">
+  <meta name="twitter:title" content="Why Long Prompts Slow Generation: Estimating Prefill and Decode Cost">
+  <meta name="twitter:description" content="A practical, evidence-bounded model for estimating LLM inference cost from long input documents.">
+  <meta name="twitter:image" content="https://agentlabjournal.online/assets/covers/llm-context-window-budget-social.png">
+
+  <script type="application/ld+json">
+  {
+    "@context": "https://schema.org",
+    "@type": "Article",
+    "headline": "Why Long Prompts Slow Generation: Estimating Prefill and Decode Cost",
+    "description": "A reproducible calculation model for estimating prefill, decode, chunked prefill, and disaggregated serving costs on H100 systems with Llama 3.1 70B.",
+    "image": ["https://agentlabjournal.online/assets/covers/llm-context-window-budget-social.png"],
+    "dateModified": "2026-11-03",
+    "author": {
+      "@type": "Organization",
+      "name": "Agent Lab Journal"
+    },
+    "publisher": {
+      "@type": "Organization",
+      "name": "Agent Lab Journal",
+      "url": "https://agentlabjournal.online/"
+    },
+    "mainEntityOfPage": {
+      "@type": "WebPage",
+      "@id": "https://agentlabjournal.online/en/prefill-decode-cost-llm-inference.html"
+    }
+  }
+  </script>
+<link rel="stylesheet" href="../homepage.css"><link rel="stylesheet" href="../max-promo.css">  <meta property="og:image:alt" content="Почему длинный prompt тормозит генерацию: расчёт стоимости prefill и decode">
+</head>
+<body>
+  <header class="site-header">
+    <a href="../index.html">Agent Lab Journal</a>
+    <nav aria-label="Primary navigation">
+      <a href="../guides.html">Guides</a>
+      <a href="../glossary.html">Glossary</a>
+    </nav>
+  </header>
+
+  <main>
+    <article class="reading">
+      <div class="reading-meta">
+        <span>Advanced</span>
+        <span>25 min read</span>
+        <time datetime="2026-11-03">Updated 3 November 2026</time>
+      </div>
+
+      <h1>Why Long Prompts Slow Generation: Estimating Prefill and Decode Cost</h1>
+        <figure class="article-cover" data-editorial-cover="prefill-decode-cost-llm-inference"><img src="../assets/covers/llm-context-window-budget.png" alt="Почему длинный prompt тормозит генерацию: расчёт стоимости prefill и decode" width="1280" height="720" fetchpriority="high"><figcaption>Temporary fallback cover; replace in editorial pass.</figcaption></figure>
+
+      <p class="lead">
+        Long documents hurt LLM serving in two different ways. They require a large one-time computation before the first output token, and they increase the memory footprint that every later token must use. The first effect is called <a href="../glossary.html#prefill">prefill</a>; the second is exposed during <a href="../glossary.html#decode">decode</a>. Treating both as one “tokens per second” number is the fastest way to mis-size a server.
+      </p>
+
+      <p>
+        This article builds a calculation model for an H100 deployment of Llama 3.1 70B. The numbers below are examples derived from explicit assumptions, not benchmark results. They are intended to help you estimate capacity, choose a measurement plan, and identify which variables must be replaced with measurements from your own stack.
+      </p>
+
+      <h2>The useful mental model: two phases, two bottlenecks</h2>
+
+      <p>
+        An autoregressive language model processes a request in two broad phases:
+      </p>
+
+      <ol>
+        <li><strong>Prefill:</strong> process the input sequence and construct the attention state needed for generation.</li>
+        <li><strong>Decode:</strong> generate output tokens one at a time, reusing the stored attention state.</li>
+      </ol>
+
+      <p>
+        The stored attention state is the <a href="../glossary.html#kv-cache">KV cache</a>. It contains key and value vectors for the prompt and for tokens generated so far. A long prompt therefore creates both more initial work and more state to read during generation.
+      </p>
+
+      <p>
+        The latency visible to a user can be approximated as:
+      </p>
+
+      <pre><code>time_to_first_token ≈ queue_time + prefill_time + scheduling_overhead
+
+total_request_time ≈ queue_time + prefill_time
+                    + output_tokens / decode_throughput</code></pre>
+
+      <p>
+        This is intentionally a service-level model. It omits tokenizer time, network time, sampling, logging, batching transitions, and other overheads unless you add them explicitly. That makes it useful for first-order sizing, but insufficient as a substitute for a benchmark.
+      </p>
+
+      <h2>A concrete case: one 32,000-token document</h2>
+
+      <p>
+        Consider a request with these inputs:
+      </p>
+
+      <table>
+        <thead>
+          <tr>
+            <th>Variable</th>
+            <th>Example value</th>
+            <th>Meaning</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td><code>L</code></td>
+            <td>32,000 tokens</td>
+            <td>Input length, including system instructions and document text</td>
+          </tr>
+          <tr>
+            <td><code>O</code></td>
+            <td>512 tokens</td>
+            <td>Expected generated output</td>
+          </tr>
+          <tr>
+            <td><code>P</code></td>
+            <td>70 billion</td>
+            <td>Approximate parameter count</td>
+          </tr>
+          <tr>
+            <td>precision</td>
+            <td>BF16</td>
+            <td>Example weight and KV-cache format</td>
+          </tr>
+          <tr>
+            <td>hardware</td>
+            <td>8 × H100 80 GB</td>
+            <td>Example tensor-parallel deployment</td>
+          </tr>
+        </tbody>
+      </table>
+
+      <p>
+        The hardware line is a deployment assumption. It does not assert that every Llama 3.1 70B serving system needs eight H100s. Weight quantization, tensor parallelism, memory utilization, runtime implementation, and context length all affect the actual placement.
+      </p>
+
+      <h2>Estimating prefill compute</h2>
+
+      <p>
+        A common first-order estimate for transformer inference is approximately <code>2P</code> floating-point operations per token for the dense feed-forward and projection work. Under that approximation:
+      </p>
+
+      <pre><code>F_prefill ≈ 2 × P × L
+           ≈ 2 × 70,000,000,000 × 32,000
+           ≈ 4.48 × 10^15 FLOPs</code></pre>
+
+      <p>
+        The result is 4.48 petaFLOPs of model compute for the example prompt. This is a model estimate, not a measurement. It excludes or simplifies attention terms, routing, padding, fused-kernel effects, tensor-parallel communication, and runtime overhead.
+      </p>
+
+      <p>
+        To turn compute into time, use an effective—not advertised peak—throughput:
+      </p>
+
+      <pre><code>prefill_time ≈ F_prefill / effective_prefill_FLOPs_per_second</code></pre>
+
+      <p>
+        For an illustrative sensitivity calculation, assume the complete eight-GPU deployment sustains an effective 0.5 PFLOP/s on this workload:
+      </p>
+
+      <pre><code>prefill_time ≈ 4.48 PFLOPs / 0.5 PFLOP/s
+              ≈ 8.96 seconds</code></pre>
+
+      <p>
+        The 8.96-second result is not a verified H100 benchmark. It simply shows how to use the equation. If your measured effective throughput is 1.0 PFLOP/s, the same estimate becomes 4.48 seconds. If it is 0.25 PFLOP/s, it becomes 17.92 seconds.
+      </p>
+
+      <p>
+        This linear approximation explains why doubling the input from 32,000 to 64,000 tokens approximately doubles the first-pass model work. In practice, the slope can change when the runtime changes kernels, runs out of memory bandwidth, pads batches, or communicates more frequently across GPUs.
+      </p>
+
+      <h2>Why decode behaves differently</h2>
+
+      <p>
+        During decode, the model produces one new token at a time. Each step still performs model-wide work, but the computation has a different shape: the new token is small while the attention operation must consult the existing KV cache.
+      </p>
+
+      <p>
+        A simplified compute estimate for <code>O</code> generated tokens is:
+      </p>
+
+      <pre><code>F_decode_model ≈ 2 × P × O</code></pre>
+
+      <p>
+        For 512 output tokens:
+      </p>
+
+      <pre><code>F_decode_model ≈ 2 × 70,000,000,000 × 512
+                ≈ 7.168 × 10^13 FLOPs</code></pre>
+
+      <p>
+        That is much less model FLOP volume than the 32,000-token prefill. However, decode is commonly constrained by memory traffic, synchronization, and the need to perform many sequential steps. A high prefill throughput number therefore does not predict decode throughput.
+      </p>
+
+      <p>
+        Use a separately measured decode rate:
+      </p>
+
+      <pre><code>decode_time ≈ output_tokens / measured_decode_tokens_per_second</code></pre>
+
+      <p>
+        As a purely illustrative example, if the deployment sustains 160 output tokens per second for the selected batch and sampling configuration:
+      </p>
+
+      <pre><code>decode_time ≈ 512 / 160
+             ≈ 3.2 seconds</code></pre>
+
+      <p>
+        The total model-side time for this example would then be approximately 8.96 + 3.2 = 12.16 seconds before queueing and other overheads. Neither 0.5 PFLOP/s nor 160 tokens/s should be presented as a measured result without running the corresponding workload.
+      </p>
+
+      <h2>Estimating KV-cache memory</h2>
+
+      <p>
+        The KV cache is often the hidden capacity limit for long documents. A useful per-token estimate is:
+      </p>
+
+      <pre><code>KV_bytes_per_token
+  = 2 × layers × KV_heads × head_dim × bytes_per_element</code></pre>
+
+      <p>
+        The first factor of two accounts for keys and values. For an example Llama 3.1 70B configuration, use 80 layers, 8 KV heads, a head dimension of 128, and BF16 values at 2 bytes each:
+      </p>
+
+      <pre><code>KV_bytes_per_token
+  = 2 × 80 × 8 × 128 × 2
+  = 327,680 bytes
+  ≈ 320 KiB</code></pre>
+
+      <p>
+        For 32,000 input tokens:
+      </p>
+
+      <pre><code>prompt_KV
+  ≈ 32,000 × 327,680
+  ≈ 10,485,760,000 bytes
+  ≈ 9.77 GiB</code></pre>
+
+      <p>
+        Generated tokens add to the same cache. With 512 output tokens, the total sequence length becomes 32,512 tokens and the estimated KV cache becomes approximately 9.93 GiB, before allocator metadata, padding, fragmentation, replicated state, and runtime-specific layout.
+      </p>
+
+      <p>
+        Check the actual model configuration before using this equation. A quantized weight format does not automatically mean that the KV cache uses the same format. Some runtimes support FP8 or other KV-cache formats; those reduce memory per token but may change quality, kernel behavior, or supported features.
+      </p>
+
+      <h2>Throughput is a queueing problem, not only a FLOP problem</h2>
+
+      <p>
+        A server usually handles multiple requests. A long prefill can occupy the GPU while short requests wait, even if the long request eventually completes efficiently. Conversely, a decode-heavy batch can leave large matrix-multiplication units underused while still consuming memory bandwidth and cache capacity.
+      </p>
+
+      <p>
+        For a rough capacity model, define:
+      </p>
+
+      <pre><code>request_service_time
+  ≈ prefill_time(L) + output_tokens / decode_rate(batch, KV_size)</code></pre>
+
+      <p>
+        If requests arrive at rate <code>λ</code> and the average service time is <code>S</code>, the offered utilization is approximately:
+      </p>
+
+      <pre><code>ρ ≈ λ × S</code></pre>
+
+      <p>
+        This is only a first-order queueing signal. Real LLM servers use continuous batching, admission control, token budgets, and sometimes priority scheduling. Once utilization approaches saturation, a modest increase in document length can cause a disproportionately large increase in queue time.
+      </p>
+
+      <p>
+        Measure at least these distributions rather than only averages:
+      </p>
+
+      <ul>
+        <li>time to first token;</li>
+        <li>inter-token latency;</li>
+        <li>total request latency;</li>
+        <li>prefill tokens per second;</li>
+        <li>decode tokens per second;</li>
+        <li>queue time;</li>
+        <li>peak and resident KV-cache memory;</li>
+        <li>batch size and active sequence count.</li>
+      </ul>
+
+      <h2>Chunked prefill: same work, different interference</h2>
+
+      <p>
+        <a href="../glossary.html#chunked-prefill">Chunked prefill</a> divides a long prompt into smaller scheduling units. With a chunk size of 2,048 tokens, the 32,000-token prompt becomes 16 chunks, with the final chunk containing 1,280 tokens.
+      </p>
+
+      <pre><code>chunks = ceil(32,000 / 2,048) = 16</code></pre>
+
+      <p>
+        If the implementation performs the same operations, the total model work is approximately unchanged:
+      </p>
+
+      <pre><code>total_chunked_prefill_compute
+  ≈ Σ compute(chunk_i)
+  ≈ compute(32,000 tokens)</code></pre>
+
+      <p>
+        Chunking changes scheduling. The runtime can insert decode work between prefill chunks, reducing the time a long prompt monopolizes the device. This can improve fairness and tail latency for already-running generations. It can also increase overhead through more scheduling decisions, less favorable kernel shapes, more synchronization, or extra padding.
+      </p>
+
+      <p>
+        A simple planning model is:
+      </p>
+
+      <pre><code>chunked_prefill_time
+  ≈ prefill_time
+  + number_of_chunks × per_chunk_overhead
+  + overlap_penalty_or_benefit</code></pre>
+
+      <p>
+        Do not assume chunking makes a single request faster. Its primary purpose is usually to control interference between long prefills and active decode. The correct test compares both single-request latency and mixed-workload tail latency.
+      </p>
+
+      <h2>Disaggregated serving: moving prefill and decode apart</h2>
+
+      <p>
+        <a href="../glossary.html#disaggregated-serving">Disaggregated serving</a> assigns prefill and decode to separate worker pools. Prefill workers process long inputs; decode workers maintain the active generation workload. The design can protect decode latency from long document ingestion, but it introduces a transfer boundary.
+      </p>
+
+      <p>
+        If the full KV cache is transferred between workers, the network payload is approximately:
+      </p>
+
+      <pre><code>transfer_bytes
+  ≈ sequence_tokens × KV_bytes_per_token</code></pre>
+
+      <p>
+        For the 32,000-token prompt in BF16:
+      </p>
+
+      <pre><code>transfer_bytes
+  ≈ 32,000 × 327,680
+  ≈ 9.77 GiB</code></pre>
+
+      <p>
+        A theoretical transfer-time lower bound for a link with usable bandwidth <code>B</code> is:
+      </p>
+
+      <pre><code>transfer_time ≥ transfer_bytes / B</code></pre>
+
+      <p>
+        For an illustrative 400 GB/s usable path:
+      </p>
+
+      <pre><code>transfer_time ≥ 10.49 GB / 400 GB/s
+               ≥ 26 milliseconds</code></pre>
+
+      <p>
+        This is an optimistic lower bound. It excludes serialization, protocol framing, contention, copies, synchronization, topology effects, and any conversion or compression. A system with a much slower network path can make KV movement a material part of first-token latency.
+      </p>
+
+      <p>
+        Disaggregation is most attractive when the operational value of isolation exceeds the cost of moving state. It may improve decode predictability while leaving total compute unchanged. It can also reduce locality: a cache that would have remained on one worker may now need to cross a device or host boundary.
+      </p>
+
+      <h2>A reproducible estimation worksheet</h2>
+
+      <p>
+        Replace the example values with your model and measurements. Keep assumptions in a separate configuration file or notebook so that a capacity review can distinguish measured values from estimates.
+      </p>
+
+      <pre><code>model_params = 70_000_000_000
+input_tokens = 32_000
+output_tokens = 512
+
+layers = 80
+kv_heads = 8
+head_dim = 128
+kv_bytes = 2
+
+effective_prefill_flops = 0.5e15       # assumption, replace with measurement
+decode_tokens_per_second = 160         # assumption, replace with measurement
+usable_transfer_bytes_per_second = 400e9
+
+prefill_flops = 2 * model_params * input_tokens
+prefill_seconds = prefill_flops / effective_prefill_flops
+
+decode_seconds = output_tokens / decode_tokens_per_second
+
+kv_bytes_per_token = 2 * layers * kv_heads * head_dim * kv_bytes
+kv_prompt_bytes = input_tokens * kv_bytes_per_token
+transfer_seconds = kv_prompt_bytes / usable_transfer_bytes_per_second
+
+print("prefill seconds:", prefill_seconds)
+print("decode seconds:", decode_seconds)
+print("prompt KV GiB:", kv_prompt_bytes / 2**30)
+print("KV transfer lower bound:", transfer_seconds)</code></pre>
+
+      <p>
+        The script produces an estimate, not a benchmark. For a benchmark, capture the same fields from the serving runtime and compare them against the worksheet.
+      </p>
+
+      <h2>Measurement procedure</h2>
+
+      <p>
+        A useful experiment varies one dimension at a time:
+      </p>
+
+      <ol>
+        <li>Choose fixed model weights, precision, GPU count, runtime version, tensor-parallel configuration, sampling settings, and maximum output length.</li>
+        <li>Test input lengths such as 1,024, 4,096, 8,192, 16,384, and 32,000 tokens.</li>
+        <li>Run a single-request prefill test and record time to first token.</li>
+        <li>Run a decode-only or short-prompt test and record output tokens per second.</li>
+        <li>Repeat under a mixed workload containing short prompts, long prompts, and active generations.</li>
+        <li>Repeat with chunked prefill enabled and record the chunk size.</li>
+        <li>If using disaggregation, record serialized KV size, transfer time, and the link or transport used.</li>
+        <li>Report median and tail values, preferably p50, p95, and p99.</li>
+      </ol>
+
+      <p>
+        Keep prompt content semantically similar when comparing lengths. Token count matters more directly than character count, and different token distributions can alter padding, compression, and kernel behavior.
+      </p>
+
+      <p>
+        A minimal command pattern might look like this, but the flags are runtime-specific and must be adapted to the server you actually use:
+      </p>
+
+      <pre><code>python benchmark.py \
+  --model /models/llama-3.1-70b \
+  --input-tokens 1024,4096,8192,16384,32000 \
+  --output-tokens 512 \
+  --concurrency 1,4,16 \
+  --record-ttft \
+  --record-itl \
+  --record-throughput \
+  --record-kv-memory</code></pre>
+
+      <p>
+        Treat the command as a test-plan template, not a verified command for a particular runtime.
+      </p>
+
+      <h2>Common failure cases</h2>
+
+      <h3>Using advertised peak FLOPs as observed throughput</h3>
+      <p>
+        Peak hardware FLOPs describe a ceiling under a specific operation mix. Long-context inference may be limited by memory traffic, communication, synchronization, or kernel efficiency. Use measured effective throughput for planning.
+      </p>
+
+      <h3>Comparing prefill tokens per second with decode tokens per second</h3>
+      <p>
+        These are different workloads. Prefill often uses larger matrix operations and parallelizes across the input sequence. Decode is sequential and repeatedly reads model and KV-cache state. Keep the metrics separate.
+      </p>
+
+      <h3>Ignoring the prompt already in the cache</h3>
+      <p>
+        Prefix caching can avoid recomputing a shared prefix, but it consumes memory and depends on exact prefix identity and runtime policy. A cached result is not free: it still occupies cache capacity and may require lookup or transfer.
+      </p>
+
+      <h3>Assuming chunked prefill reduces total compute</h3>
+      <p>
+        Chunking primarily changes scheduling. It may improve mixed-workload behavior while adding a small amount of overhead or increasing single-request latency.
+      </p>
+
+      <h3>Estimating KV memory from parameter count</h3>
+      <p>
+        KV size depends on layers, KV heads, head dimension, sequence length, and cache precision—not directly on the number of model parameters. Read these values from the model configuration.
+      </p>
+
+      <h3>Measuring only average latency</h3>
+      <p>
+        Long prompts can create queueing effects that averages hide. A stable p50 with a worsening p99 is a capacity warning, especially for interactive systems.
+      </p>
+
+      <h2>Limitations of this model</h2>
+
+      <p>
+        The equations intentionally simplify several important details:
+      </p>
+
+      <ul>
+        <li>attention cost is not modeled exactly as a function of sequence length;</li>
+        <li>mixture-of-experts routing is not applicable to every model and is not included here;</li>
+        <li>tensor-parallel and pipeline-parallel communication are omitted;</li>
+        <li>batching, padding, sequence packing, and scheduler policy are represented only indirectly;</li>
+        <li>GPU memory capacity does not equal usable KV-cache capacity;</li>
+        <li>network transfer estimates use usable bandwidth, not link-rate marketing numbers;</li>
+        <li>tokenization, HTTP, serialization, sampling, logging, and safety filters are excluded;</li>
+        <li>the illustrative throughput values are assumptions, not measurements.</li>
+      </ul>
+
+      <p>
+        Use the model to choose experiments and identify bottlenecks. Use measured traces to make production commitments.
+      </p>
+
+      <h2>Practical conclusions</h2>
+
+      <p>
+        For a 32,000-token document, the first-order prefill work scales with input length and can dominate time to first token. Decode adds a separate sequential cost whose throughput must be measured independently. The same long prompt also creates roughly 9.77 GiB of BF16 KV state under the example Llama 3.1 70B configuration, before runtime overheads.
+      </p>
+
+      <p>
+        Start with three numbers: measured prefill throughput, measured decode throughput, and measured KV-cache bytes per token. Then test the scheduler under the concurrency and prompt-length distribution that resembles production. Chunked prefill is a scheduling control; disaggregated serving is an architectural trade-off that exchanges interference for KV-transfer cost.
+      </p>
+
+      <p>
+        For related implementation patterns, continue with the <a href="../guides.html">guides</a> and use the <a href="../glossary.html">glossary</a> for the serving terms used here.
+      </p>
+    <section class="service-note">
+  <b>We publish what works for us—and implement the same solutions for your business.</b>
+  We design AI automation, Telegram bots, chats, and AI agents for real-world processes.
+  <a href="../contacts-en.html">Discuss your project →</a>
+</section>
+</article>
+  </main>
+
+  <footer class="site-footer">
+    <p>&copy; 2026 Agent Lab Journal</p>
+    <nav aria-label="Footer navigation">
+      <a href="../guides.html">Guides</a>
+      <a href="../glossary.html">Glossary</a>
+    </nav>
+  </footer>
+</body>
+</html>
