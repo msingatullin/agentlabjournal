@@ -1,0 +1,484 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Scaling a Git Backend for AI Development</title>
+  <meta name="description" content="Scaling a Git Backend for AI Development: a reproducible architecture experiment for testing object storage, concurrency, throughput, and Git compatibility under AI-agent workloads.">
+  <link rel="canonical" href="https://agentlabjournal.online/en/scaling-git-backend-for-ai-development.html">
+  <link rel="stylesheet" href="../style.css">
+  <link rel="stylesheet" href="../reading.css">
+
+  <meta property="og:type" content="article">
+  <meta property="og:title" content="Scaling a Git Backend for AI Development">
+  <meta property="og:description" content="A reproducible architecture experiment for testing object storage, concurrency, throughput, and Git compatibility under AI-agent workloads.">
+  <meta property="og:url" content="https://agentlabjournal.online/en/scaling-git-backend-for-ai-development.html">
+  <meta property="og:image" content="https://agentlabjournal.online/assets/covers/llm-context-window-budget-social.png">
+  <meta property="og:site_name" content="Agent Lab Journal">
+
+  <meta name="twitter:card" content="summary_large_image">
+  <meta name="twitter:title" content="Scaling a Git Backend for AI Development">
+  <meta name="twitter:description" content="A reproducible architecture experiment for testing object storage, concurrency, throughput, and Git compatibility under AI-agent workloads.">
+  <meta name="twitter:image" content="https://agentlabjournal.online/assets/covers/llm-context-window-budget-social.png">
+
+  <meta name="reading-time" content="30 minutes">
+  <meta name="article:section" content="Infrastructure">
+  <meta name="article:level" content="Advanced">
+
+  <script type="application/ld+json">
+  {
+    "@context": "https://schema.org",
+    "@type": "Article",
+    "headline": "Scaling a Git Backend for AI Development",
+    "description": "A reproducible architecture experiment for testing object storage, concurrency, throughput, and Git compatibility under AI-agent workloads.",
+    "image": ["https://agentlabjournal.online/assets/covers/llm-context-window-budget-social.png"],
+    "dateModified": "2026-11-03",
+    "author": {
+      "@type": "Organization",
+      "name": "Agent Lab Journal"
+    },
+    "publisher": {
+      "@type": "Organization",
+      "name": "Agent Lab Journal",
+      "url": "https://agentlabjournal.online/"
+    },
+    "mainEntityOfPage": {
+      "@type": "WebPage",
+      "@id": "https://agentlabjournal.online/en/scaling-git-backend-for-ai-development.html"
+    }
+  }
+  </script>
+<link rel="stylesheet" href="../homepage.css"><link rel="stylesheet" href="../max-promo.css">  <meta property="og:image:alt" content="Как масштабировать Git-бэкенд для AI-разработки">
+</head>
+<body>
+  <header class="site-header">
+    <a class="site-brand" href="../index.html">Agent Lab Journal</a>
+    <nav aria-label="Primary navigation">
+      <a href="../guides.html">Guides</a>
+      <a href="../glossary.html">Glossary</a>
+    </nav>
+  </header>
+
+  <main>
+    <article class="reading">
+      <header class="reading-header">
+        <p class="eyebrow">Infrastructure · Advanced · 30-minute read</p>
+        <h1>Scaling a Git Backend for AI Development</h1>
+        <figure class="article-cover" data-editorial-cover="scaling-git-backend-for-ai-development"><img src="../assets/covers/llm-context-window-budget.png" alt="Как масштабировать Git-бэкенд для AI-разработки" width="1280" height="720" fetchpriority="high"><figcaption>Temporary fallback cover; replace in editorial pass.</figcaption></figure>
+        <p class="dek">AI development changes the shape of version-control traffic. The difficult question is not whether a Git-compatible service can store more data; it is whether the entire read, write, reference, indexing, and synchronization path remains predictable when many agents work at once.</p>
+        <p class="reading-meta">Updated 3 November 2026 · Reproducible architecture experiment</p>
+      </header>
+
+      <p>Traditional developer workflows produce a relatively small number of human-paced repository operations. An automated coding system can produce many short-lived branches, repeated clones, small commits, frequent pushes, worktree refreshes, status checks, and cleanup operations. Agents also retry. They may inspect the same repository several times while deciding what to do, and an orchestrator may run many of them concurrently.</p>
+
+      <p>This article describes an experiment for finding the bottleneck before choosing a storage design. It does not report benchmark results, because no benchmark was run for this article. The commands and configuration below are a test plan and reference implementation. Replace the example values with measurements from your environment.</p>
+
+      <aside class="callout">
+        <strong>Evidence boundary:</strong> This is an architecture experiment, not a claim that one database, object store, or Git server is universally best. Record hardware, software versions, dataset shape, network conditions, and workload parameters with every run.
+      </aside>
+
+      <h2>The workload is different before the backend is different</h2>
+
+      <p>The first mistake in <a href="../glossary.html#git">Git</a> capacity planning is to estimate only repository size. For agentic development, the more useful unit is an operation mix:</p>
+
+      <ul>
+        <li><strong>Discovery:</strong> reference advertisement, capability negotiation, shallow fetches, and status-like reads.</li>
+        <li><strong>Materialization:</strong> clone, fetch, checkout, sparse checkout, and worktree creation.</li>
+        <li><strong>Mutation:</strong> blob and tree uploads, commit creation, ref updates, and push-pack processing.</li>
+        <li><strong>Coordination:</strong> locks, leases, branch creation, merge checks, and garbage-collection bookkeeping.</li>
+        <li><strong>Retention:</strong> reachability scans, repacking, pruning, snapshots, and deletion of temporary branches.</li>
+      </ul>
+
+      <p>These operations stress different resources. A fetch can be network-bound or pack-generation-bound. A push can be limited by CPU while objects are compressed, by metadata latency while objects are checked, or by serialized ref updates. A large clone can hide a high request rate behind a single long transfer. A thousand small agent operations can create the opposite profile: modest bytes but intense metadata and concurrency pressure.</p>
+
+      <p>Define the target workload explicitly. A useful model is:</p>
+
+      <pre><code>operations_per_second =
+  agents
+  × operations_per_agent
+  ÷ active_seconds</code></pre>
+
+      <p>This is only a planning equation. It does not predict backend capacity. The measured result depends on operation size, repository topology, cache state, client behavior, retries, and the number of requests generated by each protocol operation.</p>
+
+      <h2>Architecture under test</h2>
+
+      <p>Test the system as four separable planes:</p>
+
+      <ol>
+        <li><strong>Git protocol plane:</strong> the service that accepts smart HTTP or SSH Git requests and manages repository semantics.</li>
+        <li><strong>Object plane:</strong> durable storage for immutable Git objects, packfiles, indexes, and related repository data.</li>
+        <li><strong>Metadata plane:</strong> mutable references, repository configuration, leases, locks, and indexes.</li>
+        <li><strong>Control plane:</strong> authentication, scheduling, rate limits, observability, garbage collection, and lifecycle policy.</li>
+      </ol>
+
+      <p>The experiment should compare at least two layouts:</p>
+
+      <table>
+        <thead>
+          <tr>
+            <th>Layout</th>
+            <th>Object data</th>
+            <th>Mutable metadata</th>
+            <th>Question it answers</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>Local baseline</td>
+            <td>Local filesystem</td>
+            <td>Local filesystem and process locks</td>
+            <td>What is the protocol and application ceiling without remote object latency?</td>
+          </tr>
+          <tr>
+            <td>Remote object layout</td>
+            <td><a href="../glossary.html#object-storage">Object storage</a></td>
+            <td>Transactional metadata store or strongly consistent service</td>
+            <td>How much latency and concurrency cost is introduced by separating data and metadata?</td>
+          </tr>
+          <tr>
+            <td>Cached remote layout</td>
+            <td>Object storage plus local read/write cache</td>
+            <td>Transactional metadata store</td>
+            <td>Which hot paths benefit from caching, and how does invalidation affect correctness?</td>
+          </tr>
+        </tbody>
+      </table>
+
+      <p>Keep the Git protocol implementation constant while comparing layouts. Otherwise a result may reflect a server change rather than a storage change. Likewise, do not compare an empty repository with a mature monorepo and call the difference a storage effect.</p>
+
+      <h2>Build a controlled repository corpus</h2>
+
+      <p>Use synthetic repositories when customer data is unavailable. Synthetic data is acceptable for a controlled experiment, but it is not evidence about a particular production workload. Generate several shapes rather than one “average” repository:</p>
+
+      <ul>
+        <li><strong>Small active repository:</strong> many small commits and branches, representative of agent task repositories.</li>
+        <li><strong>Large history repository:</strong> enough commits and pack data to exercise long fetches and repacking.</li>
+        <li><strong>Binary-heavy repository:</strong> larger blobs and fewer files, useful for transfer and object-store throughput.</li>
+        <li><strong>High-branch repository:</strong> many refs with short lifetimes, useful for metadata contention and cleanup.</li>
+        <li><strong>Shared-base repository:</strong> many agents starting from the same commit and producing nearby descendants.</li>
+      </ul>
+
+      <p>Record the corpus manifest in version control. At minimum, include repository identifier, commit count, ref count, reachable object count, pack count, total loose-object bytes, packed bytes, largest blob size, and generation method. Do not include secrets or private source material.</p>
+
+      <pre><code># Example corpus manifest shape
+repository: small-active
+seed: 20261103-a
+commits: &lt;measure after generation&gt;
+refs: &lt;measure after generation&gt;
+reachable_objects: &lt;measure after generation&gt;
+packed_bytes: &lt;measure after generation&gt;
+largest_blob_bytes: &lt;measure after generation&gt;</code></pre>
+
+      <p>Use placeholders until the values are measured. Never copy example values into a report as if they were observations.</p>
+
+      <h2>Define the protocol scenarios</h2>
+
+      <p>Each scenario should have a fixed request sequence, a fixed repository selection rule, and a fixed concurrency level. A minimal suite might contain the following cases.</p>
+
+      <h3>Scenario A: cold clone</h3>
+
+      <p>Start a clean client directory for every run. Clone a repository over the production protocol. Measure time to first byte, time to complete transfer, total bytes received, client CPU, server CPU, object-store requests, and errors.</p>
+
+      <pre><code>git -c protocol.version=2 \
+    clone --no-checkout \
+    "$GIT_URL/small-active.git" \
+    "$RUN_DIR/client-$WORKER"</code></pre>
+
+      <p>Run this with an empty cache and then with a warm cache. Report the cache state explicitly; warm and cold runs answer different questions.</p>
+
+      <h3>Scenario B: repeated fetch</h3>
+
+      <p>Clone once, then run repeated fetches while another process creates new commits. This exposes pack reuse, ref advertisement cost, cache invalidation, and the impact of a rapidly changing default branch.</p>
+
+      <pre><code>for iteration in $(seq 1 "$FETCH_ITERATIONS"); do
+  git -C "$CLIENT_DIR" fetch --prune origin
+done</code></pre>
+
+      <h3>Scenario C: concurrent task branches</h3>
+
+      <p>Start from a common base commit. Each worker creates a unique branch, changes a disjoint file set, commits, and pushes. Keep branch names unique so the scenario measures concurrent writes rather than accidental collisions.</p>
+
+      <pre><code>branch="agent/$RUN_ID/$WORKER_ID"
+git -C "$CLIENT_DIR" switch --create "$branch"
+git -C "$CLIENT_DIR" add .
+git -C "$CLIENT_DIR" -c user.name="experiment" \
+  -c user.email="experiment@example.invalid" \
+  commit -m "experiment: worker $WORKER_ID"
+git -C "$CLIENT_DIR" push origin "HEAD:refs/heads/$branch"</code></pre>
+
+      <p>The identity above is an example test identity, not a credential. Use a reserved non-routable email domain such as <code>example.invalid</code> for synthetic data.</p>
+
+      <h3>Scenario D: same-reference contention</h3>
+
+      <p>Have multiple workers attempt to update the same test reference. This measures conflict handling, lock duration, retry behavior, and failure clarity. It is intentionally different from the disjoint-branch scenario. A backend that performs well with independent refs may still serialize or reject same-ref updates.</p>
+
+      <h3>Scenario E: cleanup and reachability</h3>
+
+      <p>Create and delete temporary branches, then run the backend’s documented maintenance procedure. Measure foreground request latency while cleanup runs. Do not assume that deleting a ref immediately removes its objects; retention and garbage collection are implementation-specific and must be verified from the system’s documented behavior and observed metrics.</p>
+
+      <h2>Drive concurrency without hiding failures</h2>
+
+      <p>A load generator should preserve per-operation outcomes. Do not reduce a run to one aggregate success rate. Save one record per operation with scenario, worker, repository, operation, start time, end time, status, bytes, retry count, and error category.</p>
+
+      <p>A shell harness can be enough for a first pass:</p>
+
+      <pre><code>#!/usr/bin/env bash
+set -Eeuo pipefail
+
+: "${GIT_URL:?set GIT_URL}"
+: "${REPO:?set REPO}"
+: "${RUN_ID:?set RUN_ID}"
+: "${WORKERS:?set WORKERS}"
+: "${RUN_DIR:?set RUN_DIR}"
+
+mkdir -p "$RUN_DIR/logs"
+
+run_worker() {
+  worker_id="$1"
+  log="$RUN_DIR/logs/worker-$worker_id.log"
+  client="$RUN_DIR/client-$worker_id"
+  start_ns=$(date +%s%N)
+
+  if git -c protocol.version=2 clone --no-checkout \
+      "$GIT_URL/$REPO.git" "$client" &gt;"$log" 2&gt;&amp;1; then
+    status=ok
+  else
+    status=failed
+  fi
+
+  end_ns=$(date +%s%N)
+  printf '%s,%s,%s,%s,%s\n' \
+    "$RUN_ID" "$worker_id" "$status" "$start_ns" "$end_ns" \
+    &gt;&gt; "$RUN_DIR/results.csv"
+}
+
+export GIT_URL REPO RUN_ID RUN_DIR
+export -f run_worker
+
+seq 1 "$WORKERS" | xargs -n1 -P"$WORKERS" bash -c 'run_worker "$@"' _
+</code></pre>
+
+      <p>This harness is deliberately incomplete: it does not implement authentication, cleanup, retries, or every scenario. Extend it only after the single-worker path is correct. A more mature runner should use a structured output format, monotonic timers, bounded retries, and a coordinator that can schedule scenarios without overwhelming the test host.</p>
+
+      <h2>Measure the system at each boundary</h2>
+
+      <p>Throughput alone is insufficient. Capture latency distributions and resource saturation at the same time.</p>
+
+      <table>
+        <thead>
+          <tr>
+            <th>Boundary</th>
+            <th>Measurements</th>
+            <th>Interpretation</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>Client</td>
+            <td>Operation latency, bytes, retries, exit status</td>
+            <td>What users and agents actually experience</td>
+          </tr>
+          <tr>
+            <td>Protocol service</td>
+            <td>Request rate, active requests, queue time, CPU, memory, file descriptors</td>
+            <td>Whether the service or its workers are saturated</td>
+          </tr>
+          <tr>
+            <td>Metadata store</td>
+            <td>Read/write latency, conflicts, lock waits, connection pool usage</td>
+            <td>Whether mutable state is limiting concurrency</td>
+          </tr>
+          <tr>
+            <td>Object store</td>
+            <td>Request counts, operation latency, error rate, bytes, throttling signals</td>
+            <td>Whether object access or request fan-out is limiting throughput</td>
+          </tr>
+          <tr>
+            <td>Network</td>
+            <td>Bandwidth, retransmits, connection counts, transfer duration</td>
+            <td>Whether the path between components is the constraint</td>
+          </tr>
+          <tr>
+            <td>Maintenance</td>
+            <td>Pack generation time, scan duration, reclaimed bytes, foreground impact</td>
+            <td>Whether housekeeping competes with interactive work</td>
+          </tr>
+        </tbody>
+      </table>
+
+      <p>Use a <a href="../glossary.html#histogram">histogram</a> or equivalent distribution view for latency. Report at least median, p95, and p99 when the sample size supports those percentiles. Also report the number of observations. A percentile from a very small sample can look precise while being statistically weak.</p>
+
+      <h2>Test object storage assumptions explicitly</h2>
+
+      <p>Remote object storage is attractive because immutable objects can be durable, horizontally scalable, and independently retained. The risk is that Git operations are not simply “write one file, read one file.” A single logical operation may involve listing, reading metadata, fetching pack ranges, uploading temporary data, committing an index, and updating refs.</p>
+
+      <p>For the object plane, test:</p>
+
+      <ul>
+        <li>many small object reads;</li>
+        <li>large sequential pack reads;</li>
+        <li>parallel range reads, if supported by the implementation;</li>
+        <li>multipart or staged uploads, if supported;</li>
+        <li>temporary object cleanup after failed pushes;</li>
+        <li>read-after-write behavior required by the protocol path;</li>
+        <li>request-rate limits and backoff behavior;</li>
+        <li>cache hit and miss behavior.</li>
+      </ul>
+
+      <p>Do not infer consistency from a successful happy-path test. Include a test that writes an object, records the returned identifier, immediately attempts the dependent read, and then exercises the corresponding ref or commit path. The acceptance condition should be defined by the Git backend’s correctness requirements, not by a generic assumption about the storage service.</p>
+
+      <h2>Test concurrency as a correctness property</h2>
+
+      <p>Concurrency is not only a performance variable. It changes correctness risks. A backend must preserve the relationship between refs and reachable objects, avoid lost updates, and handle retries without corrupting state or creating ambiguous outcomes.</p>
+
+      <p>Include these checks:</p>
+
+      <ol>
+        <li>Two workers push different branches from the same base.</li>
+        <li>Two workers update the same branch with incompatible expected old values.</li>
+        <li>A worker retries after a client-side timeout where the server may have completed the update.</li>
+        <li>A worker uploads objects but fails before the ref update.</li>
+        <li>Maintenance runs while reads and writes are active.</li>
+        <li>A client reconnects during a long transfer.</li>
+      </ol>
+
+      <p>For every failure, distinguish “operation definitely failed” from “operation outcome unknown.” An unknown outcome must be reconciled by reading the ref or querying an operation record before a retry is issued. Blind retries can duplicate work, amplify load, or overwrite a valid update.</p>
+
+      <h2>Compatibility is a separate test track</h2>
+
+      <p>High throughput does not compensate for an incompatible Git implementation. Validate protocol and repository behavior with a compatibility matrix that names the client version, transport, repository state, and expected result.</p>
+
+      <table>
+        <thead>
+          <tr>
+            <th>Area</th>
+            <th>Examples to test</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>Transport</td>
+            <td>Smart HTTP, SSH if supported, TLS termination, proxy behavior</td>
+          </tr>
+          <tr>
+            <td>Protocol</td>
+            <td>Protocol version negotiation, capability advertisement, shallow fetch, partial clone if supported</td>
+          </tr>
+          <tr>
+            <td>Refs</td>
+            <td>Branch creation, deletion, tags, symbolic default branch, namespaced refs</td>
+          </tr>
+          <tr>
+            <td>Objects</td>
+            <td>Loose objects, packfiles, deltas, large blobs, binary content, alternate object arrangements</td>
+          </tr>
+          <tr>
+            <td>Failure semantics</td>
+            <td>Non-fast-forward updates, auth failure, timeout, interrupted transfer, retry after uncertain result</td>
+          </tr>
+          <tr>
+            <td>Maintenance</td>
+            <td>Repack, prune, restore, verification, and behavior after an incomplete maintenance job</td>
+          </tr>
+        </tbody>
+      </table>
+
+      <p>Use ordinary Git clients as the compatibility oracle where possible. If the backend exposes an internal API in addition to Git protocol endpoints, test both paths but do not treat internal success as proof of Git compatibility.</p>
+
+      <h2>Analyze bottlenecks with a capacity model</h2>
+
+      <p>After each run, classify the limiting resource. Useful categories include:</p>
+
+      <ul>
+        <li><strong>CPU-bound:</strong> compression, delta search, hashing, pack indexing, or encryption consumes available CPU.</li>
+        <li><strong>Metadata-bound:</strong> ref locks, repository lookups, object indexes, or database transactions queue.</li>
+        <li><strong>Object-request-bound:</strong> the system issues too many small remote requests or encounters service throttling.</li>
+        <li><strong>Bandwidth-bound:</strong> transfer volume saturates a network link before compute or storage.</li>
+        <li><strong>Connection-bound:</strong> pools, file descriptors, proxies, or worker limits cap concurrency.</li>
+        <li><strong>Maintenance-bound:</strong> compaction, repacking, scans, or deletion competes with foreground traffic.</li>
+        <li><strong>Client-bound:</strong> the load generator or agent runtime cannot create enough pressure to test the backend.</li>
+      </ul>
+
+      <p>Run a concurrency sweep rather than one large run. For example, use worker counts of 1, 2, 4, 8, 16, and 32 only if those values are appropriate for the test environment. Stop when error rates or latency become unacceptable, and record the stopping rule before looking at results. The interesting point is often where throughput stops increasing while queueing and tail latency continue to rise.</p>
+
+      <p>For each point, retain the raw records and a summary:</p>
+
+      <pre><code>run_id,scenario,workers,successes,failures,
+throughput_ops_per_sec,p50_ms,p95_ms,p99_ms,
+bytes_read,bytes_written,retries,notes</code></pre>
+
+      <p>The summary is derived data. Keep it alongside the raw operation records so another engineer can recalculate it.</p>
+
+      <h2>Failure cases the experiment must expose</h2>
+
+      <h3>Hot references</h3>
+      <p>A single default branch or shared coordination ref can become a serialization point. Compare many independent refs with repeated updates to one ref. If the second case collapses, scaling stateless protocol workers will not solve the primary problem.</p>
+
+      <h3>Small-request amplification</h3>
+      <p>An object layout can appear efficient for large transfers while performing poorly for many metadata requests. Count requests per logical Git operation and inspect the distribution, not only total bytes.</p>
+
+      <h3>Retry storms</h3>
+      <p>Transient failures become dangerous when every client retries immediately. Add bounded exponential backoff with jitter in the test client, then compare it with an intentionally aggressive retry policy to expose amplification.</p>
+
+      <h3>Cache invalidation</h3>
+      <p>A cache that serves stale refs can produce incorrect clones, confusing push failures, or repeated retries. Test cache invalidation after a ref update and after a failed update. A cache hit is useful only if it preserves the required correctness semantics.</p>
+
+      <h3>Maintenance interference</h3>
+      <p>Run maintenance during foreground load. A backend can pass isolated read and write tests but fail when pack generation or garbage collection competes for CPU, disk bandwidth, locks, or object-store requests.</p>
+
+      <h3>Partial failure</h3>
+      <p>Kill a client at different points in a push, interrupt a network path, and stop a worker during maintenance. Then verify that recovery is observable, bounded, and safe. “The service eventually recovered” is not enough; record what state remained and what operator action was required.</p>
+
+      <h2>Recommended experiment sequence</h2>
+
+      <ol>
+        <li>Freeze versions, hardware, network topology, and configuration.</li>
+        <li>Generate and manifest the repository corpus.</li>
+        <li>Validate one clone, one fetch, one branch push, and one branch deletion manually.</li>
+        <li>Run each scenario with one worker and inspect raw logs.</li>
+        <li>Run the concurrency sweep with the local baseline.</li>
+        <li>Repeat with remote object storage and identical client behavior.</li>
+        <li>Repeat with cache enabled, documenting cache policy and invalidation.</li>
+        <li>Run the failure and maintenance cases separately from the throughput sweep.</li>
+        <li>Run the compatibility matrix against every supported transport and client profile.</li>
+        <li>Publish raw data, derived summaries, configuration, and limitations together.</li>
+      </ol>
+
+      <p>Keep each run reproducible by assigning a run identifier and storing the exact command line, environment variables, configuration files, client version, server version, repository manifest, and clock source. Redact tokens, passwords, private endpoints, and personal identifiers before sharing artifacts.</p>
+
+      <h2>What a useful conclusion looks like</h2>
+
+      <p>A strong result does not say “the backend scales” in the abstract. It says something conditional and measurable, such as:</p>
+
+      <blockquote>
+        Under the recorded repository corpus, client version, protocol, cache state, and concurrency range, the observed limiting resource was X. Increasing workers beyond Y did not improve completed operations per second and increased tail latency or failure rate. The next experiment is Z.
+      </blockquote>
+
+      <p>That form keeps the conclusion tied to evidence. It also makes the next engineering decision clearer: reduce object-request fan-out, separate hot metadata, tune pack generation, enlarge a connection pool, isolate maintenance, add a cache, shard repositories, or change the agent scheduler.</p>
+
+      <h2>Limitations</h2>
+
+      <p>This experiment cannot establish universal performance, durability, cost, or operational suitability. Synthetic repositories may not reproduce real source distributions. A single load generator may under-drive the backend. A local deployment may omit production proxies, identity systems, backups, replication, or failure domains. Results can change with Git client versions, server versions, kernel settings, object-store behavior, compression settings, repository topology, and cache state.</p>
+
+      <p>It also does not replace a disaster-recovery exercise. Restore a representative repository, verify refs and reachable objects, and test client access after restoration before making durability claims.</p>
+
+      <h2>Conclusion</h2>
+
+      <p>Scaling a Git backend for AI development starts with workload decomposition, not with a larger machine or a more fashionable storage system. Separate protocol, immutable objects, mutable metadata, and control-plane behavior in the experiment. Measure request amplification, concurrency, tail latency, retries, maintenance interference, and compatibility. Preserve raw evidence, label examples as examples, and make every conclusion conditional on the recorded test environment.</p>
+
+      <p>The practical outcome is an architecture experiment that can tell you where the backend breaks and why. That is more valuable than a single headline throughput number, because agent workloads will continue to change as orchestration, repository lifecycles, and coding patterns evolve.</p>
+
+      <p>Continue with the <a href="../guides.html">guides</a> or look up terms in the <a href="../glossary.html">glossary</a>.</p>
+    <section class="service-note">
+  <b>We publish what works for us—and implement the same solutions for your business.</b>
+  We design AI automation, Telegram bots, chats, and AI agents for real-world processes.
+  <a href="../contacts-en.html">Discuss your project →</a>
+</section>
+</article>
+  </main>
+
+  <footer class="site-footer">
+    <p>&copy; 2026 Agent Lab Journal</p>
+  </footer>
+</body>
+</html>
