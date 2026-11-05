@@ -1,0 +1,516 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Why Models Break Character Limits and How to Fix It with Code</title>
+  <meta name="description" content="Why Models Break Character Limits and How to Fix It with Code: build a reliable pipeline that measures generated strings, filters candidates, and requests revisions.">
+  <link rel="canonical" href="https://agentlabjournal.online/en/model-ne-schitaet-simvoly.html">
+  <link rel="stylesheet" href="../style.css">
+  <link rel="stylesheet" href="../reading.css">
+
+  <meta property="og:type" content="article">
+  <meta property="og:title" content="Why Models Break Character Limits and How to Fix It with Code">
+  <meta property="og:description" content="A practical, reproducible pipeline for generating, measuring, filtering, and revising strings under strict character limits.">
+  <meta property="og:url" content="https://agentlabjournal.online/en/model-ne-schitaet-simvoly.html">
+  <meta property="og:image" content="https://agentlabjournal.online/assets/covers/llm-context-window-budget-social.png">
+  <meta property="og:site_name" content="Agent Lab Journal">
+
+  <meta name="twitter:card" content="summary_large_image">
+  <meta name="twitter:title" content="Why Models Break Character Limits and How to Fix It with Code">
+  <meta name="twitter:description" content="Learn how to enforce strict character limits with code instead of trusting a model to count perfectly.">
+  <meta name="twitter:image" content="https://agentlabjournal.online/assets/covers/llm-context-window-budget-social.png">
+
+  <meta name="reading-time" content="10 minutes">
+  <meta name="article:reading_time" content="10 minutes">
+  <meta name="article:modified_time" content="2026-11-05">
+
+  <script type="application/ld+json">
+  {
+    "@context": "https://schema.org",
+    "@type": "Article",
+    "headline": "Why Models Break Character Limits and How to Fix It with Code",
+    "description": "A practical, reproducible pipeline for generating, measuring, filtering, and revising strings under strict character limits.",
+    "image": ["https://agentlabjournal.online/assets/covers/llm-context-window-budget-social.png"],
+    "dateModified": "2026-11-05",
+    "author": {
+      "@type": "Organization",
+      "name": "Agent Lab Journal"
+    },
+    "publisher": {
+      "@type": "Organization",
+      "name": "Agent Lab Journal",
+      "url": "https://agentlabjournal.online/"
+    },
+    "mainEntityOfPage": {
+      "@type": "WebPage",
+      "@id": "https://agentlabjournal.online/en/model-ne-schitaet-simvoly.html"
+    }
+  }
+  </script>
+<link rel="stylesheet" href="../homepage.css"><link rel="stylesheet" href="../max-promo.css">  <meta property="og:image:alt" content="Почему модель нарушает лимит символов и как исправить это кодом">
+</head>
+<body>
+  <header class="site-header">
+    <div class="site-header__inner">
+      <a class="site-brand" href="../index.html">Agent Lab Journal</a>
+      <nav class="site-nav" aria-label="Main navigation">
+        <a href="guides.html">Guides</a>
+        <a href="../glossary.html">Glossary</a>
+      </nav>
+    </div>
+  </header>
+
+  <main>
+    <article class="reading">
+      <header class="reading-header">
+        <p class="reading-kicker">Practical engineering</p>
+        <h1>Why Models Break Character Limits and How to Fix It with Code</h1>
+        <figure class="article-cover" data-editorial-cover="model-ne-schitaet-simvoly"><img src="../assets/covers/llm-context-window-budget.png" alt="Почему модель нарушает лимит символов и как исправить это кодом" width="1280" height="720" fetchpriority="high"><figcaption>Temporary fallback cover; replace in editorial pass.</figcaption></figure>
+        <p class="reading-lead">
+          A model can produce a headline that looks short, follows the wording of your prompt,
+          and still fail a strict character limit. The reliable solution is to treat the model
+          as a generator of candidates—not as the final validator.
+        </p>
+        <div class="reading-meta">
+          <span>10 min read</span>
+          <span>Updated 5 November 2026</span>
+          <span>Level: from zero</span>
+        </div>
+      </header>
+
+      <section>
+        <p>
+          Suppose a publishing form accepts a headline of no more than 60 characters. You ask a
+          <a href="../glossary.html#language-model">language model</a> to write one under 60
+          characters. Sometimes it succeeds. Sometimes it returns 61, 64, or 72 characters.
+          The result may even contain a useful explanation around the headline, making the
+          value unsuitable for direct submission.
+        </p>
+
+        <p>
+          This is not a contradiction. Natural-language generation and exact string measurement
+          are different tasks. A model predicts likely text; your application must enforce the
+          contract. The production pattern is simple:
+        </p>
+
+        <ol>
+          <li>Ask for more candidates than you need.</li>
+          <li>Measure every candidate in code.</li>
+          <li>Reject candidates that fail the exact rule.</li>
+          <li>Ask for a revision when no candidate passes.</li>
+          <li>Validate once more immediately before storing or sending the result.</li>
+        </ol>
+      </section>
+
+      <section>
+        <h2>Why a prompt is not a character-limit guarantee</h2>
+
+        <p>
+          A prompt such as “write a headline under 60 characters” is a useful instruction, but
+          it is not a validation mechanism. Several details make exact counting difficult for a
+          model:
+        </p>
+
+        <ul>
+          <li>
+            <strong>Generation is probabilistic.</strong> The model is choosing a plausible
+            continuation, not executing a deterministic counting loop.
+          </li>
+          <li>
+            <strong>Tokens are not characters.</strong> A
+            <a href="../glossary.html#token">token</a> is a unit used by a model internally.
+            It does not map one-to-one to a visible character.
+          </li>
+          <li>
+            <strong>Unicode has edge cases.</strong> Accented letters, emoji, combining marks,
+            and some scripts can make “what a user sees” differ from a programming language’s
+            simple string length.
+          </li>
+          <li>
+            <strong>Formatting can leak into the value.</strong> Quotes, labels such as
+            “Headline:”, Markdown, or a trailing explanation may be counted by the receiving
+            system.
+          </li>
+          <li>
+            <strong>Different systems count differently.</strong> A form may count Unicode code
+            points, UTF-16 code units, bytes, or grapheme clusters.
+          </li>
+        </ul>
+
+        <p>
+          Therefore, the first engineering question is not “how do I phrase the prompt more
+          strongly?” It is “what exact string rule does the destination enforce?”
+        </p>
+      </section>
+
+      <section>
+        <h2>Define the contract before generating text</h2>
+
+        <p>
+          Write the rule as executable requirements. For example:
+        </p>
+
+        <pre><code>{
+  "field": "headline",
+  "max_characters": 60,
+  "min_characters": 20,
+  "counting_method": "unicode_code_points",
+  "allowed_output": "plain_text_only",
+  "trim_outer_whitespace": true
+}</code></pre>
+
+        <p>
+          This example is a configuration proposal, not a universal standard. Replace
+          <code>counting_method</code> with the rule used by your actual destination. If the
+          destination counts visible user-perceived characters, code-point length may still be
+          the wrong measure.
+        </p>
+
+        <p>
+          Keep the limit in one configuration value. Avoid copying “60” into prompts, tests,
+          UI code, and database checks independently. A single source of truth reduces the
+          chance that one part of the pipeline silently uses a different limit.
+        </p>
+      </section>
+
+      <section>
+        <h2>A minimal filtering pipeline</h2>
+
+        <p>
+          The following Python example demonstrates the core method. It uses Python’s built-in
+          <code>len()</code>, which counts Unicode code points for ordinary Python strings.
+          Confirm that this matches the receiving system before using it as a production rule.
+        </p>
+
+        <pre><code>MAX_CHARS = 60
+MIN_CHARS = 20
+
+def normalize_candidate(value: str) -&gt; str:
+    """Remove only formatting that the contract explicitly permits."""
+    return value.strip()
+
+def character_count(value: str) -&gt; int:
+    return len(value)
+
+def is_valid_candidate(value: str) -&gt; bool:
+    value = normalize_candidate(value)
+
+    if not value:
+        return False
+
+    if character_count(value) &lt; MIN_CHARS:
+        return False
+
+    if character_count(value) &gt; MAX_CHARS:
+        return False
+
+    return True
+
+candidates = [
+    "A Practical Guide to Reliable Model Output",
+    "How to Make Generated Headlines Fit a Strict Limit",
+    "Headline: How to Make Generated Headlines Fit a Strict Limit"
+]
+
+valid = [item for item in candidates if is_valid_candidate(item)]
+
+if not valid:
+    raise ValueError("No candidate satisfies the headline contract")
+
+headline = valid[0]
+print(headline)
+print(character_count(headline))</code></pre>
+
+        <p>
+          Notice what the code does not do: it does not shorten an invalid headline by slicing
+          it at character 60. Blind truncation can cut a word, remove a closing punctuation mark,
+          or change the meaning. Rejection is safer than silently damaging the generated text.
+        </p>
+      </section>
+
+      <section>
+        <h2>Generate several candidates instead of one</h2>
+
+        <p>
+          Asking for one answer creates a brittle all-or-nothing interaction. Asking for several
+          candidates gives the validator alternatives. Request a machine-readable structure so
+          the application can separate values from commentary.
+        </p>
+
+        <pre><code>{
+  "task": "Write five alternative headlines about validating model output.",
+  "constraints": {
+    "min_characters": 20,
+    "max_characters": 60,
+    "output": "plain headline strings",
+    "no_prefixes": true,
+    "no_explanations": true
+  },
+  "response_format": {
+    "headlines": ["string", "string", "string", "string", "string"]
+  }
+}</code></pre>
+
+        <p>
+          The format above is an illustrative request body. The exact field names depend on the
+          model API or SDK you use. The important design choice is that the application receives
+          a list it can inspect, rather than prose it must guess how to parse.
+        </p>
+
+        <p>
+          A simple selection function can preserve the original order:
+        </p>
+
+        <pre><code>def choose_first_valid(candidates: list[str]) -&gt; str | None:
+    for candidate in candidates:
+        cleaned = normalize_candidate(candidate)
+        if is_valid_candidate(cleaned):
+            return cleaned
+    return None</code></pre>
+
+        <p>
+          You can later add ranking—such as relevance, duplication checks, or editorial
+          preferences—but the length check should remain an explicit, testable gate.
+        </p>
+      </section>
+
+      <section>
+        <h2>Request a revision when every candidate fails</h2>
+
+        <p>
+          Over-generation improves the first attempt, but it cannot guarantee success by itself.
+          Build a bounded retry loop. Pass back the measured failures and ask for shorter
+          replacements.
+        </p>
+
+        <pre><code>MAX_ATTEMPTS = 3
+
+def build_revision_request(candidates: list[str]) -&gt; str:
+    failures = [
+        {
+            "text": item,
+            "characters": character_count(normalize_candidate(item)),
+            "maximum": MAX_CHARS
+        }
+        for item in candidates
+        if not is_valid_candidate(item)
+    ]
+
+    return (
+        "Rewrite every candidate so it is plain text, between "
+        f"{MIN_CHARS} and {MAX_CHARS} characters. "
+        "Return only a JSON object with a 'headlines' array. "
+        f"Measured failures: {failures}"
+    )
+
+def select_with_revisions(generate):
+    candidates = generate()
+    
+    for attempt in range(MAX_ATTEMPTS):
+        selected = choose_first_valid(candidates)
+        if selected is not None:
+            return selected
+
+        candidates = generate(build_revision_request(candidates))
+
+    raise RuntimeError("Generation did not produce a valid headline")</code></pre>
+
+        <p>
+          The final exception is intentional. A system that cannot produce a valid value should
+          fail visibly, use a reviewed fallback, or place the item in a human-review queue. It
+          should not return an invalid string while pretending the contract was met.
+        </p>
+      </section>
+
+      <section>
+        <h2>Validate at the boundary, not only after generation</h2>
+
+        <p>
+          Validation belongs at every boundary where invalid data could escape:
+        </p>
+
+        <ul>
+          <li>after parsing the model response;</li>
+          <li>after normalization;</li>
+          <li>before writing to storage;</li>
+          <li>before sending the value to a third-party API or form;</li>
+          <li>in automated tests for the complete pipeline.</li>
+        </ul>
+
+        <p>
+          The last check is especially important. A later transformation may add a prefix,
+          replace characters, or concatenate a brand name. Validate the final value, not only
+          the model’s raw response.
+        </p>
+
+        <pre><code>def assert_contract(value: str) -&gt; None:
+    cleaned = normalize_candidate(value)
+
+    if cleaned != value:
+        raise ValueError("Value contains disallowed outer whitespace")
+
+    if not is_valid_candidate(cleaned):
+        raise ValueError(
+            f"Invalid headline length: {character_count(cleaned)} "
+            f"(allowed: {MIN_CHARS}-{MAX_CHARS})"
+        )</code></pre>
+      </section>
+
+      <section>
+        <h2>Unicode: decide what “character” means</h2>
+
+        <p>
+          A strict limit is incomplete until its counting method is documented. These are
+          different measurements:
+        </p>
+
+        <ul>
+          <li><strong>Bytes:</strong> useful when a protocol limits encoded payload size.</li>
+          <li><strong>Code points:</strong> a common Unicode-oriented string measure.</li>
+          <li><strong>UTF-16 code units:</strong> relevant to some platform APIs.</li>
+          <li><strong>Grapheme clusters:</strong> closer to visible user-perceived characters.</li>
+        </ul>
+
+        <p>
+          For example, an emoji may occupy more than one code unit in some environments. A
+          letter plus a combining mark may be displayed as one visible unit while being stored
+          as multiple code points. These are technical examples, not a claim about the counting
+          behavior of any particular service.
+        </p>
+
+        <p>
+          If your destination documents a counting rule, implement that rule directly and test
+          representative inputs. If it does not document one, record the assumption and include
+          edge cases in your verification suite.
+        </p>
+      </section>
+
+      <section>
+        <h2>Verification you can reproduce</h2>
+
+        <p>
+          Start with boundary tests. For a maximum of 60 characters, test values of 59, 60, and
+          61 characters. Also test empty strings, whitespace, formatting prefixes, non-ASCII
+          text, and model responses with unexpected fields.
+        </p>
+
+        <pre><code>def test_length_boundaries():
+    assert is_valid_candidate("a" * 59)
+    assert is_valid_candidate("a" * 60)
+    assert not is_valid_candidate("a" * 61)
+
+def test_empty_and_whitespace_are_rejected():
+    assert not is_valid_candidate("")
+    assert not is_valid_candidate("   ")
+
+def test_prefix_is_counted_when_present():
+    value = "Headline: " + ("a" * 55)
+    assert not is_valid_candidate(value)</code></pre>
+
+        <p>
+          Run the tests with the command used by your project, for example:
+        </p>
+
+        <pre><code>python -m pytest</code></pre>
+
+        <p>
+          This article does not report a test run for your environment. The command is a
+          reproducible starting point; run it in the project that contains your implementation.
+          In a real pipeline, log the measured length, contract version, attempt number, and
+          final validation result without logging secrets or personal data.
+        </p>
+      </section>
+
+      <section>
+        <h2>Common failure cases</h2>
+
+        <h3>The model returns an explanation</h3>
+        <p>
+          Parse a structured response and reject fields that are not part of the contract.
+          Do not assume the first line is always the requested value.
+        </p>
+
+        <h3>Normalization changes the count</h3>
+        <p>
+          Decide whether trimming, whitespace collapsing, punctuation replacement, or Unicode
+          normalization is allowed. Apply the same transformation before every measurement.
+        </p>
+
+        <h3>All candidates are too long</h3>
+        <p>
+          Send a bounded revision request containing the measured lengths. If the retry budget is
+          exhausted, use a reviewed fallback or escalate to human review.
+        </p>
+
+        <h3>The value passes locally but fails remotely</h3>
+        <p>
+          Compare counting methods and the exact transmitted value. A wrapper, label, encoding
+          step, or hidden whitespace may be part of what the remote system validates.
+        </p>
+
+        <h3>Truncation creates poor copy</h3>
+        <p>
+          Prefer regeneration. If truncation is an explicit product requirement, implement a
+          word-aware or domain-specific shortening strategy and validate its output again.
+        </p>
+      </section>
+
+      <section>
+        <h2>Limitations and practical trade-offs</h2>
+
+        <p>
+          This pipeline guarantees that your selected value satisfies the rule implemented by
+          your validator. It cannot guarantee that a third-party service uses the same definition
+          of “character” unless you have matched that definition. It also cannot guarantee that
+          a valid headline is accurate, useful, original, or legally safe; those are separate
+          review dimensions.
+        </p>
+
+        <p>
+          More candidates and retries can increase latency and usage. Keep the retry count
+          bounded, measure the failure rate, and choose a fallback appropriate to the product.
+          For high-value publishing workflows, a human-review queue may be preferable to
+          endlessly requesting shorter text.
+        </p>
+      </section>
+
+      <section>
+        <h2>The reliable pattern</h2>
+
+        <p>
+          Treat character limits as application constraints, not writing suggestions. Define the
+          counting rule, keep the limit in configuration, generate multiple candidates, measure
+          them in code, filter invalid values, request bounded revisions, and validate the final
+          string at the destination boundary.
+        </p>
+
+        <p>
+          The model remains useful for producing language and alternatives. Your code remains
+          responsible for enforcing the contract.
+        </p>
+
+        <p>
+          Continue with the <a href="guides.html">guides</a> or look up unfamiliar terms in the
+          <a href="../glossary.html">glossary</a>.
+        </p>
+      </section>
+    <section class="service-note">
+  <b>We publish what works for us—and implement the same solutions for your business.</b>
+  We design AI automation, Telegram bots, chats, and AI agents for real-world processes.
+  <a href="../contacts-en.html">Discuss your project →</a>
+</section>
+</article>
+  </main>
+
+  <footer class="site-footer">
+    <div class="site-footer__inner">
+      <span>Agent Lab Journal</span>
+      <nav aria-label="Footer navigation">
+        <a href="guides.html">Guides</a>
+        <a href="../glossary.html">Glossary</a>
+      </nav>
+    </div>
+  </footer>
+</body>
+</html>
