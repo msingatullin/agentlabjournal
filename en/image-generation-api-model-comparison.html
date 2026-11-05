@@ -1,0 +1,781 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>DALL·E, SDXL, and Flux for Catalogs: Comparing Image Models Through One API</title>
+  <meta name="description" content="DALL·E, SDXL, and Flux for Catalogs: Comparing Image Models Through One API. Build a retryable, idempotent Go client and reproduce a catalog-image model test for attribute accuracy, latency, cost, and workload.">
+  <link rel="canonical" href="https://agentlabjournal.online/en/image-generation-api-model-comparison.html">
+  <link rel="stylesheet" href="../style.css">
+  <link rel="stylesheet" href="../reading.css">
+
+  <meta property="og:type" content="article">
+  <meta property="og:title" content="DALL·E, SDXL, and Flux for Catalogs: Comparing Image Models Through One API">
+  <meta property="og:description" content="A reproducible plan for comparing catalog image models by attribute accuracy, latency, cost, retries, and workload.">
+  <meta property="og:url" content="https://agentlabjournal.online/en/image-generation-api-model-comparison.html">
+  <meta property="og:site_name" content="Agent Lab Journal">
+  <meta property="og:image" content="https://agentlabjournal.online/assets/covers/llm-context-window-budget-social.png">
+  <meta property="og:image:alt" content="DALL·E, SDXL и Flux для каталога: сравнение моделей через единый API">
+
+  <meta name="twitter:card" content="summary_large_image">
+  <meta name="twitter:title" content="DALL·E, SDXL, and Flux for Catalogs: Comparing Image Models Through One API">
+  <meta name="twitter:description" content="A reproducible plan for comparing catalog image models by attribute accuracy, latency, cost, retries, and workload.">
+  <meta name="twitter:image" content="https://agentlabjournal.online/assets/covers/llm-context-window-budget-social.png">
+
+  <script type="application/ld+json">
+  {
+    "@context": "https://schema.org",
+    "@type": "Article",
+    "headline": "DALL·E, SDXL, and Flux for Catalogs: Comparing Image Models Through One API",
+    "description": "A reproducible plan for comparing catalog image models by attribute accuracy, latency, cost, retries, and workload.",
+    "image": ["https://agentlabjournal.online/assets/covers/llm-context-window-budget-social.png"],
+    "dateModified": "2026-11-05",
+    "author": {
+      "@type": "Organization",
+      "name": "Agent Lab Journal",
+      "url": "https://agentlabjournal.online/"
+    },
+    "publisher": {
+      "@type": "Organization",
+      "name": "Agent Lab Journal",
+      "url": "https://agentlabjournal.online/"
+    },
+    "mainEntityOfPage": {
+      "@type": "WebPage",
+      "@id": "https://agentlabjournal.online/en/image-generation-api-model-comparison.html"
+    }
+  }
+  </script>
+<link rel="stylesheet" href="../homepage.css"><link rel="stylesheet" href="../max-promo.css"></head>
+<body>
+  <header class="site-header">
+    <div class="container">
+      <a class="brand" href="../index.html"><span class="brand-mark">AL</span><span>Agent Lab Journal</span></a>
+      <nav aria-label="Primary navigation">
+        <a href="../guides.html">Guides</a>
+        <a href="../glossary-en.html">Glossary</a>
+      </nav>
+    </div>
+  </header>
+
+  <main>
+    <article class="reading">
+      <div class="reading-meta">
+        <span>Practice</span>
+        <span>35 min read</span>
+        <span>Go</span>
+        <span>Image generation</span>
+      </div>
+
+      <h1>DALL·E, SDXL, and Flux for Catalogs: Comparing Image Models Through One API</h1>
+        <figure class="article-cover" data-editorial-cover="image-generation-api-model-comparison"><img src="../assets/covers/llm-context-window-budget.png" alt="DALL·E, SDXL и Flux для каталога: сравнение моделей через единый API" width="1280" height="720" fetchpriority="high"><figcaption>Temporary fallback cover; replace in editorial pass.</figcaption></figure>
+
+      <p class="lead">A catalog image is not successful because it is merely attractive. It is successful when the generated image preserves the product’s color, material, shape, count, and commercial constraints while arriving quickly enough and cheaply enough for the workload. This article shows how to compare DALL·E, SDXL, and Flux through one application contract, then build a retryable Go client and a reproducible test plan without pretending that an unrun benchmark has already produced winners.</p>
+
+      <p>The practical question is not “Which model is best?” It is “Which model is best for this catalog operation, under this quality threshold, latency target, budget, and queue shape?” That distinction matters because a model can produce an impressive hero image and still be a poor choice for a high-volume product refresh.</p>
+
+      <p>The examples below are provider-neutral. Model names identify families or deployments; they do not guarantee one fixed endpoint, request schema, output format, availability, or price. Confirm those details in the documentation for the provider you actually select. No credentials, customer data, prices, or benchmark results are included here.</p>
+
+      <h2>What the comparison must measure</h2>
+
+      <p>Catalog work usually has at least two different image-generation jobs:</p>
+
+      <ul>
+        <li><strong>Text-to-image:</strong> create a product scene from a structured description.</li>
+        <li><strong>Image editing or transformation:</strong> preserve a supplied product while changing its background, composition, lighting, or context.</li>
+      </ul>
+
+      <p>These jobs should not be mixed into one score. If an original product photo already exists, preserving the product may matter more than the model’s ability to invent a plausible object from text. If no photograph exists, attribute fidelity in text-to-image becomes the primary risk.</p>
+
+      <p>Use the following dimensions as separate measurements before combining them into a decision:</p>
+
+      <table>
+        <thead>
+          <tr>
+            <th>Dimension</th>
+            <th>Measurement</th>
+            <th>Decision question</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>Attribute accuracy</td>
+            <td>Pass rate for color, material, dimensions, count, shape, visible controls, and text</td>
+            <td>Does the image represent the requested product rather than a nearby idea?</td>
+          </tr>
+          <tr>
+            <td>Latency</td>
+            <td>Time to first response, time to usable image, p50, p95, and timeout rate</td>
+            <td>Can the system meet the user-facing or batch-processing deadline?</td>
+          </tr>
+          <tr>
+            <td>Cost</td>
+            <td>Provider charge per successful image plus retries, storage, moderation, and review</td>
+            <td>What does an accepted image actually cost?</td>
+          </tr>
+          <tr>
+            <td>Workload behavior</td>
+            <td>Throughput, queue time, rate-limit responses, 5xx responses, and recovery time</td>
+            <td>Does the model remain usable during bursts and backfills?</td>
+          </tr>
+          <tr>
+            <td>Operational fit</td>
+            <td>Input support, output format, aspect ratios, regional availability, and retention controls</td>
+            <td>Can the surrounding application use the result safely and consistently?</td>
+          </tr>
+        </tbody>
+      </table>
+
+      <p>Do not replace these measurements with a single visual preference vote. A visual review is useful, but it should be tied to a written rubric and recorded per image.</p>
+
+      <h2>A concrete catalog case</h2>
+
+      <p>Consider a fictional catalog team preparing images for a furniture store. The team has structured product data such as:</p>
+
+      <pre><code>{
+  "sku": "example-chair-001",
+  "category": "dining chair",
+  "material": "matte black metal frame with natural oak seat",
+  "color": "black and light oak",
+  "quantity": 1,
+  "required_view": "three-quarter front view",
+  "background": "warm neutral studio background",
+  "prohibited_changes": [
+    "no armrests",
+    "no additional chairs",
+    "no visible brand text"
+  ]
+}</code></pre>
+
+      <p>This is an example record, not a customer fact. The test harness should turn it into a prompt using a stable template and should preserve the original structured attributes alongside every generated result.</p>
+
+      <p>The test is successful only if reviewers can answer questions such as:</p>
+
+      <ul>
+        <li>Is there exactly one chair?</li>
+        <li>Is the frame black rather than dark gray or chrome?</li>
+        <li>Is the seat visibly wood rather than plastic?</li>
+        <li>Are armrests absent?</li>
+        <li>Is the requested view present?</li>
+        <li>Did the model add text, logos, or decorative objects?</li>
+      </ul>
+
+      <p>These questions are more useful than “Does this look good?” because they map directly to product-data integrity.</p>
+
+      <h2>One application contract for several image models</h2>
+
+      <p>The application should not contain model-specific branching throughout its business logic. Define one normalized request and let each adapter translate that request into the provider’s API.</p>
+
+      <p>The first mention of <a href="../glossary.html#idempotency">idempotency</a> here means that retrying one logical generation job should not silently create multiple independent jobs. A provider may support an idempotency key, or it may not. When it does not, your own job table still needs a unique logical key and an atomic state transition.</p>
+
+      <pre><code>package main
+
+import (
+	"bytes"
+	"context"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"io"
+	"math/rand"
+	"net/http"
+	"os"
+	"strings"
+	"time"
+)
+
+type GenerateRequest struct {
+	Model       string
+	Prompt      string
+	Negative    string
+	Width       int
+	Height      int
+	JobID       string
+	SourceImage []byte
+}
+
+type GenerateResponse struct {
+	Provider string
+	Model    string
+	RequestID string
+	ImageURL string
+	ImageData []byte
+}
+
+type Provider interface {
+	Name() string
+	Generate(context.Context, GenerateRequest) (GenerateResponse, error)
+}
+
+type RetryClient struct {
+	Client      *http.Client
+	MaxAttempts int
+	BaseDelay   time.Duration
+	MaxDelay    time.Duration
+}
+
+func (c RetryClient) Do(ctx context.Context, req *http.Request) (*http.Response, error) {
+	client := c.Client
+	if client == nil {
+		client = http.DefaultClient
+	}
+
+	maxAttempts := c.MaxAttempts
+	if maxAttempts &lt; 1 {
+		maxAttempts = 1
+	}
+
+	baseDelay := c.BaseDelay
+	if baseDelay &lt;= 0 {
+		baseDelay = 250 * time.Millisecond
+	}
+
+	maxDelay := c.MaxDelay
+	if maxDelay &lt;= 0 {
+		maxDelay = 5 * time.Second
+	}
+
+	var lastErr error
+
+	for attempt := 0; attempt &lt; maxAttempts; attempt++ {
+		if attempt &gt; 0 {
+			delay := baseDelay * time.Duration(1&lt;&lt;(attempt-1))
+			if delay &gt; maxDelay {
+				delay = maxDelay
+			}
+			jitter := time.Duration(rand.Int63n(int64(baseDelay)))
+			timer := time.NewTimer(delay + jitter)
+
+			select {
+			case &lt;-ctx.Done():
+				timer.Stop()
+				return nil, ctx.Err()
+			case &lt;-timer.C:
+			}
+		}
+
+		cloned := req.Clone(ctx)
+		resp, err := client.Do(cloned)
+		if err != nil {
+			lastErr = err
+			if ctx.Err() != nil {
+				return nil, ctx.Err()
+			}
+			continue
+		}
+
+		if !retryable(resp.StatusCode) {
+			return resp, nil
+		}
+
+		io.Copy(io.Discard, resp.Body)
+		resp.Body.Close()
+		lastErr = fmt.Errorf("retryable HTTP status: %s", resp.Status)
+
+		if retryAfter := parseRetryAfter(resp); retryAfter &gt; 0 {
+			select {
+			case &lt;-ctx.Done():
+				return nil, ctx.Err()
+			case &lt;-time.After(retryAfter):
+			}
+		}
+	}
+
+	return nil, lastErr
+}
+
+func retryable(status int) bool {
+	switch status {
+	case http.StatusRequestTimeout,
+		http.StatusTooManyRequests,
+		http.StatusBadGateway,
+		http.StatusServiceUnavailable,
+		http.StatusGatewayTimeout:
+		return true
+	default:
+		return false
+	}
+}
+
+func parseRetryAfter(resp *http.Response) time.Duration {
+	value := resp.Header.Get("Retry-After")
+	if value == "" {
+		return 0
+	}
+
+	var seconds int
+	if _, err := fmt.Sscanf(value, "%d", &amp;seconds); err != nil || seconds &lt; 0 {
+		return 0
+	}
+	return time.Duration(seconds) * time.Second
+}
+
+func idempotencyKey(jobID string) (string, error) {
+	jobID = strings.TrimSpace(jobID)
+	if jobID == "" {
+		return "", errors.New("job id is required")
+	}
+	return "catalog-" + jobID, nil
+}
+
+type GenericProvider struct {
+	NameValue string
+	BaseURL   string
+	Token     string
+	Client    RetryClient
+}
+
+func (p GenericProvider) Name() string {
+	return p.NameValue
+}
+
+func (p GenericProvider) Generate(ctx context.Context, in GenerateRequest) (GenerateResponse, error) {
+	key, err := idempotencyKey(in.JobID)
+	if err != nil {
+		return GenerateResponse{}, err
+	}
+
+	payload := map[string]any{
+		"model":  in.Model,
+		"prompt": in.Prompt,
+		"width":  in.Width,
+		"height": in.Height,
+	}
+
+	if in.Negative != "" {
+		payload["negative_prompt"] = in.Negative
+	}
+
+	body, err := json.Marshal(payload)
+	if err != nil {
+		return GenerateResponse{}, err
+	}
+
+	req, err := http.NewRequestWithContext(
+		ctx,
+		http.MethodPost,
+		p.BaseURL,
+		bytes.NewReader(body),
+	)
+	if err != nil {
+		return GenerateResponse{}, err
+	}
+
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer "+p.Token)
+	req.Header.Set("Idempotency-Key", key)
+
+	resp, err := p.Client.Do(ctx, req)
+	if err != nil {
+		return GenerateResponse{}, err
+	}
+	defer resp.Body.Close()
+
+	responseBody, err := io.ReadAll(io.LimitReader(resp.Body, 2&lt;&lt;20))
+	if err != nil {
+		return GenerateResponse{}, err
+	}
+
+	if resp.StatusCode &lt; 200 || resp.StatusCode &gt;= 300 {
+		return GenerateResponse{}, fmt.Errorf(
+			"provider %s returned %s: %s",
+			p.NameValue,
+			resp.Status,
+			strings.TrimSpace(string(responseBody)),
+		)
+	}
+
+	var decoded struct {
+		ID       string `json:"id"`
+		ImageURL string `json:"image_url"`
+	}
+	if err := json.Unmarshal(responseBody, &amp;decoded); err != nil {
+		return GenerateResponse{}, err
+	}
+
+	return GenerateResponse{
+		Provider:  p.NameValue,
+		Model:     in.Model,
+		RequestID: decoded.ID,
+		ImageURL:  decoded.ImageURL,
+	}, nil
+}
+
+func main() {
+	token := os.Getenv("IMAGE_API_TOKEN")
+	if token == "" {
+		panic("IMAGE_API_TOKEN is not set")
+	}
+
+	provider := GenericProvider{
+		NameValue: "example-provider",
+		BaseURL:   os.Getenv("IMAGE_API_URL"),
+		Token:     token,
+		Client: RetryClient{
+			MaxAttempts: 4,
+			BaseDelay:   250 * time.Millisecond,
+			MaxDelay:    4 * time.Second,
+		},
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
+	defer cancel()
+
+	result, err := provider.Generate(ctx, GenerateRequest{
+		Model:  "model-name-configured-by-provider",
+		Prompt: "One dining chair, matte black metal frame, natural oak seat, three-quarter front view, warm neutral studio background.",
+		Width:  1024,
+		Height: 1024,
+		JobID:  "example-chair-001-run-0001",
+	})
+	if err != nil {
+		panic(err)
+	}
+
+	fmt.Printf("%s %s %s\n", result.Provider, result.Model, result.ImageURL)
+}</code></pre>
+
+      <p>This is a complete small client skeleton, but it is intentionally not a drop-in client for every service. The generic JSON fields, endpoint, authentication header, image input format, response shape, and idempotency behavior must be adapted to the selected provider. Treat those adaptations as explicit code, not hidden assumptions.</p>
+
+      <h2>Retry policy: what is safe to repeat?</h2>
+
+      <p>A retry is an operational decision, not a universal response to an error. Retry transient transport failures, request timeouts, rate limits, and selected gateway or service-unavailable responses when the provider’s documentation permits it. Do not automatically retry malformed requests, invalid authentication, policy rejections, or unsupported parameters.</p>
+
+      <p>The client above uses exponential backoff with jitter. In production, add these controls:</p>
+
+      <ul>
+        <li>Respect a provider’s <code>Retry-After</code> value when present.</li>
+        <li>Set a total request deadline with <code>context.WithTimeout</code>.</li>
+        <li>Cap the number of attempts and maximum delay.</li>
+        <li>Record the attempt number, status code, request ID, and final outcome.</li>
+        <li>Close response bodies before another attempt.</li>
+        <li>Do not log bearer tokens, raw uploaded images, or sensitive prompts.</li>
+      </ul>
+
+      <p>At the job level, store a durable record such as <code>job_id</code>, <code>model</code>, <code>prompt_hash</code>, <code>attempt_count</code>, <code>provider_request_id</code>, <code>status</code>, and timestamps. A network timeout does not prove that the provider did not create the image. Before creating a second job, reconcile the first request when the provider offers a lookup operation or webhook.</p>
+
+      <h2>Adapter design for DALL·E, SDXL, and Flux</h2>
+
+      <p>The names in the comparison should be represented as configuration, not as business logic:</p>
+
+      <pre><code>models:
+  dalle:
+    provider: provider-a
+    model: configured-dalle-model
+    endpoint: https://example.invalid/images
+  sdxl:
+    provider: provider-b
+    model: configured-sdxl-model
+    endpoint: https://example.invalid/images
+  flux:
+    provider: provider-c
+    model: configured-flux-model
+    endpoint: https://example.invalid/images</code></pre>
+
+      <p>The URLs above are placeholders and must not be called. The purpose of the configuration is to make the test matrix explicit and to keep model selection outside the catalog workflow.</p>
+
+      <p>Each adapter should normalize at least:</p>
+
+      <ul>
+        <li>the model identifier;</li>
+        <li>prompt and optional negative prompt;</li>
+        <li>source image and edit mode, if supported;</li>
+        <li>width, height, and aspect ratio;</li>
+        <li>seed or determinism controls, if available;</li>
+        <li>output URL or downloaded bytes;</li>
+        <li>provider request ID;</li>
+        <li>usage and billing metadata, if returned.</li>
+      </ul>
+
+      <p>Do not force unsupported features into the common contract. If one adapter supports image editing and another does not, represent that capability explicitly and exclude the unsupported path from that particular comparison instead of silently changing the task.</p>
+
+      <h2>Build a reproducible test set</h2>
+
+      <p>A reproducible comparison begins with a versioned input set. Put the test cases in a repository as JSON or CSV, with no credentials or personal data:</p>
+
+      <pre><code>cases/
+  furniture-001.json
+  apparel-001.json
+  appliance-001.json
+  typography-001.json
+prompts/
+  catalog-v1.txt
+runs/
+  README.md</code></pre>
+
+      <p>Each case should contain a stable identifier, structured attributes, the requested operation, allowed transformations, prohibited changes, output dimensions, and the rubric used by reviewers. Avoid changing the prompt while a run is in progress. If the prompt changes, create a new prompt version.</p>
+
+      <p>A useful case mix contains both easy and difficult examples:</p>
+
+      <ul>
+        <li>simple products with one dominant material;</li>
+        <li>products with several colors or materials;</li>
+        <li>small parts whose count matters;</li>
+        <li>reflective, transparent, or textured surfaces;</li>
+        <li>products with required text or labels;</li>
+        <li>products where an edit must preserve a supplied silhouette.</li>
+      </ul>
+
+      <p>Do not select only visually attractive products. The hard cases reveal whether the system needs human review, multiple attempts, a different model, or a different workflow entirely.</p>
+
+      <h2>Run the matrix</h2>
+
+      <p>For every case, run every model under the same prompt version, output size, input image, timeout policy, and concurrency level. Use a fixed random seed only if the API supports it and documents its meaning. A seed is not a guarantee of byte-identical output across provider versions, hardware, or deployments, so record the complete request and environment metadata.</p>
+
+      <p>A minimal matrix might be:</p>
+
+      <table>
+        <thead>
+          <tr>
+            <th>Factor</th>
+            <th>Example levels</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>Model</td>
+            <td>DALL·E deployment, SDXL deployment, Flux deployment</td>
+          </tr>
+          <tr>
+            <td>Operation</td>
+            <td>Text-to-image, image edit</td>
+          </tr>
+          <tr>
+            <td>Prompt version</td>
+            <td>catalog-v1</td>
+          </tr>
+          <tr>
+            <td>Output</td>
+            <td>One documented square size and one documented landscape size</td>
+          </tr>
+          <tr>
+            <td>Repetitions</td>
+            <td>Several independent requests per case and model</td>
+          </tr>
+          <tr>
+            <td>Load</td>
+            <td>Serial run and controlled concurrent run</td>
+          </tr>
+        </tbody>
+      </table>
+
+      <p>The exact number of repetitions is a design choice that depends on budget and variance. State it before the run. If the run is too small to support a stable conclusion, report it as a pilot rather than as a benchmark.</p>
+
+      <h2>Measure latency and workload behavior</h2>
+
+      <p>Record timestamps at the client boundary:</p>
+
+      <pre><code>request_started_at
+first_byte_at
+response_received_at
+image_download_started_at
+image_available_at
+attempt_number
+http_status
+provider_request_id
+queue_or_poll_duration
+total_bytes
+final_status</code></pre>
+
+      <p>Calculate latency from the same clock and define the endpoint clearly. “Latency” can mean time to HTTP response, time to a hosted image URL, or time until the image has been downloaded and validated. Pick one primary definition and keep the others as separate fields.</p>
+
+      <p>For workload testing, start with a serial run to establish a baseline. Then increase concurrency in controlled steps while recording:</p>
+
+      <ul>
+        <li>completed images per minute;</li>
+        <li>p50 and p95 time to usable image;</li>
+        <li>429, 5xx, timeout, and client-error counts;</li>
+        <li>retry count per successful image;</li>
+        <li>queue time, if the service exposes it;</li>
+        <li>the point at which the error rate or p95 becomes unacceptable.</li>
+      </ul>
+
+      <p>Do not call the highest observed throughput the sustainable throughput. The sustainable value is bounded by the error and latency targets you define before the test.</p>
+
+      <h2>Calculate cost per accepted image</h2>
+
+      <p>Provider price lists and billing rules change, and different deployments may meter different units. This article therefore provides no price claim. Put the current price for the selected deployment into a versioned run configuration and capture the source and retrieval date in your internal test record.</p>
+
+      <p>The useful metric is not the nominal cost of one request. It is the cost per accepted image:</p>
+
+      <pre><code>accepted_image_cost =
+  (generation_cost
+   + retry_cost
+   + image_download_cost
+   + storage_cost
+   + moderation_cost
+   + human_review_cost)
+  / accepted_images</code></pre>
+
+      <p>If human review is not monetized in your organization, keep it as a separate operational metric rather than setting it to zero. A model that needs more manual correction can be more expensive even when its API charge is lower.</p>
+
+      <p>Record failed and rejected outputs. Otherwise a model that produces many unusable images can appear artificially cheap because only successful requests are counted.</p>
+
+      <h2>Score attribute accuracy with a written rubric</h2>
+
+      <p>Use binary or ordinal fields that reviewers can apply consistently. For example:</p>
+
+      <table>
+        <thead>
+          <tr>
+            <th>Field</th>
+            <th>Score</th>
+            <th>Pass rule</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>Object count</td>
+            <td>0 or 1</td>
+            <td>Exactly the requested number is visible</td>
+          </tr>
+          <tr>
+            <td>Primary color</td>
+            <td>0, 1, or 2</td>
+            <td>2 means correct; 1 means acceptable ambiguity; 0 means wrong</td>
+          </tr>
+          <tr>
+            <td>Material</td>
+            <td>0, 1, or 2</td>
+            <td>2 means visually consistent with the structured record</td>
+          </tr>
+          <tr>
+            <td>Shape and parts</td>
+            <td>0 or 1</td>
+            <td>No prohibited structural change</td>
+          </tr>
+          <tr>
+            <td>Text and markings</td>
+            <td>0 or 1</td>
+            <td>Required text is legible or prohibited text is absent</td>
+          </tr>
+          <tr>
+            <td>Composition</td>
+            <td>0 or 1</td>
+            <td>Requested view and background are present</td>
+          </tr>
+        </tbody>
+      </table>
+
+      <p>Define a product-level pass rule before reviewing results. For example, a product might pass only when count, color, material, and prohibited-change checks all pass. This prevents a high average score from hiding a critical failure such as an extra product or a changed product color.</p>
+
+      <p>Use two reviewers for a subset of the images if possible. Record disagreements and resolve them using the rubric. Do not use a vision-language model as the sole judge for a commercial catalog without validating its decisions against human review.</p>
+
+      <h2>Decision rules</h2>
+
+      <p>Choose thresholds before looking at the final comparison. A practical decision table could look like this:</p>
+
+      <table>
+        <thead>
+          <tr>
+            <th>Requirement</th>
+            <th>Example rule</th>
+            <th>Action when missed</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>Attribute accuracy</td>
+            <td>Must exceed the catalog’s acceptance threshold</td>
+            <td>Reject the model for that workflow or add review</td>
+          </tr>
+          <tr>
+            <td>p95 latency</td>
+            <td>Must remain under the user-facing or batch deadline</td>
+            <td>Reduce concurrency, change model, or move to asynchronous processing</td>
+          </tr>
+          <tr>
+            <td>Accepted-image cost</td>
+            <td>Must fit the operation’s budget</td>
+            <td>Change output size, retry policy, review policy, or model</td>
+          </tr>
+          <tr>
+            <td>Workload reliability</td>
+            <td>Must meet error and recovery targets at planned concurrency</td>
+            <td>Use queueing, backpressure, fallback, or another deployment</td>
+          </tr>
+        </tbody>
+      </table>
+
+      <p>A model that fails a hard attribute rule should not win because it is faster. A model that passes quality but misses the workload deadline may still be useful for overnight batch generation. The result can be a routing policy rather than one global winner.</p>
+
+      <h2>Example routing policy</h2>
+
+      <p>After testing, an application might implement a policy like this:</p>
+
+      <ol>
+        <li>Use the model with the highest measured attribute pass rate for products with strict preservation requirements.</li>
+        <li>Use a lower-cost or faster model for low-risk lifestyle images when its quality threshold is met.</li>
+        <li>Route text-heavy or label-sensitive cases to a workflow with explicit review.</li>
+        <li>Use asynchronous queueing for batch jobs and reserve synchronous calls for interactive previews.</li>
+        <li>Fall back only between adapters with compatible output and review semantics.</li>
+      </ol>
+
+      <p>This policy is an example, not a claim about the capabilities of any named model. The actual routing decision must come from your recorded test data.</p>
+
+      <h2>Verification checklist</h2>
+
+      <p>Before treating a run as reproducible, verify the following:</p>
+
+      <ul>
+        <li>The test cases, prompt template, model configuration, and client version are stored together.</li>
+        <li>Every request has a stable logical job ID.</li>
+        <li>Secrets come from the environment or a secret manager, not from source files.</li>
+        <li>Request and response bodies are redacted before logs leave the test environment.</li>
+        <li>Retries are limited and distinguish transient from permanent errors.</li>
+        <li>Each output has provider, model, request ID, timestamps, attempt count, and final status.</li>
+        <li>The cost configuration records the deployment and price source used for the run.</li>
+        <li>Reviewers use the same rubric and know which attributes are hard failures.</li>
+        <li>Results separate text-to-image from image editing.</li>
+        <li>Any missing provider feature is marked as unsupported, not silently simulated.</li>
+      </ul>
+
+      <h2>Failure cases to test deliberately</h2>
+
+      <p>A happy-path run is not enough. Add controlled tests for:</p>
+
+      <ul>
+        <li>an expired or missing token;</li>
+        <li>an invalid model identifier;</li>
+        <li>an unsupported image size or aspect ratio;</li>
+        <li>a malformed source image;</li>
+        <li>a request timeout after the provider may have accepted the job;</li>
+        <li>a 429 response with and without <code>Retry-After</code>;</li>
+        <li>a 5xx response during a retry sequence;</li>
+        <li>a response with an invalid or missing image URL;</li>
+        <li>a duplicate job submission using the same idempotency key;</li>
+        <li>a provider response that succeeds but cannot be downloaded;</li>
+        <li>an application restart between submission and result reconciliation.</li>
+      </ul>
+
+      <p>For each case, define the expected state transition. For example, a timeout should not immediately mark the logical job as safe to duplicate; it should move to a reconciliation state or a bounded retry state.</p>
+
+      <h2>Limitations</h2>
+
+      <p>This article does not provide a benchmark result, a universal model ranking, or current provider pricing. It also does not verify any specific provider’s current endpoint, retention policy, rate limit, or idempotency implementation. Those facts are deployment-specific and must be checked before production use.</p>
+
+      <p>Image quality is not fully captured by a numerical rubric. Reviewers can disagree, and a small test set can overrepresent easy products. Repeated generations may also vary even when the request is unchanged. Treat the output as evidence for a defined workload, not as a permanent property of a model family.</p>
+
+      <p>Finally, a unified API does not make providers interchangeable. Differences in safety policy, input support, output licensing, regional availability, data handling, and failure semantics remain part of the engineering decision. Keep those differences visible in the adapter and in the test report.</p>
+
+      <h2>Conclusion</h2>
+
+      <p>The reliable way to compare DALL·E, SDXL, and Flux for catalogs is to make the comparison operationally concrete: one normalized request, one versioned test set, one written attribute rubric, consistent latency measurements, accepted-image cost, controlled concurrency, and explicit retry and idempotency behavior.</p>
+
+      <p>Do not ask which model looks best in isolation. Ask which model meets the catalog’s hard quality rules at the required latency and accepted-image cost, and what happens when the provider is slow, rate-limited, unavailable, or ambiguous about whether a request succeeded. The answer may be one model, or it may be a routing policy backed by evidence from your own workload.</p>
+
+      <p class="back"><a class="text-link" href="../guides.html">← Browse the practical guides</a> · <a class="text-link" href="../glossary.html">Open the glossary</a></p>
+    <section class="service-note">
+  <b>We publish what works for us—and implement the same solutions for your business.</b>
+  We design AI automation, Telegram bots, chats, and AI agents for real-world processes.
+  <a href="../contacts-en.html">Discuss your project →</a>
+</section>
+</article>
+  </main>
+
+  <footer class="site-footer">
+    <span>Agent Lab Journal</span>
+    <span><a href="../privacy-en.html">Privacy</a></span>
+  </footer>
+</body>
+</html>

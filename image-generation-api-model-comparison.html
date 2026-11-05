@@ -1,0 +1,470 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>DALL·E, SDXL и Flux для каталога: сравнение моделей через единый API</title>
+  <meta name="description" content="DALL·E, SDXL и Flux для каталога: сравнение моделей через единый API. Практический Go-клиент с ретраями и идемпотентностью и план воспроизводимого теста.">
+  <link rel="canonical" href="https://agentlabjournal.online/image-generation-api-model-comparison.html">
+  <link rel="stylesheet" href="style.css">
+  <link rel="stylesheet" href="reading.css">
+
+  <meta property="og:type" content="article">
+  <meta property="og:title" content="DALL·E, SDXL и Flux для каталога: сравнение моделей через единый API">
+  <meta property="og:description" content="Как сравнить модели генерации изображений для каталога по точности атрибутов, задержке, стоимости и нагрузке.">
+  <meta property="og:url" content="https://agentlabjournal.online/image-generation-api-model-comparison.html">
+  <meta property="og:site_name" content="Agent Lab Journal">
+
+  <meta name="twitter:card" content="summary">
+  <meta name="twitter:title" content="DALL·E, SDXL и Flux для каталога: сравнение моделей через единый API">
+  <meta name="twitter:description" content="Рабочий Go-клиент с ретраями и идемпотентностью и план воспроизводимого теста моделей.">
+
+  <script type="application/ld+json">
+  {
+    "@context": "https://schema.org",
+    "@type": "Article",
+    "headline": "DALL·E, SDXL и Flux для каталога: сравнение моделей через единый API",
+    "description": "Практическое сравнение моделей генерации изображений для каталога по точности атрибутов, задержке, стоимости и нагрузке.",
+    "url": "https://agentlabjournal.online/image-generation-api-model-comparison.html",
+    "inLanguage": "ru-RU",
+    "publisher": {
+      "@type": "Organization",
+      "name": "Agent Lab Journal",
+      "url": "https://agentlabjournal.online/"
+    },
+    "author": {
+      "@type": "Organization",
+      "name": "Agent Lab Journal"
+    },
+    "articleSection": "Практика"
+  }
+  </script>
+<link rel="stylesheet" href="homepage.css"><link rel="stylesheet" href="max-promo.css">  <meta property="og:image" content="https://agentlabjournal.online/assets/covers/llm-context-window-budget-social.png">
+  <meta property="og:image:alt" content="DALL·E, SDXL и Flux для каталога: сравнение моделей через единый API">
+  <meta name="twitter:image" content="https://agentlabjournal.online/assets/covers/llm-context-window-budget-social.png">
+</head>
+<body>
+  <header class="site-header">
+    <div class="container">
+      <a class="site-brand" href="index.html">Agent Lab Journal</a>
+      <nav aria-label="Основная навигация">
+        <a href="guides.html">Гайды</a>
+        <a href="glossary.html">Глоссарий</a>
+      </nav>
+    </div>
+  </header>
+
+  <main>
+    <article class="reading">
+<a href="https://max.ru/channel_AgentLab?utm_source=agentlabjournal&utm_medium=article&utm_campaign=max_channel&utm_content=article_footer" class="max-promo-block" target="_blank" rel="noopener noreferrer" aria-label="Самое важное из мира AI в канале MAX AgentLab">
+  <span class="max-promo-block__icon" aria-hidden="true"></span>
+  <span class="max-promo-block__content"><span class="max-promo-block__title">Самое важное из мира AI — в канале MAX AgentLab</span><span class="max-promo-block__desc">Отдельные разборы, инструменты и практические схемы</span></span>
+  <span class="max-promo-block__arrow" aria-hidden="true">→</span>
+</a>
+<a href="https://t.me/pelmenews?utm_source=agentlabjournal&utm_medium=article&utm_campaign=telegram_channel&utm_content=article_intro" class="telegram-promo-block" target="_blank" rel="noopener noreferrer" aria-label="Читайте Agent Lab в Telegram">
+  <span class="telegram-promo-block__icon" aria-hidden="true"></span>
+  <span class="telegram-promo-block__content">
+    <span class="telegram-promo-block__title">Читайте Agent Lab в Telegram</span>
+    <span class="telegram-promo-block__desc">Разборы, кейсы и новости о практических AI-агентах без лишней воды.</span>
+  </span>
+  <span class="telegram-promo-block__arrow" aria-hidden="true">→</span>
+</a>
+      <div class="reading-meta">
+        <span>Практика</span>
+        <span>12 минут чтения</span>
+        <span>Go</span>
+      </div>
+
+      <h1>DALL·E, SDXL и Flux для каталога: сравнение моделей через единый API</h1>
+        <figure class="article-cover" data-editorial-cover="image-generation-api-model-comparison"><img src="assets/covers/llm-context-window-budget.png" alt="DALL·E, SDXL и Flux для каталога: сравнение моделей через единый API" width="1280" height="720" fetchpriority="high"><figcaption>Temporary fallback cover; replace in editorial pass.</figcaption></figure>
+
+      <p class="lead">Для каталога важна не «красота» одной удачной картинки, а стабильность: модель должна сохранить цвет, материал, форму, ракурс и ограничения бренда при предсказуемой задержке. В этой статье соберём единый Go-интерфейс для разных провайдеров и спроектируем тест, который позволит сравнить DALL·E, SDXL и Flux на одинаковых входных данных.</p>
+
+      <p>Названия моделей здесь обозначают семейства и варианты развёртывания, а не один неизменный продуктовый endpoint. Конкретные параметры, лимиты, форматы ответа и тарифы зависят от провайдера. Поэтому код ниже — рабочий каркас адаптера: адрес API, схема запроса и парсинг ответа должны быть настроены под выбранный сервис.</p>
+
+      <h2>Что именно выбирать для каталога</h2>
+
+      <p>Сначала разделите задачу на два класса:</p>
+
+      <ul>
+        <li><strong>Генерация по тексту:</strong> создать сцену или предмет по описанию.</li>
+        <li><strong>Редактирование изображения:</strong> изменить фон, цвет или композицию, сохранив исходный товар.</li>
+      </ul>
+
+      <p>Для каталога второй класс часто ближе к бизнес-задаче: исходная форма товара уже известна, а от модели требуется аккуратно изменить окружение. Если же исходных фотографий нет, тестируйте текстовую генерацию, но отдельно измеряйте соответствие атрибутам.</p>
+
+      <table>
+        <thead>
+          <tr>
+            <th>Критерий</th>
+            <th>Что измерять</th>
+            <th>Почему это важно</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>Точность атрибутов</td>
+            <td>Цвет, материал, число деталей, форма, надписи</td>
+            <td>Ошибки превращаются в возвраты и ручную модерацию</td>
+          </tr>
+          <tr>
+            <td>Задержка</td>
+            <td>p50, p95 и доля таймаутов</td>
+            <td>Определяет UX и размер очереди</td>
+          </tr>
+          <tr>
+            <td>Стоимость</td>
+            <td>Стоимость успешного изображения, включая повторы</td>
+            <td>Один дешёвый запрос не равен дешёвому результату</td>
+          </tr>
+          <tr>
+            <td>Нагрузка</td>
+            <td>Пропускная способность, rate limit, ошибки 429 и 5xx</td>
+            <td>Важна при пакетной генерации и сезонных пиках</td>
+          </tr>
+        </tbody>
+      </table>
+
+      <h2>Единый контракт</h2>
+
+      <p>Клиент приложения не должен знать, как конкретный провайдер называет размер изображения или где находится URL результата. Он передаёт нормализованный запрос, а адаптер отвечает за преобразование.</p>
+
+      <p>В примере ниже <a href="glossary.html#idempotency">идемпотентность</a> означает, что повторная отправка одного логического задания не должна незаметно создавать дубликат. Реальная поддержка ключа зависит от API-провайдера; если провайдер её не гарантирует, ключ всё равно можно использовать в собственной базе заданий.</p>
+
+<pre><code>package catalogimage
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"io"
+	"math/rand"
+	"net/http"
+	"strconv"
+	"time"
+)
+
+type GenerateRequest struct {
+	Model       string
+	Prompt      string
+	Negative    string
+	Width       int
+	Height      int
+	JobID       string
+	SourceImage []byte
+}
+
+type GenerateResponse struct {
+	ID        string
+	ImageURL  string
+	Provider  string
+	Model     string
+	Latency   time.Duration
+}
+
+type Provider interface {
+	Name() string
+	Generate(context.Context, GenerateRequest) (GenerateResponse, error)
+}
+
+type RetryClient struct {
+	Client      *http.Client
+	MaxAttempts int
+	BaseDelay   time.Duration
+}
+
+func (c RetryClient) Do(ctx context.Context, req *http.Request) (*http.Response, error) {
+	if c.Client == nil {
+		c.Client = http.DefaultClient
+	}
+	if c.MaxAttempts &lt; 1 {
+		c.MaxAttempts = 1
+	}
+	if c.BaseDelay &lt;= 0 {
+		c.BaseDelay = 250 * time.Millisecond
+	}
+
+	var lastErr error
+	for attempt := 0; attempt &lt; c.MaxAttempts; attempt++ {
+		if attempt &gt; 0 {
+			delay := c.BaseDelay * time.Duration(1&lt;&lt;(attempt-1))
+			delay += time.Duration(rand.Int63n(int64(c.BaseDelay)))
+			timer := time.NewTimer(delay)
+			select {
+			case &lt;-ctx.Done():
+				timer.Stop()
+				return nil, ctx.Err()
+			case &lt;-timer.C:
+			}
+		}
+
+		cloned := req.Clone(ctx)
+		resp, err := c.Client.Do(cloned)
+		if err != nil {
+			lastErr = err
+			if ctx.Err() != nil {
+				return nil, ctx.Err()
+			}
+			continue
+		}
+
+		if !retryable(resp.StatusCode) {
+			return resp, nil
+		}
+
+		io.Copy(io.Discard, resp.Body)
+		resp.Body.Close()
+		lastErr = fmt.Errorf("retryable HTTP status: %d", resp.StatusCode)
+	}
+
+	return nil, lastErr
+}
+
+func retryable(status int) bool {
+	return status == http.StatusRequestTimeout ||
+		status == http.StatusTooManyRequests ||
+		status == http.StatusBadGateway ||
+		status == http.StatusServiceUnavailable ||
+		status == http.StatusGatewayTimeout
+}
+
+func idempotencyKey(jobID string) (string, error) {
+	if jobID == "" {
+		return "", errors.New("job id is required")
+	}
+	return "catalog-" + jobID, nil
+}
+
+func retryAfter(resp *http.Response) time.Duration {
+	value := resp.Header.Get("Retry-After")
+	seconds, err := strconv.Atoi(value)
+	if err != nil || seconds &lt; 0 {
+		return 0
+	}
+	return time.Duration(seconds) * time.Second
+}</code></pre>
+
+      <p>В боевом клиенте добавьте конкретный HTTP-метод, URL, авторизацию из переменных окружения и декодирование ответа. Не помещайте секреты в исходный код, логи или URL. Для каждого провайдера создайте отдельный тип, реализующий <code>Provider</code>.</p>
+
+      <h2>Адаптер провайдера</h2>
+
+      <p>Адаптер должен делать четыре вещи:</p>
+
+      <ol>
+        <li>Проверить нормализованный запрос до сетевого вызова.</li>
+        <li>Преобразовать его в формат API провайдера.</li>
+        <li>Передать ключ идемпотентности, если это поддерживается.</li>
+        <li>Преобразовать ответ и ошибки в общий формат.</li>
+      </ol>
+
+<pre><code>type HTTPProvider struct {
+	NameValue string
+	Endpoint  string
+	Token     string
+	Retry     RetryClient
+}
+
+func (p HTTPProvider) Name() string {
+	return p.NameValue
+}
+
+func (p HTTPProvider) Generate(ctx context.Context, in GenerateRequest) (GenerateResponse, error) {
+	if in.Model == "" || in.Prompt == "" {
+		return GenerateResponse{}, errors.New("model and prompt are required")
+	}
+	if in.JobID == "" {
+		return GenerateResponse{}, errors.New("job id is required for idempotency")
+	}
+
+	key, err := idempotencyKey(in.JobID)
+	if err != nil {
+		return GenerateResponse{}, err
+	}
+
+	// Здесь формируется JSON-схема конкретного провайдера.
+	// Не копируйте это место между API без проверки их документации.
+	req, err := http.NewRequestWithContext(
+		ctx,
+		http.MethodPost,
+		p.Endpoint,
+		nil,
+	)
+	if err != nil {
+		return GenerateResponse{}, err
+	}
+
+	req.Header.Set("Authorization", "Bearer "+p.Token)
+	req.Header.Set("Idempotency-Key", key)
+	req.Header.Set("Content-Type", "application/json")
+
+	started := time.Now()
+	resp, err := p.Retry.Do(ctx, req)
+	if err != nil {
+		return GenerateResponse{}, err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode &lt; 200 || resp.StatusCode &gt;= 300 {
+		return GenerateResponse{}, fmt.Errorf("%s: HTTP status %d", p.Name(), resp.StatusCode)
+	}
+
+	// Декодируйте JSON ответа конкретного API и проверьте наличие результата.
+	return GenerateResponse{
+		Provider: p.Name(),
+		Model:    in.Model,
+		Latency:  time.Since(started),
+	}, nil
+}</code></pre>
+
+      <p>Обратите внимание: повторять безопасно только временные ошибки. Ошибки валидации запроса, неподдерживаемый размер, неверную авторизацию и недостаточный баланс повторять не следует. Для ответа 429 учитывайте <code>Retry-After</code>, если он присутствует, и ограничивайте общее время операции контекстом.</p>
+
+      <h2>Как сравнить DALL·E, SDXL и Flux честно</h2>
+
+      <p>Не сравнивайте модели по трём случайным промптам. Составьте фиксированный набор карточек, где каждое требование можно проверить независимо.</p>
+
+      <h3>1. Подготовьте датасет</h3>
+
+      <p>Для каждой карточки сохраните:</p>
+
+      <ul>
+        <li>идентификатор задания;</li>
+        <li>текстовое описание товара;</li>
+        <li>обязательные атрибуты и запрещённые изменения;</li>
+        <li>исходное изображение, если тестируете редактирование;</li>
+        <li>целевой размер и формат;</li>
+        <li>версию промпта и конфигурации.</li>
+      </ul>
+
+      <p>Не меняйте промпт между моделями без отдельной причины. Если API требуют разные поля, держите общий смысл постоянным и записывайте каждое преобразование.</p>
+
+      <h3>2. Зафиксируйте матрицу запуска</h3>
+
+      <p>Для каждого задания запускайте все модели в одинаковом порядке или в перемешанном порядке, чтобы время суток и состояние очереди не были систематическим преимуществом одной модели. Используйте одинаковое число повторов и одинаковые ограничения по таймауту.</p>
+
+      <p>Минимальная запись результата может выглядеть так:</p>
+
+<pre><code>{
+  "job_id": "chair-0042-run-02",
+  "provider": "example-provider",
+  "model": "example-model",
+  "prompt_version": "catalog-v3",
+  "started_at": "2026-01-01T12:00:00Z",
+  "duration_ms": 8420,
+  "http_status": 200,
+  "attempts": 1,
+  "success": true,
+  "output_bytes": 183920,
+  "attribute_score": null,
+  "cost": null
+}</code></pre>
+
+      <p>Поля <code>attribute_score</code> и <code>cost</code> оставлены пустыми намеренно: их нельзя правдоподобно заполнить без ваших проверок и тарифных данных.</p>
+
+      <h3>3. Оцените результат отдельно от транспорта</h3>
+
+      <p>Для атрибутов используйте чек-лист или слепую оценку двумя проверяющими. Например, отдельно отметьте соответствие цвета, формы, материала и количества объектов. Средний балл полезен, но сохраняйте и ошибки по категориям: модель с хорошим средним результатом может регулярно ошибаться именно в критичном для бизнеса поле.</p>
+
+      <p>Для задержки считайте p50 и p95 по успешным запросам, а также долю таймаутов и повторов. Для стоимости используйте фактический тариф выбранного провайдера на дату запуска и включайте стоимость неуспешных попыток, если они тарифицируются.</p>
+
+      <h3>4. Проверьте нагрузку ступенчато</h3>
+
+      <p>Начните с малого числа параллельных запросов и увеличивайте его ступенями. На каждом уровне фиксируйте:</p>
+
+      <ul>
+        <li>успешные ответы;</li>
+        <li>429, 5xx и сетевые ошибки;</li>
+        <li>p95 задержки;</li>
+        <li>среднее число попыток;</li>
+        <li>размер очереди и время до начала обработки.</li>
+      </ul>
+
+      <p>Остановите тест, если растёт очередь, появляются неконтролируемые повторы или превышается бюджет эксперимента. Это безопаснее, чем пытаться «дожать» максимальную пропускную способность.</p>
+
+      <h2>Практическая стратегия выбора</h2>
+
+      <p>Обычно правильный ответ — не одна модель для всех сценариев, а маршрутизация:</p>
+
+      <ul>
+        <li>быстрый и недорогой вариант — для черновиков и низкорисковых карточек;</li>
+        <li>модель с лучшим сохранением атрибутов — для публикации;</li>
+        <li>отдельный режим редактирования — когда нужно сохранить исходный товар;</li>
+        <li>резервный провайдер — при превышении лимитов или временной недоступности.</li>
+      </ul>
+
+      <p>Порог выбирайте из данных: например, отправлять результат на повторную генерацию, если не пройдена проверка обязательного атрибута. Такой контроль качества должен быть явным, а не скрытым в субъективной оценке «картинка выглядит хорошо».</p>
+
+      <h2>Проверка результата</h2>
+
+      <p>Перед интеграцией в каталог проверьте:</p>
+
+      <ol>
+        <li>При одинаковом <code>JobID</code> повтор запроса не создаёт неконтролируемый дубль.</li>
+        <li>429 и временные 5xx повторяются с ограничением числа попыток.</li>
+        <li>Ошибки 4xx, связанные с запросом или авторизацией, завершаются сразу.</li>
+        <li>Контекст отменяет ожидание и сетевой вызов.</li>
+        <li>В логах нет токенов, исходных секретов и лишних персональных данных.</li>
+        <li>Для каждого результата сохраняются модель, версия промпта, попытки и задержка.</li>
+        <li>Тестовые изображения проверены человеком или согласованным автоматическим чекером.</li>
+      </ol>
+
+      <h2>Безопасные команды для локальной проверки</h2>
+
+      <p>Команды ниже не отправляют запросы к внешнему API и не требуют секретов:</p>
+
+<pre><code>gofmt -w ./...
+go test ./...
+go vet ./...</code></pre>
+
+      <p>Для сетевого теста задайте короткий таймаут и используйте отдельный тестовый проект провайдера. Не вставляйте ключ в командную строку: она может попасть в историю оболочки или список процессов. Перед запуском убедитесь, что endpoint и лимит запросов относятся к тестовой среде.</p>
+
+      <h2>Типовые ошибки</h2>
+
+      <h3>Повтор любого сбоя</h3>
+      <p>Так можно многократно отправить некорректный запрос и увеличить расходы. Разделяйте временные транспортные ошибки и постоянные ошибки валидации.</p>
+
+      <h3>Идемпотентность только на уровне клиента</h3>
+      <p>Если процесс упал после отправки запроса, локальный клиент может не знать, был ли результат создан. Храните состояние задания и уточните у провайдера, поддерживает ли он повторное использование ключа.</p>
+
+      <h3>Сравнение разных промптов</h3>
+      <p>Сильная редактура под одну модель делает эксперимент необъективным. Версионируйте шаблоны и фиксируйте все преобразования.</p>
+
+      <h3>Стоимость без стоимости повторов</h3>
+      <p>Считайте цену успешной карточки, а не только цену одного вызова. В формулу должны попасть повторы, неуспешные операции и ручная модерация, если они существенны.</p>
+
+      <h2>Ограничения метода</h2>
+
+      <p>Единый интерфейс упрощает эксплуатацию, но не делает модели взаимозаменяемыми. Они могут по-разному поддерживать редактирование, размеры, seed, негативные подсказки, прозрачность и форматы ответа. Поэтому адаптер обязан явно объявлять поддерживаемые возможности, а неподдерживаемые параметры должны приводить к понятной ошибке.</p>
+
+      <p>Кроме того, один набор карточек не описывает весь каталог. После пилота расширьте выборку редкими материалами, сложными ракурсами, мелким текстом, упаковкой и товарами с похожими оттенками. Результаты такого теста — решение для конкретного набора данных и условий, а не вечный рейтинг моделей.</p>
+
+      <p>Дополнительные материалы: <a href="guides.html">гайды Agent Lab Journal</a> и <a href="glossary.html">глоссарий терминов</a>.</p>
+<aside class="service-note" aria-label="Связаться по проекту">
+  <div class="service-note__copy">
+    <p class="service-note__label">Связь с Agent Lab</p>
+    <p class="service-note__title">Внедрим такой контур в ваш процесс</p>
+    <p class="service-note__text">Напишите инженеру Agent Lab в Telegram: опишите задачу, бота или интеграцию — предложим пилот с проверками и понятными границами.</p>
+  </div>
+  <a class="service-note__link" href="https://t.me/msrzn007?utm_source=journal&amp;utm_medium=article&amp;utm_campaign=service_note" target="_blank" rel="noopener">Написать в Telegram
+    <svg viewBox="0 0 16 16" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"><path d="M3 13 13 3M6 3h7v7"/></svg>
+  </a>
+</aside>
+<aside class="service-note service-note--sitevisor" aria-label="Экспресс-аудит сайта">
+  <div class="service-note__copy">
+    <p class="service-note__label">SiteVisor</p>
+    <p class="service-note__title">Проверьте техническое состояние и готовность вашего сайта к рекламе</p>
+    <p class="service-note__text">Экспресс-аудит на SiteVisor.pro: индексация, скорость, разметка, аналитика и точки конверсии.</p>
+  </div>
+  <a class="service-note__link" href="https://sitevisor.pro/?utm_source=journal&amp;utm_medium=article&amp;utm_campaign=leadmagnet" target="_blank" rel="noopener">Экспресс-аудит на SiteVisor.pro
+    <svg viewBox="0 0 16 16" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"><path d="M3 13 13 3M6 3h7v7"/></svg>
+  </a>
+</aside>
+</article>
+  </main>
+
+  <footer class="site-footer">
+    <div class="container">
+      <p>Agent Lab Journal · Практика надёжных AI-интеграций</p>
+    </div>
+  </footer>
+</body>
+</html>
