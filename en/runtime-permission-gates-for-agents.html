@@ -1,0 +1,803 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>How to Restrict Dangerous AI-Agent Actions with Permission Gates</title>
+  <meta name="description" content="How to Restrict Dangerous AI-Agent Actions with Permission Gates: build auditable permissions with tools, scope, limits, expiry dates, and refusal tests.">
+  <link rel="canonical" href="https://agentlabjournal.online/en/runtime-permission-gates-for-agents.html">
+  <link rel="stylesheet" href="../style.css">
+  <link rel="stylesheet" href="../reading.css">
+
+  <meta property="og:type" content="article">
+  <meta property="og:title" content="How to Restrict Dangerous AI-Agent Actions with Permission Gates">
+  <meta property="og:description" content="Build auditable permissions with tools, scope, limits, expiry dates, and refusal tests for AI agents.">
+  <meta property="og:url" content="https://agentlabjournal.online/en/runtime-permission-gates-for-agents.html">
+  <meta property="og:image" content="https://agentlabjournal.online/assets/covers/llm-context-window-budget-social.png">
+  <meta property="og:site_name" content="Agent Lab Journal">
+  <meta property="article:published_time" content="2026-11-06">
+  <meta property="article:modified_time" content="2026-11-06">
+  <meta property="article:author" content="Agent Lab Journal">
+
+  <meta name="twitter:card" content="summary_large_image">
+  <meta name="twitter:title" content="How to Restrict Dangerous AI-Agent Actions with Permission Gates">
+  <meta name="twitter:description" content="Build auditable permissions with tools, scope, limits, expiry dates, and refusal tests for AI agents.">
+  <meta name="twitter:image" content="https://agentlabjournal.online/assets/covers/llm-context-window-budget-social.png">
+
+  <meta name="reading-time" content="40 minutes">
+  <meta name="reading-level" content="Advanced">
+  <meta name="reading-topic" content="AI-agent security and runtime permissions">
+
+  <script type="application/ld+json">
+  {
+    "@context": "https://schema.org",
+    "@type": "Article",
+    "headline": "How to Restrict Dangerous AI-Agent Actions with Permission Gates",
+    "description": "How to Restrict Dangerous AI-Agent Actions with Permission Gates: build auditable permissions with tools, scope, limits, expiry dates, and refusal tests.",
+    "image": ["https://agentlabjournal.online/assets/covers/llm-context-window-budget-social.png"],
+    "dateModified": "2026-11-06",
+    "author": {
+      "@type": "Organization",
+      "name": "Agent Lab Journal"
+    },
+    "publisher": {
+      "@type": "Organization",
+      "name": "Agent Lab Journal"
+    },
+    "mainEntityOfPage": {
+      "@type": "WebPage",
+      "@id": "https://agentlabjournal.online/en/runtime-permission-gates-for-agents.html"
+    }
+  }
+  </script>
+<link rel="stylesheet" href="../homepage.css"><link rel="stylesheet" href="../max-promo.css">  <meta property="og:image:alt" content="Как ограничить опасные действия AI-агентов через разрешения и карточки">
+</head>
+<body>
+  <header class="site-header">
+    <div class="site-header__inner">
+      <a class="site-brand" href="../index.html">Agent Lab Journal</a>
+      <nav aria-label="Primary navigation">
+        <a href="guides.html">Guides</a>
+        <a href="../glossary.html">Glossary</a>
+      </nav>
+    </div>
+  </header>
+
+  <main>
+    <article class="reading">
+      <header class="reading-header">
+        <p class="reading-kicker">Runtime security · Advanced</p>
+        <h1>How to Restrict Dangerous AI-Agent Actions with Permission Gates</h1>
+        <figure class="article-cover" data-editorial-cover="runtime-permission-gates-for-agents"><img src="../assets/covers/llm-context-window-budget.png" alt="Как ограничить опасные действия AI-агентов через разрешения и карточки" width="1280" height="720" fetchpriority="high"><figcaption>Temporary fallback cover; replace in editorial pass.</figcaption></figure>
+        <p class="reading-dek">
+          An agent can have technical access to a tool without being authorized to use it for the current role,
+          task, resource, or time window. This guide shows how to turn that distinction into a small,
+          auditable control: a runtime <a href="../glossary.html#permission-gate">permission gate</a>.
+        </p>
+        <div class="reading-meta" aria-label="Article metadata">
+          <span>40 min read</span>
+          <span>Advanced</span>
+          <span>Updated 6 November 2026</span>
+        </div>
+      </header>
+
+      <div class="reading-body">
+        <p class="lead">
+          The most dangerous agent failure is often not a clever prompt attack. It is an ordinary tool call made
+          in the wrong context: a support agent can reach a production deletion endpoint, a research agent can send
+          external email, or a coding agent can change a deployment because the shared runtime exposed more
+          capabilities than the task required.
+        </p>
+
+        <p>
+          The practical fix is to evaluate every sensitive action at the moment it is requested. A permission gate
+          receives the agent identity, task context, requested tool, target resource, limits, and current time.
+          It returns an explicit decision and records the evidence used to make that decision. The tool may still be
+          technically present, but the action is refused unless the request satisfies the policy.
+        </p>
+
+        <p>
+          This article uses a deliberately small policy model that you can reproduce in any language. It does not
+          assume a particular agent framework, identity provider, cloud, database, or authorization product.
+          All identifiers and values in the examples are fictional. The commands below are examples to adapt and
+          execute in your own isolated test environment; no commands or checks are claimed to have been run here.
+        </p>
+
+        <h2 id="the-problem">1. Separate technical access from task authorization</h2>
+
+        <p>
+          A tool registry answers a capability question: “Can this process call the function?” It does not answer
+          the authorization question: “Should this agent call the function now, against this target, with these
+          parameters?”
+        </p>
+
+        <p>
+          That distinction matters because agents operate across multiple boundaries at once:
+
+        </p>
+
+        <ul>
+          <li><strong>Role:</strong> What kind of worker is this agent?</li>
+          <li><strong>Task:</strong> Which bounded objective is it currently pursuing?</li>
+          <li><strong>Tool:</strong> Which operation is being requested?</li>
+          <li><strong>Scope:</strong> Which records, folders, repositories, environments, or recipients may be touched?</li>
+          <li><strong>Limit:</strong> How much data, money, compute, or change may the operation consume?</li>
+          <li><strong>Time:</strong> When does the authorization begin and expire?</li>
+          <li><strong>Approval:</strong> Does a human or another trusted service need to confirm this action?</li>
+        </ul>
+
+        <p>
+          A useful design principle is <a href="../glossary.html#least-privilege">least privilege</a> at decision
+          time, not only at account-provisioning time. Static credentials and coarse roles remain useful, but they
+          should establish an upper boundary. A runtime gate narrows that boundary to the current operation.
+        </p>
+
+        <h2 id="case">2. A concrete case: a support agent with a production tool</h2>
+
+        <p>
+          Consider a support agent whose task is to investigate a disputed order. The agent needs to read the order,
+          inspect a redacted event history, and draft a response. The same runtime also exposes a customer-account
+          tool with operations for changing an address, issuing a refund, and deleting an account.
+        </p>
+
+        <p>
+          The agent has technical access to the tool because the application bundles a common tool set. That
+          implementation choice does not mean the support task authorizes every operation. In particular:
+
+        </p>
+
+        <ul>
+          <li><code>orders.read</code> may be allowed for one order identifier.</li>
+          <li><code>events.read</code> may be allowed for the same order, with sensitive fields redacted.</li>
+          <li><code>responses.draft</code> may be allowed without sending.</li>
+          <li><code>accounts.update_address</code> may be refused because it changes durable customer data.</li>
+          <li><code>billing.refund</code> may require a separate approval and a strict amount limit.</li>
+          <li><code>accounts.delete</code> may be refused for this role and task under all circumstances.</li>
+        </ul>
+
+        <p>
+          The important property is observable refusal. The agent should not receive a vague “tool unavailable”
+          message if the real reason is policy denial. The application should return a stable error code, avoid
+          leaking sensitive policy details, and write an audit record that explains the decision to an authorized
+          reviewer.
+        </p>
+
+        <h2 id="policy-model">3. Model a permission as a bounded decision</h2>
+
+        <p>
+          Start with a data model that is explicit enough to audit. A permission should name the operation rather
+          than merely naming a broad service. “Billing access” is too broad to review. “Create a refund for one
+          order, up to 50 units of the configured currency, with an approval token, until a stated expiry” is
+          reviewable.
+        </p>
+
+        <p>
+          The following YAML is an example <a href="../glossary.html#policy-as-code">policy-as-code</a> document.
+          It is illustrative configuration, not a claim about a particular product’s syntax.
+        </p>
+
+        <pre><code>policy_version: "1"
+policy_id: "support-order-investigation"
+subject:
+  agent_role: "support-investigator"
+  task_id: "task_example_8472"
+
+window:
+  not_before: "2026-11-06T09:00:00Z"
+  expires_at: "2026-11-06T10:00:00Z"
+
+permissions:
+  - effect: "allow"
+    tool: "orders.read"
+    resource:
+      type: "order"
+      ids: ["order_example_123"]
+    limits:
+      max_calls: 10
+
+  - effect: "allow"
+    tool: "events.read"
+    resource:
+      type: "order"
+      ids: ["order_example_123"]
+    constraints:
+      redact_fields: ["email", "phone", "payment_token"]
+    limits:
+      max_calls: 5
+
+  - effect: "allow"
+    tool: "responses.draft"
+    resource:
+      type: "case"
+      ids: ["case_example_456"]
+    constraints:
+      send: false
+    limits:
+      max_calls: 3
+
+  - effect: "require_approval"
+    tool: "billing.refund"
+    resource:
+      type: "order"
+      ids: ["order_example_123"]
+    limits:
+      max_amount: 50
+      max_calls: 1
+
+  - effect: "deny"
+    tool: "accounts.delete"
+
+  - effect: "deny"
+    tool: "accounts.update_address"</code></pre>
+
+        <p>
+          The example has six important properties:
+
+        </p>
+
+        <ol>
+          <li>The policy is tied to a role and a task, not just to a process.</li>
+          <li>The time window is finite.</li>
+          <li>Allowed tools are named at operation level.</li>
+          <li>Resources are constrained to specific identifiers.</li>
+          <li>Quantitative limits are separate from the allow decision.</li>
+          <li>Dangerous operations have an explicit deny or approval requirement.</li>
+        </ol>
+
+        <p>
+          Treat omission as denial. If a tool is not listed, the evaluator should return a default-deny decision.
+          This makes new tools safer by default: adding a tool to the runtime does not silently grant every existing
+          agent access to it.
+        </p>
+
+        <h2 id="decision-contract">4. Define the gate’s decision contract</h2>
+
+        <p>
+          A gate should return a machine-readable result. Keep the contract small enough that every tool adapter can
+          use it consistently.
+        </p>
+
+        <pre><code>{
+  "decision": "deny",
+  "code": "TOOL_NOT_PERMITTED",
+  "message": "The requested operation is not permitted for this task.",
+  "policy_id": "support-order-investigation",
+  "policy_version": "1",
+  "request_id": "req_example_001",
+  "audit_id": "audit_example_001",
+  "retryable": false
+}</code></pre>
+
+        <p>
+          Possible decisions are:
+
+        </p>
+
+        <ul>
+          <li><code>allow</code>: the adapter may execute the operation after validating the parameters.</li>
+          <li><code>deny</code>: the adapter must not execute it.</li>
+          <li><code>require_approval</code>: execution is paused until the required approval is verified.</li>
+          <li><code>throttle</code>: the operation is temporarily blocked by a rate or quantity limit.</li>
+        </ul>
+
+        <p>
+          Do not let the language model interpret the decision as a suggestion. The enforcement point must sit in
+          application code between the agent and the side-effecting tool. A prompt instruction such as “do not
+          delete accounts” is useful context, but it is not a permission boundary.
+        </p>
+
+        <h2 id="request-shape">5. Normalize every request before evaluation</h2>
+
+        <p>
+          Policy bugs often come from comparing different representations. Normalize the request before matching it
+          against a rule. The normalized form should include only the fields needed for authorization and auditing.
+          Avoid copying full customer records or secrets into the policy engine.
+        </p>
+
+        <pre><code>{
+  "request_id": "req_example_001",
+  "agent": {
+    "id": "agent_example_support_01",
+    "role": "support-investigator"
+  },
+  "task": {
+    "id": "task_example_8472",
+    "purpose": "investigate disputed order"
+  },
+  "action": {
+    "tool": "accounts.delete",
+    "operation": "delete",
+    "resource": {
+      "type": "account",
+      "id": "account_example_987"
+    },
+    "parameters": {}
+  },
+  "context": {
+    "environment": "production",
+    "requested_at": "2026-11-06T09:24:00Z"
+  }
+}</code></pre>
+
+        <p>
+          Canonicalization should cover tool names, resource identifiers, environment names, timestamps, and numeric
+          quantities. For example, do not let <code>prod</code>, <code>production</code>, and an unvalidated
+          environment value accidentally map to different policy branches. Decide whether identifiers are
+          case-sensitive and enforce that decision consistently.
+        </p>
+
+        <h2 id="evaluation-order">6. Use a conservative evaluation order</h2>
+
+        <p>
+          A practical evaluator can follow this order:
+
+        </p>
+
+        <ol>
+          <li>Reject malformed or incomplete requests.</li>
+          <li>Resolve the policy version for the task.</li>
+          <li>Check that the agent identity and role match the task.</li>
+          <li>Check the time window using a trusted clock.</li>
+          <li>Match the exact tool operation.</li>
+          <li>Match the resource and environment scope.</li>
+          <li>Check parameter constraints and quantity limits.</li>
+          <li>Check whether an approval is required and valid.</li>
+          <li>Return the most restrictive applicable decision.</li>
+          <li>Write an audit event before executing a side effect.</li>
+        </ol>
+
+        <p>
+          The “most restrictive” rule prevents a broad allow from overriding a narrow deny. A useful precedence is
+          explicit deny, then approval requirement, then throttle, then allow, then default deny. Document the
+          precedence in code and tests; do not rely on map iteration order or file order unless that behavior is
+          formally guaranteed.
+        </p>
+
+        <p>
+          Here is compact pseudocode for the core decision:
+
+        </p>
+
+        <pre><code>function authorize(request, policy, clock):
+    validate_shape(request)
+
+    if request.agent.role != policy.subject.agent_role:
+        return deny("ROLE_MISMATCH")
+
+    if request.task.id != policy.subject.task_id:
+        return deny("TASK_MISMATCH")
+
+    if clock.now &lt; policy.window.not_before:
+        return deny("NOT_YET_VALID")
+
+    if clock.now &gt;= policy.window.expires_at:
+        return deny("PERMISSION_EXPIRED")
+
+    matches = find_matching_rules(policy.permissions, request)
+
+    if matches is empty:
+        return deny("TOOL_NOT_PERMITTED")
+
+    if any(matches, rule =&gt; rule.effect == "deny"):
+        return deny("EXPLICIT_DENY")
+
+    if any(matches, rule =&gt; rule.effect == "require_approval"):
+        if not valid_approval(request):
+            return require_approval("APPROVAL_REQUIRED")
+
+    if any_limit_exceeded(matches, request):
+        return throttle("LIMIT_EXCEEDED")
+
+    return allow()</code></pre>
+
+        <p>
+          This pseudocode intentionally leaves identity verification, approval verification, and resource matching
+          abstract. Those components depend on your system. The invariant is that the side-effecting adapter receives
+          the gate result and cannot bypass it through a second call path.
+        </p>
+
+        <h2 id="adapter">7. Put the enforcement point in the tool adapter</h2>
+
+        <p>
+          The safest architecture has one wrapper around every sensitive tool. The wrapper constructs the normalized
+          request, calls the gate, emits the audit event, and only then invokes the underlying tool.
+        </p>
+
+        <pre><code>async function callProtectedTool(agentContext, toolName, args) {
+  const request = normalizeRequest({
+    agent: agentContext.agent,
+    task: agentContext.task,
+    tool: toolName,
+    args,
+    requestedAt: trustedClock.now()
+  });
+
+  const decision = await permissionGate.evaluate(request);
+
+  await auditLog.append({
+    requestId: request.requestId,
+    auditId: decision.auditId,
+    decision: decision.decision,
+    code: decision.code,
+    policyId: decision.policyId,
+    policyVersion: decision.policyVersion,
+    tool: request.action.tool,
+    resource: request.action.resource,
+    requestedAt: request.context.requestedAt
+  });
+
+  if (decision.decision !== "allow") {
+    throw new PermissionError(decision.code);
+  }
+
+  return toolRegistry.invoke(toolName, args);
+}</code></pre>
+
+        <p>
+          The wrapper should be the only supported route to the protected tool. Review direct imports, background
+          workers, administrative scripts, plugin callbacks, and retry handlers. A gate that protects the main agent
+          loop but not a helper path is not a complete control.
+        </p>
+
+        <h2 id="audit">8. Make decisions auditable without logging secrets</h2>
+
+        <p>
+          An <a href="../glossary.html#audit-log">audit log</a> should answer who requested what, against which
+          resource, under which policy version, when the decision was made, and whether execution occurred.
+          It should not become a second database of credentials, tokens, prompts, or personal data.
+        </p>
+
+        <p>
+          A minimal event might look like this:
+
+        </p>
+
+        <pre><code>{
+  "audit_id": "audit_example_001",
+  "request_id": "req_example_001",
+  "agent_id": "agent_example_support_01",
+  "role": "support-investigator",
+  "task_id": "task_example_8472",
+  "tool": "accounts.delete",
+  "resource_type": "account",
+  "resource_id_hash": "hash_example",
+  "decision": "deny",
+  "code": "EXPLICIT_DENY",
+  "policy_id": "support-order-investigation",
+  "policy_version": "1",
+  "requested_at": "2026-11-06T09:24:00Z",
+  "executed": false
+}</code></pre>
+
+        <p>
+          Hash or tokenize identifiers only if reviewers can still correlate events in an approved way. The exact
+          privacy treatment depends on your data classification and retention requirements. Do not put raw access
+          tokens, API keys, authentication headers, full prompts, or unredacted customer fields into a permission
+          log.
+        </p>
+
+        <p>
+          Record policy changes separately from request decisions. A reviewer should be able to determine which
+          policy version was active and who or what published it. If policy updates are mutable in place, preserve
+          an immutable version identifier for every decision.
+        </p>
+
+        <h2 id="approval">9. Treat approval as a separate capability</h2>
+
+        <p>
+          “Require approval” is not the same as “ask the model to confirm.” An approval should be issued by a
+          separately authenticated principal or trusted workflow and bound to the exact operation.
+        </p>
+
+        <pre><code>{
+  "approval_id": "approval_example_007",
+  "approved_by": "reviewer_example_12",
+  "request_hash": "hash_of_normalized_request",
+  "allowed_tool": "billing.refund",
+  "allowed_resource": {
+    "type": "order",
+    "id": "order_example_123"
+  },
+  "maximum_amount": 50,
+  "expires_at": "2026-11-06T09:35:00Z"
+}</code></pre>
+
+        <p>
+          Bind approval to a request hash, resource, amount, and expiry. Otherwise an agent may reuse approval for a
+          different order or change the amount after approval. The gate should reject an approval if any material
+          request field differs.
+        </p>
+
+        <p>
+          For destructive operations, consider requiring a human-visible summary that states the target, action,
+          affected quantity, and rollback status. The summary is a review aid, not a replacement for enforcement.
+        </p>
+
+        <h2 id="limits">10. Enforce limits as state, not as prose</h2>
+
+        <p>
+          Limits such as “no more than one refund” or “read at most ten records” require state. The gate needs a
+          reliable counter or reservation mechanism, especially when several agent turns or workers can act
+          concurrently.
+        </p>
+
+        <p>
+          A safe sequence is:
+
+        </p>
+
+        <ol>
+          <li>Evaluate whether the request is structurally valid.</li>
+          <li>Atomically reserve the relevant quantity.</li>
+          <li>Execute the operation.</li>
+          <li>Mark the reservation consumed or release it according to the failure policy.</li>
+        </ol>
+
+        <p>
+          Without atomic reservation, two concurrent requests can each observe remaining capacity and together exceed
+          the limit. The correct transaction or distributed-lock design depends on your storage system. Document
+          what happens when the tool times out after the reservation: retrying may duplicate a side effect unless the
+          operation supports <a href="../glossary.html#idempotency">idempotency</a>.
+        </p>
+
+        <h2 id="expiry">11. Make expiry unavoidable</h2>
+
+        <p>
+          Every temporary permission should have an explicit expiry. Short windows reduce the impact of leaked task
+          context, stale approvals, and abandoned sessions. The gate should compare timestamps using a trusted clock,
+          not a timestamp supplied by the agent.
+        </p>
+
+        <p>
+          Decide the boundary convention once. In the examples above, <code>not_before</code> is inclusive and
+          <code>expires_at</code> is exclusive. That means a request exactly at <code>expires_at</code> is refused.
+          Test the boundary because off-by-one errors in time comparisons are easy to miss.
+        </p>
+
+        <p>
+          Expiry should apply to cached decisions as well. If you cache authorization results, include policy version,
+          subject, task, resource, parameters that affect limits, and expiry in the cache key. Never let a cached
+          allow outlive the policy window.
+        </p>
+
+        <h2 id="verification">12. Test the refusal path first</h2>
+
+        <p>
+          A permission system is not verified by demonstrating that a permitted read succeeds. The high-value tests
+          show that dangerous actions are refused under the expected conditions and that no underlying tool call
+          occurs.
+        </p>
+
+        <p>
+          Build a test matrix that includes at least these cases:
+
+        </p>
+
+        <table>
+          <thead>
+            <tr>
+              <th>Case</th>
+              <th>Expected decision</th>
+              <th>Expected side effect</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td>Listed read, matching resource, valid window</td>
+              <td><code>allow</code></td>
+              <td>Tool may execute</td>
+            </tr>
+            <tr>
+              <td>Unlisted tool</td>
+              <td><code>deny</code></td>
+              <td>No tool call</td>
+            </tr>
+            <tr>
+              <td>Explicitly denied tool</td>
+              <td><code>deny</code></td>
+              <td>No tool call</td>
+            </tr>
+            <tr>
+              <td>Allowed tool, wrong resource</td>
+              <td><code>deny</code></td>
+              <td>No tool call</td>
+            </tr>
+            <tr>
+              <td>Request at expiry</td>
+              <td><code>deny</code></td>
+              <td>No tool call</td>
+            </tr>
+            <tr>
+              <td>Refund without approval</td>
+              <td><code>require_approval</code></td>
+              <td>No tool call</td>
+            </tr>
+            <tr>
+              <td>Refund above amount limit</td>
+              <td><code>throttle</code> or <code>deny</code></td>
+              <td>No tool call</td>
+            </tr>
+            <tr>
+              <td>Malformed resource identifier</td>
+              <td><code>deny</code></td>
+              <td>No tool call</td>
+            </tr>
+          </tbody>
+        </table>
+
+        <p>
+          The following command illustrates a generic test invocation. Replace the path and test name with those used
+          by your project.
+        </p>
+
+        <pre><code>TEST_ENV=isolated \
+  ./your-test-runner permission-gate \
+  --case "explicitly denied destructive action"</code></pre>
+
+        <p>
+          A useful assertion is stronger than checking the returned error:
+
+        </p>
+
+        <pre><code>expect(result.decision).toEqual("deny");
+expect(result.code).toEqual("EXPLICIT_DENY");
+expect(protectedTool.invoke).not.toHaveBeenCalled();
+expect(auditLog.last().executed).toEqual(false);</code></pre>
+
+        <p>
+          To test the full agent path, provide the agent with a task that makes the dangerous action tempting, then
+          inspect the tool boundary. The test should verify that the model’s proposed call is intercepted before the
+          underlying operation. Avoid using real customer records, production credentials, or irreversible tools in
+          this test.
+        </p>
+
+        <h2 id="failure-cases">13. Failure cases that commonly invalidate the control</h2>
+
+        <h3 id="prompt-only">Prompt-only restrictions</h3>
+
+        <p>
+          A system prompt can describe allowed behavior, but the model can misunderstand, hallucinate, or be
+          manipulated by untrusted content. Keep the instruction for usability, and enforce the decision in code.
+        </p>
+
+        <h3 id="broad-tools">Broad tools with hidden operations</h3>
+
+        <p>
+          A single <code>database.execute</code> or <code>http.request</code> tool makes policy matching difficult.
+          Prefer narrow operations with typed parameters. If a broad tool is unavoidable, authorize method, host,
+          path, query, body shape, and resource scope independently.
+        </p>
+
+        <h3 id="alternate-paths">Unprotected alternate paths</h3>
+
+        <p>
+          A developer console, retry queue, plugin hook, or scheduled worker may call the same side effect without
+          passing through the gate. Inventory all callers and enforce the same boundary at the tool service or API
+          layer when possible.
+        </p>
+
+        <h3 id="confused-deputy">Confused deputy behavior</h3>
+
+        <p>
+          A trusted service may perform an action on behalf of an agent while checking only the service identity.
+          Forward the original actor, task, resource, and approval context. Do not replace the agent identity with the
+          identity of the gateway.
+        </p>
+
+        <h3 id="policy-drift">Policy and implementation drift</h3>
+
+        <p>
+          A policy can say “draft only” while the tool silently sends the message. Keep policy constraints close to
+          the adapter’s actual parameters and add integration tests for high-risk flags such as
+          <code>send</code>, <code>publish</code>, <code>delete</code>, and <code>capture</code>.
+        </p>
+
+        <h3 id="fail-open">Fail-open behavior during outages</h3>
+
+        <p>
+          If the gate is unavailable, decide explicitly whether each action fails closed. Read-only, low-risk
+          operations may have a different availability policy from irreversible writes, but the exception should be
+          documented and tested. Never let a generic timeout silently become an allow.
+        </p>
+
+        <h2 id="reproduction">14. A small reproducible implementation exercise</h2>
+
+        <p>
+          You can validate the design without connecting to a real service. Create a fake tool whose invocation
+          increments a counter and returns a harmless value. Create a fixed clock and an in-memory audit sink. Then
+          implement the following sequence:
+
+        </p>
+
+        <ol>
+          <li>Load the example policy with one allowed read and one explicit destructive deny.</li>
+          <li>Construct a request for the allowed read within the time window.</li>
+          <li>Assert that the decision is <code>allow</code> and the fake tool is called once.</li>
+          <li>Construct a request for the destructive operation.</li>
+          <li>Assert that the decision is <code>deny</code> and the fake tool call count remains unchanged.</li>
+          <li>Advance the fixed clock to the expiry boundary.</li>
+          <li>Repeat the allowed read and assert <code>PERMISSION_EXPIRED</code>.</li>
+          <li>Inspect the audit events and confirm that each request has a policy version and execution status.</li>
+        </ol>
+
+        <p>
+          This exercise tests the control boundary, not the safety of a production deployment. Before production use,
+          add tests for concurrency, policy publication, identity verification, approval replay, serialization,
+          logging redaction, retries, and every alternate tool path.
+        </p>
+
+        <h2 id="limitations">15. Limitations and design boundaries</h2>
+
+        <p>
+          Permission gates reduce unauthorized tool use; they do not make an agent trustworthy by themselves. They
+          cannot correct a compromised host, an incorrect identity assertion, a vulnerable tool implementation, a
+          malicious operator, or a policy that grants too much authority.
+        </p>
+
+        <p>
+          They also do not decide whether an allowed action is substantively wise. A gate can confirm that a refund
+          is within the approved amount and resource scope. It cannot determine whether the business decision is
+          fair unless that judgment is represented in a separate, testable rule or review process.
+        </p>
+
+        <p>
+          Keep the authorization vocabulary small. Every new wildcard, implicit inheritance rule, or emergency bypass
+          increases the review burden. If an exception is necessary, make it time-limited, narrowly scoped, and
+          visible in the audit trail.
+        </p>
+
+        <h2 id="checklist">16. Implementation checklist</h2>
+
+        <ul>
+          <li>Use default deny for unlisted operations.</li>
+          <li>Authorize exact tool operations, not broad service names.</li>
+          <li>Bind permissions to agent role, task, resource, and environment.</li>
+          <li>Set explicit quantity limits for data, money, and side effects.</li>
+          <li>Use trusted time and an exclusive expiry boundary.</li>
+          <li>Make approval specific to the normalized request.</li>
+          <li>Enforce the gate in the tool adapter or service boundary.</li>
+          <li>Record policy ID and immutable policy version.</li>
+          <li>Log decisions without secrets or unnecessary personal data.</li>
+          <li>Test refusal and verify that the underlying tool is not called.</li>
+          <li>Review alternate callers, retries, caches, and background workers.</li>
+          <li>Define fail-closed behavior for gate outages.</li>
+        </ul>
+
+        <h2 id="conclusion">Conclusion</h2>
+
+        <p>
+          The central security question is not whether an agent can technically reach a tool. It is whether the
+          requested operation is authorized for this role, this task, this resource, this amount, and this moment.
+          A small runtime permission gate turns that question into a repeatable decision with an audit trail.
+        </p>
+
+        <p>
+          Start with one dangerous action, one explicit policy, and one refusal test. Then expand the model only when
+          a real requirement demands it. The result should be narrow permissions, visible expiry, controlled
+          approvals, and evidence that a forbidden action stops before it reaches the underlying system.
+        </p>
+
+        <p>
+          Continue with the related <a href="guides.html">guides</a> or look up implementation terms in the
+          <a href="../glossary.html">glossary</a>.
+        </p>
+      </div>
+    <section class="service-note">
+  <b>We publish what works for us—and implement the same solutions for your business.</b>
+  We design AI automation, Telegram bots, chats, and AI agents for real-world processes.
+  <a href="../contacts-en.html">Discuss your project →</a>
+</section>
+</article>
+  </main>
+
+  <footer class="site-footer">
+    <div class="site-footer__inner">
+      <p>© 2026 Agent Lab Journal</p>
+      <nav aria-label="Footer navigation">
+        <a href="guides.html">Guides</a>
+        <a href="../glossary.html">Glossary</a>
+      </nav>
+    </div>
+  </footer>
+</body>
+</html>
