@@ -1,0 +1,437 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Как воспроизвести benchmark памяти агентов и проверить его упаковку результатов</title>
+  <meta name="description" content="Как воспроизвести benchmark памяти агентов и проверить его упаковку результатов: практический план запуска, проверки транскриптов, расчёта метрик и валидации submission-архива.">
+  <link rel="canonical" href="https://agentlabjournal.online/dolphinbench-memory-reproduction.html">
+  <link rel="stylesheet" href="style.css">
+  <link rel="stylesheet" href="reading.css">
+
+  <meta property="og:type" content="article">
+  <meta property="og:locale" content="ru_RU">
+  <meta property="og:title" content="Как воспроизвести benchmark памяти агентов и проверить его упаковку результатов">
+  <meta property="og:description" content="Практический план воспроизведения benchmark памяти агентов: от фиксации окружения до проверки submission-архива.">
+  <meta property="og:url" content="https://agentlabjournal.online/dolphinbench-memory-reproduction.html">
+
+  <meta name="twitter:card" content="summary">
+  <meta name="twitter:title" content="Как воспроизвести benchmark памяти агентов и проверить его упаковку результатов">
+  <meta name="twitter:description" content="Практический план воспроизведения benchmark памяти агентов, транскриптов, метрик и submission-архива.">
+
+  <script type="application/ld+json">
+  {
+    "@context": "https://schema.org",
+    "@type": "Article",
+    "headline": "Как воспроизвести benchmark памяти агентов и проверить его упаковку результатов",
+    "description": "Практический план воспроизведения benchmark памяти агентов: запуск, проверка транскриптов, расчёт метрик и валидация submission-архива.",
+    "url": "https://agentlabjournal.online/dolphinbench-memory-reproduction.html",
+    "inLanguage": "ru",
+    "author": {
+      "@type": "Organization",
+      "name": "Agent Lab Journal"
+    },
+    "publisher": {
+      "@type": "Organization",
+      "name": "Agent Lab Journal"
+    },
+    "mainEntityOfPage": {
+      "@type": "WebPage",
+      "@id": "https://agentlabjournal.online/dolphinbench-memory-reproduction.html"
+    }
+  }
+  </script>
+<link rel="stylesheet" href="homepage.css"><link rel="stylesheet" href="max-promo.css">  <meta property="og:image" content="https://agentlabjournal.online/assets/covers/llm-context-window-budget-social.png">
+  <meta property="og:image:alt" content="Как воспроизвести benchmark памяти агентов и проверить его упаковку результатов">
+  <meta name="twitter:image" content="https://agentlabjournal.online/assets/covers/llm-context-window-budget-social.png">
+</head>
+<body>
+  <header class="site-header">
+    <div class="container">
+      <a class="site-brand" href="index.html">Agent Lab Journal</a>
+      <nav aria-label="Основная навигация">
+        <a href="guides.html">Гайды</a>
+        <a href="glossary.html">Глоссарий</a>
+      </nav>
+    </div>
+  </header>
+
+  <main>
+    <article class="reading">
+      <header class="reading-header">
+        <p class="reading-kicker">Практический гайд · воспроизводимость</p>
+        <h1>Как воспроизвести benchmark памяти агентов и проверить его упаковку результатов</h1>
+        <figure class="article-cover" data-editorial-cover="dolphinbench-memory-reproduction"><img src="assets/covers/llm-context-window-budget.png" alt="Как воспроизвести benchmark памяти агентов и проверить его упаковку результатов" width="1280" height="720" fetchpriority="high"><figcaption>Temporary fallback cover; replace in editorial pass.</figcaption></figure>
+        <div class="reading-meta">
+          <span>12 минут чтения</span>
+          <span>Уровень: продвинутый</span>
+          <span>Обновляемый материал</span>
+        </div>
+      </header>
+<a href="https://max.ru/channel_AgentLab?utm_source=agentlabjournal&utm_medium=article&utm_campaign=max_channel&utm_content=article_footer" class="max-promo-block" target="_blank" rel="noopener noreferrer" aria-label="Самое важное из мира AI в канале MAX AgentLab">
+  <span class="max-promo-block__icon" aria-hidden="true"></span>
+  <span class="max-promo-block__content"><span class="max-promo-block__title">Самое важное из мира AI — в канале MAX AgentLab</span><span class="max-promo-block__desc">Отдельные разборы, инструменты и практические схемы</span></span>
+  <span class="max-promo-block__arrow" aria-hidden="true">→</span>
+</a>
+<a href="https://t.me/pelmenews?utm_source=agentlabjournal&utm_medium=article&utm_campaign=telegram_channel&utm_content=article_intro" class="telegram-promo-block" target="_blank" rel="noopener noreferrer" aria-label="Читайте Agent Lab в Telegram">
+  <span class="telegram-promo-block__icon" aria-hidden="true"></span>
+  <span class="telegram-promo-block__content">
+    <span class="telegram-promo-block__title">Читайте Agent Lab в Telegram</span>
+    <span class="telegram-promo-block__desc">Разборы, кейсы и новости о практических AI-агентах без лишней воды.</span>
+  </span>
+  <span class="telegram-promo-block__arrow" aria-hidden="true">→</span>
+</a>
+
+      <p class="lead">
+        Сравнение систем памяти агентов ломается не только из-за ошибок в коде. На результат влияют версия раннера, порядок эпизодов, формат транскриптов, правила подсчёта метрик и даже то, какие файлы попали в submission-архив. Поэтому воспроизведение benchmark — это не повторный запуск одной команды, а проверяемая цепочка от входных данных до опубликованного артефакта.
+      </p>
+
+      <p>
+        В этой статье <a href="glossary.html#benchmark">benchmark</a> означает зафиксированный набор сценариев, правил запуска и метрик, по которому можно сопоставлять системы. Ниже описан нейтральный процесс: он не предполагает конкретного провайдера модели, закрытого датасета или заранее известного значения метрик.
+      </p>
+
+      <h2>Что именно нужно воспроизвести</h2>
+
+      <p>
+        Перед запуском разделите эксперимент на четыре слоя. Это помогает не смешивать ошибку агента с ошибкой инфраструктуры.
+      </p>
+
+      <ol>
+        <li><strong>Спецификация.</strong> Версия сценариев, схема событий, лимиты контекста, число эпизодов и правила остановки.</li>
+        <li><strong>Раннер.</strong> Код, который подаёт события агенту, сохраняет ответы и применяет ограничения.</li>
+        <li><strong>Оценивание.</strong> Скрипты или правила, превращающие транскрипты в метрики.</li>
+        <li><strong>Упаковка.</strong> Набор файлов, структура каталогов и проверки, через которые проходит submission-архив.</li>
+      </ol>
+
+      <p>
+        Если один из слоёв не зафиксирован, результат следует считать условным. Например, одинаковый агент, запущенный с другой политикой обрезки истории, уже является другой экспериментальной конфигурацией.
+      </p>
+
+      <h2>Шаг 1. Зафиксируйте исходное состояние</h2>
+
+      <p>
+        Начните с отдельной рабочей директории и сохраните идентификатор версии раннера. Не редактируйте файлы benchmark непосредственно во время эксперимента: любые локальные изменения должны быть видны в журнале.
+      </p>
+
+      <pre><code>git clone &lt;URL_репозитория&gt; benchmark-repro
+cd benchmark-repro
+git rev-parse HEAD
+git status --short
+</code></pre>
+
+      <p>
+        В этой статье адрес репозитория обозначен как <code>&lt;URL_репозитория&gt;</code>: его нужно заменить официальным адресом из задания benchmark. Если проект поставляется архивом, сохраните исходный архив и его контрольную сумму.
+      </p>
+
+      <pre><code>sha256sum &lt;исходный-архив&gt;
+</code></pre>
+
+      <p>
+        Зафиксируйте также версию интерпретатора, менеджера пакетов, операционной системы и доступные переменные окружения. Секреты, токены и полные значения ключей в журнал не записывайте.
+      </p>
+
+      <pre><code>python --version
+python -m pip --version
+uname -a
+env | sort | sed -E 's/(TOKEN|KEY|SECRET|PASSWORD)=.*/\1=[REDACTED]/'
+</code></pre>
+
+      <p class="callout">
+        <strong>Безопасная практика:</strong> выполняйте команды в виртуальном окружении и перед публикацией просматривайте логи на наличие токенов, персональных данных и исходных промптов, если они не предназначены для публикации.
+      </p>
+
+      <h2>Шаг 2. Изучите контракт входа и выхода</h2>
+
+      <p>
+        Не начинайте с запуска. Сначала найдите документацию раннера, пример конфигурации и код сериализации результата. Вам нужно ответить на вопросы:
+      </p>
+
+      <ul>
+        <li>какой файл или каталог содержит сценарии;</li>
+        <li>какие поля обязательны у события и ответа;</li>
+        <li>как обозначаются ошибки, тайм-ауты и пустые ответы;</li>
+        <li>можно ли повторно запускать эпизод с тем же идентификатором;</li>
+        <li>какие поля ожидает оценщик;</li>
+        <li>какая структура требуется для submission-архива.</li>
+      </ul>
+
+      <p>
+        Практический минимум — найти все места, где создаются транскрипты и итоговые метрики:
+      </p>
+
+      <pre><code>rg -n "transcript|conversation|episode|metric|score|submission|manifest" .
+</code></pre>
+
+      <p>
+        Если контракт описан только в коде, составьте локальную таблицу полей. Для каждого поля укажите тип, обязательность и источник значения. Это не заменяет официальную спецификацию, но делает расхождения заметными до запуска.
+      </p>
+
+      <h2>Шаг 3. Соберите воспроизводимое окружение</h2>
+
+      <p>
+        Установите зависимости способом, который предусмотрен проектом. Не смешивайте системные пакеты и виртуальное окружение без явной причины.
+      </p>
+
+      <pre><code>python -m venv .venv
+. .venv/bin/activate
+python -m pip install --upgrade pip
+python -m pip install -r requirements.txt
+</code></pre>
+
+      <p>
+        Команды выше — шаблон. Используйте только те файлы и команды установки, которые указаны в документации конкретного раннера. После установки сохраните список версий:
+      </p>
+
+      <pre><code>python -m pip freeze &gt; environment.freeze.txt
+</code></pre>
+
+      <p>
+        Отдельно зафиксируйте настройки, которые могут менять поведение агента: модель, параметры генерации, лимит токенов, тайм-аут, число повторов, seed и режим параллельного выполнения. Если параметр не поддерживается, не создавайте видимость детерминизма: укажите это в отчёте.
+      </p>
+
+      <h2>Шаг 4. Проведите контрольный запуск</h2>
+
+      <p>
+        До полного benchmark выполните самый маленький допустимый прогон. Его цель — проверить маршрутизацию, авторизацию, формат ответа и запись файлов, а не получить финальную оценку.
+      </p>
+
+      <pre><code>python -m &lt;runner_module&gt; \
+  --config &lt;config-файл&gt; \
+  --limit 1 \
+  --output runs/smoke
+</code></pre>
+
+      <p>
+        Сверьте код завершения процесса, наличие ожидаемых файлов и соответствие идентификаторов. Если контрольный запуск создаёт неполный транскрипт, сначала исправьте интеграцию или конфигурацию. Неполные данные нельзя молча включать в основной прогон.
+      </p>
+
+      <h2>Шаг 5. Запустите полный прогон с журналом</h2>
+
+      <p>
+        Для полного запуска используйте отдельный каталог с датой, версией кода и кратким описанием конфигурации. Не перезаписывайте предыдущий результат: повтор должен создавать новый артефакт.
+      </p>
+
+      <pre><code>RUN_ID="2026-11-06-runner-commit-config"
+mkdir -p "runs/$RUN_ID"
+
+python -m &lt;runner_module&gt; \
+  --config &lt;config-файл&gt; \
+  --output "runs/$RUN_ID" \
+  2&gt; "runs/$RUN_ID/stderr.log" \
+  | tee "runs/$RUN_ID/stdout.log"
+</code></pre>
+
+      <p>
+        Если в команде есть случайный seed, сохраните его рядом с результатом. Если benchmark рассчитан на несколько запусков, храните каждый прогон отдельно и агрегируйте результаты только после независимой проверки транскриптов.
+      </p>
+
+      <p>
+        В журнале эксперимента зафиксируйте как минимум:
+      </p>
+
+      <ul>
+        <li>commit или хеш исходного архива;</li>
+        <li>версию окружения;</li>
+        <li>конфигурацию модели и раннера;</li>
+        <li>время старта и завершения;</li>
+        <li>число запланированных, завершённых и ошибочных эпизодов;</li>
+        <li>путь к транскриптам и контрольную сумму итогового набора.</li>
+      </ul>
+
+      <h2>Шаг 6. Проверьте транскрипты до расчёта метрик</h2>
+
+      <p>
+        Метрики не должны быть первым сигналом о проблеме. Сначала проверьте саму форму данных. Даже если формат JSON, это не гарантирует, что все события принадлежат правильному эпизоду и идут в допустимом порядке.
+      </p>
+
+      <p>
+        Базовая проверка должна выявлять:
+      </p>
+
+      <ul>
+        <li>дубликаты идентификаторов эпизодов;</li>
+        <li>пропущенные или лишние сценарии;</li>
+        <li>пустые ответы и необработанные исключения;</li>
+        <li>нарушение порядка событий;</li>
+        <li>обрезанные файлы и некорректный JSON;</li>
+        <li>отсутствующие обязательные поля;</li>
+        <li>следы отладки, которые могли попасть в машинно читаемый вывод.</li>
+      </ul>
+
+      <p>
+        Пример безопасного чтения JSON-файлов без изменения данных:
+      </p>
+
+      <pre><code>python - &lt;&lt;'PY'
+import json
+from pathlib import Path
+
+root = Path("runs") / "RUN_ID"
+files = sorted(root.rglob("*.json"))
+
+if not files:
+    raise SystemExit("JSON-транскрипты не найдены")
+
+for path in files:
+    try:
+        with path.open(encoding="utf-8") as f:
+            json.load(f)
+    except Exception as exc:
+        raise SystemExit(f"Некорректный JSON: {path}: {exc}")
+
+print(f"Проверено JSON-файлов: {len(files)}")
+PY
+</code></pre>
+
+      <p>
+        Этот фрагмент проверяет только синтаксис JSON. Схемную проверку выполняйте штатным валидатором benchmark или отдельным скриптом, если он предоставлен. Не подменяйте отсутствующее поле пустой строкой: это скрывает дефект входных данных.
+      </p>
+
+      <h2>Шаг 7. Рассчитайте метрики и сохраните промежуточные данные</h2>
+
+      <p>
+        Запускайте официальный оценщик на неизменённых транскриптах. Сохраняйте не только итоговый score, но и промежуточную таблицу по эпизодам, если её выдаёт инструмент. Так можно отличить общую деградацию от нескольких проблемных сценариев.
+      </p>
+
+      <pre><code>python -m &lt;evaluator_module&gt; \
+  --input "runs/RUN_ID" \
+  --output "runs/RUN_ID/metrics"
+</code></pre>
+
+      <p>
+        Проверьте, что знаменатель метрики совпадает с числом валидных эпизодов. Если оценщик исключает ошибки или пропуски, это должно быть явно отражено в отчёте. Нельзя сравнивать два результата, если один score рассчитан по всем эпизодам, а другой — только по успешно завершённым.
+      </p>
+
+      <p>
+        Для каждой метрики зафиксируйте определение, единицу агрегации и правило округления. Значение, полученное после ручной фильтрации транскриптов, помечайте как производное, а не как официальный результат.
+      </p>
+
+      <h2>Шаг 8. Проверьте упаковку submission-архива</h2>
+
+      <p>
+        Архив — часть эксперимента. Он должен быть достаточным для проверки результата и не должен содержать лишние секреты, кэш или случайные локальные файлы.
+      </p>
+
+      <p>
+        Сначала соберите staging-каталог с явным списком файлов:
+      </p>
+
+      <pre><code>rm -rf submission-staging
+mkdir -p submission-staging
+
+cp -a runs/RUN_ID/metrics submission-staging/
+cp -a runs/RUN_ID/transcripts submission-staging/
+cp environment.freeze.txt submission-staging/
+cp &lt;manifest-файл&gt; submission-staging/
+</code></pre>
+
+      <p>
+        Команда удаления здесь ограничена специально созданным каталогом <code>submission-staging</code>. Не заменяйте этот путь переменной с неизвестным значением и не запускайте рекурсивное удаление в корне проекта.
+      </p>
+
+      <p>
+        Перед архивацией просмотрите содержимое:
+      </p>
+
+      <pre><code>find submission-staging -type f -print | sort
+rg -n -i "api[_-]?key|token|secret|password|authorization|bearer" submission-staging || true
+</code></pre>
+
+      <p>
+        Затем создайте архив и контрольную сумму:
+      </p>
+
+      <pre><code>tar -czf submission.tar.gz -C submission-staging .
+tar -tzf submission.tar.gz
+sha256sum submission.tar.gz
+</code></pre>
+
+      <p>
+        Сопоставьте список внутри архива с требованиями задания. Проверьте, что пути относительные, обязательные файлы лежат в ожидаемых каталогах, а имя архива и расширение соответствуют контракту. Если при распаковке появляется дополнительный верхний каталог, это может нарушить автоматическую проверку.
+      </p>
+
+      <h2>Финальный чек-лист проверки</h2>
+
+      <ul>
+        <li>Версия раннера и зависимости записаны.</li>
+        <li>Конфигурация эксперимента сохранена без секретов.</li>
+        <li>Контрольный запуск завершился ожидаемым образом.</li>
+        <li>Число эпизодов и их идентификаторы проверены.</li>
+        <li>Транскрипты валидны синтаксически и схемно.</li>
+        <li>Ошибки, тайм-ауты и пропуски отражены явно.</li>
+        <li>Метрики рассчитаны официальным оценщиком на исходных данных.</li>
+        <li>Промежуточные результаты сохранены.</li>
+        <li>Архив содержит только разрешённые файлы.</li>
+        <li>Архив можно перечислить и распаковать в чистую директорию.</li>
+        <li>Контрольная сумма архива записана в отчёте.</li>
+      </ul>
+
+      <h2>Типовые ошибки</h2>
+
+      <h3>«Одинаковая команда» не означает одинаковый эксперимент</h3>
+      <p>
+        Разные версии библиотек, переменные окружения и настройки параллельности могут изменить порядок событий или поведение модели. Поэтому сравнивайте не команды, а полные конфигурации запусков.
+      </p>
+
+      <h3>Метрика считается по повреждённым данным</h3>
+      <p>
+        Если оценщик пропускает невалидные эпизоды, итоговое число может выглядеть корректно, хотя покрытие benchmark уменьшилось. Всегда публикуйте знаменатель и список исключённых эпизодов.
+      </p>
+
+      <h3>Локальный файл попал в архив</h3>
+      <p>
+        Частые причины — журналы отладки, кэш, дампы окружения и файлы с секретами. Решение — собирать архив из staging-каталога с явным составом, а не архивировать весь рабочий каталог.
+      </p>
+
+      <h3>Транскрипт визуально похож на правильный</h3>
+      <p>
+        Человек может не заметить дубликат события, неправильный идентификатор или смену роли сообщения. Машинная проверка схемы и инвариантов должна выполняться до ручного просмотра выборки.
+      </p>
+
+      <h2>Ограничения воспроизводимости</h2>
+
+      <p>
+        Даже тщательно упакованный результат не гарантирует побитовую идентичность. Внешняя модель может обновиться, сетевой сервис — изменить ответ, а распределённое выполнение — выбрать другой порядок завершения. Такие источники вариативности нужно перечислить отдельно и не маскировать округлением score.
+      </p>
+
+      <p>
+        Если детерминизм невозможен, повышайте прозрачность: храните конфигурацию, версии, seed там, где он поддерживается, исходные транскрипты, правила исключения и контрольные суммы. Тогда другой исследователь сможет проверить не только итоговую цифру, но и путь, которым она получена.
+      </p>
+
+      <p>
+        Дополнительные практические материалы собраны в разделе <a href="guides.html">гайдов</a>, а определения терминов — в <a href="glossary.html">глоссарии</a>.
+      </p>
+<aside class="service-note" aria-label="Связаться по проекту">
+  <div class="service-note__copy">
+    <p class="service-note__label">Связь с Agent Lab</p>
+    <p class="service-note__title">Внедрим такой контур в ваш процесс</p>
+    <p class="service-note__text">Напишите инженеру Agent Lab в Telegram: опишите задачу, бота или интеграцию — предложим пилот с проверками и понятными границами.</p>
+  </div>
+  <a class="service-note__link" href="https://t.me/msrzn007?utm_source=journal&amp;utm_medium=article&amp;utm_campaign=service_note" target="_blank" rel="noopener">Написать в Telegram
+    <svg viewBox="0 0 16 16" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"><path d="M3 13 13 3M6 3h7v7"/></svg>
+  </a>
+</aside>
+<aside class="service-note service-note--sitevisor" aria-label="Экспресс-аудит сайта">
+  <div class="service-note__copy">
+    <p class="service-note__label">SiteVisor</p>
+    <p class="service-note__title">Проверьте техническое состояние и готовность вашего сайта к рекламе</p>
+    <p class="service-note__text">Экспресс-аудит на SiteVisor.pro: индексация, скорость, разметка, аналитика и точки конверсии.</p>
+  </div>
+  <a class="service-note__link" href="https://sitevisor.pro/?utm_source=journal&amp;utm_medium=article&amp;utm_campaign=leadmagnet" target="_blank" rel="noopener">Экспресс-аудит на SiteVisor.pro
+    <svg viewBox="0 0 16 16" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"><path d="M3 13 13 3M6 3h7v7"/></svg>
+  </a>
+</aside>
+</article>
+  </main>
+
+  <footer class="site-footer">
+    <div class="container">
+      <p>© Agent Lab Journal</p>
+      <nav aria-label="Навигация в подвале">
+        <a href="guides.html">Гайды</a>
+        <a href="glossary.html">Глоссарий</a>
+      </nav>
+    </div>
+  </footer>
+</body>
+</html>

@@ -1,0 +1,399 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>How to Reproduce an Agent-Memory Benchmark and Audit Its Submission Format</title>
+  <meta name="description" content="How to Reproduce an Agent-Memory Benchmark and Audit Its Submission Format: a practical, reproducible workflow for running agents, checking transcripts, calculating metrics, and validating archives.">
+  <link rel="canonical" href="https://agentlabjournal.online/en/dolphinbench-memory-reproduction.html">
+  <link rel="stylesheet" href="../style.css">
+  <link rel="stylesheet" href="../reading.css">
+
+  <meta property="og:type" content="article">
+  <meta property="og:title" content="How to Reproduce an Agent-Memory Benchmark and Audit Its Submission Format">
+  <meta property="og:description" content="A practical workflow for reproducing an agent-memory benchmark and auditing its runner, transcripts, metrics, and submission archive.">
+  <meta property="og:url" content="https://agentlabjournal.online/en/dolphinbench-memory-reproduction.html">
+  <meta property="og:image" content="https://agentlabjournal.online/assets/covers/llm-context-window-budget-social.png">
+  <meta property="og:site_name" content="Agent Lab Journal">
+
+  <meta name="twitter:card" content="summary_large_image">
+  <meta name="twitter:title" content="How to Reproduce an Agent-Memory Benchmark and Audit Its Submission Format">
+  <meta name="twitter:description" content="A reproducible plan for running an agent-memory benchmark, checking transcripts, calculating metrics, and validating the submission archive.">
+  <meta name="twitter:image" content="https://agentlabjournal.online/assets/covers/llm-context-window-budget-social.png">
+
+  <meta name="reading-time" content="25 minutes">
+  <meta name="article:reading_time" content="25 minutes">
+  <meta name="article:level" content="Advanced">
+  <meta name="article:section" content="Reproducibility">
+
+  <script type="application/ld+json">
+  {
+    "@context": "https://schema.org",
+    "@type": "Article",
+    "headline": "How to Reproduce an Agent-Memory Benchmark and Audit Its Submission Format",
+    "description": "A practical, reproducible workflow for running an agent-memory benchmark and auditing its runner, transcripts, metrics, and submission archive.",
+    "image": ["https://agentlabjournal.online/assets/covers/llm-context-window-budget-social.png"],
+    "dateModified": "2026-11-06",
+    "author": {
+      "@type": "Organization",
+      "name": "Agent Lab Journal"
+    },
+    "publisher": {
+      "@type": "Organization",
+      "name": "Agent Lab Journal",
+      "url": "https://agentlabjournal.online/"
+    },
+    "mainEntityOfPage": {
+      "@type": "WebPage",
+      "@id": "https://agentlabjournal.online/en/dolphinbench-memory-reproduction.html"
+    }
+  }
+  </script>
+<link rel="stylesheet" href="../homepage.css"><link rel="stylesheet" href="../max-promo.css">  <meta property="og:image:alt" content="Как воспроизвести benchmark памяти агентов и проверить его упаковку результатов">
+</head>
+<body>
+  <header class="site-header">
+    <div class="site-header__inner">
+      <a class="site-brand" href="../index.html">Agent Lab Journal</a>
+      <nav class="site-nav" aria-label="Primary navigation">
+        <a href="../guides.html">Guides</a>
+        <a href="../glossary.html">Glossary</a>
+      </nav>
+    </div>
+  </header>
+
+  <main>
+    <article class="reading">
+      <header class="reading-header">
+        <p class="reading-kicker">Reproducibility · Advanced · 25 min read</p>
+        <h1>How to Reproduce an Agent-Memory Benchmark and Audit Its Submission Format</h1>
+        <figure class="article-cover" data-editorial-cover="dolphinbench-memory-reproduction"><img src="../assets/covers/llm-context-window-budget.png" alt="Как воспроизвести benchmark памяти агентов и проверить его упаковку результатов" width="1280" height="720" fetchpriority="high"><figcaption>Temporary fallback cover; replace in editorial pass.</figcaption></figure>
+        <p class="reading-dek">A benchmark result is only as useful as the path from input to published number. This guide shows how to rebuild that path, inspect what the agent actually saw, and reject an archive that cannot be independently audited.</p>
+        <div class="reading-meta">
+          <span>By Agent Lab Journal</span>
+          <span>Updated 6 November 2026</span>
+          <span>25 min read</span>
+        </div>
+      </header>
+
+      <aside class="reading-callout">
+        <strong>Scope note.</strong> This is a reproducibility procedure, not a report of benchmark results. No scores, credentials, model rankings, or external test outcomes are asserted here. Replace the example names and paths with the verified materials for the benchmark you are studying.
+      </aside>
+
+      <p>Comparing <a href="../glossary.html#agent-memory">agent-memory systems</a> looks straightforward: run the same tasks, collect the scores, and compare the averages. In practice, the comparison can change before the memory component is even evaluated. A reference runner may alter prompts, a result format may omit failed episodes, and a publication process may expose only a final table rather than the evidence needed to reconstruct it.</p>
+
+      <p>The reliable unit of comparison is therefore not a number. It is a traceable experiment: a pinned runner, a declared configuration, immutable task inputs, complete <a href="../glossary.html#transcript">transcripts</a>, explicit <a href="../glossary.html#metric">metrics</a>, and a submission archive that another person can inspect without private context.</p>
+
+      <h2 id="case">A concrete audit case</h2>
+
+      <p>Imagine a benchmark named <code>DolphinBench-Memory</code>. It evaluates whether an agent can answer questions about information introduced earlier in a multi-turn episode. The benchmark repository contains a runner, task files, a model adapter, and a submission template. A paper reports one aggregate score, but the accompanying archive contains only a CSV with one row per system.</p>
+
+      <p>That archive is not automatically invalid. It is simply insufficient until you can answer questions such as:</p>
+
+      <ul>
+        <li>Which exact task instances were evaluated?</li>
+        <li>Did every system receive the same history and tool results?</li>
+        <li>Were retries, timeouts, and malformed outputs counted?</li>
+        <li>Was the score computed from all episodes or only successful episodes?</li>
+        <li>Can a reviewer map every aggregate value back to an episode-level record?</li>
+      </ul>
+
+      <p>Your goal is to turn those questions into checks with observable evidence. If a property cannot be checked from the runner, configuration, logs, or archive, label it <em>unverified</em> rather than inferring it from a polished table.</p>
+
+      <h2 id="model">Model the experiment before running it</h2>
+
+      <p>Write down the experiment as a function before installing dependencies:</p>
+
+      <pre><code>score = evaluate(
+    runner_version,
+    task_set,
+    agent_config,
+    model_identifier,
+    seed_policy,
+    environment,
+    scoring_rules
+)</code></pre>
+
+      <p>Each argument can affect the result. Record at least:</p>
+
+      <table>
+        <thead>
+          <tr>
+            <th>Component</th>
+            <th>Record</th>
+            <th>Audit question</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>Runner</td>
+            <td>Commit, release, local patches</td>
+            <td>Can another person obtain the same execution logic?</td>
+          </tr>
+          <tr>
+            <td>Tasks</td>
+            <td>Version, manifest, hashes</td>
+            <td>Are task IDs and ordering fixed?</td>
+          </tr>
+          <tr>
+            <td>Agent</td>
+            <td>Prompt, memory policy, tools</td>
+            <td>Is the tested system distinguished from the harness?</td>
+          </tr>
+          <tr>
+            <td>Model</td>
+            <td>Provider, model ID, parameters</td>
+            <td>Is the model identifier precise enough to resolve later?</td>
+          </tr>
+          <tr>
+            <td>Randomness</td>
+            <td>Seed, sampling settings, retry policy</td>
+            <td>Is nondeterminism measured or merely assumed away?</td>
+          </tr>
+          <tr>
+            <td>Scoring</td>
+            <td>Formula, exclusions, aggregation</td>
+            <td>Can the final number be recomputed from raw records?</td>
+          </tr>
+        </tbody>
+      </table>
+
+      <p>This inventory is also where you separate verified facts from examples. A command such as <code>git rev-parse HEAD</code> can verify a local commit. A statement such as “the benchmark uses deterministic evaluation” requires evidence about the runner, model API, sampling parameters, and external tools.</p>
+
+      <h2 id="environment">Create a controlled environment</h2>
+
+      <p>Use an isolated environment and make the dependency state visible. The commands below are illustrative; they are not claims about a particular repository.</p>
+
+      <pre><code>git clone &lt;verified-benchmark-repository&gt;
+cd &lt;repository-directory&gt;
+
+git checkout --detach &lt;verified-commit&gt;
+
+python -m venv .venv
+. .venv/bin/activate
+python -m pip install --upgrade pip
+python -m pip install -r requirements.txt
+
+python --version
+python -m pip freeze &gt; reproduction/pip-freeze.txt
+git rev-parse HEAD &gt; reproduction/runner-commit.txt</code></pre>
+
+      <p>Do not place API keys in shell history, configuration committed to the archive, or transcripts. Load secrets from the execution environment and redact them before publication:</p>
+
+      <pre><code>export BENCHMARK_API_KEY='&lt;provided-out-of-band&gt;'
+python -m benchmark_runner \
+  --config configs/reproduction.yaml \
+  --output runs/example-001</code></pre>
+
+      <p>Keep the original configuration beside the run. If the runner expands defaults, save the resolved configuration too. A short configuration might look like this:</p>
+
+      <pre><code>tasks_manifest: data/tasks.sha256
+episodes: all
+seed: 17
+temperature: 0
+max_retries: 0
+timeout_seconds: 120
+save_transcripts: true
+save_tool_events: true
+score_from: episode_results.jsonl</code></pre>
+
+      <p>“Temperature zero” is not a proof of identical outputs. Provider-side changes, tool timing, hidden sampling, and retrieval order can still introduce variation. Treat determinism as a hypothesis to test.</p>
+
+      <h2 id="run">Run a smoke test, then the full benchmark</h2>
+
+      <p>Start with one known task and one deliberately failing task if the runner supports them. The smoke test should prove that the pipeline creates the expected artifacts and that a failure remains visible.</p>
+
+      <pre><code>python -m benchmark_runner \
+  --config configs/reproduction.yaml \
+  --task-id smoke-001 \
+  --output runs/smoke-001
+
+find runs/smoke-001 -maxdepth 2 -type f -print | sort</code></pre>
+
+      <p>Check for a run manifest, resolved configuration, episode results, transcript files, error records, and a machine-readable summary. If the smoke test silently drops an exception, stop there. A full run built on an opaque smoke test is not reproducible.</p>
+
+      <p>For the full run, preserve the command line exactly. A shell script or task runner is preferable because it records the invocation and makes accidental changes easier to detect:</p>
+
+      <pre><code>set -eu
+
+RUN_ID="system-a-seed-17"
+python -m benchmark_runner \
+  --config configs/reproduction.yaml \
+  --system system-a \
+  --seed 17 \
+  --output "runs/${RUN_ID}"
+
+python -m benchmark_tools.validate_run \
+  --run "runs/${RUN_ID}" \
+  --manifest data/tasks.sha256</code></pre>
+
+      <p>Run each system against the same task manifest. Do not regenerate tasks separately for each system unless the benchmark explicitly defines that procedure. Preserve ordering even when the scoring formula is order-independent; ordering often reveals missing or duplicated episodes.</p>
+
+      <h2 id="transcripts">Audit transcripts, not just scores</h2>
+
+      <p>A <a href="../glossary.html#transcript">transcript</a> is evidence of what the agent received and produced. It should make the memory pathway inspectable without exposing secrets or personal data. At minimum, each episode should identify:</p>
+
+      <ul>
+        <li>task ID and run ID;</li>
+        <li>runner and task-set versions;</li>
+        <li>turn order and message roles;</li>
+        <li>memory writes, reads, or retrieval events;</li>
+        <li>tool calls and tool results;</li>
+        <li>termination reason;</li>
+        <li>episode-level score and error status.</li>
+      </ul>
+
+      <p>Use a schema validator before manual review:</p>
+
+      <pre><code>python -m benchmark_tools.validate_transcripts \
+  --input runs/system-a-seed-17/transcripts \
+  --schema schemas/transcript.schema.json</code></pre>
+
+      <p>Then inspect representative episodes: a correct answer requiring recall, a correct answer that does not require memory, a memory miss, a timeout, and a malformed response. These examples expose different classes of failure. A transcript that contains only the final answer cannot show whether the agent remembered, guessed, or received leaked context.</p>
+
+      <p>Redaction must preserve auditability. Replace secrets with stable placeholders such as <code>[REDACTED_API_KEY_1]</code>, not arbitrary deletions. If personal data appears in a task, remove or synthesize it before publication and document that transformation.</p>
+
+      <h2 id="metrics">Calculate metrics from episode-level records</h2>
+
+      <p>Do not accept a reported aggregate until you can reproduce it from the lowest useful level of data. A simple accuracy definition is:</p>
+
+      <pre><code>accuracy = sum(episode.correct for episode in episodes) / len(episodes)</code></pre>
+
+      <p>Real benchmarks often add partial credit, abstention handling, latency, cost, or memory-specific measures. Define the denominator for every metric. For example, “accuracy on completed episodes” and “accuracy over all assigned episodes” are different quantities when timeouts exist.</p>
+
+      <p>A compact validation script can compare the archive’s summary with a recomputation:</p>
+
+      <pre><code>python -m benchmark_tools.recompute_metrics \
+  --episodes runs/system-a-seed-17/episode_results.jsonl \
+  --output runs/system-a-seed-17/recomputed_metrics.json
+
+diff -u \
+  runs/system-a-seed-17/summary.json \
+  runs/system-a-seed-17/recomputed_metrics.json</code></pre>
+
+      <p>Report counts alongside rates:</p>
+
+      <ul>
+        <li>assigned episodes;</li>
+        <li>completed episodes;</li>
+        <li>correct, incorrect, abstained, and errored episodes;</li>
+        <li>timeouts and retries;</li>
+        <li>episodes excluded by policy;</li>
+        <li>the exact denominator used.</li>
+      </ul>
+
+      <p>If repeated runs are possible, report variation rather than a single lucky score. Keep the seed policy fixed and distinguish repeated seeds from repeated provider calls. A confidence interval can describe sampling uncertainty, but it does not repair systematic differences in prompts, task ordering, or runner behavior.</p>
+
+      <h2 id="archive">Validate the submission archive</h2>
+
+      <p>The submission archive should be self-describing. A practical layout is:</p>
+
+      <pre><code>submission/
+├── README.md
+├── manifest.sha256
+├── metadata.json
+├── configs/
+│   └── resolved.yaml
+├── runs/
+│   └── system-a-seed-17/
+│       ├── run.json
+│       ├── episode_results.jsonl
+│       ├── metrics.json
+│       ├── transcripts/
+│       └── errors.jsonl
+└── schemas/
+    └── transcript.schema.json</code></pre>
+
+      <p>The <a href="../glossary.html#submission-archive">submission archive</a> must answer four questions:</p>
+
+      <ol>
+        <li><strong>What was run?</strong> Include versions, configuration, command, environment, and task manifest.</li>
+        <li><strong>What happened?</strong> Include episode records, transcripts, tool events, and errors.</li>
+        <li><strong>How was it scored?</strong> Include formulas, denominators, exclusions, and recomputed outputs.</li>
+        <li><strong>Can files be verified?</strong> Include hashes and a documented validation command.</li>
+      </ol>
+
+      <p>Create hashes after final redaction and packaging:</p>
+
+      <pre><code>find submission -type f -print0 \
+  | sort -z \
+  | xargs -0 sha256sum \
+  &gt; submission/manifest.sha256
+
+sha256sum --check submission/manifest.sha256</code></pre>
+
+      <p>Check the archive in a clean directory, not only in the working tree where untracked files may hide dependencies:</p>
+
+      <pre><code>tmpdir="$(mktemp -d)"
+tar -xzf submission.tar.gz -C "$tmpdir"
+
+python -m benchmark_tools.validate_submission \
+  --root "$tmpdir/submission"
+
+python -m benchmark_tools.recompute_metrics \
+  --episodes "$tmpdir/submission/runs/system-a-seed-17/episode_results.jsonl" \
+  --output "$tmpdir/recomputed.json"</code></pre>
+
+      <p>Only call the archive reproducible if the clean-room validation succeeds and the recomputed metrics match under a declared tolerance. If the archive depends on an unavailable private endpoint, mark the run as not independently rerunnable and explain what evidence remains available.</p>
+
+      <h2 id="failure-cases">Common failure cases</h2>
+
+      <h3>Different prompts hidden behind the same system name</h3>
+      <p>Two agents may both be called “memory-enabled” while one receives retrieved memories in a system message and the other receives them as user content. Compare resolved prompts and event logs, not labels.</p>
+
+      <h3>Retries counted inconsistently</h3>
+      <p>A retry can be a new attempt, a continuation of the same episode, or a failure that should count against the system. Declare the policy and preserve every attempt in the raw record.</p>
+
+      <h3>Missing episodes replaced by a smaller denominator</h3>
+      <p>If a runner writes only successful outputs, aggregate accuracy can be inflated. Reconcile the task manifest with the result IDs and require an explicit status for every assigned episode.</p>
+
+      <h3>Tool results are not captured</h3>
+      <p>Memory behavior cannot be audited if external retrieval, search, or database responses are absent from the transcript. Save tool inputs and outputs, subject to redaction.</p>
+
+      <h3>Archive validates only on the author’s machine</h3>
+      <p>Undeclared local packages, environment variables, mounted files, and cached model assets are common causes. Run the validation from a clean environment and list unavoidable external dependencies.</p>
+
+      <h2 id="limitations">What this procedure cannot establish</h2>
+
+      <p>A successful reproduction establishes that a declared pipeline can produce a comparable run. It does not prove that the benchmark measures long-term memory in every setting, that the task set is free from leakage, or that one score represents all agent workloads.</p>
+
+      <p>It also cannot remove changes outside the archive’s control, such as an updated model service or unavailable historical dependency. The correct response is to record the uncertainty, narrow the claim, and preserve enough intermediate evidence for a later audit.</p>
+
+      <h2 id="checklist">Final reproducibility checklist</h2>
+
+      <ul>
+        <li>Runner commit and task manifest are pinned.</li>
+        <li>Resolved configuration is included.</li>
+        <li>Model identifier and sampling policy are recorded.</li>
+        <li>Every assigned episode has a terminal status.</li>
+        <li>Transcripts include memory and tool events.</li>
+        <li>Secrets and personal data are removed or transformed.</li>
+        <li>Metrics are recomputable from episode-level records.</li>
+        <li>Counts and denominators accompany aggregate rates.</li>
+        <li>Archive hashes are generated after redaction.</li>
+        <li>Validation succeeds in a clean directory.</li>
+        <li>Unverified assumptions are labeled as limitations.</li>
+      </ul>
+
+      <p>The central discipline is simple: follow the evidence from task manifest to transcript to episode result to aggregate table. When a link is missing, do not fill it with confidence. Mark the gap, preserve the available artifacts, and state exactly what a future reader can and cannot reproduce.</p>
+
+      <p>For related procedures and terminology, see the <a href="../guides.html">guides</a> and the <a href="../glossary.html">glossary</a>.</p>
+    <section class="service-note">
+  <b>We publish what works for us—and implement the same solutions for your business.</b>
+  We design AI automation, Telegram bots, chats, and AI agents for real-world processes.
+  <a href="../contacts-en.html">Discuss your project →</a>
+</section>
+</article>
+  </main>
+
+  <footer class="site-footer">
+    <div class="site-footer__inner">
+      <span>© Agent Lab Journal</span>
+      <nav aria-label="Footer navigation">
+        <a href="../guides.html">Guides</a>
+        <a href="../glossary.html">Glossary</a>
+      </nav>
+    </div>
+  </footer>
+</body>
+</html>
