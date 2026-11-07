@@ -1,0 +1,678 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Estimating LLM Decode Speed from Memory Bandwidth</title>
+  <meta name="description" content="Estimating LLM Decode Speed from Memory Bandwidth: calculate traffic budget, decode speed, ridge batch, and critical context length for different weight and KV-cache dtypes.">
+  <link rel="canonical" href="https://agentlabjournal.online/en/izmeryaem-decode-llm-po-propusknoi-sposobnosti-pamyati.html">
+  <link rel="stylesheet" href="../style.css">
+  <link rel="stylesheet" href="../reading.css">
+
+  <meta property="og:type" content="article">
+  <meta property="og:title" content="Estimating LLM Decode Speed from Memory Bandwidth">
+  <meta property="og:description" content="Estimating LLM Decode Speed from Memory Bandwidth: calculate traffic budget, decode speed, ridge batch, and critical context length for different weight and KV-cache dtypes.">
+  <meta property="og:url" content="https://agentlabjournal.online/en/izmeryaem-decode-llm-po-propusknoi-sposobnosti-pamyati.html">
+  <meta property="og:image" content="https://agentlabjournal.online/assets/covers/llm-context-window-budget-social.png">
+  <meta property="og:site_name" content="Agent Lab Journal">
+
+  <meta name="twitter:card" content="summary_large_image">
+  <meta name="twitter:title" content="Estimating LLM Decode Speed from Memory Bandwidth">
+  <meta name="twitter:description" content="Estimating LLM Decode Speed from Memory Bandwidth: calculate traffic budget, decode speed, ridge batch, and critical context length for different weight and KV-cache dtypes.">
+  <meta name="twitter:image" content="https://agentlabjournal.online/assets/covers/llm-context-window-budget-social.png">
+
+  <script type="application/ld+json">
+  {
+    "@context": "https://schema.org",
+    "@type": "Article",
+    "headline": "Estimating LLM Decode Speed from Memory Bandwidth",
+    "description": "Estimating LLM Decode Speed from Memory Bandwidth: calculate traffic budget, decode speed, ridge batch, and critical context length for different weight and KV-cache dtypes.",
+    "image": ["https://agentlabjournal.online/assets/covers/llm-context-window-budget-social.png"],
+    "dateModified": "2026-11-07",
+    "author": {
+      "@type": "Organization",
+      "name": "Agent Lab Journal"
+    },
+    "publisher": {
+      "@type": "Organization",
+      "name": "Agent Lab Journal",
+      "logo": {
+        "@type": "ImageObject",
+        "url": "https://agentlabjournal.online/assets/images/logo.png"
+      }
+    },
+    "mainEntityOfPage": {
+      "@type": "WebPage",
+      "@id": "https://agentlabjournal.online/en/izmeryaem-decode-llm-po-propusknoi-sposobnosti-pamyati.html"
+    }
+  }
+  </script>
+<link rel="stylesheet" href="../homepage.css"><link rel="stylesheet" href="../max-promo.css">  <meta property="og:image:alt" content="Измеряем скорость decode LLM через пропускную способность памяти">
+</head>
+<body>
+  <header class="site-header">
+    <div class="container">
+      <a class="site-brand" href="../index.html">Agent Lab Journal</a>
+      <nav aria-label="Primary navigation">
+        <a href="guides.html">Guides</a>
+        <a href="../glossary.html">Glossary</a>
+      </nav>
+    </div>
+  </header>
+
+  <main>
+    <article class="reading">
+      <header class="reading-header">
+        <p class="eyebrow">Systems · Inference performance</p>
+        <h1>Estimating LLM Decode Speed from Memory Bandwidth</h1>
+        <figure class="article-cover" data-editorial-cover="izmeryaem-decode-llm-po-propusknoi-sposobnosti-pamyati"><img src="../assets/covers/llm-context-window-budget.png" alt="Измеряем скорость decode LLM через пропускную способность памяти" width="1280" height="720" fetchpriority="high"><figcaption>Temporary fallback cover; replace in editorial pass.</figcaption></figure>
+        <div class="reading-meta">
+          <span>Advanced</span>
+          <span>20-minute read</span>
+          <time datetime="2026-11-07">Updated 7 November 2026</time>
+        </div>
+        <p class="lead">
+          A useful first estimate for generation speed is often not the number of
+          tensor cores. During autoregressive <a href="../glossary.html#decode">decode</a>,
+          a <a href="../glossary.html#llm">large language model (LLM)</a> repeatedly
+          streams its weights and reads the <a href="../glossary.html#kv-cache">KV cache</a>.
+          If you can account for those bytes, you can estimate a traffic budget,
+          an idealized tokens-per-second ceiling, the batch at which the cache
+          becomes as expensive as the weights, and the context length where that
+          transition occurs.
+        </p>
+      </header>
+
+      <section>
+        <h2>The short answer</h2>
+        <p>
+          For one generated token, approximate memory traffic as:
+        </p>
+
+        <div class="formula">
+          <code>traffic/token ≈ weight_bytes + batch × context × kv_bytes/token</code>
+        </div>
+
+        <p>
+          Then divide usable memory bandwidth by that traffic:
+        </p>
+
+        <div class="formula">
+          <code>decode_tokens/s ≈ usable_bandwidth / traffic/token</code>
+        </div>
+
+        <p>
+          This is a bandwidth-bound estimate, not a benchmark result. It assumes
+          that the relevant weights and cache are streamed efficiently, that
+          transfers overlap with computation, and that arithmetic, kernel launch
+          overhead, communication, and scheduling do not become the limiting
+          factors.
+        </p>
+
+        <p>
+          The estimate becomes especially useful when comparing
+          <a href="../glossary.html#dtype">data types</a>. Lower-precision weights
+          reduce the fixed cost paid by every generated token. Lower-precision
+          KV cache reduces the cost that grows with batch size and context length.
+        </p>
+      </section>
+
+      <section>
+        <h2>What decode is actually moving</h2>
+
+        <p>
+          In a typical decoder-only transformer, one decode step consumes one new
+          token for every active sequence. The model must apply every layer to the
+          current hidden state. The weight matrices are reused across the batch,
+          while attention reads the keys and values stored for previous tokens.
+        </p>
+
+        <p>
+          During <a href="../glossary.html#prefill">prefill</a>, many tokens are
+          processed together and matrix multiplication can have high reuse. During
+          decode, the new-token dimension is small. The workload often has low
+          <a href="../glossary.html#arithmetic-intensity">arithmetic intensity</a>:
+          relatively few operations are performed for each byte fetched from
+          memory.
+        </p>
+
+        <p>
+          The model can therefore approach a
+          <a href="../glossary.html#roofline-model">roofline-model</a> limit set by
+          memory bandwidth before it reaches the accelerator's advertised compute
+          throughput. This does not make compute irrelevant. It means that compute
+          should be checked as a second bound after the traffic estimate.
+        </p>
+
+        <h3>Notation</h3>
+
+        <table>
+          <thead>
+            <tr>
+              <th>Symbol</th>
+              <th>Meaning</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td><code>W</code></td>
+              <td>Bytes occupied by model weights that must be read per decode step</td>
+            </tr>
+            <tr>
+              <td><code>B</code></td>
+              <td>Active batch size: sequences producing a token in this step</td>
+            </tr>
+            <tr>
+              <td><code>C</code></td>
+              <td>Average cached context length per active sequence</td>
+            </tr>
+            <tr>
+              <td><code>K</code></td>
+              <td>KV-cache bytes read per sequence and cached token</td>
+            </tr>
+            <tr>
+              <td><code>BW</code></td>
+              <td>Usable device memory bandwidth in bytes per second</td>
+            </tr>
+            <tr>
+              <td><code>T</code></td>
+              <td>Estimated aggregate decode rate in tokens per second</td>
+            </tr>
+          </tbody>
+        </table>
+      </section>
+
+      <section>
+        <h2>Derive the KV-cache term</h2>
+
+        <p>
+          Let a model have <code>L</code> transformer layers, <code>H<sub>kv</sub></code>
+          key/value heads, head dimension <code>D</code>, and
+          <code>S<sub>kv</sub></code> bytes per cache scalar. Each cached token
+          stores both a key and a value:
+        </p>
+
+        <div class="formula">
+          <code>K = 2 × L × H<sub>kv</sub> × D × S<sub>kv</sub></code>
+        </div>
+
+        <p>
+          The factor of two accounts for keys and values. For grouped-query
+          attention or multi-query attention, use the number of KV heads, not the
+          number of query heads. Confusing those two values can overestimate cache
+          traffic by a large factor.
+        </p>
+
+        <p>
+          For a decode step, a simple attention-read model is:
+        </p>
+
+        <div class="formula">
+          <code>KV traffic/token ≈ B × C × K</code>
+        </div>
+
+        <p>
+          This treats the full cached prefix as read for every active sequence.
+          Implementations can differ in layout, padding, page size, quantization
+          metadata, and cache reuse, so this term is an approximation rather than
+          a byte-for-byte trace.
+        </p>
+      </section>
+
+      <section>
+        <h2>Worked case: an 80-layer GQA model</h2>
+
+        <p>
+          The following is a reproducible numerical example, not a claim about a
+          measured product or a particular vendor's implementation. Assume:
+        </p>
+
+        <ul>
+          <li>80 transformer layers</li>
+          <li>8 KV heads</li>
+          <li>128 values per head</li>
+          <li>70 billion parameters</li>
+          <li>16-bit weights, so <code>W = 70 × 10<sup>9</sup> × 2 = 140 GB</code> before format-specific overhead</li>
+          <li>1.6 TB/s usable memory bandwidth</li>
+          <li>batch <code>B = 8</code></li>
+          <li>cached context <code>C = 4096</code> tokens</li>
+        </ul>
+
+        <p>
+          With a 16-bit KV cache:
+        </p>
+
+        <div class="formula">
+          <code>K = 2 × 80 × 8 × 128 × 2 = 327,680 bytes/token</code>
+        </div>
+
+        <p>
+          The cache traffic for the batch is:
+        </p>
+
+        <div class="formula">
+          <code>8 × 4096 × 327,680 = 10,737,418,240 bytes ≈ 10.74 GB</code>
+        </div>
+
+        <p>
+          The total simplified traffic budget is therefore about
+          <code>140 + 10.74 = 150.74 GB</code> per aggregate decode step. The
+          bandwidth estimate is:
+        </p>
+
+        <div class="formula">
+          <code>T ≈ 1,600 GB/s ÷ 150.74 GB ≈ 10.6 aggregate tokens/s</code>
+        </div>
+
+        <p>
+          If all eight sequences are equally active, that corresponds to about
+          <code>1.3 tokens/s per sequence</code>. These numbers are arithmetic from
+          the assumptions above. They are not measured throughput, and they omit
+          quantization scales, allocator padding, cache metadata, kernel effects,
+          and any multi-device traffic.
+        </p>
+
+        <h3>Compare KV-cache dtypes</h3>
+
+        <table>
+          <thead>
+            <tr>
+              <th>Weights</th>
+              <th>KV cache</th>
+              <th>Weight traffic</th>
+              <th>KV traffic at B=8, C=4096</th>
+              <th>Estimated aggregate rate</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td>16-bit</td>
+              <td>16-bit</td>
+              <td>140.00 GB</td>
+              <td>10.74 GB</td>
+              <td>10.6 tokens/s</td>
+            </tr>
+            <tr>
+              <td>16-bit</td>
+              <td>8-bit</td>
+              <td>140.00 GB</td>
+              <td>5.37 GB</td>
+              <td>11.0 tokens/s</td>
+            </tr>
+            <tr>
+              <td>8-bit</td>
+              <td>16-bit</td>
+              <td>70.00 GB</td>
+              <td>10.74 GB</td>
+              <td>19.8 tokens/s</td>
+            </tr>
+            <tr>
+              <td>8-bit</td>
+              <td>8-bit</td>
+              <td>70.00 GB</td>
+              <td>5.37 GB</td>
+              <td>21.2 tokens/s</td>
+            </tr>
+          </tbody>
+        </table>
+
+        <p>
+          The table assumes exactly one byte per scalar for the 8-bit cases and
+          ignores scales and other metadata. Real quantized formats may have
+          block scales, zero points, alignment requirements, or dequantization
+          behavior that changes both capacity and traffic.
+        </p>
+      </section>
+
+      <section>
+        <h2>Ridge batch: when cache traffic catches the weights</h2>
+
+        <p>
+          The <a href="../glossary.html#ridge-point">ridge batch</a> is the batch
+          size at which the estimated KV-cache traffic equals the weight traffic:
+        </p>
+
+        <div class="formula">
+          <code>B<sub>ridge</sub> = W ÷ (C × K)</code>
+        </div>
+
+        <p>
+          In the worked case with 16-bit weights, a 16-bit KV cache, and
+          <code>C = 4096</code>:
+        </p>
+
+        <div class="formula">
+          <code>B<sub>ridge</sub> = 140,000,000,000 ÷ (4096 × 327,680) ≈ 104</code>
+        </div>
+
+        <p>
+          Below a batch of roughly 104, the simplified weight-read term is larger
+          than the cache-read term. Above it, context-dependent cache traffic is
+          larger. This does not mean that batch 104 is automatically optimal. It
+          only identifies a change in the dominant term of this model.
+        </p>
+
+        <p>
+          With an 8-bit KV cache, <code>K</code> is halved and the ridge batch is
+          approximately 208 at the same context. With 8-bit weights and a
+          16-bit KV cache, it is approximately 52. Quantizing weights moves the
+          ridge earlier because the fixed weight term becomes smaller.
+        </p>
+      </section>
+
+      <section>
+        <h2>Critical context length</h2>
+
+        <p>
+          The same relationship can be solved for context. The
+          <a href="../glossary.html#critical-context-length">critical context length</a>
+          at a chosen batch is:
+        </p>
+
+        <div class="formula">
+          <code>C<sub>critical</sub> = W ÷ (B × K)</code>
+        </div>
+
+        <p>
+          For the 16-bit-weight, 16-bit-KV example at batch 8:
+        </p>
+
+        <div class="formula">
+          <code>C<sub>critical</sub> = 140,000,000,000 ÷ (8 × 327,680) ≈ 53,406 tokens</code>
+        </div>
+
+        <p>
+          At an average context below roughly 53k tokens, weights dominate the
+          simplified traffic budget. Above it, cache reads dominate. If the KV
+          cache is 8-bit, the critical context is approximately 106.8k tokens. If
+          the weights are 8-bit while the cache remains 16-bit, it is
+          approximately 26.7k tokens.
+        </p>
+
+        <p>
+          This threshold is useful for capacity planning, but it is not a quality
+          or latency guarantee. Long-context implementations may use paged
+          attention, sliding windows, prefix reuse, speculative decoding, or
+          sparse attention patterns that change the amount of data actually read.
+        </p>
+      </section>
+
+      <section>
+        <h2>Make the estimate reproducible</h2>
+
+        <p>
+          Put the model and hardware assumptions in a small script rather than
+          copying numbers into a spreadsheet. The following Python program uses
+          decimal bytes for GB and TB. It prints the same quantities used above.
+        </p>
+
+        <pre><code>from dataclasses import dataclass
+
+@dataclass
+class Case:
+    layers: int
+    kv_heads: int
+    head_dim: int
+    parameters: int
+    weight_bytes: float
+    kv_bytes: float
+    bandwidth_bytes_s: float
+    batch: int
+    context: int
+
+def estimate(case: Case):
+    kv_per_token = (
+        2
+        * case.layers
+        * case.kv_heads
+        * case.head_dim
+        * case.kv_bytes
+    )
+    weight_traffic = case.parameters * case.weight_bytes
+    kv_traffic = case.batch * case.context * kv_per_token
+    total_traffic = weight_traffic + kv_traffic
+    tokens_per_second = case.bandwidth_bytes_s / total_traffic
+    ridge_batch = weight_traffic / (case.context * kv_per_token)
+    critical_context = weight_traffic / (case.batch * kv_per_token)
+
+    return {
+        "kv_bytes_per_token": kv_per_token,
+        "weight_traffic_gb": weight_traffic / 1e9,
+        "kv_traffic_gb": kv_traffic / 1e9,
+        "total_traffic_gb": total_traffic / 1e9,
+        "aggregate_tokens_per_second": tokens_per_second,
+        "ridge_batch": ridge_batch,
+        "critical_context": critical_context,
+    }
+
+case = Case(
+    layers=80,
+    kv_heads=8,
+    head_dim=128,
+    parameters=70_000_000_000,
+    weight_bytes=2,
+    kv_bytes=2,
+    bandwidth_bytes_s=1.6e12,
+    batch=8,
+    context=4096,
+)
+
+for key, value in estimate(case).items():
+    print(f"{key}: {value}")</code></pre>
+
+        <p>
+          To compare dtypes, run the same case with
+          <code>weight_bytes=1</code> and/or <code>kv_bytes=1</code>. For a
+          quantized format with metadata, replace the nominal byte count with an
+          effective byte count:
+        </p>
+
+        <div class="formula">
+          <code>effective bytes/scalar = payload bytes + scale/zero-point overhead</code>
+        </div>
+
+        <p>
+          If the model uses tensor parallelism, calculate the local weight traffic
+          and add communication separately. Do not divide the full model size by
+          the number of devices and assume the rest of the system is free: all
+          reductions, broadcasts, and synchronization can impose additional
+          bandwidth or latency costs.
+        </p>
+      </section>
+
+      <section>
+        <h2>Choose usable bandwidth, not the headline number</h2>
+
+        <p>
+          A vendor's peak bandwidth is an upper bound. For a useful estimate,
+          define a conservative utilization factor:
+        </p>
+
+        <div class="formula">
+          <code>usable bandwidth = peak bandwidth × bandwidth efficiency</code>
+        </div>
+
+        <p>
+          For example, if a device is advertised at 1.6 TB/s and you choose an
+          assumed 70% efficiency, use 1.12 TB/s in the estimate. The efficiency
+          value must be treated as an assumption until it is calibrated against a
+          real workload. This article does not provide a verified efficiency
+          value for any GPU.
+        </p>
+
+        <p>
+          A practical calibration sequence is:
+
+        </p>
+
+        <ol>
+          <li>Measure a representative decode run with fixed model, prompt, batch, context, and output length.</li>
+          <li>Record aggregate output tokens per second and per-sequence latency.</li>
+          <li>Compute implied bandwidth as <code>traffic/token × measured tokens/s</code>.</li>
+          <li>Use that implied value only for the same implementation and operating point.</li>
+          <li>Repeat at several batches and context lengths to see whether the slope follows the cache term.</li>
+        </ol>
+
+        <p>
+          A benchmark should report warm-up policy, tokenization policy, prompt
+          length, generated length, concurrency, quantization format, KV-cache
+          format, device count, and whether input and output tokens are included.
+          Without those details, two “tokens/s” figures may describe different
+          workloads.
+        </p>
+      </section>
+
+      <section>
+        <h2>Convert the estimate into batching limits</h2>
+
+        <p>
+          Traffic is only one batching limit. The cache must also fit in available
+          memory. A simple cache-capacity check is:
+        </p>
+
+        <div class="formula">
+          <code>cache_bytes ≈ active_sequences × context × K</code>
+        </div>
+
+        <p>
+          Reserve memory for weights, runtime workspaces, activations, temporary
+          buffers, allocator fragmentation, and framework overhead before assigning
+          the remainder to KV cache:
+        </p>
+
+        <div class="formula">
+          <code>available_cache = device_memory − weights − reserve</code>
+        </div>
+
+        <p>
+          The capacity-only upper bound is then:
+        </p>
+
+        <div class="formula">
+          <code>batch<sub>memory</sub> ≈ available_cache ÷ (context × K)</code>
+        </div>
+
+        <p>
+          Use the smaller of the capacity bound and the latency or throughput
+          target. A batch can fit while still missing a service-level objective
+          because the KV term has made each token too expensive.
+        </p>
+
+        <p>
+          For variable-length requests, replace <code>batch × context</code> with
+          the sum of cached tokens across active sequences. This is the quantity
+          that matters for memory capacity and, approximately, for KV traffic.
+        </p>
+      </section>
+
+      <section>
+        <h2>Failure cases and common wrong turns</h2>
+
+        <h3>Using total parameter count as exact weight traffic</h3>
+        <p>
+          Parameter count multiplied by nominal dtype size omits scales, padding,
+          duplicated tensors, embedding choices, tied weights, and runtime
+          transformations. Treat it as a first-order estimate. Use the actual
+          serialized and resident representation when sizing a production system.
+        </p>
+
+        <h3>Counting query heads instead of KV heads</h3>
+        <p>
+          Grouped-query attention stores fewer keys and values than query heads.
+          The cache formula must use <code>H<sub>kv</sub></code>. This is one of
+          the easiest ways to produce a large, systematic error.
+        </p>
+
+        <h3>Confusing aggregate and per-request throughput</h3>
+        <p>
+          The formula returns aggregate tokens per second across the active batch.
+          Divide by active sequences only when they have comparable scheduling and
+          context. Streaming latency can be dominated by queueing and
+          synchronization even when aggregate throughput looks healthy.
+        </p>
+
+        <h3>Assuming quantized KV cache is free</h3>
+        <p>
+          KV quantization lowers storage and often lowers traffic, but it may add
+          scale metadata, conversion work, or implementation-specific accuracy
+          constraints. The one-byte example is a model input, not a universal
+          property of all 8-bit caches.
+        </p>
+
+        <h3>Ignoring non-memory bottlenecks</h3>
+        <p>
+          The bandwidth estimate can be optimistic when attention kernels,
+          dequantization, normalization, sampling, CPU scheduling, PCIe or
+          interconnect transfers, or multi-tenant interference dominate. Compare
+          the bandwidth estimate with a compute estimate and with an actual
+          end-to-end measurement.
+        </p>
+      </section>
+
+      <section>
+        <h2>A compact decision procedure</h2>
+
+        <ol>
+          <li>Identify the resident weight representation and calculate or measure <code>W</code>.</li>
+          <li>Read the architecture configuration: layers, KV heads, head dimension, and KV dtype.</li>
+          <li>Calculate <code>K = 2 × L × H<sub>kv</sub> × D × S<sub>kv</sub></code>.</li>
+          <li>Estimate total traffic with the expected active-token count, not just the nominal batch size.</li>
+          <li>Use a documented usable-bandwidth assumption to estimate aggregate decode speed.</li>
+          <li>Calculate <code>B<sub>ridge</sub> = W ÷ (C × K)</code> and <code>C<sub>critical</sub> = W ÷ (B × K)</code>.</li>
+          <li>Check that weights and KV cache fit simultaneously in device memory.</li>
+          <li>Validate with a controlled benchmark and report the conditions that produced it.</li>
+        </ol>
+
+        <p>
+          The model is most valuable as a comparison tool. It explains why a
+          smaller weight dtype often improves decode speed at every batch, why KV
+          dtype matters more as context grows, and why a configuration that fits
+          in memory may still be too slow at the target concurrency.
+        </p>
+      </section>
+
+      <section>
+        <h2>Limits of the estimate</h2>
+
+        <p>
+          This method does not predict exact latency. It assumes a simplified
+          streaming pattern and does not model cache locality, kernel fusion,
+          asynchronous scheduling, prefix sharing, speculative decoding, sparse
+          attention, request arrival patterns, or output-sampling cost. It also
+          does not establish the quality or safety of any quantization format.
+        </p>
+
+        <p>
+          Use it as an evidence-bounded planning calculation: state every input,
+          show the units, preserve the distinction between a derived example and
+          a measured result, and then test the operating points that matter to
+          your workload. When the benchmark disagrees, the disagreement is useful
+          evidence that another term has become dominant.
+        </p>
+      </section>
+
+      <footer class="reading-footer">
+        <p>
+          Continue with the <a href="guides.html">guides</a> or look up terms in
+          the <a href="../glossary.html">glossary</a>.
+        </p>
+      </footer>
+    <section class="service-note">
+  <b>We publish what works for us—and implement the same solutions for your business.</b>
+  We design AI automation, Telegram bots, chats, and AI agents for real-world processes.
+  <a href="../contacts-en.html">Discuss your project →</a>
+</section>
+</article>
+  </main>
+
+  <footer class="site-footer">
+    <div class="container">
+      <a href="../index.html">Agent Lab Journal</a>
+      <nav aria-label="Footer navigation">
+        <a href="guides.html">Guides</a>
+        <a href="../glossary.html">Glossary</a>
+      </nav>
+    </div>
+  </footer>
+</body>
+</html>
