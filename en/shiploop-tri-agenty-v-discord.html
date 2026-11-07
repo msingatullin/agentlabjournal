@@ -1,0 +1,429 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Three AI Agents in Discord: From Customer Complaint to a Tested Pull Request</title>
+  <meta name="description" content="Three AI Agents in Discord: From Customer Complaint to a Tested Pull Request — a reproducible demo workflow for triage, fixing, testing, and human-controlled merging.">
+  <link rel="canonical" href="https://agentlabjournal.online/en/shiploop-tri-agenty-v-discord.html">
+  <link rel="stylesheet" href="../style.css">
+  <link rel="stylesheet" href="../reading.css">
+
+  <meta property="og:type" content="article">
+  <meta property="og:title" content="Three AI Agents in Discord: From Customer Complaint to a Tested Pull Request">
+  <meta property="og:description" content="A reproducible demo workflow for triage, fixing, testing, and human-controlled merging with AI agents.">
+  <meta property="og:url" content="https://agentlabjournal.online/en/shiploop-tri-agenty-v-discord.html">
+  <meta property="og:image" content="https://agentlabjournal.online/assets/covers/llm-context-window-budget-social.png">
+  <meta property="og:site_name" content="Agent Lab Journal">
+
+  <meta name="twitter:card" content="summary_large_image">
+  <meta name="twitter:title" content="Three AI Agents in Discord: From Customer Complaint to a Tested Pull Request">
+  <meta name="twitter:description" content="A reproducible demo workflow for triage, fixing, testing, and human-controlled merging with AI agents.">
+  <meta name="twitter:image" content="https://agentlabjournal.online/assets/covers/llm-context-window-budget-social.png">
+
+  <meta name="reading-time" content="16 minutes">
+  <meta name="article-level" content="Intermediate">
+  <meta name="article-topic" content="AI agents, Discord, GitHub, Docker, pull requests">
+
+  <script type="application/ld+json">
+  {
+    "@context": "https://schema.org",
+    "@type": "Article",
+    "headline": "Three AI Agents in Discord: From Customer Complaint to a Tested Pull Request",
+    "description": "A reproducible demo workflow for triage, fixing, testing, and human-controlled merging with AI agents.",
+    "image": ["https://agentlabjournal.online/assets/covers/llm-context-window-budget-social.png"],
+    "dateModified": "2026-11-07",
+    "author": {
+      "@type": "Organization",
+      "name": "Agent Lab Journal"
+    },
+    "publisher": {
+      "@type": "Organization",
+      "name": "Agent Lab Journal",
+      "url": "https://agentlabjournal.online/"
+    },
+    "mainEntityOfPage": {
+      "@type": "WebPage",
+      "@id": "https://agentlabjournal.online/en/shiploop-tri-agenty-v-discord.html"
+    }
+  }
+  </script>
+<link rel="stylesheet" href="../homepage.css"><link rel="stylesheet" href="../max-promo.css">  <meta property="og:image:alt" content="Три AI-агента в Discord: от жалобы пользователя до проверенного pull request">
+</head>
+<body>
+  <header class="site-header">
+    <div class="container">
+      <a href="../index.html" class="site-logo">Agent Lab Journal</a>
+      <nav aria-label="Main navigation">
+        <a href="guides.html">Guides</a>
+        <a href="../glossary.html">Glossary</a>
+      </nav>
+    </div>
+  </header>
+
+  <main>
+    <article class="reading">
+      <header class="reading-header">
+        <p class="reading-meta">Intermediate · 16 min read · Updated 7 November 2026</p>
+        <h1>Three AI Agents in Discord: From Customer Complaint to a Tested Pull Request</h1>
+        <figure class="article-cover" data-editorial-cover="shiploop-tri-agenty-v-discord"><img src="../assets/covers/llm-context-window-budget.png" alt="Три AI-агента в Discord: от жалобы пользователя до проверенного pull request" width="1280" height="720" fetchpriority="high"><figcaption>Temporary fallback cover; replace in editorial pass.</figcaption></figure>
+        <p class="lead">A customer complaint enters a Discord channel, three narrowly scoped agents turn it into a proposed code change, and automated checks report whether the change is safe to review. A person still owns the final merge decision.</p>
+      </header>
+
+      <p>This article describes a demo architecture, not a production incident or a measured benchmark. The commands and configuration are designed to be reproducible, but they have not been executed in the environment where this article is published. Replace example names, repository URLs, image tags, and secrets with values from your own project.</p>
+
+      <h2>The problem: automate the path, keep the decision</h2>
+
+      <p>Bug reports often lose time between intake, reproduction, implementation, and review. The desired workflow is straightforward:</p>
+
+      <ol>
+        <li>A customer-facing report is captured without exposing personal data.</li>
+        <li>A triage agent extracts a small, testable problem statement.</li>
+        <li>A fixing agent works in an isolated branch and opens a <a href="../glossary.html#pull-request">pull request</a>.</li>
+        <li>A review agent checks the diff, tests, and risk signals.</li>
+        <li>A human reviews the evidence and decides whether to merge.</li>
+      </ol>
+
+      <p>The important boundary is authorization. Agents may prepare a change and report evidence; they do not receive permission to merge directly into the default branch.</p>
+
+      <h2>What the demo contains</h2>
+
+      <p>The example uses <a href="../glossary.html#discord">Discord</a> as the operator interface, <a href="../glossary.html#github">GitHub</a> as the source-control and review system, and <a href="../glossary.html#docker">Docker</a> to make the test environment explicit.</p>
+
+      <pre><code>Customer report
+      |
+      v
+Discord #bug-reports
+      |
+      v
+Triage agent ----&gt; structured issue summary
+      |
+      v
+Fix agent -------&gt; branch + pull request
+      |
+      v
+CI in Docker -----&gt; test and lint results
+      |
+      v
+Review agent ----&gt; risk review in pull request
+      |
+      v
+Human ----------&gt; approve, request changes, or merge</code></pre>
+
+      <p>Each agent has one job:</p>
+
+      <ul>
+        <li><strong>Triage agent:</strong> converts an unstructured report into symptoms, reproduction steps, expected behavior, actual behavior, and a confidence note.</li>
+        <li><strong>Fix agent:</strong> reads the approved issue, changes only the relevant files, adds or updates tests, and opens a pull request.</li>
+        <li><strong>Review agent:</strong> inspects the proposed diff and test output, then comments on correctness, scope, and unresolved risk.</li>
+      </ul>
+
+      <h2>Repository and channel design</h2>
+
+      <p>Use a small repository for the demo. A minimal layout could look like this:</p>
+
+      <pre><code>demo-service/
+├── app/
+│   └── orders.py
+├── tests/
+│   └── test_orders.py
+├── .github/
+│   └── workflows/
+│       └── test.yml
+├── Dockerfile
+└── pyproject.toml</code></pre>
+
+      <p>Create separate Discord channels so an agent never has to infer the intended audience from free-form conversation:</p>
+
+      <pre><code>#bug-reports       human reports and triage commands
+#agent-updates     status messages and links
+#pull-requests     review notifications
+#agent-admin       restricted operational messages</code></pre>
+
+      <p>Keep customer names, email addresses, order numbers, access tokens, and full request payloads out of the channels. If a report contains personal data, redact it before the triage agent sees it.</p>
+
+      <h2>Step 1: define a report contract</h2>
+
+      <p>Agents work more reliably when the hand-off format is explicit. Ask the triage agent to emit JSON with a bounded schema:</p>
+
+      <pre><code>{
+  "title": "Short bug title",
+  "summary": "One-sentence description",
+  "expected": "What should happen",
+  "actual": "What happens instead",
+  "reproduction": [
+    "Step one",
+    "Step two"
+  ],
+  "suspected_area": "app/orders.py",
+  "acceptance_tests": [
+    "A valid order is still accepted",
+    "The reported invalid order is rejected"
+  ],
+  "confidence": "low|medium|high",
+  "needs_human_clarification": false
+}</code></pre>
+
+      <p>The schema is an example. In a real project, validate it before passing the result downstream. A missing reproduction step should stop the pipeline or request clarification; it should not be silently invented.</p>
+
+      <h2>Step 2: connect Discord to triage</h2>
+
+      <p>A Discord bot can listen for a command such as:</p>
+
+      <pre><code>/triage The checkout accepts an order with quantity 0</code></pre>
+
+      <p>The bot should perform four checks before invoking the model:</p>
+
+      <ol>
+        <li>Verify that the command came from an allowed channel.</li>
+        <li>Verify that the user is allowed to start triage.</li>
+        <li>Remove or mask known personal-data fields.</li>
+        <li>Attach a correlation ID to every downstream message.</li>
+      </ol>
+
+      <p>A simplified event envelope might be:</p>
+
+      <pre><code>{
+  "correlation_id": "demo-2026-0001",
+  "source": "discord:#bug-reports",
+  "report": "The checkout accepts an order with quantity 0",
+  "repository": "example/demo-service",
+  "base_branch": "main"
+}</code></pre>
+
+      <p>Do not put a bot token in source code or in a Discord message. Store it in the runtime secret manager or an environment variable injected by the deployment system.</p>
+
+      <h2>Step 3: triage before changing code</h2>
+
+      <p>The triage agent receives the event envelope and read-only repository context. Its instruction should make uncertainty visible:</p>
+
+      <pre><code>You are the triage agent.
+Return only the specified JSON object.
+Do not propose a code change unless the report provides enough evidence.
+Do not invent logs, users, timestamps, or reproduction results.
+Mark confidence as low when the affected code path is uncertain.
+If the report is ambiguous, set needs_human_clarification to true.</code></pre>
+
+      <p>The bot posts a compact result back to Discord and stores the full structured record with the correlation ID. The human can then correct the report before the fix agent is allowed to act.</p>
+
+      <p>Example status message:</p>
+
+      <pre><code>TRIAGE READY · demo-2026-0001
+Title: Checkout accepts quantity 0
+Suspected area: app/orders.py
+Acceptance tests: 2
+Confidence: medium
+Human clarification: not required
+Next action: authorize fix</code></pre>
+
+      <p>The “authorize fix” step can be a Discord button, a slash command, or a GitHub issue label. Choose one explicit transition. Reading a triage result should not itself authorize code changes.</p>
+
+      <h2>Step 4: give the fixing agent a branch boundary</h2>
+
+      <p>The fixing agent should operate on a short-lived branch named from the correlation ID:</p>
+
+      <pre><code>bug/demo-2026-0001-quantity-zero</code></pre>
+
+      <p>Its permissions should allow it to:</p>
+
+      <ul>
+        <li>read the repository;</li>
+        <li>create a branch;</li>
+        <li>commit to that branch;</li>
+        <li>open a pull request;</li>
+        <li>read check results and write a bounded pull-request comment.</li>
+      </ul>
+
+      <p>Its permissions should not allow it to merge, change branch protection, create organization-level credentials, or modify the workflow that grants those permissions.</p>
+
+      <p>A useful fixing instruction is deliberately conservative:</p>
+
+      <pre><code>You are the fixing agent.
+Work only on the authorized branch.
+Read the triage JSON and inspect the relevant implementation and tests.
+Make the smallest change that satisfies the acceptance tests.
+Do not change dependencies, CI permissions, or unrelated files.
+Add a regression test when the behavior can be tested locally.
+Run the repository's documented checks.
+Open a pull request containing:
+- the problem,
+- the root-cause hypothesis,
+- files changed,
+- commands run,
+- results observed,
+- remaining uncertainty.</code></pre>
+
+      <p>For the demo bug, the implementation might add a validation guard in <code>app/orders.py</code> and a test in <code>tests/test_orders.py</code>. That is an example of the expected shape of a change, not a verified patch for a real repository.</p>
+
+      <h2>Step 5: make tests reproducible with Docker</h2>
+
+      <p>The container should describe the runtime assumptions clearly. For example:</p>
+
+      <pre><code>FROM python:3.12-slim
+
+WORKDIR /workspace
+COPY pyproject.toml .
+RUN pip install --no-cache-dir pytest ruff
+
+COPY . .
+CMD ["pytest", "-q"]</code></pre>
+
+      <p>A local operator could build and run the image with:</p>
+
+      <pre><code>docker build -t demo-service-checks .
+docker run --rm demo-service-checks</code></pre>
+
+      <p>These commands are illustrative. The exact install command must match the repository's dependency manager. If the project uses a lockfile, copy and install from that lockfile rather than introducing an unpinned environment.</p>
+
+      <p>GitHub Actions can run the same check after the branch is pushed:</p>
+
+      <pre><code>name: test
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+      - run: docker build --tag demo-service-checks .
+      - run: docker run --rm demo-service-checks</code></pre>
+
+      <p>Pin action versions according to your organization's policy and review changes to the workflow itself. A passing application test is not evidence that a modified workflow is safe.</p>
+
+      <h2>Step 6: let the review agent read evidence, not assumptions</h2>
+
+      <p>The review agent should receive the pull-request diff, the triage JSON, the acceptance tests, and the checks reported by GitHub. It should not report a test as passing merely because the fixing agent said it ran.</p>
+
+      <p>Its output can use a fixed comment template:</p>
+
+      <pre><code>## Automated review
+
+### Scope
+- [ ] Change is limited to the reported problem
+- [ ] No unrelated files changed
+- [ ] No credentials or personal data added
+
+### Behavior
+- [ ] Acceptance test is covered
+- [ ] Existing behavior is preserved where expected
+- [ ] Error handling is explicit
+
+### Evidence
+- Checks observed:
+- Checks missing:
+- Test output link:
+- Remaining uncertainty:
+
+### Recommendation
+- approve_for_human_review
+- request_changes
+- needs_more_information</code></pre>
+
+      <p>The recommendation is advisory. A review agent can identify a missing test or suspicious diff; it cannot turn that observation into a merge authorization.</p>
+
+      <h2>Step 7: enforce the human merge gate</h2>
+
+      <p>Configure branch protection so that the default branch requires the checks and approvals your project considers necessary. At minimum, the design should ensure:</p>
+
+      <ul>
+        <li>direct pushes to the default branch are restricted;</li>
+        <li>the required test check must pass;</li>
+        <li>at least one human approval is required;</li>
+        <li>the fixing and review agents cannot approve their own pull request;</li>
+        <li>the agents do not have merge permission.</li>
+      </ul>
+
+      <p>The human reviewer should inspect the original complaint, the triage record, the diff, the test output, and the review-agent comment. The available decisions are simple: merge, request changes, or close the pull request as incorrect or unnecessary.</p>
+
+      <h2>End-to-end demonstration sequence</h2>
+
+      <p>For a repeatable demo, use a synthetic report with no real customer data:</p>
+
+      <pre><code>/triage The checkout accepts an order with quantity 0</code></pre>
+
+      <p>Then follow this sequence:</p>
+
+      <ol>
+        <li>Discord creates correlation ID <code>demo-2026-0001</code>.</li>
+        <li>The triage agent produces the structured report.</li>
+        <li>A human confirms that the report is actionable.</li>
+        <li>The fixing agent creates the branch and changes the smallest relevant surface.</li>
+        <li>The fixing agent opens a pull request and posts the commands it claims to have run.</li>
+        <li>GitHub runs the Docker-based check.</li>
+        <li>The review agent reads the actual check status and comments on the pull request.</li>
+        <li>A human reviews the evidence and makes the merge decision.</li>
+      </ol>
+
+      <p>Record the correlation ID in Discord, the issue or pull-request URL in GitHub, the container tag used for checks, and the final human decision. This creates an audit trail without storing the original customer message everywhere.</p>
+
+      <h2>Verification checklist</h2>
+
+      <p>Before calling the demo complete, verify each boundary manually:</p>
+
+      <ul>
+        <li>Can an unauthorized Discord user start a fix?</li>
+        <li>Can a report containing personal data reach an agent unredacted?</li>
+        <li>Can the fixing agent push to the default branch?</li>
+        <li>Can either agent approve or merge its own pull request?</li>
+        <li>Does the review agent distinguish observed checks from claimed checks?</li>
+        <li>Does a failing test block the merge path?</li>
+        <li>Can a human stop the workflow before code is changed?</li>
+        <li>Can operators trace a Discord message to one branch and one pull request?</li>
+      </ul>
+
+      <p>For a real rollout, also test token rotation, revoked permissions, duplicate events, network timeouts, malformed model output, and a repository with a deliberately failing test. Those are verification cases to run in your environment; they are not results reported by this article.</p>
+
+      <h2>Failure cases and recovery</h2>
+
+      <h3>Ambiguous complaint</h3>
+      <p>Stop after triage and ask for a concrete reproduction. A model-generated guess is not a customer fact. Keep the status as “needs clarification” until a human supplies enough detail.</p>
+
+      <h3>Duplicate Discord event</h3>
+      <p>Use the Discord event ID or correlation ID as an idempotency key. A repeated delivery should update the existing workflow rather than create a second branch and pull request.</p>
+
+      <h3>Tests fail on the branch</h3>
+      <p>Do not ask the review agent to reinterpret a failing check as success. Return the failure to the fixing agent or to a human, with the exact command and log location.</p>
+
+      <h3>The diff is too broad</h3>
+      <p>Stop and request changes. A useful guard is a changed-file allowlist or a maximum diff size for automated branches. Exceptions should require a human explanation.</p>
+
+      <h3>Agent credentials are overpowered</h3>
+      <p>Revoke the token, inspect recent actions, and recreate the integration with narrower permissions. Treat permission review as part of the workflow, not as a one-time setup task.</p>
+
+      <h2>Limitations</h2>
+
+      <p>This pattern does not make software maintenance autonomous or risk-free. Agents can misunderstand requirements, overlook edge cases, produce plausible but weak tests, and misread incomplete evidence. Docker improves repeatability but does not guarantee production equivalence. Discord is convenient for coordination but is not a substitute for issue history, access control, or an auditable code-review system.</p>
+
+      <p>The most defensible claim for this design is narrower: it can make the path from report to review more structured while preserving a human-controlled merge boundary, provided the permissions, checks, and audit trail are configured correctly.</p>
+
+      <h2>Closing pattern</h2>
+
+      <p>Use Discord to collect and coordinate, GitHub to preserve code history and review, Docker to define the test environment, and agents to handle bounded transformations. Keep authorization explicit at every transition. The final question is not whether an agent can open a pull request; it is whether a human can understand the evidence well enough to decide what happens next.</p>
+
+      <p>Continue with the <a href="guides.html">guides</a> or look up terms in the <a href="../glossary.html">glossary</a>.</p>
+    <section class="service-note">
+  <b>We publish what works for us—and implement the same solutions for your business.</b>
+  We design AI automation, Telegram bots, chats, and AI agents for real-world processes.
+  <a href="../contacts-en.html">Discuss your project →</a>
+</section>
+</article>
+  </main>
+
+  <footer class="site-footer">
+    <div class="container">
+      <p>© Agent Lab Journal</p>
+      <nav aria-label="Footer navigation">
+        <a href="guides.html">Guides</a>
+        <a href="../glossary.html">Glossary</a>
+      </nav>
+    </div>
+  </footer>
+</body>
+</html>
