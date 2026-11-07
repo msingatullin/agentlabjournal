@@ -1,0 +1,386 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Как ускорить декодирование Qwen2 на Metal в Candle</title>
+  <meta name="description" content="Как ускорить декодирование Qwen2 на Metal в Candle: разбор KV-heads, лишних операций внимания и патч с fused SDPA для Apple M2.">
+  <link rel="canonical" href="https://agentlabjournal.online/qwen2-metal-sdpa-candle.html">
+  <link rel="stylesheet" href="style.css">
+  <link rel="stylesheet" href="reading.css">
+
+  <meta property="og:type" content="article">
+  <meta property="og:title" content="Как ускорить декодирование Qwen2 на Metal в Candle">
+  <meta property="og:description" content="Практический разбор декодирования Qwen2 на Metal в Candle и патч с fused SDPA.">
+  <meta property="og:url" content="https://agentlabjournal.online/qwen2-metal-sdpa-candle.html">
+  <meta property="og:site_name" content="Agent Lab Journal">
+
+  <meta name="twitter:card" content="summary">
+  <meta name="twitter:title" content="Как ускорить декодирование Qwen2 на Metal в Candle">
+  <meta name="twitter:description" content="Почему квантованный Qwen2 теряет скорость на Metal и как проверить ускорение после fused SDPA.">
+
+  <script type="application/ld+json">
+  {
+    "@context": "https://schema.org",
+    "@type": "Article",
+    "headline": "Как ускорить декодирование Qwen2 на Metal в Candle",
+    "description": "Разбор расширения KV-heads и лишних операций внимания при декодировании Qwen2 на Metal в Candle.",
+    "author": {
+      "@type": "Organization",
+      "name": "Agent Lab Journal"
+    },
+    "publisher": {
+      "@type": "Organization",
+      "name": "Agent Lab Journal"
+    },
+    "mainEntityOfPage": "https://agentlabjournal.online/qwen2-metal-sdpa-candle.html",
+    "inLanguage": "ru"
+  }
+  </script>
+<link rel="stylesheet" href="homepage.css"><link rel="stylesheet" href="max-promo.css">  <meta property="og:image" content="https://agentlabjournal.online/assets/covers/llm-context-window-budget-social.png">
+  <meta property="og:image:alt" content="Как ускорить декодирование Qwen2 на Metal в Candle">
+  <meta name="twitter:image" content="https://agentlabjournal.online/assets/covers/llm-context-window-budget-social.png">
+</head>
+
+<body>
+  <header class="site-header">
+    <a href="index.html" class="site-brand">Agent Lab Journal</a>
+    <nav aria-label="Основная навигация">
+      <a href="guides.html">Guides</a>
+      <a href="glossary.html">Глоссарий</a>
+    </nav>
+  </header>
+
+  <main>
+    <article class="reading">
+      <header class="reading-header">
+        <p class="reading-kicker">Metal · Candle · Qwen2</p>
+        <h1>Как ускорить декодирование Qwen2 на Metal в Candle</h1>
+        <figure class="article-cover" data-editorial-cover="qwen2-metal-sdpa-candle"><img src="assets/covers/llm-context-window-budget.png" alt="Как ускорить декодирование Qwen2 на Metal в Candle" width="1280" height="720" fetchpriority="high"><figcaption>Temporary fallback cover; replace in editorial pass.</figcaption></figure>
+        <div class="reading-meta">
+          <span>Практическая статья</span>
+          <span>Продвинутый уровень</span>
+          <span>Чтение: до 12 минут</span>
+        </div>
+      </header>
+<a href="https://max.ru/channel_AgentLab?utm_source=agentlabjournal&utm_medium=article&utm_campaign=max_channel&utm_content=article_footer" class="max-promo-block" target="_blank" rel="noopener noreferrer" aria-label="Самое важное из мира AI в канале MAX AgentLab">
+  <span class="max-promo-block__icon" aria-hidden="true"></span>
+  <span class="max-promo-block__content"><span class="max-promo-block__title">Самое важное из мира AI — в канале MAX AgentLab</span><span class="max-promo-block__desc">Отдельные разборы, инструменты и практические схемы</span></span>
+  <span class="max-promo-block__arrow" aria-hidden="true">→</span>
+</a>
+<a href="https://t.me/pelmenews?utm_source=agentlabjournal&utm_medium=article&utm_campaign=telegram_channel&utm_content=article_intro" class="telegram-promo-block" target="_blank" rel="noopener noreferrer" aria-label="Читайте Agent Lab в Telegram">
+  <span class="telegram-promo-block__icon" aria-hidden="true"></span>
+  <span class="telegram-promo-block__content">
+    <span class="telegram-promo-block__title">Читайте Agent Lab в Telegram</span>
+    <span class="telegram-promo-block__desc">Разборы, кейсы и новости о практических AI-агентах без лишней воды.</span>
+  </span>
+  <span class="telegram-promo-block__arrow" aria-hidden="true">→</span>
+</a>
+
+      <p class="lead">
+        Квантование уменьшает размер модели, но само по себе не гарантирует быстрое
+        декодирование. В Qwen2 с grouped-query attention число query-heads больше числа
+        KV-heads. Если backend перед вычислением внимания материализует расширенные
+        копии ключей и значений, Metal получает лишнюю работу на каждом токене.
+      </p>
+
+      <p>
+        В этой статье показан безопасный путь диагностики и патчирования Candle:
+        сохранить компактный KV-cache, передать повторение групп непосредственно в
+        fused SDPA и сравнить baseline с изменённой реализацией на Apple M2.
+        Численные результаты здесь не подменяются вымышленными измерениями: их нужно
+        получить на вашей сборке и сохранить вместе с параметрами запуска.
+      </p>
+
+      <h2>Где появляется потеря производительности</h2>
+
+      <p>
+        В grouped-query attention запросы используют больше голов, чем cache ключей и
+        значений. Пусть <code>n_q</code> равно числу query-heads, а
+        <code>n_kv</code> равно числу KV-heads. Тогда размер группы равен:
+      </p>
+
+      <pre><code>group_size = n_q / n_kv</code></pre>
+
+      <p>
+        Наивный путь делает <code>repeat_kv</code> до формы
+        <code>[batch, n_q, sequence, head_dim]</code>. Это удобно для обычного
+        матричного умножения, но увеличивает объём чтения из памяти и создаёт
+        промежуточные tensor-операции. На коротком prompt проблема может быть
+        незаметной. При пошаговом декодировании она повторяется для каждого нового
+        токена.
+      </p>
+
+      <p>
+        На Metal стоимость таких операций особенно заметна, когда основной
+        матричный продукт уже хорошо оптимизирован. В результате квантованный
+        linear-слой ускоряется, а attention становится новым ограничением.
+      </p>
+
+      <h2>Проверяем baseline</h2>
+
+      <p>
+        Сначала зафиксируйте исходное состояние. Не меняйте одновременно модель,
+        размер контекста и способ подсчёта токенов. Пример команд ниже не удаляет
+        файлы и не изменяет глобальную конфигурацию Rust.
+      </p>
+
+      <pre><code>rustc --version
+cargo --version
+uname -m
+system_profiler SPDisplaysDataType | sed -n '1,40p'
+
+cargo run --release --features metal -- \
+  --model ./models/qwen2 \
+  --prompt "Explain grouped-query attention in one paragraph." \
+  --max-new-tokens 128 \
+  --measure decode</code></pre>
+
+      <p>
+        Если CLI проекта называется иначе, замените только имя бинарника и его
+        аргументы. Для сравнения сохраните скорость декодирования, количество
+        сгенерированных токенов, размер prompt, тип квантования и commit
+        исходного Candle.
+      </p>
+
+      <h2>Что менять в Candle</h2>
+
+      <p>
+        Патч должен менять не математику attention, а место, где KV-heads
+        расширяются. Ищите вызов вроде <code>repeat_kv</code>,
+        <code>repeat_interleave</code> или reshape, который превращает
+        <code>n_kv</code> в <code>n_q</code> до вычисления attention.
+      </p>
+
+      <p>
+        Удобная граница для исправления выглядит так:
+      </p>
+
+      <pre><code>Q: [batch, n_q,  q_len, head_dim]
+K: [batch, n_kv, kv_len, head_dim]
+V: [batch, n_kv, kv_len, head_dim]</code></pre>
+
+      <p>
+        Вместо materialize-расширения передайте эти tensor вместе с
+        <code>group_size</code> в fused SDPA. Внутри kernel каждая query-head
+        обращается к KV-head с индексом:
+      </p>
+
+      <pre><code>kv_head = query_head / group_size</code></pre>
+
+      <p>
+        Ниже приведён каркас патча. Названия функций зависят от версии Candle и
+        вашего Metal backend, поэтому это пример места интеграции, а не готовый
+        универсальный diff.
+      </p>
+
+      <pre><code>fn attention(
+    q: &amp;Tensor,
+    k: &amp;Tensor,
+    v: &amp;Tensor,
+    scale: f64,
+    n_q: usize,
+    n_kv: usize,
+) -&gt; Result&lt;Tensor&gt; {
+    if n_q % n_kv != 0 {
+        bail!("n_q must be divisible by n_kv");
+    }
+
+    let group_size = n_q / n_kv;
+
+    // Не вызываем repeat_kv(k, group_size) и repeat_kv(v, group_size).
+    metal_fused_sdpa(
+        q,
+        k,
+        v,
+        scale,
+        group_size,
+    )
+}</code></pre>
+
+      <p>
+        В kernel следует проверить границы индексов и поддержать causal mask.
+        Для decode обычно <code>q_len == 1</code>, поэтому путь для одного query
+        может быть отдельной специализацией. Важно не копировать K и V только ради
+        совместимости с формой Q.
+      </p>
+
+      <h2>Минимальная логика fused SDPA</h2>
+
+      <p>
+        Псевдокод вычисления для одной пары query-head и KV-head выглядит так:
+      </p>
+
+      <pre><code>for query_head in 0..n_q {
+    let kv_head = query_head / group_size;
+
+    for token in visible_tokens {
+        let score = dot(
+            q[query_head],
+            k[kv_head][token]
+        ) * scale;
+
+        // causal mask применяется до softmax
+        scores[token] = score;
+    }
+
+    let weights = softmax(scores);
+    output[query_head] = weighted_sum(
+        weights,
+        v[kv_head]
+    );
+}</code></pre>
+
+      <p>
+        Реальная реализация должна оставить вычисления на GPU, не создавать
+        промежуточный tensor для повторенных голов и использовать тот же dtype,
+        что и существующий Metal kernel. Для квантованных весов это не означает,
+        что Q, K и V обязательно должны оставаться квантованными: проверьте
+        текущую схему деквантизации и не переносите её в attention без необходимости.
+      </p>
+
+      <h2>Собираем и сравниваем</h2>
+
+      <p>
+        Соберите отдельную release-сборку после патча. Если проект использует
+        lockfile, не обновляйте зависимости во время эксперимента.
+      </p>
+
+      <pre><code>cargo build --release --features metal
+
+cargo run --release --features metal -- \
+  --model ./models/qwen2 \
+  --prompt "Explain grouped-query attention in one paragraph." \
+  --max-new-tokens 128 \
+  --measure decode</code></pre>
+
+      <p>
+        Повторите каждый вариант несколько раз после одинакового прогрева.
+        Сравнивайте только декодирование, а не суммарное время загрузки модели и
+        prompt-prefill. Для отчёта используйте одну таблицу:
+      </p>
+
+      <table>
+        <thead>
+          <tr>
+            <th>Вариант</th>
+            <th>Decode tokens/s</th>
+            <th>Память</th>
+            <th>Примечание</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>Baseline</td>
+            <td>заполнить</td>
+            <td>заполнить</td>
+            <td>KV-heads расширяются</td>
+          </tr>
+          <tr>
+            <td>Fused SDPA</td>
+            <td>заполнить</td>
+            <td>заполнить</td>
+            <td>расширение выполняется логически</td>
+          </tr>
+        </tbody>
+      </table>
+
+      <p>
+        Ускорение считайте по формуле:
+      </p>
+
+      <pre><code>speedup = fused_decode_tokens_per_sec
+        / baseline_decode_tokens_per_sec</code></pre>
+
+      <p>
+        Запишите также размер модели, commit патча, версию macOS, модель Mac,
+        параметры Metal и точную команду запуска. Без этих данных число tokens/s
+        трудно воспроизвести.
+      </p>
+
+      <h2>Типовые ошибки</h2>
+
+      <ul>
+        <li>
+          <strong>Несовместимые формы.</strong> Проверьте, что
+          <code>n_q % n_kv == 0</code>, а head dimension совпадает для Q, K и V.
+        </li>
+        <li>
+          <strong>Неверная causal mask.</strong> Для decode позиция нового токена
+          должна видеть весь доступный KV-cache, а не только последний элемент.
+        </li>
+        <li>
+          <strong>Скрытая материализация.</strong> Уберите не только явный
+          <code>repeat_kv</code>, но и операции, которые возвращают contiguous
+          tensor размера <code>n_q</code>.
+        </li>
+        <li>
+          <strong>Сравнение разных режимов.</strong> Prefill и decode имеют
+          разные профили. Не смешивайте их в одном показателе.
+        </li>
+        <li>
+          <strong>Ошибки dtype.</strong> Если kernel ожидает float16, не передавайте
+          float32 без явного решения. Это может увеличить память и изменить
+          производительность.
+        </li>
+      </ul>
+
+      <h2>Ограничения подхода</h2>
+
+      <p>
+        Fused SDPA не устраняет стоимость чтения KV-cache и не делает
+        квантованные матричные операции бесплатными. Выигрыш зависит от размера
+        группы, длины контекста, реализации Metal kernel и баланса между
+        attention и остальными слоями.
+      </p>
+
+      <p>
+        Если текущий backend уже выполняет повторение голов внутри kernel, внешний
+        патч может не дать ускорения. В этом случае измеряйте не только tokens/s,
+        но и аллокации, объём переданных данных и время отдельного attention
+        участка.
+      </p>
+
+      <h2>Итог</h2>
+
+      <p>
+        Чтобы ускорить декодирование Qwen2 на Metal в Candle, сначала найдите
+        materialize-расширение KV-heads, затем перенесите отображение
+        query-head → KV-head внутрь fused SDPA. После этого сравните baseline и
+        патч на одинаковом prompt, контексте и числе новых токенов. Только
+        измерение на конкретном Apple M2 покажет фактический выигрыш вашей сборки.
+      </p>
+
+      <p>
+        Для связанных практических материалов откройте
+        <a href="guides.html">раздел guides</a>, а определения терминов проверьте в
+        <a href="glossary.html">глоссарии</a>.
+      </p>
+<aside class="service-note" aria-label="Связаться по проекту">
+  <div class="service-note__copy">
+    <p class="service-note__label">Связь с Agent Lab</p>
+    <p class="service-note__title">Внедрим такой контур в ваш процесс</p>
+    <p class="service-note__text">Напишите инженеру Agent Lab в Telegram: опишите задачу, бота или интеграцию — предложим пилот с проверками и понятными границами.</p>
+  </div>
+  <a class="service-note__link" href="https://t.me/msrzn007?utm_source=journal&amp;utm_medium=article&amp;utm_campaign=service_note" target="_blank" rel="noopener">Написать в Telegram
+    <svg viewBox="0 0 16 16" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"><path d="M3 13 13 3M6 3h7v7"/></svg>
+  </a>
+</aside>
+<aside class="service-note service-note--sitevisor" aria-label="Экспресс-аудит сайта">
+  <div class="service-note__copy">
+    <p class="service-note__label">SiteVisor</p>
+    <p class="service-note__title">Проверьте техническое состояние и готовность вашего сайта к рекламе</p>
+    <p class="service-note__text">Экспресс-аудит на SiteVisor.pro: индексация, скорость, разметка, аналитика и точки конверсии.</p>
+  </div>
+  <a class="service-note__link" href="https://sitevisor.pro/?utm_source=journal&amp;utm_medium=article&amp;utm_campaign=leadmagnet" target="_blank" rel="noopener">Экспресс-аудит на SiteVisor.pro
+    <svg viewBox="0 0 16 16" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"><path d="M3 13 13 3M6 3h7v7"/></svg>
+  </a>
+</aside>
+</article>
+  </main>
+
+  <footer class="site-footer">
+    <p>Agent Lab Journal · Практика локального inference</p>
+  </footer>
+</body>
+</html>
