@@ -1,0 +1,488 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>A GitLab Issue Queue for Coding Agents: Selection Rules, Checks, and Stop Conditions</title>
+  <meta name="description" content="A GitLab Issue Queue for Coding Agents: Selection Rules, Checks, and Stop Conditions. Build a reproducible workflow with issue selection rules, repository instructions, verification, scoped changes, and human checkpoints.">
+  <link rel="canonical" href="https://agentlabjournal.online/en/gitlab-agent-issue-queue.html">
+  <link rel="stylesheet" href="../style.css">
+  <link rel="stylesheet" href="../reading.css">
+  <meta property="og:type" content="article">
+  <meta property="og:site_name" content="Agent Lab Journal">
+  <meta property="og:title" content="A GitLab Issue Queue for Coding Agents: Selection Rules, Checks, and Stop Conditions">
+  <meta property="og:description" content="A reproducible GitLab workflow for coding agents: select safe issues, verify changes, keep scope bounded, and stop when human review is required.">
+  <meta property="og:url" content="https://agentlabjournal.online/en/gitlab-agent-issue-queue.html">
+  <meta property="og:image" content="https://agentlabjournal.online/assets/covers/llm-context-window-budget-social.png">
+  <meta name="twitter:card" content="summary_large_image">
+  <meta name="twitter:title" content="A GitLab Issue Queue for Coding Agents: Selection Rules, Checks, and Stop Conditions">
+  <meta name="twitter:description" content="A reproducible GitLab workflow for coding agents with explicit selection rules, verification gates, scope limits, and human checkpoints.">
+  <meta name="twitter:image" content="https://agentlabjournal.online/assets/covers/llm-context-window-budget-social.png">
+  <meta name="reading-time" content="20 minutes">
+  <meta name="article:reading_time" content="20 minutes">
+  <script type="application/ld+json">
+  {
+    "@context": "https://schema.org",
+    "@type": "Article",
+    "headline": "A GitLab Issue Queue for Coding Agents: Selection Rules, Checks, and Stop Conditions",
+    "description": "A reproducible GitLab workflow for coding agents with explicit issue selection rules, repository instructions, verification gates, scope limits, and human checkpoints.",
+    "image": ["https://agentlabjournal.online/assets/covers/llm-context-window-budget-social.png"],
+    "dateModified": "2026-11-08",
+    "author": {
+      "@type": "Organization",
+      "name": "Agent Lab Journal"
+    },
+    "publisher": {
+      "@type": "Organization",
+      "name": "Agent Lab Journal",
+      "url": "https://agentlabjournal.online/"
+    },
+    "mainEntityOfPage": {
+      "@type": "WebPage",
+      "@id": "https://agentlabjournal.online/en/gitlab-agent-issue-queue.html"
+    }
+  }
+  </script>
+<link rel="stylesheet" href="../homepage.css"><link rel="stylesheet" href="../max-promo.css">  <meta property="og:image:alt" content="Очередь GitLab-задач для coding agent: правила выбора, проверки и остановки">
+</head>
+<body>
+  <header class="site-header">
+    <a href="../index.html" class="site-logo">Agent Lab Journal</a>
+    <nav aria-label="Primary navigation">
+      <a href="guides.html">Guides</a>
+      <a href="../glossary.html">Glossary</a>
+    </nav>
+  </header>
+
+  <main>
+    <article class="reading">
+      <p class="reading-meta">Guide · Intermediate · 20-minute read · Updated 8 November 2026</p>
+
+      <h1>A GitLab Issue Queue for Coding Agents: Selection Rules, Checks, and Stop Conditions</h1>
+        <figure class="article-cover" data-editorial-cover="gitlab-agent-issue-queue"><img src="../assets/covers/llm-context-window-budget.png" alt="Очередь GitLab-задач для coding agent: правила выбора, проверки и остановки" width="1280" height="720" fetchpriority="high"><figcaption>Temporary fallback cover; replace in editorial pass.</figcaption></figure>
+
+      <p class="lead">A coding agent should not treat a GitLab issue list as an invitation to improvise. A safe queue gives the agent a narrow selection rule, repository-specific instructions, repeatable checks, and an explicit point where it must stop and ask a human.</p>
+
+      <p>This article describes a reproducible workflow for repositories where an agent may inspect issues, prepare a scoped change, run local verification, and open a <a href="../glossary.html#merge-request">merge request</a>. It does not assume a particular programming language, runner, hosting plan, or automation product. Commands are examples; adapt them to the repository and label them as examples in your own documentation.</p>
+
+      <h2>The operating model</h2>
+
+      <p>The queue is a controlled handoff between GitLab and the repository. GitLab provides issue state, labels, ownership, and the merge-request review path. The repository provides instructions, tests, formatting rules, and the definition of a valid change. The agent connects the two, but it must not replace human decisions about product intent, security, data handling, or release risk.</p>
+
+      <p>A useful model is:</p>
+
+      <ol>
+        <li>Select exactly one eligible issue.</li>
+        <li>Confirm that the issue is actionable and within the agent’s authority.</li>
+        <li>Read repository instructions before editing.</li>
+        <li>Make the smallest change that satisfies the acceptance criteria.</li>
+        <li>Run the checks required by the repository.</li>
+        <li>Report evidence, limitations, and remaining uncertainty.</li>
+        <li>Stop for human review when a stop condition is met.</li>
+      </ol>
+
+      <p>The important property is not that every task is automated. It is that every transition is observable and reversible.</p>
+
+      <h2>1. Define an eligible issue</h2>
+
+      <p>Do not let the agent choose “the next interesting issue.” Define eligibility as a conjunction of rules. A queue item is eligible only when every required condition is true.</p>
+
+      <pre><code>eligible(issue) =
+  issue.state == "opened"
+  AND issue.labels contains "agent-ready"
+  AND issue.labels contains "size:small"
+  AND issue.assignee is empty
+  AND issue.milestone is current
+  AND issue has acceptance criteria
+  AND issue has no "human-only" label
+  AND issue has no unresolved blocking dependency</code></pre>
+
+      <p>The exact field names depend on your GitLab process. The principle is stable: selection should be deterministic enough that two operators looking at the same queue can explain why the same issue was selected.</p>
+
+      <h3>Recommended labels</h3>
+
+      <p>Use labels to communicate authority and risk, not just topic.</p>
+
+      <ul>
+        <li><code>agent-ready</code>: the issue may be selected by the agent.</li>
+        <li><code>human-only</code>: a person must make the change or decision.</li>
+        <li><code>needs-clarification</code>: acceptance criteria are incomplete.</li>
+        <li><code>blocked</code>: a dependency or external decision prevents work.</li>
+        <li><code>security-review</code>: the issue needs specialist review before implementation.</li>
+        <li><code>agent-in-progress</code>: a worker has claimed the issue.</li>
+        <li><code>agent-verification-failed</code>: the attempted change did not pass required checks.</li>
+      </ul>
+
+      <p>Labels are coordination signals, not security boundaries. A label can be changed incorrectly, and an agent should not infer permission to access secrets, production systems, or personal data from the presence of <code>agent-ready</code>.</p>
+
+      <h3>Preventing duplicate work</h3>
+
+      <p>The first write operation should claim the issue. A simple claim protocol is:</p>
+
+      <ol>
+        <li>Read the issue and record its current state, labels, assignee, and last update.</li>
+        <li>Re-read immediately before claiming it.</li>
+        <li>Add <code>agent-in-progress</code> and assign the issue to the designated bot or service account.</li>
+        <li>Write a short comment containing the claim time, intended scope, and worker identifier.</li>
+        <li>Abort if the issue changed between the two reads.</li>
+      </ol>
+
+      <p>If the integration cannot make the claim atomically, treat the claim as advisory. The merge request and repository checks must still protect against conflicting work.</p>
+
+      <h2>2. Make the issue actionable</h2>
+
+      <p>An agent-ready issue should answer five questions:</p>
+
+      <ul>
+        <li>What behavior is wrong or missing?</li>
+        <li>What behavior should replace it?</li>
+        <li>What files or component boundaries are in scope?</li>
+        <li>How can the result be verified?</li>
+        <li>What must not change?</li>
+      </ul>
+
+      <p>A practical issue template can make these answers mandatory:</p>
+
+      <pre><code>## Goal
+Describe one observable outcome.
+
+## Acceptance criteria
+- [ ] ...
+- [ ] ...
+
+## Scope
+List the expected files, module, endpoint, or user flow.
+
+## Verification
+Name the test, command, or manual check that proves the change.
+
+## Out of scope
+List adjacent behavior that must remain unchanged.
+
+## Human decisions
+List decisions the agent must stop for rather than infer.</code></pre>
+
+      <p>“Fix the API” is not an acceptance criterion. “Return a validation error when the required field is absent, preserve the existing response for valid requests, and add a regression test” is closer to an executable specification.</p>
+
+      <h2>3. Put repository instructions where the agent can find them</h2>
+
+      <p>Repository instructions should be versioned with the code. A common arrangement is a root-level <code>AGENTS.md</code>, with more specific instruction files in subdirectories when the repository needs them.</p>
+
+      <p>For example:</p>
+
+      <pre><code>repository/
+├── AGENTS.md
+├── .gitlab-ci.yml
+├── docs/
+│   └── AGENTS.md
+├── services/
+│   └── payments/
+│       └── AGENTS.md
+└── src/</code></pre>
+
+      <p>The root file should state the universal rules. A nested file should narrow or extend them for its directory. Avoid instructions that depend on unstated local knowledge.</p>
+
+      <h3>Example root instructions</h3>
+
+      <pre><code># Repository instructions
+
+## Before editing
+- Read the issue and inspect the current implementation.
+- Check the working tree before making changes.
+- Do not modify generated files unless the issue requires it.
+- Do not access, print, or commit secrets.
+
+## Scope
+- Change only files needed for the issue.
+- Do not upgrade dependencies unless explicitly requested.
+- Do not alter public APIs, schemas, permissions, or deployment settings
+  without a human decision.
+
+## Verification
+- Run the formatter for changed files.
+- Run the focused test command.
+- Run the repository's required validation command.
+- Report commands and outcomes; do not claim checks that were not run.
+
+## Stop conditions
+- Stop if acceptance criteria conflict.
+- Stop if a required behavior is ambiguous.
+- Stop before handling production data or credentials.
+- Stop before changing security, billing, permissions, migrations, or
+  externally visible contracts.
+- Stop if verification cannot be run or its result cannot be interpreted.</code></pre>
+
+      <p>Instructions should describe observable actions. “Use good judgment” is not reproducible. “If a database migration is required, stop and request human review” is reproducible.</p>
+
+      <h2>4. Add a preflight before implementation</h2>
+
+      <p>Before editing, the agent should produce a preflight record. This can be a comment on the issue, a local log, or the initial merge-request description.</p>
+
+      <pre><code>Issue: #123
+Selected because: opened + agent-ready + small + unassigned
+Intended scope: src/validator.ts and test/validator.test.ts
+Acceptance criteria:
+- [ ] ...
+- [ ] ...
+Planned checks:
+- npm test -- --runInBand test/validator.test.ts
+- npm run lint -- src/validator.ts
+Known stop conditions:
+- public contract changes
+- dependency changes
+- migration or permission changes</code></pre>
+
+      <p>The preflight is useful even when the task later stops. It shows what the agent believed it was authorized to do and makes scope drift easier to detect.</p>
+
+      <h2>5. Keep changes scoped</h2>
+
+      <p>Scope is a measurable constraint. Before and after the change, inspect the working tree and the diff.</p>
+
+      <pre><code>git status --short
+git diff --stat
+git diff -- src/validator.ts test/validator.test.ts</code></pre>
+
+      <p>These commands are examples, not evidence that they were run for this article. In a real run, record the actual commands and their outputs in the merge request.</p>
+
+      <p>A useful scope policy is:</p>
+
+      <ul>
+        <li>Only files named in the issue or discovered as necessary may change.</li>
+        <li>Unrelated formatting changes are not allowed.</li>
+        <li>Dependency lockfiles may change only when dependency changes are intentional.</li>
+        <li>Generated artifacts must be regenerated only by the documented command.</li>
+        <li>Unexpected files require investigation and usually a stop.</li>
+      </ul>
+
+      <p>If the smallest correct solution crosses a declared boundary, stop and explain why. Scope expansion is a decision, not a side effect.</p>
+
+      <h2>6. Verification should have layers</h2>
+
+      <p>One green test is not a complete verification strategy. Use layers that match the change.</p>
+
+      <h3>Layer 1: fast local checks</h3>
+
+      <p>Run formatting, linting, type checking, or a focused unit test for the changed code. These checks provide quick feedback while the agent is working.</p>
+
+      <pre><code># Examples only; use commands defined by the repository
+npm run format:check
+npm run lint
+npm test -- --runInBand path/to/changed.test.ts</code></pre>
+
+      <h3>Layer 2: required repository checks</h3>
+
+      <p>Run the checks documented by the repository or configured in the <a href="../glossary.html#ci-pipeline">CI pipeline</a>. The agent must not substitute a convenient check for a required one without stating the difference.</p>
+
+      <p>A minimal GitLab configuration might look like this:</p>
+
+      <pre><code>stages:
+  - verify
+
+verify:
+  stage: verify
+  image: node:22
+  script:
+    - npm ci
+    - npm run format:check
+    - npm run lint
+    - npm test -- --runInBand
+  rules:
+    - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'</code></pre>
+
+      <p>This is an example configuration. It is not a claim that every project should use Node.js, this image, or these commands.</p>
+
+      <h3>Layer 3: change-specific checks</h3>
+
+      <p>For a parser change, test malformed input. For an authorization change, test both allowed and denied paths. For a migration, verify the migration plan and rollback behavior with a human. For a UI change, include the project’s documented browser or visual checks if available.</p>
+
+      <h3>Layer 4: human review</h3>
+
+      <p>Automated checks can establish that selected conditions passed. They cannot decide whether the issue was the right product decision, whether an error message is appropriate, or whether a security trade-off is acceptable. Those are review questions.</p>
+
+      <h2>7. Define stop conditions before the agent starts</h2>
+
+      <p>Stop conditions are part of the workflow, not a failure of the agent. They prevent silent decisions in areas where repository evidence is insufficient.</p>
+
+      <p>The agent should stop and request human review when:</p>
+
+      <ul>
+        <li>Acceptance criteria conflict or leave the expected behavior ambiguous.</li>
+        <li>The change affects authentication, authorization, secrets, privacy, or sensitive data.</li>
+        <li>The change alters a public API, database schema, migration, billing rule, or data-retention policy.</li>
+        <li>A dependency must be added, upgraded, removed, or replaced.</li>
+        <li>The issue requires production access or an irreversible operation.</li>
+        <li>Tests fail for a reason the agent cannot explain from repository evidence.</li>
+        <li>Required checks cannot run because of missing tools, network access, credentials, or environment assumptions.</li>
+        <li>The diff exceeds the issue’s declared scope.</li>
+        <li>Another change has modified the same files or issue while work is in progress.</li>
+      </ul>
+
+      <p>A stop report should be specific:</p>
+
+      <pre><code>STOPPED: human decision required
+
+Reason:
+The requested behavior changes the public response schema.
+
+Evidence:
+The current endpoint returns fields A and B. The issue requests field C,
+but does not specify compatibility requirements for existing clients.
+
+Completed:
+- Inspected the endpoint and its tests.
+- Added no code.
+- No verification commands were run.
+
+Decision needed:
+Should the schema change be backward-compatible, versioned, or rejected?</code></pre>
+
+      <p>“I got stuck” is not enough. A useful stop report separates observed facts from interpretation and states the smallest decision needed to continue.</p>
+
+      <h2>8. Use GitLab as the audit trail</h2>
+
+      <p>A merge request should make the work reviewable without reconstructing the agent’s session. Include:</p>
+
+      <ul>
+        <li>the linked issue;</li>
+        <li>the selected acceptance criteria;</li>
+        <li>a summary of changed files and why they changed;</li>
+        <li>commands actually run;</li>
+        <li>the observed result of each command;</li>
+        <li>checks that were not run and why;</li>
+        <li>known limitations;</li>
+        <li>any human decision requested.</li>
+      </ul>
+
+      <p>For example:</p>
+
+      <pre><code>## Verification
+
+Run:
+- `npm run lint -- src/validator.ts` — passed
+- `npm test -- --runInBand test/validator.test.ts` — passed
+
+Not run:
+- full browser suite — not available in this environment
+
+Limitations:
+- This verifies the focused validator path only.
+- No production data or external service was accessed.</code></pre>
+
+      <p>Do not write “all tests pass” unless all required tests actually ran and their result is known. Do not convert an unavailable check into a pass.</p>
+
+      <h2>9. A small queue controller</h2>
+
+      <p>The queue can be implemented with a scheduled job, a manually invoked script, or an agent orchestration service. The mechanism is less important than the state transitions.</p>
+
+      <pre><code>for issue in ordered_open_issues:
+    if not is_eligible(issue):
+        continue
+
+    if not claim(issue):
+        continue
+
+    context = load_issue_and_repository_instructions(issue)
+
+    if context.has_stop_condition:
+        report_stop(issue, context.reason)
+        release_or_mark(issue, "needs-clarification")
+        continue
+
+    result = agent_implement(issue, context)
+
+    if result.scope_expanded:
+        report_stop(issue, "scope expansion")
+        continue
+
+    verification = run_required_checks(result)
+
+    if verification.incomplete:
+        report_stop(issue, verification.reason)
+        continue
+
+    open_merge_request(issue, result, verification)
+    break</code></pre>
+
+      <p>This pseudocode deliberately leaves several decisions open: how to authenticate, how to order issues, how to recover abandoned claims, and which checks are required. Those decisions belong in the repository or platform runbook rather than being silently guessed by the agent.</p>
+
+      <h2>10. Failure cases to test</h2>
+
+      <p>A reproducible workflow should be tested against failure, not only the happy path.</p>
+
+      <table>
+        <thead>
+          <tr>
+            <th>Failure</th>
+            <th>Expected behavior</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>Issue has no acceptance criteria</td>
+            <td>Do not claim it; add <code>needs-clarification</code> or request review.</td>
+          </tr>
+          <tr>
+            <td>Issue is assigned after selection</td>
+            <td>Abort the claim and re-read the queue.</td>
+          </tr>
+          <tr>
+            <td>Required test command is missing</td>
+            <td>Stop and report the missing repository instruction.</td>
+          </tr>
+          <tr>
+            <td>Unexpected file appears in the diff</td>
+            <td>Investigate; revert only with an approved, recoverable process or stop.</td>
+          </tr>
+          <tr>
+            <td>Test fails due to an unrelated environment problem</td>
+            <td>Report the failure and its evidence; do not call it passed.</td>
+          </tr>
+          <tr>
+            <td>Issue requires a migration</td>
+            <td>Stop before changing the schema unless the workflow explicitly authorizes it.</td>
+          </tr>
+          <tr>
+            <td>Two workers claim the same issue</td>
+            <td>Keep one authoritative merge request and close or reconcile the duplicate manually.</td>
+          </tr>
+        </tbody>
+      </table>
+
+      <h2>11. Limitations</h2>
+
+      <p>This workflow reduces accidental automation; it does not prove correctness. Labels can be wrong, issue descriptions can be incomplete, tests can be insufficient, and CI can pass while the product behavior is still undesirable. A repository may also contain instructions that conflict with organizational policy. Human ownership remains necessary for high-impact decisions.</p>
+
+      <p>Do not treat the queue as a permission system. Use GitLab permissions, protected branches, protected environments, secret management, and least-privilege credentials for that purpose. The article does not prescribe a particular GitLab configuration, runner architecture, or agent product because those details must be verified against the actual environment.</p>
+
+      <h2>Practical checklist</h2>
+
+      <ul>
+        <li>Is the issue opened, labeled <code>agent-ready</code>, unassigned, and current?</li>
+        <li>Does it have acceptance criteria, scope, verification steps, and explicit exclusions?</li>
+        <li>Did the agent read the applicable repository instruction files?</li>
+        <li>Was the issue claimed and rechecked before editing?</li>
+        <li>Did the diff remain within scope?</li>
+        <li>Were the required checks actually run?</li>
+        <li>Are command results and unavailable checks recorded accurately?</li>
+        <li>Did the agent stop before security, schema, contract, production, or other human-only decisions?</li>
+        <li>Can a reviewer understand what changed without reading the agent’s private session?</li>
+      </ul>
+
+      <h2>Conclusion</h2>
+
+      <p>A GitLab issue queue becomes suitable for coding agents when it behaves like a small control system: deterministic selection, explicit authority, repository-local instructions, layered verification, narrow diffs, and visible stop conditions. The result is not autonomous software development. It is a repeatable path from an approved issue to a reviewable change, with uncertainty surfaced before it becomes an irreversible decision.</p>
+
+      <p>For related terminology, see the <a href="../glossary.html">Agent Lab Journal glossary</a>. For more workflows and implementation guides, continue to <a href="guides.html">the guides index</a>.</p>
+    <section class="service-note">
+  <b>We publish what works for us—and implement the same solutions for your business.</b>
+  We design AI automation, Telegram bots, chats, and AI agents for real-world processes.
+  <a href="../contacts-en.html">Discuss your project →</a>
+</section>
+</article>
+  </main>
+
+  <footer class="site-footer">
+    <p>&copy; Agent Lab Journal</p>
+  </footer>
+</body>
+</html>
