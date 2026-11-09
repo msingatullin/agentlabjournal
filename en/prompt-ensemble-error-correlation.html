@@ -1,0 +1,459 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Prompt Ensembles: When Five Variants Beat One</title>
+  <meta name="description" content="Prompt Ensembles: When Five Variants Beat One — a reproducible method for testing whether prompt ensembling improves accuracy instead of merely increasing call costs.">
+  <link rel="canonical" href="https://agentlabjournal.online/en/prompt-ensemble-error-correlation.html">
+  <link rel="stylesheet" href="../style.css">
+  <link rel="stylesheet" href="../reading.css">
+
+  <meta property="og:type" content="article">
+  <meta property="og:title" content="Prompt Ensembles: When Five Variants Beat One">
+  <meta property="og:description" content="A reproducible framework for comparing one prompt, self-consistency, and prompt ensembles with different error correlations, aggregation rules, and tie-break policies.">
+  <meta property="og:url" content="https://agentlabjournal.online/en/prompt-ensemble-error-correlation.html">
+  <meta property="og:image" content="https://agentlabjournal.online/assets/covers/llm-context-window-budget-social.png">
+  <meta property="og:site_name" content="Agent Lab Journal">
+
+  <meta name="twitter:card" content="summary_large_image">
+  <meta name="twitter:title" content="Prompt Ensembles: When Five Variants Beat One">
+  <meta name="twitter:description" content="How to test whether prompt ensembling improves accuracy rather than merely increasing call costs.">
+  <meta name="twitter:image" content="https://agentlabjournal.online/assets/covers/llm-context-window-budget-social.png">
+
+  <meta name="reading-time" content="20 minutes">
+  <meta name="article:section" content="Evaluation">
+  <meta name="article:tag" content="prompt engineering">
+  <meta name="article:tag" content="evaluation">
+  <meta name="article:tag" content="ensembles">
+  <meta name="article:tag" content="error correlation">
+  <meta name="dateModified" content="2026-11-09">
+
+  <script type="application/ld+json">
+  {
+    "@context": "https://schema.org",
+    "@type": "Article",
+    "headline": "Prompt Ensembles: When Five Variants Beat One",
+    "description": "A reproducible framework for comparing one prompt, self-consistency, and prompt ensembles with different error correlations, aggregation rules, and tie-break policies.",
+    "image": ["https://agentlabjournal.online/assets/covers/llm-context-window-budget-social.png"],
+    "dateModified": "2026-11-09",
+    "author": {
+      "@type": "Organization",
+      "name": "Agent Lab Journal"
+    },
+    "publisher": {
+      "@type": "Organization",
+      "name": "Agent Lab Journal",
+      "url": "https://agentlabjournal.online/"
+    },
+    "mainEntityOfPage": {
+      "@type": "WebPage",
+      "@id": "https://agentlabjournal.online/en/prompt-ensemble-error-correlation.html"
+    }
+  }
+  </script>
+<link rel="stylesheet" href="../homepage.css"><link rel="stylesheet" href="../max-promo.css">  <meta property="og:image:alt" content="Ансамбль промптов: когда пять вариантов лучше одного">
+</head>
+<body>
+  <header class="site-header">
+    <div class="site-header__inner">
+      <a class="site-logo" href="../index.html">Agent Lab Journal</a>
+      <nav aria-label="Primary navigation">
+        <a href="../guides.html">Guides</a>
+        <a href="../glossary.html">Glossary</a>
+      </nav>
+    </div>
+  </header>
+
+  <main>
+    <article class="reading">
+      <header class="reading-header">
+        <p class="reading-kicker">Evaluation · Prompt engineering</p>
+        <h1>Prompt Ensembles: When Five Variants Beat One</h1>
+        <figure class="article-cover" data-editorial-cover="prompt-ensemble-error-correlation"><img src="../assets/covers/llm-context-window-budget.png" alt="Ансамбль промптов: когда пять вариантов лучше одного" width="1280" height="720" fetchpriority="high"><figcaption>Temporary fallback cover; replace in editorial pass.</figcaption></figure>
+        <p class="reading-dek">Five model calls can look like a reliability strategy. They can also be five times the cost with almost no additional signal. The difference is usually explained by error correlation, aggregation, and how ties are resolved.</p>
+        <div class="reading-meta">
+          <span>20 min read</span>
+          <span>Updated 9 November 2026</span>
+          <span>By Agent Lab Journal</span>
+        </div>
+      </header>
+
+      <p class="lead">Prompt ensembles are useful only when their members fail differently enough for the aggregator to recover from individual mistakes. This article gives you a reproducible test: hold the dataset and model configuration fixed, compare a single prompt with self-consistency and deliberately different prompt variants, then report accuracy together with calls, latency, cost, disagreement, and failure modes.</p>
+
+      <h2>The question to answer</h2>
+
+      <p>The practical question is not “does asking five times produce a better answer?” It is:</p>
+
+      <blockquote>
+        <p>Does the additional accuracy from five coordinated predictions justify the additional calls under the same quality, latency, and budget constraints?</p>
+      </blockquote>
+
+      <p>That wording changes the experiment. A five-call system that improves accuracy by one percentage point may be a bad choice for an interactive product. A smaller improvement may be valuable in an offline, high-consequence workflow. The decision depends on the operating point, not on the ensemble score alone.</p>
+
+      <p>Keep three quantities separate:</p>
+
+      <ul>
+        <li><strong>Quality:</strong> how often the final prediction is correct, and how severe its errors are.</li>
+        <li><strong>Resource use:</strong> model calls, input and output tokens, latency, and monetary cost.</li>
+        <li><strong>Reliability:</strong> whether gains hold across slices, random seeds, prompt variants, and evaluation runs.</li>
+      </ul>
+
+      <h2>What counts as an ensemble?</h2>
+
+      <p>An ensemble combines multiple predictions for the same input. The members may differ in wording, decomposition, examples, role framing, decoding settings, or even model family. The final answer is produced by an <a href="../glossary.html#aggregation-rule">aggregation rule</a>, such as majority vote or a confidence-weighted decision.</p>
+
+      <p>There are three comparisons worth making:</p>
+
+      <table>
+        <thead>
+          <tr>
+            <th>System</th>
+            <th>What changes</th>
+            <th>What it tests</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>Single prompt</td>
+            <td>One fixed prompt and one call</td>
+            <td>Baseline quality and cost</td>
+          </tr>
+          <tr>
+            <td><a href="../glossary.html#self-consistency">Self-consistency</a></td>
+            <td>Same prompt repeated with permitted sampling variation</td>
+            <td>Whether independent-looking samples help</td>
+          </tr>
+          <tr>
+            <td>Prompt ensemble</td>
+            <td>Several fixed prompt variants</td>
+            <td>Whether prompt diversity creates useful disagreement</td>
+          </tr>
+        </tbody>
+      </table>
+
+      <p>Self-consistency is not automatically diverse. If decoding is deterministic, repeated calls may be identical. If the model uses the same reasoning path, a repeated error can appear five times. Conversely, changing prompts can increase variation without increasing correctness. The experiment must measure both.</p>
+
+      <h2>A concrete case: classification with five labels</h2>
+
+      <p>Assume you classify support messages into five known labels. Each example has one adjudicated reference label. The production system currently uses one prompt and returns one label. You want to know whether five prompt variants improve classification enough to justify their cost.</p>
+
+      <p>Define the task before writing variants:</p>
+
+      <pre><code>Input: one support message
+Output: exactly one label from:
+- billing
+- access
+- bug
+- cancellation
+- other
+
+Evaluation: exact match against the reference label</code></pre>
+
+      <p>Do not let the ensemble introduce a new task. Every member should receive the same input, label set, output contract, and relevant policy context. If one variant is allowed to use extra information, it is no longer a fair prompt-only comparison.</p>
+
+      <h2>Design five variants with different failure risks</h2>
+
+      <p>The objective is not to make five prompts sound different. It is to create plausible decision procedures whose errors are not perfectly correlated.</p>
+
+      <ol>
+        <li><strong>Direct classification:</strong> choose the best label from the message.</li>
+        <li><strong>Definition-first:</strong> restate the meaning of each label, then classify.</li>
+        <li><strong>Contrastive:</strong> compare the two most plausible labels and explain the distinction internally.</li>
+        <li><strong>Evidence-first:</strong> identify the decisive phrase before selecting a label.</li>
+        <li><strong>Adversarial:</strong> check whether the first choice could be confused with a neighboring label.</li>
+      </ol>
+
+      <p>Keep the output schema identical. If explanations are needed for audit, store them separately from the final label. Do not evaluate one member on a richer output format unless the production system will also use that format.</p>
+
+      <p>Here is a configuration shape that makes the experiment explicit:</p>
+
+      <pre><code>{
+  "task": "support_message_classification",
+  "labels": ["billing", "access", "bug", "cancellation", "other"],
+  "members": [
+    {"id": "direct", "prompt_version": "v1"},
+    {"id": "definitions", "prompt_version": "v2"},
+    {"id": "contrastive", "prompt_version": "v3"},
+    {"id": "evidence_first", "prompt_version": "v4"},
+    {"id": "adversarial", "prompt_version": "v5"}
+  ],
+  "aggregation": {
+    "method": "majority_vote",
+    "tie_break": "single_prompt"
+  }
+}</code></pre>
+
+      <h2>Control the experiment</h2>
+
+      <p>Use a fixed evaluation set that was not used to invent the variants. Record the dataset version, prompt text, model identifier, decoding parameters, tool availability, system instructions, and parser version. If any of these change between systems, record the change and treat the result as a different experiment.</p>
+
+      <p>A minimal run table should contain one row per example and member:</p>
+
+      <pre><code>example_id,member_id,prediction,valid_format,input_tokens,
+output_tokens,latency_ms,request_status,error_message</code></pre>
+
+      <p>For every example, also store the reference label and the final ensemble prediction. Never overwrite raw member predictions with the aggregate. The raw predictions are required to measure agreement and error correlation.</p>
+
+      <h2>Compare aggregation rules</h2>
+
+      <p>Start with simple rules. Complexity can hide where the gain came from.</p>
+
+      <h3>Majority vote</h3>
+
+      <p>For five members, the majority label is the label receiving at least three votes. This rule is easy to audit and does not require calibrated confidence. Its weakness is that five correlated members can confidently agree on the same wrong label.</p>
+
+      <h3>Weighted vote</h3>
+
+      <p>Assign each member a weight based only on training or validation data, never on the held-out test labels. A weighted vote can help when one prompt is consistently stronger, but it can also overfit a small validation set.</p>
+
+      <pre><code>score(label) = sum(weight(member) for member
+                    if member_prediction == label)</code></pre>
+
+      <h3>Abstention or escalation</h3>
+
+      <p>If no label reaches a required threshold, send the example to a fallback process. This changes the metric: report coverage and accuracy separately. An ensemble that is highly accurate only when it answers may be useful, but it is not equivalent to a system that always predicts.</p>
+
+      <h2>Tie-break policies are part of the model</h2>
+
+      <p>A five-member ensemble can tie when there are multiple labels or when members fail to return valid predictions. The <a href="../glossary.html#tie-break-policy">tie-break policy</a> must be defined before evaluation.</p>
+
+      <p>Reasonable policies include:</p>
+
+      <ul>
+        <li>Use the single-prompt baseline.</li>
+        <li>Use the highest validation-performing member.</li>
+        <li>Run one additional adjudicator call.</li>
+        <li>Abstain or escalate.</li>
+        <li>Choose a deterministic label priority, if the domain explicitly requires it.</li>
+      </ul>
+
+      <p>Each policy has a different cost and risk profile. An extra adjudicator call makes the system a six-call or conditionally six-call system. A fixed label priority may silently favor one class. Abstention improves safety in some settings while reducing coverage. Report the policy as part of the configuration, not as an implementation footnote.</p>
+
+      <h2>Measure error correlation, not just agreement</h2>
+
+      <p>Agreement measures whether members produce the same prediction. <a href="../glossary.html#error-correlation">Error correlation</a> asks whether they are wrong on the same examples. These are related but not identical.</p>
+
+      <p>For each pair of members, create an error indicator:</p>
+
+      <pre><code>error(member, example) =
+  1 if prediction != reference_label
+  0 otherwise</code></pre>
+
+      <p>Then compare the error vectors across examples. You can use a correlation coefficient, Jaccard similarity of error sets, or simply count shared errors. The simplest diagnostic is often the most interpretable:</p>
+
+      <pre><code>shared_errors(A, B) =
+  count(example where error(A, example) == 1
+                  and error(B, example) == 1)</code></pre>
+
+      <p>Also report pairwise disagreement:</p>
+
+      <pre><code>disagreement(A, B) =
+  mean(prediction(A, example) != prediction(B, example))</code></pre>
+
+      <p>High disagreement is not automatically good. It may indicate useful diversity, unstable parsing, or random guessing. The useful pattern is disagreement concentrated on cases where at least one member is correct and the aggregator selects that correct answer.</p>
+
+      <h2>Use a cost-adjusted comparison</h2>
+
+      <p>Let:</p>
+
+      <ul>
+        <li><code>A</code> be accuracy.</li>
+        <li><code>C</code> be total cost or a chosen resource measure.</li>
+        <li><code>L</code> be latency at the percentile relevant to your product.</li>
+        <li><code>N</code> be the number of evaluated examples.</li>
+      </ul>
+
+      <p>Report absolute and relative changes:</p>
+
+      <pre><code>accuracy_gain = A_ensemble - A_baseline
+extra_cost = C_ensemble - C_baseline
+gain_per_extra_cost = accuracy_gain / extra_cost</code></pre>
+
+      <p>Do not treat gain per dollar as a universal score. It is a reporting aid. A product decision may instead require:</p>
+
+      <pre><code>accuracy_ensemble >= required_accuracy
+latency_p95_ensemble <= latency_budget
+cost_per_example_ensemble <= cost_budget</code></pre>
+
+      <p>For a fair comparison, calculate cost from actual recorded usage where possible. If provider pricing is not available or changes over time, report tokens and calls without inventing a currency amount.</p>
+
+      <h2>A reproducible evaluation procedure</h2>
+
+      <ol>
+        <li>Freeze a labeled evaluation set and assign it a version identifier.</li>
+        <li>Freeze the model configuration, prompts, parser, and aggregation code.</li>
+        <li>Run the single-prompt baseline.</li>
+        <li>Run repeated calls with the same prompt if self-consistency is in scope.</li>
+        <li>Run all five prompt variants on every example.</li>
+        <li>Save raw outputs, parsed predictions, failures, tokens, and latency.</li>
+        <li>Apply each aggregation rule to the same raw predictions.</li>
+        <li>Apply each tie-break policy and record any additional calls.</li>
+        <li>Compute accuracy, per-label metrics, disagreement, shared errors, coverage, latency, and resource use.</li>
+        <li>Repeat the evaluation with a predefined random seed policy or repeated samples.</li>
+        <li>Inspect examples where the ensemble differs from the baseline.</li>
+        <li>Make the decision only after checking confidence intervals or an equivalent uncertainty analysis.</li>
+      </ol>
+
+      <p>The last step matters. A small accuracy difference on a modest test set may be noise. Use a paired analysis because every system sees the same examples. For classification, compare the examples where the baseline and ensemble disagree, then examine which system is correct. A bootstrap over examples is a practical option when its assumptions and resampling procedure are documented.</p>
+
+      <h2>Minimal pseudocode</h2>
+
+      <pre><code>for example in evaluation_set:
+    predictions = []
+
+    for member in members:
+        raw = call_model(
+            prompt=member.prompt,
+            input=example.text,
+            config=frozen_model_config
+        )
+
+        parsed = parse_label(raw, allowed_labels)
+        save_raw_result(example.id, member.id, raw, parsed)
+
+        if parsed is not None:
+            predictions.append((member.id, parsed))
+
+    final_label = aggregate(
+        predictions=predictions,
+        rule=aggregation_rule,
+        tie_break=tie_break_policy
+    )
+
+    save_final_result(example.id, final_label, predictions)
+
+metrics = evaluate_saved_results(
+    references=evaluation_set.labels,
+    predictions=saved_final_results
+)</code></pre>
+
+      <p>This is a test outline, not a reported result. It deliberately leaves the model client, parser, retry behavior, and storage implementation open because those depend on the system being evaluated.</p>
+
+      <h2>Failure cases to test explicitly</h2>
+
+      <h3>Correlated prompt errors</h3>
+
+      <p>All variants may misread the same ambiguous phrase or inherit the same flawed label definition. Majority vote cannot fix a shared blind spot. Review shared-error clusters, not only aggregate accuracy.</p>
+
+      <h3>Invalid or incomplete outputs</h3>
+
+      <p>One member may return an explanation instead of a label, a label outside the allowed set, or no output after a timeout. Define whether retries count as additional calls and whether invalid members are removed or treated as abstentions.</p>
+
+      <h3>Prompt leakage</h3>
+
+      <p>A variant may accidentally include an answer pattern, test-set wording, or metadata unavailable in production. Keep prompt construction versioned and review the rendered requests.</p>
+
+      <h3>Unequal information</h3>
+
+      <p>One prompt may ask for a tool lookup or longer context while another receives only the user message. That is a system comparison, not an isolated prompt-ensemble comparison.</p>
+
+      <h3>Parser-induced gains</h3>
+
+      <p>An ensemble can appear better because its outputs are easier for the parser to recognize. Evaluate raw semantic correctness and format validity separately.</p>
+
+      <h3>Selective reporting</h3>
+
+      <p>Do not report only the best aggregation rule, seed, or slice. Predefine the primary metric and publish the full comparison table, including rules that performed worse.</p>
+
+      <h2>What a useful result table looks like</h2>
+
+      <p>Fill this table from your run rather than copying a headline number:</p>
+
+      <table>
+        <thead>
+          <tr>
+            <th>System</th>
+            <th>Calls/example</th>
+            <th>Accuracy</th>
+            <th>Coverage</th>
+            <th>p95 latency</th>
+            <th>Tokens/example</th>
+            <th>Notes</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>Single prompt</td>
+            <td>Measured</td>
+            <td>Measured</td>
+            <td>Measured</td>
+            <td>Measured</td>
+            <td>Measured</td>
+            <td>Baseline</td>
+          </tr>
+          <tr>
+            <td>Self-consistency</td>
+            <td>Measured</td>
+            <td>Measured</td>
+            <td>Measured</td>
+            <td>Measured</td>
+            <td>Measured</td>
+            <td>Same prompt, sampled calls</td>
+          </tr>
+          <tr>
+            <td>Five-variant majority</td>
+            <td>Measured</td>
+            <td>Measured</td>
+            <td>Measured</td>
+            <td>Measured</td>
+            <td>Measured</td>
+            <td>Fixed tie-break</td>
+          </tr>
+          <tr>
+            <td>Five-variant weighted</td>
+            <td>Measured</td>
+            <td>Measured</td>
+            <td>Measured</td>
+            <td>Measured</td>
+            <td>Measured</td>
+            <td>Weights frozen before test</td>
+          </tr>
+        </tbody>
+      </table>
+
+      <h2>How to decide whether five beats one</h2>
+
+      <p>Choose the ensemble only when the measured gain survives the following checks:</p>
+
+      <ul>
+        <li>The gain is visible on a held-out set and not only on prompt-development examples.</li>
+        <li>The gain persists across meaningful data slices.</li>
+        <li>At least some member errors are complementary rather than identical.</li>
+        <li>The aggregation rule and tie-break policy are fixed before the final comparison.</li>
+        <li>Latency, calls, tokens, and operational complexity fit the product budget.</li>
+        <li>The ensemble does not hide a dangerous increase in confident errors.</li>
+      </ul>
+
+      <p>If the five-member system is more accurate but too slow, consider conditional routing: call one member first and invoke additional members only when a confidence or disagreement signal warrants it. Evaluate that router as a new system, including the cases where it decides not to spend more calls.</p>
+
+      <h2>Limitations</h2>
+
+      <p>This protocol does not prove that prompt diversity will generalize to a different model, dataset, language, or task. Error correlation is dataset-dependent. A prompt that is complementary on one domain may be redundant on another. Aggregation can also fail when labels are ambiguous, references are inconsistent, or the task requires a structured explanation rather than a single discrete answer.</p>
+
+      <p>Accuracy alone is insufficient for high-impact decisions. Add domain-specific harm metrics, calibration checks, human review, and abstention analysis where appropriate. Do not infer safety from agreement.</p>
+
+      <h2>Bottom line</h2>
+
+      <p>Five variants beat one when they provide recoverable diversity: they disagree on cases where at least one member has useful evidence, and the aggregation policy selects that evidence reliably. The only defensible way to find out is to measure the full trade-off—quality, shared errors, calls, tokens, latency, failures, and tie behavior—on a frozen evaluation set.</p>
+
+      <p>For adjacent methods and definitions, continue with the <a href="../guides.html">evaluation guides</a> or browse the <a href="../glossary.html">glossary</a>.</p>
+    <section class="service-note">
+  <b>We publish what works for us—and implement the same solutions for your business.</b>
+  We design AI automation, Telegram bots, chats, and AI agents for real-world processes.
+  <a href="../contacts-en.html">Discuss your project →</a>
+</section>
+</article>
+  </main>
+
+  <footer class="site-footer">
+    <div class="site-footer__inner">
+      <span>Agent Lab Journal</span>
+      <nav aria-label="Footer navigation">
+        <a href="../guides.html">Guides</a>
+        <a href="../glossary.html">Glossary</a>
+      </nav>
+    </div>
+  </footer>
+</body>
+</html>
