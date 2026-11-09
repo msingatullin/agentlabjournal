@@ -1,0 +1,480 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Миграция embedding-модели без скрытой деградации поиска</title>
+  <meta name="description" content="Миграция embedding-модели без скрытой деградации поиска: как сравнить модели на своих запросах, версионировать векторы и выполнить миграцию через параллельный индекс.">
+  <link rel="canonical" href="https://agentlabjournal.online/embedding-model-migration.html">
+  <link rel="stylesheet" href="style.css">
+  <link rel="stylesheet" href="reading.css">
+
+  <meta property="og:type" content="article">
+  <meta property="og:locale" content="ru_RU">
+  <meta property="og:title" content="Миграция embedding-модели без скрытой деградации поиска">
+  <meta property="og:description" content="Практический план сравнения embedding-моделей, версионирования векторов и безопасного переключения RAG-поиска.">
+  <meta property="og:url" content="https://agentlabjournal.online/embedding-model-migration.html">
+  <meta property="og:site_name" content="Agent Lab Journal">
+
+  <meta name="twitter:card" content="summary">
+  <meta name="twitter:title" content="Миграция embedding-модели без скрытой деградации поиска">
+  <meta name="twitter:description" content="Как выбрать embedding-модель и заменить её без смешивания несовместимых векторов и простоя поиска.">
+
+  <script type="application/ld+json">
+  {
+    "@context": "https://schema.org",
+    "@type": "Article",
+    "headline": "Миграция embedding-модели без скрытой деградации поиска",
+    "description": "Практическое руководство по сравнению embedding-моделей, версионированию векторов и миграции через параллельный индекс.",
+    "mainEntityOfPage": {
+      "@type": "WebPage",
+      "@id": "https://agentlabjournal.online/embedding-model-migration.html"
+    },
+    "url": "https://agentlabjournal.online/embedding-model-migration.html",
+    "inLanguage": "ru-RU",
+    "publisher": {
+      "@type": "Organization",
+      "name": "Agent Lab Journal"
+    }
+  }
+  </script>
+<link rel="stylesheet" href="homepage.css"><link rel="stylesheet" href="max-promo.css">  <meta property="og:image" content="https://agentlabjournal.online/assets/covers/llm-context-window-budget-social.png">
+  <meta property="og:image:alt" content="Миграция embedding-модели без скрытой деградации поиска">
+  <meta name="twitter:image" content="https://agentlabjournal.online/assets/covers/llm-context-window-budget-social.png">
+</head>
+<body>
+  <header class="site-header">
+    <div class="container">
+      <a class="site-brand" href="index.html">Agent Lab Journal</a>
+      <nav aria-label="Основная навигация">
+        <a href="guides.html">Гайды</a>
+        <a href="glossary.html">Глоссарий</a>
+      </nav>
+    </div>
+  </header>
+
+  <main>
+    <article class="reading">
+      <header class="reading-header">
+        <p class="reading-kicker">RAG · Поиск · Инфраструктура</p>
+        <h1>Миграция embedding-модели без скрытой деградации поиска</h1>
+        <figure class="article-cover" data-editorial-cover="embedding-model-migration"><img src="assets/covers/llm-context-window-budget.png" alt="Миграция embedding-модели без скрытой деградации поиска" width="1280" height="720" fetchpriority="high"><figcaption>Temporary fallback cover; replace in editorial pass.</figcaption></figure>
+        <p class="reading-lead">
+          Замена модели для построения <a href="glossary.html#embedding">embedding-векторов</a>
+          меняет геометрию поиска. Если добавить новые векторы в старый индекс, сравнивать
+          результаты «на глаз» или переключить модель до полной проверки, качество может
+          ухудшиться незаметно: система продолжит отвечать, но будет находить не те фрагменты.
+        </p>
+        <div class="reading-meta">
+          <span>Уровень: средний</span>
+          <span>Время чтения: до 12 минут</span>
+          <span>Тема: RAG и векторный поиск</span>
+        </div>
+      </header>
+<a href="https://max.ru/channel_AgentLab?utm_source=agentlabjournal&utm_medium=article&utm_campaign=max_channel&utm_content=article_footer" class="max-promo-block" target="_blank" rel="noopener noreferrer" aria-label="Самое важное из мира AI в канале MAX AgentLab">
+  <span class="max-promo-block__icon" aria-hidden="true"></span>
+  <span class="max-promo-block__content"><span class="max-promo-block__title">Самое важное из мира AI — в канале MAX AgentLab</span><span class="max-promo-block__desc">Отдельные разборы, инструменты и практические схемы</span></span>
+  <span class="max-promo-block__arrow" aria-hidden="true">→</span>
+</a>
+<a href="https://t.me/pelmenews?utm_source=agentlabjournal&utm_medium=article&utm_campaign=telegram_channel&utm_content=article_intro" class="telegram-promo-block" target="_blank" rel="noopener noreferrer" aria-label="Читайте Agent Lab в Telegram">
+  <span class="telegram-promo-block__icon" aria-hidden="true"></span>
+  <span class="telegram-promo-block__content">
+    <span class="telegram-promo-block__title">Читайте Agent Lab в Telegram</span>
+    <span class="telegram-promo-block__desc">Разборы, кейсы и новости о практических AI-агентах без лишней воды.</span>
+  </span>
+  <span class="telegram-promo-block__arrow" aria-hidden="true">→</span>
+</a>
+
+      <section>
+        <h2>Коротко: безопасная схема миграции</h2>
+        <p>
+          Сначала зафиксируйте текущую модель и создайте небольшой набор эталонных запросов.
+          Затем посчитайте ответы старой и новой моделей на одном и том же наборе документов,
+          постройте для новой модели отдельный индекс и сравните результаты. Переключайте
+          чтение только после проверки, а старый индекс сохраняйте до завершения периода
+          отката.
+        </p>
+
+        <ol>
+          <li>Опишите контракт текущих векторов: модель, размерность, метрику и версию индекса.</li>
+          <li>Соберите собственный набор запросов с ожидаемыми релевантными документами.</li>
+          <li>Постройте новый индекс отдельно, не добавляя новые векторы в старый.</li>
+          <li>Сравните качество, задержку, долю пустых результатов и ошибки.</li>
+          <li>Переключите чтение на новый индекс после прогрева и оставьте быстрый откат.</li>
+        </ol>
+      </section>
+
+      <section>
+        <h2>Почему нельзя смешивать векторы</h2>
+        <p>
+          Вектор — это не универсальное представление текста. Его координаты зависят от
+          конкретной модели и её конфигурации. Даже если две модели имеют одинаковую
+          размерность, это не делает их векторы взаимозаменяемыми: близость между векторами
+          может иметь другой смысл.
+        </p>
+        <p>
+          На практике опасная схема выглядит так: документы постепенно переиндексируются
+          новой моделью, а запросы некоторое время кодируются старой. В индексе оказываются
+          векторы разных версий, и итоговый рейтинг становится непредсказуемым. Проблема
+          особенно трудно обнаруживается, если система не падает, а только начинает чаще
+          возвращать фрагменты второго или третьего уровня релевантности.
+        </p>
+
+        <aside class="callout">
+          <strong>Правило совместимости:</strong> индекс должен однозначно связывать
+          каждый вектор с версией embedding-модели, её размерностью и метрикой сравнения.
+          Если хотя бы одно поле изменилось, относитесь к этому как к новому индексу.
+        </aside>
+      </section>
+
+      <section>
+        <h2>1. Зафиксируйте текущий контракт</h2>
+        <p>
+          До выбора кандидата запишите параметры действующей конфигурации. Минимальный
+          набор полей можно хранить рядом с настройками индекса или в реестре версий:
+        </p>
+
+        <pre><code>{
+  "embedding_model": "current-model-id",
+  "embedding_version": "2026-01",
+  "dimensions": 1536,
+  "distance_metric": "cosine",
+  "chunking_version": "chunks-v3",
+  "index_name": "documents_current"
+}</code></pre>
+
+        <p>
+          Значения в примере условны: подставьте реальные идентификаторы и параметры своей
+          системы. Не меняйте одновременно embedding-модель, размер чанка и стратегию
+          поиска без отдельной маркировки. Иначе будет трудно понять, что именно повлияло
+          на результат.
+        </p>
+      </section>
+
+      <section>
+        <h2>2. Соберите набор собственных запросов</h2>
+        <p>
+          Универсальный benchmark не заменяет запросы пользователей вашего продукта.
+          Составьте набор, который отражает реальные сценарии: точные вопросы, перефразировки,
+          короткие запросы, длинные описания, термины с опечатками и запросы, для которых
+          релевантного документа нет.
+        </p>
+
+        <p>
+          Для каждого запроса укажите один или несколько ожидаемых документов. Это может
+          быть ручная разметка или уже проверенный результат текущей системы, если вы
+          отдельно убедились в его корректности.
+        </p>
+
+        <pre><code>[
+  {
+    "query_id": "q-001",
+    "text": "Как отменить двухэтапную оплату?",
+    "relevant_document_ids": ["doc-104", "doc-119"]
+  },
+  {
+    "query_id": "q-002",
+    "text": "Что делать, если webhook пришёл повторно?",
+    "relevant_document_ids": ["doc-207"]
+  }
+]</code></pre>
+
+        <p>
+          Не подменяйте проверку числом запросов. Небольшой, но разнообразный набор
+          полезнее большого списка почти одинаковых формулировок. Зафиксируйте его до
+          сравнения моделей, чтобы не подгонять оценку под понравившийся результат.
+        </p>
+      </section>
+
+      <section>
+        <h2>3. Сравните модели на одинаковых данных</h2>
+        <p>
+          Выберите несколько кандидатов, доступных вашей инфраструктуре и допустимых по
+          требованиям к лицензии, размещению и стоимости. Важны не только размерность и
+          скорость. Проверяйте качество именно на собственных запросах и документах.
+        </p>
+
+        <p>Для каждой модели используйте одинаковые условия:</p>
+
+        <ul>
+          <li>одинаковый корпус документов;</li>
+          <li>одинаковое разбиение на чанки;</li>
+          <li>одинаковое количество результатов top-k;</li>
+          <li>одинаковую метрику внутри конкретного сравнения;</li>
+          <li>одинаковую процедуру обработки пустых и ошибочных ответов.</li>
+        </ul>
+
+        <p>
+          В качестве базовых показателей можно посчитать Recall@k — попал ли хотя бы один
+          релевантный документ в первые k результатов, — и MRR — насколько высоко оказался
+          первый релевантный результат. Эти метрики не описывают всё качество RAG, но
+          помогают сделать сравнение воспроизводимым.
+        </p>
+
+        <pre><code># Псевдокоманды: адаптируйте их под свой CLI или скрипт
+rag embed \
+  --model candidate-model-id \
+  --input documents.jsonl \
+  --output vectors_candidate.jsonl \
+  --version candidate-2026-02
+
+rag evaluate \
+  --queries queries.jsonl \
+  --index documents_candidate \
+  --top-k 5 \
+  --output evaluation_candidate.json</code></pre>
+
+        <p>
+          Команды выше иллюстрируют последовательность, а не готовый универсальный CLI.
+          Перед запуском проверьте имена параметров своего инструмента и убедитесь, что
+          вывод новой модели не записывается в рабочий индекс.
+        </p>
+      </section>
+
+      <section>
+        <h2>4. Версионируйте векторы и индексы</h2>
+        <p>
+          Версия должна быть видна не только в названии файла. Добавьте её в метаданные
+          вектора и в имя физического индекса. Полезно также хранить хеш конфигурации
+          chunking и дату построения.
+        </p>
+
+        <pre><code>{
+  "document_id": "doc-104",
+  "chunk_id": "doc-104-chunk-03",
+  "embedding_model": "candidate-model-id",
+  "embedding_version": "candidate-2026-02",
+  "dimensions": 1536,
+  "chunking_version": "chunks-v3",
+  "vector": [0.0123, -0.0041]
+}</code></pre>
+
+        <p>
+          В примере массив сокращён и не является полноценным вектором. Смысл схемы —
+          показать, какие сведения должны сопровождать значение. Если хранилище позволяет,
+          продублируйте критические поля на уровне коллекции или индекса, чтобы их можно
+          было проверять до выполнения запроса.
+        </p>
+
+        <p>Названия могут выглядеть так:</p>
+
+        <pre><code>documents_current
+documents_candidate_2026_02
+documents_candidate_2026_02_shadow</code></pre>
+
+        <p>
+          Запросы к индексу должны использовать ту же версию модели, что и индекс. Это
+          стоит проверять в коде конфигурации, а не оставлять только договорённостью между
+          командами.
+        </p>
+      </section>
+
+      <section>
+        <h2>5. Постройте параллельный индекс без простоя</h2>
+        <p>
+          Параллельный индекс позволяет построить и проверить новую версию, пока старый
+          индекс обслуживает поиск. Общая последовательность выглядит так:
+        </p>
+
+        <ol>
+          <li>Зафиксируйте снимок корпуса или версию источника документов.</li>
+          <li>Сгенерируйте новые векторы только новой моделью.</li>
+          <li>Создайте отдельный индекс с новой размерностью и метрикой.</li>
+          <li>Загрузите в него все векторы и дождитесь завершения индексации.</li>
+          <li>Проверьте количество документов, чанков и отсутствие смешанных версий.</li>
+          <li>Прогрейте индекс контрольными запросами.</li>
+          <li>Переключите маршрутизацию чтения на новый индекс.</li>
+        </ol>
+
+        <pre><code># Иллюстративная последовательность
+rag index create documents_candidate_2026_02 \
+  --dimensions 1536 \
+  --metric cosine
+
+rag index load documents_candidate_2026_02 \
+  --vectors vectors_candidate_2026_02.jsonl
+
+rag index validate documents_candidate_2026_02 \
+  --model-version candidate-2026-02 \
+  --chunking-version chunks-v3
+
+rag search switch \
+  --from documents_current \
+  --to documents_candidate_2026_02</code></pre>
+
+        <p>
+          Если ваша система не поддерживает атомарное переключение, используйте отдельный
+          конфигурационный параметр или service discovery. Сначала измените его в среде
+          проверки, затем включите новый индекс для небольшой доли трафика, если такая
+          возможность предусмотрена архитектурой.
+        </p>
+      </section>
+
+      <section>
+        <h2>Проверка результата после переключения</h2>
+        <p>
+          До миграции сохраните контрольные результаты для фиксированного набора запросов.
+          После переключения выполните тот же прогон и сравните не только среднее значение,
+          но и отдельные запросы, где результат изменился.
+        </p>
+
+        <table>
+          <thead>
+            <tr>
+              <th>Что проверить</th>
+              <th>Зачем</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td>Recall@k и MRR</td>
+              <td>Увидеть изменение релевантности на размеченных запросах.</td>
+            </tr>
+            <tr>
+              <td>Топ результатов по контрольным запросам</td>
+              <td>Найти регрессии, которые скрывает среднее значение.</td>
+            </tr>
+            <tr>
+              <td>Размерность и версия модели</td>
+              <td>Исключить смешивание несовместимых векторов.</td>
+            </tr>
+            <tr>
+              <td>Задержка и ошибки</td>
+              <td>Проверить влияние нового индекса на эксплуатацию.</td>
+            </tr>
+            <tr>
+              <td>Пустые ответы</td>
+              <td>Отделить ухудшение поиска от проблем фильтрации или загрузки.</td>
+            </tr>
+          </tbody>
+        </table>
+
+        <p>
+          Считайте миграцию завершённой только после того, как результаты удовлетворяют
+          заранее заданным критериям. Сам факт успешной индексации не доказывает, что
+          поиск сохранил качество.
+        </p>
+      </section>
+
+      <section>
+        <h2>Откат и период наблюдения</h2>
+        <p>
+          Старый индекс должен оставаться доступным, пока новая версия не пройдёт период
+          наблюдения, установленный вашей командой. Откатом должен быть переключатель
+          маршрутизации, а не повторная генерация векторов.
+        </p>
+
+        <pre><code># Пример безопасного отката
+rag search switch \
+  --from documents_candidate_2026_02 \
+  --to documents_current</code></pre>
+
+        <p>
+          Не удаляйте старый индекс сразу после переключения. Сначала сохраните его
+          метаданные, контрольные результаты и способ возврата. Срок хранения определите
+          внутренними требованиями к эксплуатации и стоимости хранения.
+        </p>
+      </section>
+
+      <section>
+        <h2>Типовые ошибки</h2>
+
+        <h3>Новая модель записывается в старую коллекцию</h3>
+        <p>
+          Это самый опасный сценарий: размерность может совпасть, поэтому техническая
+          проверка не сработает. Разделяйте индексы физически и проверяйте версию при
+          загрузке каждой партии векторов.
+        </p>
+
+        <h3>Сравниваются разные корпуса</h3>
+        <p>
+          Если одна модель получила свежие документы, а другая — старый снимок, результат
+          нельзя честно интерпретировать как сравнение моделей. Зафиксируйте источник и
+          версию корпуса.
+        </p>
+
+        <h3>Меняется сразу несколько параметров</h3>
+        <p>
+          Одновременная смена embedding-модели, chunking, фильтров и reranker усложняет
+          диагностику. Для первой миграции изменяйте один существенный компонент за раз.
+        </p>
+
+        <h3>Оценивается только средний балл</h3>
+        <p>
+          Среднее значение может скрыть провал на важной категории запросов. Разбивайте
+          результаты по типам запросов и просматривайте случаи с наибольшим изменением
+          рейтинга.
+        </p>
+
+        <h3>Нет проверки версии на чтении</h3>
+        <p>
+          Даже правильно построенный индекс можно случайно вызвать неправильной моделью.
+          Перед поиском проверяйте согласованность конфигурации запроса и метаданных индекса.
+        </p>
+      </section>
+
+      <section>
+        <h2>Ограничения подхода</h2>
+        <p>
+          Оценка на собственном наборе запросов не гарантирует качество на всех будущих
+          запросах. Разметка может быть неполной, а изменение embedding-модели иногда
+          влияет на последующие этапы — reranker, формирование контекста и ответы
+          генеративной модели. Поэтому проверяйте не только retrieval-метрики, но и
+          несколько сквозных сценариев RAG.
+        </p>
+        <p>
+          Параллельный индекс требует дополнительного места и времени на построение.
+          В системах с постоянно меняющимся корпусом нужно отдельно продумать синхронизацию
+          новых документов во время миграции и правило выбора версии для каждого обновления.
+        </p>
+      </section>
+
+      <section>
+        <h2>Итоговый чек-лист</h2>
+        <ul>
+          <li>Есть фиксированный набор запросов и ожидаемых релевантных документов.</li>
+          <li>Старая и новая модели проверены на одинаковом корпусе.</li>
+          <li>Для векторов указаны модель, версия, размерность и метрика.</li>
+          <li>Новый индекс построен отдельно от рабочего.</li>
+          <li>Проведена проверка количества данных и отсутствия смешанных версий.</li>
+          <li>Сохранены контрольные результаты до и после миграции.</li>
+          <li>Откат выполняется переключением на старый индекс.</li>
+        </ul>
+      </section>
+
+      <footer class="reading-footer">
+        <p>
+          Дополнительные практические материалы: <a href="guides.html">все гайды</a>
+          и <a href="glossary.html">глоссарий терминов</a>.
+        </p>
+      </footer>
+<aside class="service-note" aria-label="Связаться по проекту">
+  <div class="service-note__copy">
+    <p class="service-note__label">Связь с Agent Lab</p>
+    <p class="service-note__title">Внедрим такой контур в ваш процесс</p>
+    <p class="service-note__text">Напишите инженеру Agent Lab в Telegram: опишите задачу, бота или интеграцию — предложим пилот с проверками и понятными границами.</p>
+  </div>
+  <a class="service-note__link" href="https://t.me/msrzn007?utm_source=journal&amp;utm_medium=article&amp;utm_campaign=service_note" target="_blank" rel="noopener">Написать в Telegram
+    <svg viewBox="0 0 16 16" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"><path d="M3 13 13 3M6 3h7v7"/></svg>
+  </a>
+</aside>
+<aside class="service-note service-note--sitevisor" aria-label="Экспресс-аудит сайта">
+  <div class="service-note__copy">
+    <p class="service-note__label">SiteVisor</p>
+    <p class="service-note__title">Проверьте техническое состояние и готовность вашего сайта к рекламе</p>
+    <p class="service-note__text">Экспресс-аудит на SiteVisor.pro: индексация, скорость, разметка, аналитика и точки конверсии.</p>
+  </div>
+  <a class="service-note__link" href="https://sitevisor.pro/?utm_source=journal&amp;utm_medium=article&amp;utm_campaign=leadmagnet" target="_blank" rel="noopener">Экспресс-аудит на SiteVisor.pro
+    <svg viewBox="0 0 16 16" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"><path d="M3 13 13 3M6 3h7v7"/></svg>
+  </a>
+</aside>
+</article>
+  </main>
+
+  <footer class="site-footer">
+    <div class="container">
+      <p>Agent Lab Journal · Практика разработки AI-систем</p>
+    </div>
+  </footer>
+</body>
+</html>

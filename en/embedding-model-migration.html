@@ -1,0 +1,439 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Embedding Model Migration Without a Silent Search Regression</title>
+  <meta name="description" content="Embedding Model Migration Without a Silent Search Regression: a practical, reproducible method for evaluating embedding models, versioning vectors, and migrating RAG search through a parallel index.">
+  <link rel="canonical" href="https://agentlabjournal.online/en/embedding-model-migration.html">
+  <link rel="stylesheet" href="../style.css">
+  <link rel="stylesheet" href="../reading.css">
+
+  <meta property="og:type" content="article">
+  <meta property="og:title" content="Embedding Model Migration Without a Silent Search Regression">
+  <meta property="og:description" content="A practical method for evaluating embedding models, versioning vectors, and migrating RAG search through a parallel index.">
+  <meta property="og:url" content="https://agentlabjournal.online/en/embedding-model-migration.html">
+  <meta property="og:image" content="https://agentlabjournal.online/assets/covers/llm-context-window-budget-social.png">
+  <meta property="og:site_name" content="Agent Lab Journal">
+
+  <meta name="twitter:card" content="summary_large_image">
+  <meta name="twitter:title" content="Embedding Model Migration Without a Silent Search Regression">
+  <meta name="twitter:description" content="A reproducible guide to safe embedding model migration for RAG search.">
+  <meta name="twitter:image" content="https://agentlabjournal.online/assets/covers/llm-context-window-budget-social.png">
+
+  <script type="application/ld+json">
+  {
+    "@context": "https://schema.org",
+    "@type": "Article",
+    "headline": "Embedding Model Migration Without a Silent Search Regression",
+    "description": "A practical, reproducible method for evaluating embedding models, versioning vectors, and migrating RAG search through a parallel index.",
+    "image": ["https://agentlabjournal.online/assets/covers/llm-context-window-budget-social.png"],
+    "dateModified": "2026-11-09",
+    "author": {
+      "@type": "Organization",
+      "name": "Agent Lab Journal"
+    },
+    "publisher": {
+      "@type": "Organization",
+      "name": "Agent Lab Journal",
+      "url": "https://agentlabjournal.online/"
+    },
+    "mainEntityOfPage": {
+      "@type": "WebPage",
+      "@id": "https://agentlabjournal.online/en/embedding-model-migration.html"
+    }
+  }
+  </script>
+<link rel="stylesheet" href="../homepage.css"><link rel="stylesheet" href="../max-promo.css">  <meta property="og:image:alt" content="Миграция embedding-модели без скрытой деградации поиска">
+</head>
+<body>
+  <header class="site-header">
+    <div class="container">
+      <a class="site-brand" href="../index.html">Agent Lab Journal</a>
+      <nav aria-label="Primary navigation">
+        <a href="guides.html">Guides</a>
+        <a href="../glossary.html">Glossary</a>
+      </nav>
+    </div>
+  </header>
+
+  <main>
+    <article class="reading">
+      <header class="reading-header">
+        <p class="reading-kicker">Search systems · Migration guide</p>
+        <h1>Embedding Model Migration Without a Silent Search Regression</h1>
+        <figure class="article-cover" data-editorial-cover="embedding-model-migration"><img src="../assets/covers/llm-context-window-budget.png" alt="Миграция embedding-модели без скрытой деградации поиска" width="1280" height="720" fetchpriority="high"><figcaption>Temporary fallback cover; replace in editorial pass.</figcaption></figure>
+        <div class="reading-meta">
+          <span>15 min read</span>
+          <span>Intermediate</span>
+          <time datetime="2026-11-09">Updated November 9, 2026</time>
+        </div>
+        <p class="reading-dek">
+          A new <a href="../glossary.html#embedding-model">embedding model</a> can improve retrieval quality, reduce latency, or simplify operations. Replacing it safely requires more than changing a model name: vectors must be versioned, evaluated on the same queries, and moved through a parallel index before production traffic depends on them.
+        </p>
+      </header>
+
+      <section>
+        <h2>The risk is compatibility, not just quality</h2>
+        <p>
+          In a retrieval-augmented generation (<a href="../glossary.html#rag">RAG</a>) system, documents and user queries are converted into numerical vectors. A search service compares the query vector with stored document vectors and returns the nearest candidates to the language model.
+        </p>
+        <p>
+          When the embedding model changes, the new vectors are not automatically compatible with the old ones. Even if both models produce vectors with the same number of dimensions, their coordinate systems can represent meaning differently. A query encoded by the new model may therefore retrieve old vectors with an apparently valid score but an invalid semantic comparison.
+        </p>
+        <p>
+          This creates two dangerous failure modes:
+        </p>
+        <ul>
+          <li><strong>Obvious failure:</strong> the index rejects vectors because their dimensions do not match.</li>
+          <li><strong>Silent regression:</strong> the index accepts the vectors, but retrieval quality falls without an infrastructure error.</li>
+        </ul>
+        <p>
+          The safe default is to treat every model change as a schema and data migration. Create a new embedding version, rebuild a separate index, evaluate it against a fixed query set, and switch traffic only after the new path passes explicit checks.
+        </p>
+      </section>
+
+      <section>
+        <h2>A concrete case: changing the model behind a support assistant</h2>
+        <p>
+          Consider a support assistant that searches product documentation. Its current pipeline has these stages:
+        </p>
+        <ol>
+          <li>Split source documents into chunks.</li>
+          <li>Encode each chunk with the current model.</li>
+          <li>Store vectors and metadata in a <a href="../glossary.html#vector-index">vector index</a>.</li>
+          <li>Encode each incoming question with the same model.</li>
+          <li>Retrieve the top candidates and pass them to the generator.</li>
+        </ol>
+        <p>
+          The team wants to test a replacement model. The reason might be better multilingual retrieval, improved performance on short queries, lower memory use, or a new provider requirement. The reason is not important to the migration mechanics. The critical invariant is this:
+        </p>
+        <blockquote>
+          A query and the documents it searches must be embedded with the same model version and compatible preprocessing.
+        </blockquote>
+        <p>
+          During migration, the old path remains available while the new path is built and measured. Do not overwrite the old vectors in place.
+        </p>
+      </section>
+
+      <section>
+        <h2>1. Define the embedding contract before comparing models</h2>
+        <p>
+          Write down the properties that make one embedding deployment compatible with another. Store them as configuration rather than relying on an informal model name.
+        </p>
+
+        <pre><code>{
+  "embedding_version": "docs-2026-11-09-model-b-v1",
+  "model_id": "provider/model-b",
+  "dimensions": 1536,
+  "similarity": "cosine",
+  "document_prefix": "passage: ",
+  "query_prefix": "query: ",
+  "chunker_version": "markdown-chunker-v3",
+  "normalization": "l2",
+  "source_revision": "docs-2026-11-09"
+}</code></pre>
+
+        <p>
+          The exact values above are illustrative configuration, not verified recommendations. Use the values required by the model and search engine you actually operate.
+        </p>
+        <p>At minimum, record:</p>
+        <ul>
+          <li>Model identifier and provider.</li>
+          <li>Model revision or deployment identifier, if available.</li>
+          <li>Output dimensions and numeric type.</li>
+          <li>Similarity metric, such as cosine similarity or dot product.</li>
+          <li>Query and document instruction prefixes.</li>
+          <li>Text normalization, truncation, and token limits.</li>
+          <li>Chunker version and source-data revision.</li>
+          <li>Embedding generation timestamp and software version.</li>
+        </ul>
+        <p>
+          A vector without this metadata is difficult to audit. Treat the embedding version as part of the index schema, not merely as a deployment label.
+        </p>
+      </section>
+
+      <section>
+        <h2>2. Build a small, representative query set</h2>
+        <p>
+          Compare models on queries that resemble real use. A benchmark made only from easy, hand-written examples can hide the failures that matter in production.
+        </p>
+        <p>
+          If you have historical search logs, sample queries after removing personal data and secrets. Otherwise, create a labeled set from the main user journeys. Include short and long queries, synonyms, product names, error messages, multilingual inputs if relevant, and queries whose correct answer depends on a specific version or condition.
+        </p>
+        <p>
+          Store each evaluation item in a reviewable format:
+        </p>
+
+        <pre><code>{
+  "id": "q-017",
+  "query": "How do I rotate an expired service token?",
+  "relevant_chunk_ids": [
+    "auth/token-rotation.md#section-3"
+  ],
+  "acceptable_chunk_ids": [
+    "auth/token-rotation.md#section-2",
+    "auth/token-rotation.md#section-4"
+  ],
+  "notes": "Must distinguish rotation from revocation."
+}</code></pre>
+
+        <p>
+          The labels are the test oracle. They should describe what retrieval must return, not what a particular model happens to return. For a first comparison, a few dozen carefully reviewed queries can reveal obvious regressions. A larger set gives more confidence, but no query set proves universal quality.
+        </p>
+      </section>
+
+      <section>
+        <h2>3. Compare retrieval, not just vector statistics</h2>
+        <p>
+          Embedding dimensions, vector norms, and average similarity scores are useful diagnostics, but they are not a quality evaluation. A model can have plausible-looking distributions while returning the wrong chunks.
+        </p>
+        <p>
+          Run the same query set against each candidate index and calculate retrieval metrics such as:
+        </p>
+        <ul>
+          <li><strong>Recall@k:</strong> whether at least one relevant chunk appears in the first <em>k</em> results.</li>
+          <li><strong>MRR:</strong> how highly the first relevant result is ranked.</li>
+          <li><strong>nDCG:</strong> ranking quality when relevance has more than two levels.</li>
+          <li><strong>Zero-hit rate:</strong> how often no acceptable result appears in the inspected window.</li>
+          <li><strong>Latency:</strong> query encoding time plus index search time.</li>
+        </ul>
+        <p>
+          The metric choice should match the product. If the generator needs one authoritative chunk, rank position matters. If it can combine several sources, recall at a larger <em>k</em> may be more useful.
+        </p>
+        <p>
+          A minimal evaluation loop can look like this:
+        </p>
+
+        <pre><code>for query in evaluation_queries:
+    expected = query.relevant_chunk_ids + query.acceptable_chunk_ids
+
+    for index in ["current-v1", "candidate-v2"]:
+        vector = embed(
+            text=query.text,
+            embedding_version=index.embedding_version
+        )
+        results = index.search(vector, top_k=10)
+
+        record(
+            query_id=query.id,
+            index=index.name,
+            result_ids=[item.id for item in results],
+            latency_ms=results.latency_ms,
+            hit_at_10=any(item.id in expected for item in results)
+        )</code></pre>
+
+        <p>
+          This pseudocode is intentionally provider-neutral. Adapt the embedding and search calls to your stack. The important property is that each index receives a query encoded with its own embedding version.
+        </p>
+      </section>
+
+      <section>
+        <h2>4. Create a parallel index</h2>
+        <p>
+          The parallel index is the safety boundary. It contains a complete copy of the source corpus embedded with the candidate configuration. Give it a distinct name that includes the embedding version.
+        </p>
+
+        <pre><code>documents_current_v1
+documents_candidate_v2</code></pre>
+
+        <p>
+          Keep the document identifier stable across both indexes. A stable ID makes result comparison and rollback easier, while the index name and embedding version identify the representation.
+        </p>
+        <p>
+          Re-embed every source chunk for the candidate index. Do not copy old vectors and update only recently changed documents. That produces a mixed corpus in which some candidates use the old representation and others use the new one.
+        </p>
+        <p>
+          If the source corpus changes during the rebuild, choose one of two explicit strategies:
+        </p>
+        <ul>
+          <li>Capture a source revision, build from that snapshot, then replay changes before cutover.</li>
+          <li>Continuously mirror changes into both indexes and verify that document counts and revisions converge before switching.</li>
+        </ul>
+        <p>
+          The first strategy is simpler to reason about. The second can reduce staleness for long rebuilds but requires more operational bookkeeping.
+        </p>
+      </section>
+
+      <section>
+        <h2>5. Use dual-read evaluation before dual-read production</h2>
+        <p>
+          Before changing user-visible results, send evaluation queries to both indexes. Compare not only aggregate metrics but also individual disagreements.
+        </p>
+        <p>
+          A useful review table contains:
+        </p>
+
+        <table>
+          <thead>
+            <tr>
+              <th>Query</th>
+              <th>Current top result</th>
+              <th>Candidate top result</th>
+              <th>Expected result</th>
+              <th>Decision</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td>Expired token rotation</td>
+              <td>Revocation guide</td>
+              <td>Rotation guide</td>
+              <td>Rotation guide</td>
+              <td>Candidate improves</td>
+            </tr>
+            <tr>
+              <td>Legacy API timeout</td>
+              <td>Migration note</td>
+              <td>Generic timeout page</td>
+              <td>Migration note</td>
+              <td>Investigate</td>
+            </tr>
+          </tbody>
+        </table>
+
+        <p>
+          The rows above are examples of the review format, not measured results. In a real migration, populate them from your query set and label every disagreement as an improvement, acceptable change, regression, or unresolved case.
+        </p>
+        <p>
+          Watch for systematic regressions: one language, one product area, short queries, numbers, code snippets, or documents with similar titles. Aggregate scores can conceal a concentrated failure that affects an important user journey.
+        </p>
+      </section>
+
+      <section>
+        <h2>6. Cut over with an explicit routing switch</h2>
+        <p>
+          The application should select an embedding version and index through configuration or a feature flag. Avoid hard-coding an index name in multiple services.
+        </p>
+
+        <pre><code>SEARCH_INDEX_CURRENT=documents_current_v1
+SEARCH_INDEX_CANDIDATE=documents_candidate_v2
+ACTIVE_SEARCH_INDEX=documents_current_v1
+ACTIVE_EMBEDDING_VERSION=docs-2026-11-09-model-a-v1</code></pre>
+
+        <p>
+          A controlled cutover can proceed in stages:
+        </p>
+        <ol>
+          <li>Build and validate the candidate index offline.</li>
+          <li>Enable candidate searches for internal evaluation or a small, observable traffic slice.</li>
+          <li>Compare latency, empty-result rate, retrieval metrics, and application-level answer signals.</li>
+          <li>Increase traffic only when the candidate remains within agreed thresholds.</li>
+          <li>Switch the default route to the candidate index.</li>
+          <li>Keep the previous index available for rollback until the observation window ends.</li>
+        </ol>
+        <p>
+          The application must also switch query embedding at the same time as index routing. A candidate query vector sent to the current index is an incompatibility, even if the request succeeds.
+        </p>
+      </section>
+
+      <section>
+        <h2>Verification checklist</h2>
+        <p>
+          A migration is ready for cutover only when the following checks have evidence attached:
+        </p>
+        <ul>
+          <li>The candidate index contains the intended source revision.</li>
+          <li>Every candidate vector carries the expected embedding version.</li>
+          <li>Dimensions and similarity metric match the candidate schema.</li>
+          <li>Query encoding selects the same version as the target index.</li>
+          <li>Evaluation queries have been run against both indexes.</li>
+          <li>Relevant-hit metrics meet the agreed acceptance criteria.</li>
+          <li>Representative disagreements have been reviewed.</li>
+          <li>Search latency and resource use are within operational limits.</li>
+          <li>Rollback changes one routing configuration, not a data rewrite.</li>
+          <li>Monitoring can distinguish current and candidate traffic.</li>
+        </ul>
+        <p>
+          If a check is not measured, label it as unknown. Do not convert an unknown into an assumption because the index loaded successfully.
+        </p>
+      </section>
+
+      <section>
+        <h2>Failure cases to plan for</h2>
+
+        <h3>Mixed vectors in one index</h3>
+        <p>
+          This often happens when a partial backfill updates documents in place. The index may remain searchable while ranking becomes inconsistent. Use immutable index versions and rebuild the candidate corpus completely.
+        </p>
+
+        <h3>Same dimensions, different semantics</h3>
+        <p>
+          Matching dimensions do not establish compatibility. Store the model identifier and representation metadata with every index, and never infer compatibility from shape alone.
+        </p>
+
+        <h3>Different preprocessing</h3>
+        <p>
+          A new model may expect a query instruction, a document prefix, different truncation, or a different normalization policy. Put preprocessing in the embedding contract and test it with the same fixtures used in evaluation.
+        </p>
+
+        <h3>Stale candidate data</h3>
+        <p>
+          A candidate index built from yesterday’s corpus can appear better or worse for reasons unrelated to the model. Compare indexes built from the same source revision, or explicitly account for changes.
+        </p>
+
+        <h3>Overfitting to the evaluation set</h3>
+        <p>
+          A model can be tuned to a small hand-written benchmark and still fail on production traffic. Keep a held-out set, sample new anonymized queries after launch, and review failures continuously.
+        </p>
+
+        <h3>Rollback without query rollback</h3>
+        <p>
+          Switching only the document index back is unsafe if the query encoder remains on the candidate model. Rollback must restore the index and the matching query-embedding configuration together.
+        </p>
+      </section>
+
+      <section>
+        <h2>Limitations and practical trade-offs</h2>
+        <p>
+          Offline retrieval metrics do not measure the entire RAG system. A retrieved chunk can be relevant but poorly formatted for the generator. Conversely, a generator may answer correctly from a less highly ranked chunk. Add answer-quality checks only after retrieval itself is measurable.
+        </p>
+        <p>
+          A parallel rebuild temporarily costs more storage and compute. That cost buys a reversible migration boundary. If the corpus is very large, use a snapshot, batch embeddings, checkpoint progress, and preserve enough metadata to resume without silently mixing versions.
+        </p>
+        <p>
+          No single score decides whether a model is right. Consider retrieval quality, latency, memory, throughput, language coverage, data handling requirements, operational reliability, and the cost of maintaining the model. Make the decision from your query set and stated constraints rather than from dimension count or a generic benchmark alone.
+        </p>
+      </section>
+
+      <section>
+        <h2>Final operating pattern</h2>
+        <p>
+          The repeatable pattern is simple:
+        </p>
+        <ol>
+          <li>Define an immutable embedding contract.</li>
+          <li>Create a labeled query set representative of real search.</li>
+          <li>Build a complete candidate index from the same source revision.</li>
+          <li>Encode queries with the matching candidate version.</li>
+          <li>Compare retrieval quality and operational behavior.</li>
+          <li>Cut over through a routing switch with rollback ready.</li>
+          <li>Keep monitoring after launch and review new failures.</li>
+        </ol>
+        <p>
+          This approach turns an opaque model replacement into a controlled data migration. The key protection against a silent search regression is not a larger model or a more impressive score. It is the combination of versioned representations, reproducible evaluation, and a parallel index that can be rejected without taking search offline.
+        </p>
+      </section>
+
+      <footer class="reading-footer">
+        <p>Continue with the <a href="guides.html">guides index</a> or look up terms in the <a href="../glossary.html">Agent Lab Journal glossary</a>.</p>
+      </footer>
+    <section class="service-note">
+  <b>We publish what works for us—and implement the same solutions for your business.</b>
+  We design AI automation, Telegram bots, chats, and AI agents for real-world processes.
+  <a href="../contacts-en.html">Discuss your project →</a>
+</section>
+</article>
+  </main>
+
+  <footer class="site-footer">
+    <div class="container">
+      <p>&copy; Agent Lab Journal</p>
+      <nav aria-label="Footer navigation">
+        <a href="guides.html">Guides</a>
+        <a href="../glossary.html">Glossary</a>
+      </nav>
+    </div>
+  </footer>
+</body>
+</html>
