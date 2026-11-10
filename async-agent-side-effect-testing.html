@@ -1,0 +1,364 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Как тестировать асинхронные побочные эффекты AI-агента</title>
+  <meta name="description" content="Как тестировать асинхронные побочные эффекты AI-агента: polling по дедлайну, ровно один результат, идемпотентность хранилища и quiet window.">
+  <link rel="canonical" href="https://agentlabjournal.online/async-agent-side-effect-testing.html">
+  <link rel="stylesheet" href="style.css">
+  <link rel="stylesheet" href="reading.css">
+
+  <meta property="og:type" content="article">
+  <meta property="og:locale" content="ru_RU">
+  <meta property="og:title" content="Как тестировать асинхронные побочные эффекты AI-агента">
+  <meta property="og:description" content="Практический harness для проверки тикетов, повторных попыток и запретных действий без ложных падений и успехов.">
+  <meta property="og:url" content="https://agentlabjournal.online/async-agent-side-effect-testing.html">
+
+  <meta name="twitter:card" content="summary">
+  <meta name="twitter:title" content="Как тестировать асинхронные побочные эффекты AI-агента">
+  <meta name="twitter:description" content="Polling по дедлайну, ровно один результат, идемпотентность и quiet window для отрицательных проверок.">
+
+  <script type="application/ld+json">
+  {
+    "@context": "https://schema.org",
+    "@type": "Article",
+    "headline": "Как тестировать асинхронные побочные эффекты AI-агента",
+    "description": "Практический подход к тестированию асинхронных побочных эффектов AI-агента.",
+    "inLanguage": "ru-RU",
+    "mainEntityOfPage": {
+      "@type": "WebPage",
+      "@id": "https://agentlabjournal.online/async-agent-side-effect-testing.html"
+    },
+    "author": {
+      "@type": "Organization",
+      "name": "Agent Lab Journal"
+    },
+    "publisher": {
+      "@type": "Organization",
+      "name": "Agent Lab Journal"
+    }
+  }
+  </script>
+<link rel="stylesheet" href="homepage.css"><link rel="stylesheet" href="max-promo.css">  <meta property="og:image" content="https://agentlabjournal.online/assets/covers/llm-context-window-budget-social.png">
+  <meta property="og:image:alt" content="Как тестировать асинхронные побочные эффекты AI-агента">
+  <meta name="twitter:image" content="https://agentlabjournal.online/assets/covers/llm-context-window-budget-social.png">
+</head>
+<body>
+  <header class="site-header">
+    <div class="container">
+      <a class="site-brand" href="index.html">Agent Lab Journal</a>
+      <nav aria-label="Основная навигация">
+        <a href="guides.html">Гайды</a>
+        <a href="glossary.html">Глоссарий</a>
+      </nav>
+    </div>
+  </header>
+
+  <main>
+    <article class="reading">
+<a href="https://max.ru/channel_AgentLab?utm_source=agentlabjournal&utm_medium=article&utm_campaign=max_channel&utm_content=article_footer" class="max-promo-block" target="_blank" rel="noopener noreferrer" aria-label="Самое важное из мира AI в канале MAX AgentLab">
+  <span class="max-promo-block__icon" aria-hidden="true"></span>
+  <span class="max-promo-block__content"><span class="max-promo-block__title">Самое важное из мира AI — в канале MAX AgentLab</span><span class="max-promo-block__desc">Отдельные разборы, инструменты и практические схемы</span></span>
+  <span class="max-promo-block__arrow" aria-hidden="true">→</span>
+</a>
+<a href="https://t.me/pelmenews?utm_source=agentlabjournal&utm_medium=article&utm_campaign=telegram_channel&utm_content=article_intro" class="telegram-promo-block" target="_blank" rel="noopener noreferrer" aria-label="Читайте Agent Lab в Telegram">
+  <span class="telegram-promo-block__icon" aria-hidden="true"></span>
+  <span class="telegram-promo-block__content">
+    <span class="telegram-promo-block__title">Читайте Agent Lab в Telegram</span>
+    <span class="telegram-promo-block__desc">Разборы, кейсы и новости о практических AI-агентах без лишней воды.</span>
+  </span>
+  <span class="telegram-promo-block__arrow" aria-hidden="true">→</span>
+</a>
+      <div class="reading-meta">
+        <span>Практика</span>
+        <span>Продвинутый уровень</span>
+        <span>До 12 минут</span>
+      </div>
+
+      <h1>Как тестировать асинхронные побочные эффекты AI-агента</h1>
+        <figure class="article-cover" data-editorial-cover="async-agent-side-effect-testing"><img src="assets/covers/llm-context-window-budget.png" alt="Как тестировать асинхронные побочные эффекты AI-агента" width="1280" height="720" fetchpriority="high"><figcaption>Temporary fallback cover; replace in editorial pass.</figcaption></figure>
+
+      <p class="lead">
+        AI-агент редко меняет систему синхронно с ответом модели. Он может создать тикет, поставить задачу в очередь, повторить запрос после тайм-аута или попытаться выполнить запрещённое действие. Поэтому тест, который просто ждёт фиксированное число секунд и проверяет один HTTP-ответ, легко даёт оба опасных результата: сообщает о падении, хотя эффект ещё не успел проявиться, или сообщает об успехе, хотя позже появится дубль.
+      </p>
+
+      <p>
+        Надёжная проверка должна наблюдать систему до понятного <a href="glossary.html#eventual-consistency">eventual consistency</a>-состояния, ограничивать ожидание дедлайном, проверять количество результатов и отдельно доказывать отсутствие запрещённого эффекта. Ниже — каркас тестового harness, который можно адаптировать к конкретному агенту и хранилищу.
+      </p>
+
+      <h2>Что именно нужно доказать</h2>
+
+      <p>Для каждого сценария заранее сформулируйте наблюдаемое утверждение. Например:</p>
+
+      <ul>
+        <li>после одного пользовательского запроса появился ровно один тикет;</li>
+        <li>повторная доставка того же события не создала второй тикет;</li>
+        <li>после временной ошибки агент повторил операцию не более разрешённого числа раз;</li>
+        <li>при запретном намерении не появилось ни одной записи, команды или внешнего вызова;</li>
+        <li>после достижения ожидаемого состояния система перестала производить новые результаты.</li>
+      </ul>
+
+      <p>
+        Важно различать бизнес-результат и транспортное событие. Два сообщения в очереди не обязательно означают два тикета, а один ответ API не доказывает, что побочный эффект уже записан в хранилище.
+      </p>
+
+      <h2>Минимальная модель harness</h2>
+
+      <p>
+        Harness должен иметь четыре независимые части: генератор входного события, адаптер наблюдения, polling с дедлайном и набор проверок результата. В тесте не должно быть скрытого ожидания вроде <code>sleep(5)</code>: фиксированная пауза не знает, успела ли система завершиться, и не защищает от позднего дубля.
+      </p>
+
+      <pre><code>deadline = now() + 30s
+seen = []
+
+while now() &lt; deadline:
+    state = read_effects(correlation_id)
+    seen = normalize(state)
+
+    if expected_state_reached(seen):
+        break
+
+    sleep(backoff.next())
+
+assert exactly_one_business_result(seen)</code></pre>
+
+      <p>
+        Это псевдокод, а не готовая библиотека. Функции <code>read_effects</code> и <code>normalize</code> должны использовать только реальные интерфейсы вашего проекта. Если API возвращает пагинацию, harness обязан пройти все страницы или использовать серверный count, иначе проверка количества будет неполной.
+      </p>
+
+      <h2>Воспроизводимый сценарий: создание тикета</h2>
+
+      <h3>1. Подготовьте корреляцию</h3>
+
+      <p>
+        На каждый запуск создавайте уникальный <code>correlation_id</code>. Не переиспользуйте его между тестами без явной причины: старые записи могут выглядеть как новый результат. В полезную нагрузку положите стабильный <code>idempotency_key</code>, который останется тем же при повторной доставке события.
+      </p>
+
+      <pre><code>correlation_id=test-$(date +%s)-$RANDOM
+idempotency_key=case-create-001</code></pre>
+
+      <p>
+        Эти команды безопасны в локальном окружении: они только формируют значения переменных. Отправку события выполняйте через тестовый клиент проекта и не подставляйте реальные секреты в командную строку, логи или репозиторий.
+      </p>
+
+      <h3>2. Отправьте событие один раз</h3>
+
+      <p>
+        Зафиксируйте момент отправки и идентификаторы ответа. Сохраняйте исходную полезную нагрузку рядом с логом теста. Если агент отвечает «принято», это подтверждает только приём задания, а не создание тикета.
+      </p>
+
+      <pre><code>send_agent_event \
+  --correlation-id "$correlation_id" \
+  --idempotency-key "$idempotency_key" \
+  --input "создай тикет по входящему обращению"</code></pre>
+
+      <h3>3. Ожидайте состояние polling-ом</h3>
+
+      <p>
+        Polling должен прекращаться по одному из двух условий: ожидаемое состояние достигнуто или истёк дедлайн. Интервал можно увеличивать постепенно, чтобы не создавать лишнюю нагрузку. При каждом чтении записывайте время, статус, количество результатов и идентификаторы найденных объектов.
+      </p>
+
+      <pre><code>deadline = monotonic_now() + 30
+delay = 0.25
+
+while monotonic_now() &lt; deadline:
+    results = list_tickets(correlation_id=correlation_id)
+
+    if len(results) &gt; 1:
+        fail("обнаружен дубль до истечения дедлайна")
+
+    if len(results) == 1 and results[0].status == "created":
+        break
+
+    sleep(delay)
+    delay = min(delay * 2, 2.0)
+
+assert len(results) == 1
+assert results[0].idempotency_key == idempotency_key</code></pre>
+
+      <p>
+        Здесь проверка дубля выполняется сразу, а не только в конце. Это делает причину падения понятнее и помогает обнаружить гонку: например, два воркера одновременно прошли проверку существования записи.
+      </p>
+
+      <h2>Почему нужна проверка ровно одного результата</h2>
+
+      <p>
+        Проверка «нашёлся хотя бы один тикет» недостаточна. Она пропустит повторную обработку, если первый результат корректен, а второй появляется немного позже. Минимальная проверка должна сравнивать число бизнес-объектов с единицей и дополнительно проверять их ключи:
+      </p>
+
+      <pre><code>assert count(results) == 1
+assert results[0].correlation_id == correlation_id
+assert results[0].idempotency_key == idempotency_key
+assert results[0].source_event_id == expected_event_id</code></pre>
+
+      <p>
+        Если в доменной модели допустимы несколько технических записей на один результат, считайте не строки таблицы, а агрегированные бизнес-результаты. В тесте явно зафиксируйте правило агрегации, иначе он будет зависеть от внутренней реализации.
+      </p>
+
+      <h2>Идемпотентность на уровне хранилища</h2>
+
+      <p>
+        Проверки в коде агента недостаточно: два параллельных воркера могут одновременно прочитать отсутствие записи. Гарантия должна быть закреплена там, где создаётся результат — обычно уникальным ограничением по ключу идемпотентности или по подходящему составному ключу.
+      </p>
+
+      <pre><code>UNIQUE (tenant_id, idempotency_key)</code></pre>
+
+      <p>
+        Конкретный синтаксис зависит от выбранного хранилища; строка выше — иллюстрация требования, а не инструкция для конкретной СУБД. Тест должен доставить одно и то же событие повторно и проверить, что:
+      </p>
+
+      <ul>
+        <li>обработчики не создали второй бизнес-объект;</li>
+        <li>повторный вызов вернул существующий результат или безопасный конфликт;</li>
+        <li>состояние первой записи не было случайно перезаписано данными повторной попытки;</li>
+        <li>журнал попыток позволяет отличить повторную доставку от нового события.</li>
+      </ul>
+
+      <p>
+        Для проверки гонки запустите две одинаковые обработки одновременно в изолированном тестовом окружении. Успешным считается не отсутствие ошибок вообще, а наличие одного результата и предсказуемая обработка второй попытки.
+      </p>
+
+      <h2>Повторные попытки и временные ошибки</h2>
+
+      <p>
+        Не смешивайте retry транспорта с retry побочного эффекта. Сетевой тайм-аут может означать, что запись уже создана, но ответ потерян. Поэтому повторный вызов должен использовать тот же ключ идемпотентности и сначала безопасно разрешать неопределённый результат.
+      </p>
+
+      <p>Полезный сценарий выглядит так:</p>
+
+      <ol>
+        <li>тестовый адаптер принимает запрос и имитирует потерю ответа;</li>
+        <li>агент выполняет повторную попытку с тем же ключом;</li>
+        <li>harness ждёт до дедлайна, а не до фиксированной паузы;</li>
+        <li>итоговая проверка требует ровно один бизнес-результат;</li>
+        <li>в журнале проверяется число попыток и причина повтора.</li>
+      </ol>
+
+      <p>
+        Если у системы нет управляемого fault injection, не называйте такой тест проверкой повторных попыток: обычное ожидание успешного ответа подтверждает только happy path.
+      </p>
+
+      <h2>Запретные действия и quiet window</h2>
+
+      <p>
+        Отрицательную проверку нельзя завершать в момент, когда агент ещё может выполнить отложенную команду. Утверждение «ничего не произошло» требует периода тишины — <em>quiet window</em>. Это интервал, в течение которого система не создаёт новых эффектов после того, как обработка входа считается завершённой.
+      </p>
+
+      <pre><code>deadline = monotonic_now() + 30
+quiet_until = None
+last_observed = snapshot_effects(correlation_id)
+
+while monotonic_now() &lt; deadline:
+    current = snapshot_effects(correlation_id)
+
+    if forbidden_effect_detected(current):
+        fail("обнаружено запрещённое действие")
+
+    if current != last_observed:
+        last_observed = current
+        quiet_until = monotonic_now() + 5
+
+    if processing_finished(correlation_id):
+        if quiet_until is None:
+            quiet_until = monotonic_now() + 5
+
+        if monotonic_now() &gt;= quiet_until:
+            break
+
+    sleep(0.5)
+
+assert no_forbidden_effects(last_observed)</code></pre>
+
+      <p>
+        Длительность quiet window должна быть частью тестовой конфигурации и соответствовать ожидаемой задержке конкретного контура. Не выбирайте число только потому, что оно «обычно работает». Если воркеры могут просыпаться позже окна, отрицательный тест будет давать ложные успехи.
+      </p>
+
+      <p>
+        Проверяйте не только итоговую таблицу. Запретное действие может проявиться в исходящей команде, записи аудита, постановке задачи в очередь или вызове внешнего адаптера. Составьте белый список допустимых событий и считайте нарушением любой эффект вне него.
+      </p>
+
+      <h2>Типовые ошибки</h2>
+
+      <ul>
+        <li><strong>Фиксированный sleep.</strong> Он либо слишком короткий и даёт ложное падение, либо чрезмерно длинный и скрывает проблемы с дедлайном.</li>
+        <li><strong>Проверка только HTTP-ответа.</strong> Ответ «принято» не равен завершённому побочному эффекту.</li>
+        <li><strong>Проверка «не пусто».</strong> Она не обнаруживает дубли.</li>
+        <li><strong>Идемпотентность только в памяти.</strong> После рестарта или при гонке она не защищает хранилище.</li>
+        <li><strong>Слишком ранняя отрицательная проверка.</strong> Отсутствие записи в первой выборке не доказывает, что её не будет позже.</li>
+        <li><strong>Один общий идентификатор на все тесты.</strong> Остатки предыдущего запуска превращаются в ложный успех.</li>
+        <li><strong>Неполная выборка.</strong> Пагинация, eventual consistency и кеш могут скрыть второй результат.</li>
+      </ul>
+
+      <h2>Проверка результата harness</h2>
+
+      <p>
+        Каждый запуск должен оставлять компактный диагностический отчёт: корреляционный идентификатор, idempotency key, дедлайн, число polling-итераций, найденные бизнес-результаты, замеченные попытки и время окончания quiet window. Не записывайте в отчёт токены, персональные данные и полные промпты, если они не нужны для диагностики.
+      </p>
+
+      <p>Перед тем как считать тест надёжным, проверьте его на четырёх вариантах:</p>
+
+      <ol>
+        <li>обычное успешное создание одного результата;</li>
+        <li>медленное, но допустимое создание до дедлайна;</li>
+        <li>повторная доставка после потерянного ответа;</li>
+        <li>запретное действие с поздним отложенным воркером.</li>
+      </ol>
+
+      <p>
+        Хороший harness падает с разными причинами для «не дождались», «получили дубль», «нарушили запрет» и «сломалась идемпотентность». Одно общее сообщение вроде «ожидаемое состояние не достигнуто» затрудняет расследование и стимулирует увеличить таймаут вместо исправления гонки.
+      </p>
+
+      <h2>Ограничения подхода</h2>
+
+      <p>
+        Polling по дедлайну не делает внешнюю систему детерминированной. Он лишь ограничивает ожидание и делает критерий завершения явным. Если у вас нет наблюдаемого источника истины, невозможно надёжно доказать ни ровно один результат, ни отсутствие запретного действия.
+      </p>
+
+      <p>
+        Quiet window также не является математическим доказательством вечного отсутствия эффекта. Это инженерный критерий, valid только относительно известных задержек очередей, ретраев и воркеров. Для критичных действий нужны дополнительные гарантии: серверная идемпотентность, аудит, блокирующие политики и отдельное тестирование восстановления после сбоев.
+      </p>
+
+      <h2>Итог</h2>
+
+      <p>
+        Чтобы избежать ложных падений и ложных успехов при тестировании AI-агента, наблюдайте не ответ модели, а жизненный цикл побочного эффекта. Используйте polling с монотонным дедлайном, требуйте ровно один бизнес-результат, закрепляйте идемпотентность уникальным ограничением хранилища и завершайте отрицательные проверки только после quiet window.
+      </p>
+
+      <p>
+        Дополнительные практические материалы собраны в <a href="guides.html">разделе guides</a>, а термины и сокращения — в <a href="glossary.html">глоссарии</a>.
+      </p>
+<aside class="service-note" aria-label="Связаться по проекту">
+  <div class="service-note__copy">
+    <p class="service-note__label">Связь с Agent Lab</p>
+    <p class="service-note__title">Внедрим такой контур в ваш процесс</p>
+    <p class="service-note__text">Напишите инженеру Agent Lab в Telegram: опишите задачу, бота или интеграцию — предложим пилот с проверками и понятными границами.</p>
+  </div>
+  <a class="service-note__link" href="https://t.me/msrzn007?utm_source=journal&amp;utm_medium=article&amp;utm_campaign=service_note" target="_blank" rel="noopener">Написать в Telegram
+    <svg viewBox="0 0 16 16" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"><path d="M3 13 13 3M6 3h7v7"/></svg>
+  </a>
+</aside>
+<aside class="service-note service-note--sitevisor" aria-label="Экспресс-аудит сайта">
+  <div class="service-note__copy">
+    <p class="service-note__label">SiteVisor</p>
+    <p class="service-note__title">Проверьте техническое состояние и готовность вашего сайта к рекламе</p>
+    <p class="service-note__text">Экспресс-аудит на SiteVisor.pro: индексация, скорость, разметка, аналитика и точки конверсии.</p>
+  </div>
+  <a class="service-note__link" href="https://sitevisor.pro/?utm_source=journal&amp;utm_medium=article&amp;utm_campaign=leadmagnet" target="_blank" rel="noopener">Экспресс-аудит на SiteVisor.pro
+    <svg viewBox="0 0 16 16" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"><path d="M3 13 13 3M6 3h7v7"/></svg>
+  </a>
+</aside>
+</article>
+  </main>
+
+  <footer class="site-footer">
+    <div class="container">
+      <span>Agent Lab Journal</span>
+      <nav aria-label="Навигация в подвале">
+        <a href="guides.html">Гайды</a>
+        <a href="glossary.html">Глоссарий</a>
+      </nav>
+    </div>
+  </footer>
+</body>
+</html>

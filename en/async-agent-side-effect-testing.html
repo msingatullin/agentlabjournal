@@ -1,0 +1,773 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Testing Asynchronous Side Effects in an AI Agent</title>
+  <meta name="description" content="Testing Asynchronous Side Effects in an AI Agent with deadline-based polling, exactly-one assertions, sink-level idempotency, and quiet windows for negative assertions.">
+  <link rel="canonical" href="https://agentlabjournal.online/en/async-agent-side-effect-testing.html">
+  <link rel="stylesheet" href="../style.css">
+  <link rel="stylesheet" href="../reading.css">
+
+  <meta property="og:type" content="article">
+  <meta property="og:title" content="Testing Asynchronous Side Effects in an AI Agent">
+  <meta property="og:description" content="A reproducible test harness for tickets, retries, and prohibited actions in asynchronous AI agents.">
+  <meta property="og:url" content="https://agentlabjournal.online/en/async-agent-side-effect-testing.html">
+  <meta property="og:image" content="https://agentlabjournal.online/assets/covers/llm-context-window-budget-social.png">
+  <meta property="og:site_name" content="Agent Lab Journal">
+
+  <meta name="twitter:card" content="summary_large_image">
+  <meta name="twitter:title" content="Testing Asynchronous Side Effects in an AI Agent">
+  <meta name="twitter:description" content="A practical test harness for reliable assertions around asynchronous agent side effects.">
+  <meta name="twitter:image" content="https://agentlabjournal.online/assets/covers/llm-context-window-budget-social.png">
+
+  <meta name="reading-time" content="30 minutes">
+  <meta name="article:level" content="Advanced">
+  <meta name="article:topic" content="Testing Asynchronous Side Effects in an AI Agent">
+  <meta name="article:dateModified" content="2026-11-10">
+
+  <script type="application/ld+json">
+  {
+    "@context": "https://schema.org",
+    "@type": "Article",
+    "headline": "Testing Asynchronous Side Effects in an AI Agent",
+    "description": "A reproducible test harness for deadline-based polling, exactly-one assertions, sink-level idempotency, and quiet windows for negative assertions.",
+    "image": ["https://agentlabjournal.online/assets/covers/llm-context-window-budget-social.png"],
+    "dateModified": "2026-11-10",
+    "author": {
+      "@type": "Organization",
+      "name": "Agent Lab Journal"
+    },
+    "publisher": {
+      "@type": "Organization",
+      "name": "Agent Lab Journal",
+      "url": "https://agentlabjournal.online/"
+    },
+    "mainEntityOfPage": {
+      "@type": "WebPage",
+      "@id": "https://agentlabjournal.online/en/async-agent-side-effect-testing.html"
+    }
+  }
+  </script>
+<link rel="stylesheet" href="../homepage.css"><link rel="stylesheet" href="../max-promo.css">  <meta property="og:image:alt" content="Как тестировать асинхронные побочные эффекты AI-агента">
+</head>
+<body>
+  <header class="site-header">
+    <div class="site-header__inner">
+      <a class="site-header__brand" href="../index.html">Agent Lab Journal</a>
+      <nav class="site-header__nav" aria-label="Primary navigation">
+        <a href="../guides.html">Guides</a>
+        <a href="../glossary.html">Glossary</a>
+      </nav>
+    </div>
+  </header>
+
+  <main>
+    <article class="reading">
+      <header class="reading-header">
+        <p class="reading-kicker">Testing · Advanced · 30 minutes</p>
+        <h1>Testing Asynchronous Side Effects in an AI Agent</h1>
+        <figure class="article-cover" data-editorial-cover="async-agent-side-effect-testing"><img src="../assets/covers/llm-context-window-budget.png" alt="Как тестировать асинхронные побочные эффекты AI-агента" width="1280" height="720" fetchpriority="high"><figcaption>Temporary fallback cover; replace in editorial pass.</figcaption></figure>
+        <p class="reading-dek">
+          A reliable test must prove what happened, when it happened, how many times it happened,
+          and that forbidden work did not happen after the system had enough time to do it.
+        </p>
+        <div class="reading-meta">
+          <span>Advanced</span>
+          <span>30-minute read</span>
+          <span>Updated 10 November 2026</span>
+        </div>
+      </header>
+
+      <p>
+        AI agents rarely finish a request in one synchronous function call. They may create a
+        ticket, enqueue a retry, call a model again, write to a notification system, and then
+        report completion. The user sees one conversation, while the system produces a chain of
+        delayed <a href="../glossary.html#side-effect">side effects</a>.
+      </p>
+
+      <p>
+        That gap is where tests become misleading. A test may inspect the ticket before the worker
+        has written it and report a false failure. It may wait until one ticket appears, ignore a
+        duplicate created by a retry, and report a false pass. A negative assertion can fail in the
+        opposite direction: “no email was sent” may be checked before a delayed email is eligible
+        to leave the system.
+      </p>
+
+      <p>
+        This article develops a small harness for those cases. The design is intentionally
+        implementation-neutral, but the examples use Python-like pseudocode and a fake sink so
+        that the timing rules are explicit. The examples are patterns to adapt, not test results
+        claimed to have been executed here.
+      </p>
+
+      <h2>The concrete case</h2>
+
+      <p>
+        Consider an agent that handles a support request. It can create one ticket in a ticket
+        system, retry transient failures, and optionally send a notification. A policy says that
+        requests containing a prohibited action must be refused: the agent may record a decision,
+        but it must not create a ticket, send a message, or invoke the external action.
+      </p>
+
+      <p>The test suite needs to answer four separate questions:</p>
+
+      <ul>
+        <li>Did the expected ticket eventually appear before the deadline?</li>
+        <li>Did exactly one ticket appear, even if the worker retried?</li>
+        <li>Did repeated delivery produce one effect at the sink?</li>
+        <li>Did a prohibited request remain free of forbidden effects during a complete quiet window?</li>
+      </ul>
+
+      <p>
+        These are not variations of one assertion. They observe different properties and need
+        different clocks.
+      </p>
+
+      <h2>Why ordinary assertions are insufficient</h2>
+
+      <p>
+        A direct assertion assumes that the observable state is settled when the command returns:
+      </p>
+
+      <pre><code>agent.handle("Please open a ticket about the outage")
+
+assert ticket_store.count() == 1</code></pre>
+
+      <p>
+        That assertion is only valid if <code>handle</code> performs the write synchronously and
+        the store is immediately consistent. An asynchronous worker makes neither assumption safe.
+        The test can fail because the write is late, not because the behavior is wrong.
+      </p>
+
+      <p>
+        Replacing it with an arbitrary sleep is not a fix:
+      </p>
+
+      <pre><code>sleep(2)
+assert ticket_store.count() == 1</code></pre>
+
+      <p>
+        A fixed sleep is too short when the system is slow and unnecessarily long when it is fast.
+        It also hides the useful fact that the expected state became visible at a particular time.
+        More importantly, it does not define what happens when the state never appears.
+      </p>
+
+      <p>
+        Use a bounded poll instead: repeatedly observe the condition until it is true or a
+        deadline expires. This makes waiting explicit, bounded, and diagnosable.
+      </p>
+
+      <h2>Define the contract before writing the harness</h2>
+
+      <p>
+        Start with a test contract that names the expected effect, the identity used to recognize
+        it, the allowed time, and the forbidden effects. A useful contract for the ticket case is:
+      </p>
+
+      <pre><code>{
+  "request": "Please open a ticket about the outage",
+  "expected": {
+    "ticket": {
+      "request_id": "req-001",
+      "action": "create_ticket"
+    }
+  },
+  "cardinality": {
+    "tickets": 1
+  },
+  "deadline_seconds": 10,
+  "negative_quiet_window_seconds": 2
+}</code></pre>
+
+      <p>
+        The <code>request_id</code> is a test-controlled correlation identifier. In production,
+        use an identifier that is safe to expose to the relevant systems and does not contain
+        personal data. Do not use customer names, email addresses, credentials, or raw prompts as
+        an idempotency key.
+      </p>
+
+      <p>
+        The contract separates identity from payload. A title can change because of prompt
+        normalization or model wording; the request identifier should not. Assertions should use
+        stable fields wherever possible.
+      </p>
+
+      <h2>A deadline-based polling primitive</h2>
+
+      <p>
+        The core primitive accepts a function that observes state and a predicate that decides
+        whether the state is acceptable. It uses a monotonic clock, not wall-clock timestamps,
+        because elapsed-duration calculations should not change when the system clock is adjusted.
+      </p>
+
+      <pre><code>from time import monotonic, sleep
+
+class DeadlineExceeded(AssertionError):
+    pass
+
+def eventually(
+    observe,
+    predicate,
+    *,
+    timeout_seconds=10.0,
+    interval_seconds=0.1,
+    description="condition"
+):
+    deadline = monotonic() + timeout_seconds
+    last_value = None
+
+    while True:
+        last_value = observe()
+
+        if predicate(last_value):
+            return last_value
+
+        remaining = deadline - monotonic()
+        if remaining &lt;= 0:
+            raise DeadlineExceeded(
+                f"Timed out waiting for {description}; "
+                f"last observed value: {last_value!r}"
+            )
+
+        sleep(min(interval_seconds, remaining))</code></pre>
+
+      <p>
+        The function has three important properties:
+      </p>
+
+      <ul>
+        <li>It returns immediately when the condition becomes true.</li>
+        <li>It never waits beyond the configured deadline.</li>
+        <li>Its failure includes the last observed value.</li>
+      </ul>
+
+      <p>
+        Keep the polling interval separate from the timeout. The timeout expresses the contract;
+        the interval controls observation cost. A test environment with a very slow sink may need a
+        larger timeout, but increasing the interval merely makes detection less responsive.
+      </p>
+
+      <p>
+        In a real harness, add an injected clock or a scheduler abstraction if deterministic time
+        control is important. The example above uses the process clock to keep the rule readable.
+      </p>
+
+      <h2>Waiting for an expected ticket</h2>
+
+      <p>
+        The first assertion should wait for existence, then inspect the returned record. It should
+        not use “the latest ticket” as an identity shortcut because another test or another retry
+        may create a newer record.
+      </p>
+
+      <pre><code>ticket = eventually(
+    observe=lambda: ticket_store.find_by_request_id("req-001"),
+    predicate=lambda item: item is not None,
+    timeout_seconds=10,
+    interval_seconds=0.1,
+    description="ticket for request req-001"
+)
+
+assert ticket["action"] == "create_ticket"
+assert ticket["status"] in {"open", "queued"}</code></pre>
+
+      <p>
+        If the store is eventually consistent, <code>find_by_request_id</code> must represent the
+        same read model that a user or downstream consumer relies on. Polling a process-local
+        cache while production reads from a replicated database can make the test pass against the
+        wrong observation point.
+      </p>
+
+      <h2>Exactly-one assertions</h2>
+
+      <p>
+        “At least one ticket exists” is not the same as “the agent created exactly one ticket.”
+        A retry may repeat the side effect after the first request succeeded but before the worker
+        received the acknowledgement. The correct test waits for the expected item and then
+        verifies cardinality for the request identity.
+      </p>
+
+      <pre><code>tickets = eventually(
+    observe=lambda: ticket_store.find_all_by_request_id("req-001"),
+    predicate=lambda rows: len(rows) &gt;= 1,
+    timeout_seconds=10,
+    interval_seconds=0.1,
+    description="at least one ticket for request req-001"
+)
+
+assert len(tickets) == 1, (
+    "expected exactly one ticket for req-001, "
+    f"found {len(tickets)}: {tickets!r}"
+)</code></pre>
+
+      <p>
+        The predicate waits for the minimum state needed to perform the cardinality check. The
+        final assertion is exactly-one, not merely existence. If duplicates can arrive after the
+        first item becomes visible, the assertion needs a stabilization rule or a sink-level
+        uniqueness guarantee.
+      </p>
+
+      <p>
+        One practical approach is to model the test as two phases:
+      </p>
+
+      <ol>
+        <li>Wait until the expected effect is visible before the deadline.</li>
+        <li>Continue observing through the end of the allowed delivery period, then assert exact cardinality.</li>
+      </ol>
+
+      <p>
+        The second phase must be bounded. Otherwise the test is not a test; it is an indefinite
+        monitor.
+      </p>
+
+      <pre><code>def observe_exactly_one_after_delivery(
+    find_rows,
+    *,
+    request_id,
+    delivery_window_seconds=3.0,
+    interval_seconds=0.1
+):
+    deadline = monotonic() + delivery_window_seconds
+    last_rows = []
+
+    while True:
+        last_rows = find_rows(request_id)
+
+        if monotonic() &gt;= deadline:
+            break
+
+        sleep(interval_seconds)
+
+    assert len(last_rows) == 1, (
+        f"expected exactly one sink record for {request_id}; "
+        f"found {len(last_rows)}: {last_rows!r}"
+    )
+
+    return last_rows[0]</code></pre>
+
+      <p>
+        This pattern is only meaningful if the delivery window is based on a documented retry and
+        queueing policy. A test should not invent a universal “safe” duration. Configure it from
+        the system under test, then keep it visible in the test contract.
+      </p>
+
+      <h2>Retries are not evidence of duplicate behavior</h2>
+
+      <p>
+        A retry is an attempt, not necessarily an additional business effect. The harness should
+        record both where possible:
+      </p>
+
+      <ul>
+        <li>attempt count or delivery count, used to diagnose execution;</li>
+        <li>sink record count, used to assert the externally visible effect.</li>
+      </ul>
+
+      <p>
+        A test that asserts “the worker ran once” is brittle when retries are part of the design.
+        A test that asserts “the sink contains one ticket for this request” checks the behavior
+        that matters to the user.
+      </p>
+
+      <pre><code>attempts = worker_log.count(
+    lambda event: event["request_id"] == "req-001"
+)
+
+sink_rows = ticket_store.find_all_by_request_id("req-001")
+
+# Diagnostic evidence, not the business invariant:
+assert attempts &gt;= 1
+
+# Business invariant:
+assert len(sink_rows) == 1</code></pre>
+
+      <p>
+        Do not assert an exact attempt count unless the retry policy itself is the subject of the
+        test. Backoff, worker restarts, and acknowledgement timing can legitimately alter the
+        number of attempts without altering the sink result.
+      </p>
+
+      <h2>Sink-level idempotency</h2>
+
+      <p>
+        <a href="../glossary.html#idempotency">Idempotency</a> means that repeating the same
+        logical operation does not create additional business effects. For agent workflows, the
+        strongest place to enforce this property is at the sink that would otherwise duplicate
+        the effect.
+      </p>
+
+      <p>
+        A worker-side “already processed” flag is helpful, but it may be bypassed by a second
+        worker, a crash between the flag update and the sink write, or a replay from a queue.
+        The sink should accept an idempotency key and enforce uniqueness atomically.
+      </p>
+
+      <pre><code>class FakeTicketSink:
+    def __init__(self):
+        self.rows = {}
+
+    def create(self, *, idempotency_key, title):
+        if idempotency_key in self.rows:
+            return self.rows[idempotency_key]
+
+        ticket = {
+            "id": f"ticket-{len(self.rows) + 1}",
+            "idempotency_key": idempotency_key,
+            "title": title
+        }
+        self.rows[idempotency_key] = ticket
+        return ticket
+
+    def find_all_by_idempotency_key(self, key):
+        ticket = self.rows.get(key)
+        return [] if ticket is None else [ticket]</code></pre>
+
+      <p>
+        This fake sink represents a uniqueness constraint, not a full database transaction. A
+        production implementation must make the check-and-create operation atomic at the storage
+        layer. A Python dictionary cannot prove that property under distributed concurrency.
+      </p>
+
+      <p>
+        The test should deliver the same logical command more than once and verify that the sink
+        exposes one record:
+      </p>
+
+      <pre><code>key = "req-001:create_ticket"
+
+for _ in range(3):
+    ticket_sink.create(
+        idempotency_key=key,
+        title="Investigate outage"
+    )
+
+rows = ticket_sink.find_all_by_idempotency_key(key)
+
+assert len(rows) == 1
+assert rows[0]["idempotency_key"] == key</code></pre>
+
+      <p>
+        The key must describe the logical effect, not the transient worker attempt. A key such as
+        <code>worker-7-attempt-3</code> guarantees uniqueness per attempt and therefore cannot
+        prevent duplicate business effects. A key such as
+        <code>request-id:operation</code> usually expresses the required boundary more clearly.
+      </p>
+
+      <h2>Negative assertions need a quiet window</h2>
+
+      <p>
+        A negative assertion is a statement that something must not happen: no ticket, no email,
+        no external API call, or no message published. Checking once immediately after the agent
+        returns is unsafe because the prohibited effect may still be queued.
+      </p>
+
+      <p>
+        Use a <a href="../glossary.html#quiet-window">quiet window</a>: after the system reaches the
+        decision point, observe the relevant sinks continuously for a bounded period and fail if
+        the forbidden effect appears at any point.
+      </p>
+
+      <pre><code>def assert_no_rows_during_window(
+    find_rows,
+    *,
+    request_id,
+    window_seconds=2.0,
+    interval_seconds=0.1
+):
+    deadline = monotonic() + window_seconds
+    observations = []
+
+    while True:
+        rows = find_rows(request_id)
+        observations.append(rows)
+
+        if rows:
+            raise AssertionError(
+                f"forbidden effect appeared for {request_id}: {rows!r}"
+            )
+
+        remaining = deadline - monotonic()
+        if remaining &lt;= 0:
+            return
+
+        sleep(min(interval_seconds, remaining))</code></pre>
+
+      <p>
+        The negative assertion is stronger when it checks every relevant sink, not just the
+        primary ticket store:
+      </p>
+
+      <pre><code>assert_no_rows_during_window(
+    ticket_store.find_all_by_request_id,
+    request_id="req-002",
+    window_seconds=2
+)
+
+assert_no_rows_during_window(
+    notification_sink.find_all_by_request_id,
+    request_id="req-002",
+    window_seconds=2
+)
+
+assert_no_rows_during_window(
+    external_call_log.find_all_by_request_id,
+    request_id="req-002",
+    window_seconds=2
+)</code></pre>
+
+      <p>
+        A quiet window does not prove that an effect can never occur. It proves only that the
+        effect did not appear during the configured observation period, assuming the sinks and
+        clocks being observed are the authoritative ones.
+      </p>
+
+      <h2>Testing a prohibited action</h2>
+
+      <p>
+        The prohibited-action test should assert both the agent’s decision and the absence of
+        side effects. Testing only the refusal message can produce a false pass if the agent says
+        “I cannot do that” and a background worker performs the action anyway.
+      </p>
+
+      <pre><code>result = agent.handle(
+    request_id="req-002",
+    text="Perform the prohibited administrative action"
+)
+
+assert result["decision"] == "refuse"
+
+assert_no_rows_during_window(
+    ticket_store.find_all_by_request_id,
+    request_id="req-002",
+    window_seconds=2
+)
+
+assert_no_rows_during_window(
+    notification_sink.find_all_by_request_id,
+    request_id="req-002",
+    window_seconds=2
+)
+
+assert_no_rows_during_window(
+    external_call_log.find_all_by_request_id,
+    request_id="req-002",
+    window_seconds=2
+)</code></pre>
+
+      <p>
+        The test input is deliberately generic. In a real suite, use a synthetic fixture that
+        represents the policy boundary without copying personal or confidential production data.
+      </p>
+
+      <h2>Control the test environment</h2>
+
+      <p>
+        Asynchronous tests become difficult to interpret when state leaks between examples. Each
+        test should have a unique request identifier and isolated or resettable sinks. The harness
+        should also provide a way to drain or stop workers after the test so late effects cannot
+        mutate the next test’s observations.
+      </p>
+
+      <pre><code>def new_request_id(test_name):
+    return f"test-{test_name}-001"
+
+def assert_isolated(sinks, request_id):
+    for sink in sinks:
+        assert sink.find_all_by_request_id(request_id) == []</code></pre>
+
+      <p>
+        If the system uses a shared queue, use a test namespace or a dedicated queue. If the
+        system uses an external service, use a sandbox with synthetic data and a cleanup mechanism.
+        Do not make production systems part of a repeatable side-effect test.
+      </p>
+
+      <p>
+        Isolation is not merely cleanup. It is part of the evidence boundary: if another test can
+        create a matching record, the test cannot attribute the observed effect to the command
+        under test.
+      </p>
+
+      <h2>A compact end-to-end harness</h2>
+
+      <p>
+        The following example combines the pieces. The methods named <code>agent.handle</code>,
+        <code>ticket_store.find_all_by_request_id</code>, and <code>worker.stop</code> are
+        interfaces that a real adapter must implement.
+      </p>
+
+      <pre><code>def test_ticket_is_created_once(ticket_store, notification_sink, agent, worker):
+    request_id = "test-create-ticket-001"
+
+    agent.handle(
+        request_id=request_id,
+        text="Please open a ticket about the outage"
+    )
+
+    rows = eventually(
+        observe=lambda: ticket_store.find_all_by_request_id(request_id),
+        predicate=lambda records: len(records) &gt;= 1,
+        timeout_seconds=10,
+        interval_seconds=0.1,
+        description=f"ticket for {request_id}"
+    )
+
+    assert len(rows) == 1
+    assert rows[0]["request_id"] == request_id
+
+    # Observe through the configured delivery window so a late duplicate is visible.
+    final_rows = observe_exactly_one_after_delivery(
+        ticket_store.find_all_by_request_id,
+        request_id=request_id,
+        delivery_window_seconds=3,
+        interval_seconds=0.1
+    )
+
+    assert final_rows["request_id"] == request_id
+
+    # This example also states that ticket creation does not notify by default.
+    assert_no_rows_during_window(
+        notification_sink.find_all_by_request_id,
+        request_id=request_id,
+        window_seconds=2
+    )
+
+    worker.stop()</code></pre>
+
+      <p>
+        The order matters. First establish eventual existence. Then establish final cardinality.
+        Only after the expected behavior is observed should the test inspect related negative
+        behavior, unless the contract explicitly requires concurrency between those checks.
+      </p>
+
+      <h2>Failure cases the harness should expose</h2>
+
+      <h3>The worker never processes the message</h3>
+
+      <p>
+        The deadline expires and the failure includes the last observed state. Investigate queue
+        routing, worker health, fixture setup, and request correlation before changing the timeout.
+        A longer timeout can conceal a permanently stuck path.
+      </p>
+
+      <h3>The ticket appears after the deadline</h3>
+
+      <p>
+        This is a contract failure if the deadline represents a user-visible service objective.
+        If the deadline was chosen arbitrarily, revise the contract based on the system’s documented
+        behavior rather than increasing it until the test passes.
+      </p>
+
+      <h3>Two tickets appear</h3>
+
+      <p>
+        The test has found a duplicate business effect. Inspect the idempotency key, the sink’s
+        uniqueness enforcement, and the interval between the sink write and acknowledgement. Do
+        not “fix” the test by asserting only that at least one ticket exists.
+      </p>
+
+      <h3>The refusal test sees no ticket, but an external call occurred</h3>
+
+      <p>
+        The negative assertion covered only one sink. Add an audit sink or a test adapter for every
+        prohibited action, and make the action boundary observable. Absence in the ticket store
+        cannot prove absence in an external system.
+      </p>
+
+      <h3>A forbidden effect appears after the quiet window</h3>
+
+      <p>
+        The test is not automatically wrong, but the contract is incomplete. The quiet window
+        must cover the maximum relevant queueing and retry period, or the system must expose a
+        completion signal that makes the negative assertion meaningful. Document which guarantee
+        the window provides.
+      </p>
+
+      <h3>Tests pass individually and fail in the suite</h3>
+
+      <p>
+        Suspect leaked state, reused identifiers, shared queues, unfinished workers, or a read
+        model that is not reset between tests. Make identifiers unique and add an explicit
+        precondition that the relevant sinks contain no records for that identifier.
+      </p>
+
+      <h2>Verification checklist</h2>
+
+      <p>
+        Before treating an asynchronous side-effect test as trustworthy, check the following:
+      </p>
+
+      <ul>
+        <li>The test uses a monotonic deadline rather than an unbounded wait.</li>
+        <li>Every poll failure reports the last observed state.</li>
+        <li>The effect is matched by a stable request or operation identifier.</li>
+        <li>Exactly-one behavior is asserted at the sink, not inferred from worker attempts.</li>
+        <li>Retries are tested as repeated delivery of one logical operation.</li>
+        <li>The sink enforces uniqueness atomically in the real implementation.</li>
+        <li>Negative assertions observe every relevant prohibited-action sink.</li>
+        <li>Negative assertions run for a documented quiet window.</li>
+        <li>Tests use isolated identifiers, queues, namespaces, or stores.</li>
+        <li>Workers and queued tasks are stopped or drained after the test.</li>
+        <li>Timeouts correspond to documented behavior or an explicit test contract.</li>
+      </ul>
+
+      <h2>What this method does not prove</h2>
+
+      <p>
+        A test harness built this way does not prove that a model always chooses the correct
+        action. It proves a bounded set of observable behaviors for controlled inputs and
+        controlled infrastructure.
+      </p>
+
+      <p>
+        It also does not prove that an external provider is globally idempotent unless the provider
+        documents and enforces that guarantee. A local fake sink can validate the harness logic,
+        but it cannot reproduce every failure mode of a remote API.
+      </p>
+
+      <p>
+        Finally, a quiet window is not a mathematical proof of non-occurrence outside the window.
+        It is an operational assertion whose strength depends on the selected duration, the
+        completeness of the observed sinks, and the system’s delivery guarantees.
+      </p>
+
+      <h2>Conclusion</h2>
+
+      <p>
+        Reliable testing of an asynchronous agent requires more than adding sleeps around ordinary
+        assertions. Use deadline-based polling for eventual state, exactly-one assertions for
+        business cardinality, sink-level idempotency for retries, and a quiet window for negative
+        behavior. Give each test a stable identity, isolate its observations, and report the last
+        state seen when a deadline expires.
+      </p>
+
+      <p>
+        With those boundaries in place, a failure becomes useful: it can distinguish lateness,
+        duplication, forbidden activity, and test contamination instead of collapsing them into
+        “the agent failed.”
+      </p>
+
+      <p class="reading-next">
+        Continue with the <a href="../guides.html">Agent Lab Journal guides</a> or look up related
+        terms in the <a href="../glossary.html">glossary</a>.
+      </p>
+    <section class="service-note">
+  <b>We publish what works for us—and implement the same solutions for your business.</b>
+  We design AI automation, Telegram bots, chats, and AI agents for real-world processes.
+  <a href="../contacts-en.html">Discuss your project →</a>
+</section>
+</article>
+  </main>
+
+  <footer class="site-footer">
+    <div class="site-footer__inner">
+      <p>Agent Lab Journal</p>
+      <nav aria-label="Footer navigation">
+        <a href="../guides.html">Guides</a>
+        <a href="../glossary.html">Glossary</a>
+      </nav>
+    </div>
+  </footer>
+</body>
+</html>
