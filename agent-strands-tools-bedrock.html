@@ -1,0 +1,398 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Создаём агента с инструментами на Strands Agents</title>
+  <meta name="description" content="Создаём агента с инструментами на Strands Agents: подключаем API-инструмент правил и Python-функцию броска костей с Amazon Bedrock.">
+  <link rel="canonical" href="https://agentlabjournal.online/agent-strands-tools-bedrock.html">
+  <link rel="stylesheet" href="style.css">
+  <link rel="stylesheet" href="reading.css">
+
+  <meta property="og:type" content="article">
+  <meta property="og:title" content="Создаём агента с инструментами на Strands Agents">
+  <meta property="og:description" content="Практический пример агента на Python и Amazon Bedrock с API-инструментом и собственной функцией броска костей.">
+  <meta property="og:url" content="https://agentlabjournal.online/agent-strands-tools-bedrock.html">
+  <meta property="og:site_name" content="Agent Lab Journal">
+
+  <meta name="twitter:card" content="summary">
+  <meta name="twitter:title" content="Создаём агента с инструментами на Strands Agents">
+  <meta name="twitter:description" content="Подключаем API правил и собственный Python-инструмент к агенту Strands Agents.">
+
+  <script type="application/ld+json">
+  {
+    "@context": "https://schema.org",
+    "@type": "Article",
+    "headline": "Создаём агента с инструментами на Strands Agents",
+    "description": "Практическая статья о подключении API-инструмента и собственной Python-функции к агенту Strands Agents на Amazon Bedrock.",
+    "url": "https://agentlabjournal.online/agent-strands-tools-bedrock.html",
+    "inLanguage": "ru",
+    "publisher": {
+      "@type": "Organization",
+      "name": "Agent Lab Journal",
+      "url": "https://agentlabjournal.online/"
+    },
+    "mainEntityOfPage": "https://agentlabjournal.online/agent-strands-tools-bedrock.html"
+  }
+  </script>
+<link rel="stylesheet" href="homepage.css"><link rel="stylesheet" href="max-promo.css">  <meta property="og:image" content="https://agentlabjournal.online/assets/covers/llm-context-window-budget-social.png">
+  <meta property="og:image:alt" content="Создаём агента с инструментами на Strands Agents">
+  <meta name="twitter:image" content="https://agentlabjournal.online/assets/covers/llm-context-window-budget-social.png">
+</head>
+<body>
+  <header class="site-header">
+    <div class="container">
+      <a class="site-brand" href="index.html">Agent Lab Journal</a>
+      <nav aria-label="Основная навигация">
+        <a href="guides.html">Гайды</a>
+        <a href="glossary.html">Глоссарий</a>
+      </nav>
+    </div>
+  </header>
+
+  <main>
+    <article class="reading container">
+<a href="https://max.ru/channel_AgentLab?utm_source=agentlabjournal&utm_medium=article&utm_campaign=max_channel&utm_content=article_footer" class="max-promo-block" target="_blank" rel="noopener noreferrer" aria-label="Самое важное из мира AI в канале MAX AgentLab">
+  <span class="max-promo-block__icon" aria-hidden="true"></span>
+  <span class="max-promo-block__content"><span class="max-promo-block__title">Самое важное из мира AI — в канале MAX AgentLab</span><span class="max-promo-block__desc">Отдельные разборы, инструменты и практические схемы</span></span>
+  <span class="max-promo-block__arrow" aria-hidden="true">→</span>
+</a>
+<a href="https://t.me/pelmenews?utm_source=agentlabjournal&utm_medium=article&utm_campaign=telegram_channel&utm_content=article_intro" class="telegram-promo-block" target="_blank" rel="noopener noreferrer" aria-label="Читайте Agent Lab в Telegram">
+  <span class="telegram-promo-block__icon" aria-hidden="true"></span>
+  <span class="telegram-promo-block__content">
+    <span class="telegram-promo-block__title">Читайте Agent Lab в Telegram</span>
+    <span class="telegram-promo-block__desc">Разборы, кейсы и новости о практических AI-агентах без лишней воды.</span>
+  </span>
+  <span class="telegram-promo-block__arrow" aria-hidden="true">→</span>
+</a>
+      <div class="reading-meta">
+        <span>Практика</span>
+        <span>Python</span>
+        <span>До 12 минут</span>
+      </div>
+
+      <h1>Создаём агента с инструментами на Strands Agents</h1>
+        <figure class="article-cover" data-editorial-cover="agent-strands-tools-bedrock"><img src="assets/covers/llm-context-window-budget.png" alt="Создаём агента с инструментами на Strands Agents" width="1280" height="720" fetchpriority="high"><figcaption>Temporary fallback cover; replace in editorial pass.</figcaption></figure>
+
+      <p class="lead">
+        В этом материале соберём минимального <a href="glossary.html#agent">агента</a>,
+        который работает через Amazon Bedrock, обращается к API правил и запускает
+        собственную Python-функцию броска костей. Затем проверим журнал, чтобы увидеть,
+        какие инструменты модель действительно вызвала.
+      </p>
+
+      <div class="callout">
+        <strong>Что получится.</strong>
+        Один файл <code>agent.py</code>, виртуальное окружение Python и команда запуска.
+        Пример показывает структуру интеграции; фактический ответ модели и порядок вызовов
+        зависят от выбранной модели, запроса и настроек AWS.
+      </div>
+
+      <h2>Как устроен пример</h2>
+
+      <p>
+        У агента будет два инструмента:
+      </p>
+
+      <ul>
+        <li><code>http_request</code> — готовый инструмент для HTTP-запроса к API правил;</li>
+        <li><code>roll_dice</code> — наша функция на Python, которую Strands передаст модели как инструмент.</li>
+      </ul>
+
+      <p>
+        Пользовательский запрос попросит агента найти правило и бросить несколько костей.
+        Модель сама решит, нужно ли вызвать один инструмент, оба или ни одного. Важно:
+        инструменты не вызываются обычным Python-кодом напрямую из текста запроса — решение
+        принимает модель в рамках цикла агента.
+      </p>
+
+      <h2>1. Подготовьте окружение</h2>
+
+      <p>
+        Нужны Python 3.10 или новее, аккаунт AWS с доступом к Amazon Bedrock и настроенные
+        учётные данные AWS. Секреты не записывайте в исходный файл и не вставляйте в команду,
+        которую собираетесь публиковать.
+      </p>
+
+      <pre><code>mkdir strands-tools-demo
+cd strands-tools-demo
+
+python -m venv .venv
+source .venv/bin/activate
+
+python -m pip install --upgrade pip
+python -m pip install strands-agents strands-agents-tools boto3</code></pre>
+
+      <p>
+        В Windows PowerShell активация окружения выглядит так:
+      </p>
+
+      <pre><code>.venv\Scripts\Activate.ps1</code></pre>
+
+      <p>
+        Настройте регион и проверьте AWS-профиль через стандартный механизм AWS CLI:
+      </p>
+
+      <pre><code>aws configure
+aws sts get-caller-identity</code></pre>
+
+      <p>
+        Команда <code>aws sts get-caller-identity</code> должна вернуть сведения о текущей
+        IAM-идентичности. Если в аккаунте ещё не разрешён выбранный foundation model,
+        включите доступ к нему в консоли Amazon Bedrock и проверьте доступность модели в нужном
+        регионе.
+      </p>
+
+      <h2>2. Напишите собственный инструмент</h2>
+
+      <p>
+        Декоратор <code>@tool</code> превращает обычную Python-функцию в инструмент. Strands
+        использует имя функции, аннотации типов и docstring, чтобы сформировать описание,
+        которое увидит модель.
+      </p>
+
+      <p>
+        Создайте файл <code>agent.py</code> и добавьте функцию броска костей:
+      </p>
+
+      <pre><code>import logging
+import random
+
+from strands import Agent, tool
+from strands_tools import http_request
+
+
+@tool
+def roll_dice(number: int = 1, sides: int = 20) -&gt; str:
+    """Бросить указанное количество одинаковых игральных костей.
+
+    Args:
+        number: Количество костей от 1 до 10.
+        sides: Количество граней у каждой кости от 2 до 100.
+    """
+    if not 1 &lt;= number &lt;= 10:
+        return "Ошибка: number должен быть от 1 до 10."
+
+    if not 2 &lt;= sides &lt;= 100:
+        return "Ошибка: sides должен быть от 2 до 100."
+
+    rolls = [random.randint(1, sides) for _ in range(number)]
+    return f"Результаты бросков d{sides}: {rolls}; сумма: {sum(rolls)}"</code></pre>
+
+      <p>
+        Ограничения на входе нужны не только для удобства. Они не дают модели запросить
+        чрезмерное количество операций и делают поведение инструмента предсказуемым.
+        Результат броска намеренно не является криптографически защищённым случайным числом:
+        это демонстрация обычного игрового броска.
+      </p>
+
+      <h2>3. Подключите API-инструмент</h2>
+
+      <p>
+        В примере используется готовый <code>http_request</code> из пакета инструментов Strands.
+        Он позволяет агенту выполнить HTTP-запрос, когда это необходимо. В качестве API правил
+        возьмём публичный API правил Dungeons &amp; Dragons 5e. Это внешний сервис для примера,
+        поэтому его доступность и формат ответа могут измениться.
+      </p>
+
+      <p>
+        Передадим агенту адрес API в системной инструкции и явно опишем безопасные границы:
+        только чтение, только GET-запрос, без передачи секретов.
+      </p>
+
+      <pre><code>logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s %(levelname)s %(name)s: %(message)s",
+)
+
+agent = Agent(
+    tools=[
+        http_request,
+        roll_dice,
+    ],
+    system_prompt=(
+        "Ты помощник по настольным играм. "
+        "Если нужно узнать правило, используй http_request только методом GET "
+        "к API https://www.dnd5eapi.co. "
+        "Не отправляй POST, PUT, PATCH или DELETE. "
+        "Не передавай в запросах секреты и персональные данные. "
+        "Если пользователь просит бросок костей, используй roll_dice. "
+        "Не утверждай, что инструмент был вызван, если в журнале нет подтверждения."
+    ),
+)
+
+if __name__ == "__main__":
+    prompt = (
+        "Найди в API правило с кратким объяснением про состояния персонажа, "
+        "а затем брось две двадцатигранные кости. "
+        "Раздели ответ на: источник правила и результаты броска."
+    )
+    result = agent(prompt)
+    print(result)</code></pre>
+
+      <p>
+        Вызов <code>Agent(...)</code> собирает инструменты в единый список. Для модели
+        <code>http_request</code> и <code>roll_dice</code> становятся доступными действиями,
+        но код функции выполняется только после соответствующего tool call.
+      </p>
+
+      <h2>4. Запустите агента и проверьте журнал</h2>
+
+      <p>
+        Запустите программу:
+      </p>
+
+      <pre><code>python agent.py</code></pre>
+
+      <p>
+        Точный текст ответа заранее неизвестен: он зависит от модели Bedrock и содержимого
+        ответа API. Проверяйте не формулировку, а признаки правильного потока:
+      </p>
+
+      <ol>
+        <li>агент получил запрос;</li>
+        <li>модель запросила HTTP-инструмент с методом GET;</li>
+        <li>модель запросила <code>roll_dice</code> с допустимыми аргументами;</li>
+        <li>инструменты вернули результаты;</li>
+        <li>модель сформировала итоговый ответ.</li>
+      </ol>
+
+      <p>
+        Если стандартного уровня логирования недостаточно, временно включите более подробный
+        журнал для отладки:
+      </p>
+
+      <pre><code>logging.getLogger("strands").setLevel(logging.DEBUG)</code></pre>
+
+      <p>
+        Не публикуйте DEBUG-логи целиком: в них могут попасть параметры запросов, фрагменты
+        контекста или данные, которые нельзя отдавать третьим лицам. Для production лучше
+        настроить фильтрацию, маскирование и ограниченный срок хранения журналов.
+      </p>
+
+      <h2>Как отличить вызов инструмента от обычного текста</h2>
+
+      <p>
+        Фраза модели «я обратился к API» сама по себе не доказывает, что HTTP-запрос был
+        выполнен. Надёжнее сопоставлять три источника:
+      </p>
+
+      <ul>
+        <li>сообщение о вызове инструмента в журнале Strands;</li>
+        <li>параметры вызова, например URL, метод и аргументы костей;</li>
+        <li>результат выполнения инструмента.</li>
+      </ul>
+
+      <p>
+        Для собственного инструмента полезно добавить короткий лог непосредственно перед
+        вычислением. Не записывайте туда содержимое пользовательского запроса, если оно может
+        содержать персональные данные:
+      </p>
+
+      <pre><code>logger = logging.getLogger(__name__)
+
+@tool
+def roll_dice(number: int = 1, sides: int = 20) -&gt; str:
+    """Бросить указанное количество одинаковых игральных костей."""
+    logger.info("roll_dice called: number=%s, sides=%s", number, sides)
+    # проверки и бросок остаются без изменений</code></pre>
+
+      <h2>Типовые ошибки</h2>
+
+      <h3>AccessDeniedException или ошибка доступа к модели</h3>
+      <p>
+        Проверьте IAM-права, регион AWS и доступ к конкретной модели в Amazon Bedrock.
+        У разных моделей и регионов могут быть разные условия доступа. Не расширяйте права
+        вслепую: начните с политики, разрешающей только необходимые действия.
+      </p>
+
+      <h3>Модель не вызывает инструмент</h3>
+      <p>
+        Уточните запрос: назовите действие явно — «получи правило через API» или «брось две
+        d20». Также проверьте, что инструмент передан в список <code>tools</code>, а его
+        docstring описывает назначение и параметры.
+      </p>
+
+      <h3>HTTP-инструмент возвращает ошибку</h3>
+      <p>
+        Проверьте URL, сетевой доступ и статус внешнего API. Публичный сервис может временно
+        недоступен или изменить схему ответа. Для production добавьте таймауты, ограничение
+        доменов, обработку кодов 4xx/5xx и собственный кэш там, где это допустимо.
+      </p>
+
+      <h3>Не находится <code>strands_tools</code></h3>
+      <p>
+        Убедитесь, что активировано то же виртуальное окружение, в которое установлены пакеты.
+        Затем обновите пакет инструментов командой <code>python -m pip show strands-agents-tools</code>.
+        API и состав готовых инструментов могут меняться между версиями, поэтому сверяйте
+        импорт с документацией установленной версии.
+      </p>
+
+      <h2>Ограничения примера</h2>
+
+      <ul>
+        <li>Публичный API правил не является частью вашего приложения и не даёт гарантии доступности.</li>
+        <li>Случайность Python-функции подходит для демонстрации, но не для азартных игр или безопасности.</li>
+        <li>Модель сама выбирает момент вызова инструмента; для критичных операций добавляйте явные проверки и подтверждение пользователя.</li>
+        <li>Сетевой инструмент расширяет поверхность риска: ограничивайте домены, методы, таймауты и объём ответа.</li>
+        <li>Стоимость и задержка зависят от модели Bedrock, количества итераций и размера контекста.</li>
+      </ul>
+
+      <h2>Итог</h2>
+
+      <p>
+        Мы подключили к одному агенту два разных типа возможностей: готовый HTTP-инструмент
+        для обращения к API и собственную типизированную функцию Python. Ключ к проверке —
+        не только итоговый текст, а журнал вызовов с параметрами и результатами. На этой основе
+        можно добавлять внутренние API, базы данных и другие инструменты, сохраняя отдельные
+        проверки для каждого внешнего действия.
+      </p>
+
+      <p>
+        Для продолжения смотрите <a href="guides.html">другие практические гайды</a> и
+        <a href="glossary.html">глоссарий терминов</a>.
+      </p>
+
+      <h2>Источники и документация</h2>
+
+      <ul>
+        <li><a href="https://strandsagents.com/docs/user-guide/concepts/tools/python-tools/" rel="nofollow">Strands Agents: создание собственных Python-инструментов</a></li>
+        <li><a href="https://strandsagents.com/docs/user-guide/sdk/agents/agent-loop/" rel="nofollow">Strands Agents: цикл агента</a></li>
+        <li><a href="https://strandsagents.com/docs/user-guide/sdk/quickstart/python/" rel="nofollow">Strands Agents: Python Quickstart</a></li>
+        <li><a href="https://docs.aws.amazon.com/bedrock/latest/userguide/model-access.html" rel="nofollow">Amazon Bedrock: доступ к моделям</a></li>
+        <li><a href="https://www.dnd5eapi.co/" rel="nofollow">D&amp;D 5e API</a></li>
+      </ul>
+<aside class="service-note" aria-label="Связаться по проекту">
+  <div class="service-note__copy">
+    <p class="service-note__label">Связь с Agent Lab</p>
+    <p class="service-note__title">Внедрим такой контур в ваш процесс</p>
+    <p class="service-note__text">Напишите инженеру Agent Lab в Telegram: опишите задачу, бота или интеграцию — предложим пилот с проверками и понятными границами.</p>
+  </div>
+  <a class="service-note__link" href="https://t.me/msrzn007?utm_source=journal&amp;utm_medium=article&amp;utm_campaign=service_note" target="_blank" rel="noopener">Написать в Telegram
+    <svg viewBox="0 0 16 16" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"><path d="M3 13 13 3M6 3h7v7"/></svg>
+  </a>
+</aside>
+<aside class="service-note service-note--sitevisor" aria-label="Экспресс-аудит сайта">
+  <div class="service-note__copy">
+    <p class="service-note__label">SiteVisor</p>
+    <p class="service-note__title">Проверьте техническое состояние и готовность вашего сайта к рекламе</p>
+    <p class="service-note__text">Экспресс-аудит на SiteVisor.pro: индексация, скорость, разметка, аналитика и точки конверсии.</p>
+  </div>
+  <a class="service-note__link" href="https://sitevisor.pro/?utm_source=journal&amp;utm_medium=article&amp;utm_campaign=leadmagnet" target="_blank" rel="noopener">Экспресс-аудит на SiteVisor.pro
+    <svg viewBox="0 0 16 16" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"><path d="M3 13 13 3M6 3h7v7"/></svg>
+  </a>
+</aside>
+</article>
+  </main>
+
+  <footer class="site-footer">
+    <div class="container">
+      <p>© Agent Lab Journal</p>
+      <nav aria-label="Дополнительная навигация">
+        <a href="guides.html">Гайды</a>
+        <a href="glossary.html">Глоссарий</a>
+      </nav>
+    </div>
+  </footer>
+</body>
+</html>

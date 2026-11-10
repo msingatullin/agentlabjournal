@@ -1,0 +1,628 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Build an Agent with Tools Using Strands Agents</title>
+  <meta name="description" content="Build an Agent with Tools Using Strands Agents: connect a ready-made API tool and a custom Python dice tool to an Amazon Bedrock agent, then verify tool calls in logs.">
+  <link rel="canonical" href="https://agentlabjournal.online/en/agent-strands-tools-bedrock.html">
+  <link rel="stylesheet" href="../style.css">
+  <link rel="stylesheet" href="../reading.css">
+
+  <meta property="og:type" content="article">
+  <meta property="og:title" content="Build an Agent with Tools Using Strands Agents">
+  <meta property="og:description" content="A reproducible beginner tutorial for connecting an API tool and a custom Python dice tool to an Amazon Bedrock agent.">
+  <meta property="og:url" content="https://agentlabjournal.online/en/agent-strands-tools-bedrock.html">
+  <meta property="og:image" content="https://agentlabjournal.online/assets/covers/llm-context-window-budget-social.png">
+  <meta property="og:site_name" content="Agent Lab Journal">
+  <meta property="article:published_time" content="2026-11-10">
+  <meta property="article:modified_time" content="2026-11-10">
+  <meta property="article:author" content="Agent Lab Journal">
+
+  <meta name="twitter:card" content="summary_large_image">
+  <meta name="twitter:title" content="Build an Agent with Tools Using Strands Agents">
+  <meta name="twitter:description" content="Connect a ready-made API tool and a custom Python dice tool to an Amazon Bedrock agent, then verify the calls in logs.">
+  <meta name="twitter:image" content="https://agentlabjournal.online/assets/covers/llm-context-window-budget-social.png">
+
+  <meta name="reading-time" content="45 minutes">
+  <meta name="reading-level" content="Beginner">
+  <meta name="article-topic" content="Build an Agent with Tools Using Strands Agents">
+
+  <script type="application/ld+json">
+  {
+    "@context": "https://schema.org",
+    "@type": "Article",
+    "headline": "Build an Agent with Tools Using Strands Agents",
+    "description": "A reproducible beginner tutorial for connecting a ready-made API tool and a custom Python dice tool to an Amazon Bedrock agent.",
+    "image": ["https://agentlabjournal.online/assets/covers/llm-context-window-budget-social.png"],
+    "dateModified": "2026-11-10",
+    "author": {
+      "@type": "Organization",
+      "name": "Agent Lab Journal"
+    },
+    "publisher": {
+      "@type": "Organization",
+      "name": "Agent Lab Journal",
+      "url": "https://agentlabjournal.online/"
+    },
+    "mainEntityOfPage": {
+      "@type": "WebPage",
+      "@id": "https://agentlabjournal.online/en/agent-strands-tools-bedrock.html"
+    }
+  }
+  </script>
+<link rel="stylesheet" href="../homepage.css"><link rel="stylesheet" href="../max-promo.css">  <meta property="og:image:alt" content="Создаём агента с инструментами на Strands Agents">
+</head>
+
+<body>
+  <header class="site-header">
+    <div class="container">
+      <a class="site-brand" href="../index.html">Agent Lab Journal</a>
+      <nav aria-label="Primary navigation">
+        <a href="guides.html">Guides</a>
+        <a href="../glossary.html">Glossary</a>
+      </nav>
+    </div>
+  </header>
+
+  <main>
+    <article class="reading">
+      <header class="reading-header">
+        <p class="reading-kicker">Practical guide · Beginner · 45 minutes</p>
+        <h1>Build an Agent with Tools Using Strands Agents</h1>
+        <figure class="article-cover" data-editorial-cover="agent-strands-tools-bedrock"><img src="../assets/covers/llm-context-window-budget.png" alt="Создаём агента с инструментами на Strands Agents" width="1280" height="720" fetchpriority="high"><figcaption>Temporary fallback cover; replace in editorial pass.</figcaption></figure>
+        <p class="reading-dek">
+          Connect a ready-made API tool and a custom Python dice-rolling function to an
+          <a href="../glossary.html#amazon-bedrock">Amazon Bedrock</a> agent, then verify what happened in its logs.
+        </p>
+        <div class="reading-meta">
+          <span>By Agent Lab Journal</span>
+          <span>Updated 10 November 2026</span>
+          <span>45 min read</span>
+        </div>
+      </header>
+
+      <div class="reading-body">
+        <p class="lead">
+          An agent becomes useful when it can take a well-defined action instead of only generating text.
+          In this tutorial, you will build a small <a href="../glossary.html#strands-agents">Strands Agents</a>
+          program with two tools: a ready-made HTTP tool for querying a rules API and a custom Python tool
+          that rolls dice. The model decides when to call each tool; your program executes the calls; and
+          the log output gives you evidence that the tools actually ran.
+        </p>
+
+        <p>
+          The example is intentionally small. It does not prove that every model will select tools
+          perfectly, and it does not replace authentication, authorization, rate limiting, or production
+          observability. It gives you a repeatable local experiment with a clear boundary between model
+          reasoning, tool execution, and returned data.
+        </p>
+
+        <aside class="callout callout-note">
+          <h2>What this article verifies</h2>
+          <p>
+            The code structure and commands below are an implementation example based on the public
+            Strands Python interface. No command was executed in this article’s workspace, no AWS account
+            was accessed, and no model response or log line is presented as a test result. Run the
+            verification steps in your own environment before treating them as confirmed for your setup.
+          </p>
+        </aside>
+
+        <h2 id="result">The result you will build</h2>
+
+        <p>
+          The finished program gives an agent two capabilities:
+        </p>
+
+        <ul>
+          <li><strong>Rules lookup:</strong> the agent can use a ready-made HTTP request tool to query a rules API.</li>
+          <li><strong>Dice rolling:</strong> the agent can call a custom Python function that validates a dice expression and returns the rolls.</li>
+        </ul>
+
+        <p>
+          A natural-language request such as “Look up the rule section for actions, then roll 2d6”
+          should lead to a sequence like this:
+        </p>
+
+        <ol>
+          <li>The model receives the user request and the tool descriptions.</li>
+          <li>The model emits a tool call for the rules lookup.</li>
+          <li>Strands executes the HTTP tool and sends the result back to the model.</li>
+          <li>The model emits a tool call for <code>roll_dice</code>.</li>
+          <li>Strands executes the Python function and sends its result back.</li>
+          <li>The model writes a final answer using the returned data.</li>
+        </ol>
+
+        <p>
+          The exact wording and ordering can vary. Tool selection is model-driven, so the useful
+          verification target is not a particular sentence. It is evidence that the expected tool names
+          were made available and that the corresponding calls were executed.
+        </p>
+
+        <h2 id="prerequisites">Prerequisites</h2>
+
+        <p>You need:</p>
+
+        <ul>
+          <li>Python 3.10 or newer.</li>
+          <li>An AWS account with access to Amazon Bedrock.</li>
+          <li>A model enabled for your account in the AWS Region you intend to use.</li>
+          <li>A configured AWS identity with permission to invoke that model.</li>
+          <li>Outbound network access if you want to query the example rules API.</li>
+        </ul>
+
+        <p>
+          Keep credentials outside the source file. Use an AWS profile, environment variables, or
+          another supported AWS credential provider. Do not paste access keys into the code, shell
+          history, screenshots, or article notes.
+        </p>
+
+        <h3 id="credentials">Configure AWS credentials</h3>
+
+        <p>
+          The following command is an example of selecting a named local AWS profile:
+        </p>
+
+        <pre><code>export AWS_PROFILE=my-bedrock-profile
+export AWS_REGION=us-west-2</code></pre>
+
+        <p>
+          Replace the profile name and Region with values that exist in your environment. The example
+          does not establish that a particular Region, model, or account has access. If you normally use
+          another AWS credential provider, keep using that provider instead.
+        </p>
+
+        <h2 id="project">Create the project</h2>
+
+        <p>Create an isolated directory and virtual environment:</p>
+
+        <pre><code>mkdir strands-tools-demo
+cd strands-tools-demo
+
+python -m venv .venv
+source .venv/bin/activate
+
+python -m pip install --upgrade pip
+python -m pip install strands-agents strands-agents-tools boto3</code></pre>
+
+        <p>
+          On Windows PowerShell, activate the environment with:
+        </p>
+
+        <pre><code>.\.venv\Scripts\Activate.ps1</code></pre>
+
+        <p>
+          The package names and APIs can change over time. If installation or imports fail, inspect the
+          installed package versions and consult the version-specific Strands documentation before
+          changing the code.
+        </p>
+
+        <h2 id="api-tool">Connect the ready-made API tool</h2>
+
+        <p>
+          Strands provides ready-made tools for common operations. In this example, the
+          <a href="../glossary.html#api-tool">API tool</a> is the HTTP request tool from
+          <code>strands_tools</code>. It lets the model request a URL without you writing an HTTP client
+          wrapper for this small experiment.
+        </p>
+
+        <p>
+          The API endpoint below is an example of a public D&amp;D 5e rules API path. Public services can
+          change, rate-limit requests, or become unavailable. Treat the URL as a replaceable example,
+          not as a service-level guarantee.
+        </p>
+
+        <pre><code>RULES_API_URL = "https://www.dnd5eapi.co/api/2014/rule-sections"</code></pre>
+
+        <p>
+          A ready-made HTTP tool is powerful enough to reach many destinations. That is also its main
+          risk: the model may request a URL you did not intend to expose. In production, place an
+          allowlist, proxy, network policy, or purpose-built wrapper between the agent and external
+          services.
+        </p>
+
+        <h2 id="custom-tool">Add a custom Python dice tool</h2>
+
+        <p>
+          A <a href="../glossary.html#custom-tool">custom tool</a> is an ordinary Python function
+          exposed to the agent with the <code>@tool</code> decorator. Its type hints and docstring
+          describe the operation to the model. The function itself remains responsible for validation.
+        </p>
+
+        <p>
+          Save the following as <code>agent.py</code>:
+        </p>
+
+        <pre><code>import logging
+import random
+import re
+
+from strands import Agent, tool
+from strands.models import BedrockModel
+from strands_tools import http_request
+
+
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s %(levelname)s %(name)s %(message)s",
+)
+
+
+@tool
+def roll_dice(expression: str) -&gt; str:
+    """Roll dice using a simple NdM expression.
+
+    Args:
+        expression: Dice expression such as "2d6" or "1d20".
+
+    Returns:
+        A concise description of the individual rolls and their total.
+    """
+    match = re.fullmatch(r"\s*(\d+)\s*[dD]\s*(\d+)\s*", expression)
+    if not match:
+        return "Invalid dice expression. Use a form such as 2d6."
+
+    count = int(match.group(1))
+    sides = int(match.group(2))
+
+    if not 1 &lt;= count &lt;= 20:
+        return "Dice count must be between 1 and 20."
+    if not 2 &lt;= sides &lt;= 100:
+        return "Dice sides must be between 2 and 100."
+
+    rolls = [random.randint(1, sides) for _ in range(count)]
+    total = sum(rolls)
+
+    return f"{count}d{sides}: rolls={rolls}, total={total}"
+
+
+model = BedrockModel(
+    model_id="REPLACE_WITH_A_MODEL_ID",
+    region_name="REPLACE_WITH_AWS_REGION",
+)
+
+agent = Agent(
+    model=model,
+    tools=[http_request, roll_dice],
+    system_prompt=(
+        "You are a rules assistant. "
+        "Use the HTTP tool only for the configured rules API. "
+        "Use roll_dice whenever the user asks for a random dice result. "
+        "Do not invent tool results. "
+        "If a tool fails, explain that it failed."
+    ),
+)
+
+question = (
+    "Use the HTTP tool to look up the rules API collection at "
+    "https://www.dnd5eapi.co/api/2014/rule-sections. "
+    "Then roll 2d6 with the dice tool and report the rules lookup result "
+    "and the dice result separately."
+)
+
+response = agent(question)
+print(response)</code></pre>
+
+        <p>
+          Replace both model placeholders before running the file. The model ID must be available to
+          your AWS account in the selected Region. The code deliberately keeps the dice tool
+          deterministic in shape, but not in value: every valid call produces a new random result.
+        </p>
+
+        <h3 id="why-docstrings">Why the docstring matters</h3>
+
+        <p>
+          The model does not inspect your Python function the way a human developer does. The tool
+          description and schema are the model’s working contract. A vague description such as
+          “does dice stuff” gives the model little guidance. The example instead states the accepted
+          input format, gives an example, and returns a compact result.
+        </p>
+
+        <p>
+          The function still validates its input because model-generated arguments are not a security
+          boundary. Rejecting excessive dice counts and side counts prevents this toy tool from doing
+          unexpectedly large work.
+        </p>
+
+        <h2 id="model">Choose the Bedrock model</h2>
+
+        <p>
+          The <code>BedrockModel</code> object connects Strands to Amazon Bedrock. Set a model ID that
+          supports tool calling in your account and Region. The article cannot name a universally valid
+          model ID because access depends on your account configuration and can change.
+        </p>
+
+        <p>
+          For a quick local experiment, you can also pass a model ID directly when supported by your
+          installed Strands version. Using an explicit <code>BedrockModel</code> keeps the Region visible
+          in the example and makes the provider boundary clear.
+        </p>
+
+        <pre><code>model = BedrockModel(
+    model_id="REPLACE_WITH_A_MODEL_ID",
+    region_name="REPLACE_WITH_AWS_REGION",
+)</code></pre>
+
+        <p>
+          If the model rejects the request because of an unsupported schema feature, simplify the tool
+          signature first. This example uses one string parameter and basic return text intentionally.
+        </p>
+
+        <h2 id="run">Run the agent</h2>
+
+        <p>Run the program from the activated virtual environment:</p>
+
+        <pre><code>python agent.py</code></pre>
+
+        <p>
+          A successful run should print a final model response. The response may summarize the rules
+          endpoint, show the dice result, or explain an API response format. The numeric dice result
+          will differ between runs. That output alone is not sufficient to prove that both tools ran;
+          inspect the logs as described next.
+        </p>
+
+        <h2 id="logs">Verify tool calls in logs</h2>
+
+        <p>
+          <a href="../glossary.html#observability">Observability</a> starts with making the execution
+          path visible. The logging configuration above sets the Python root logger to
+          <code>INFO</code>, which is a useful first diagnostic setting. Strands may emit messages
+          through its own logger, and the exact logger names and message formats can vary by version.
+        </p>
+
+        <p>
+          Capture the run to a file so you can search it without copying secrets into a ticket:
+        </p>
+
+        <pre><code>python agent.py 2&gt;agent.log | tee agent-output.txt
+rg -i "tool|http_request|roll_dice|invocation|error" agent.log agent-output.txt</code></pre>
+
+        <p>
+          Depending on the installed version and logging configuration, look for evidence with these
+          properties:
+        </p>
+
+        <ul>
+          <li>The agent was given the tools <code>http_request</code> and <code>roll_dice</code>.</li>
+          <li>A model response requested a tool call.</li>
+          <li>The requested tool name appears in the execution trace.</li>
+          <li>The tool returned a result or an explicit error.</li>
+          <li>The agent continued after the result and produced a final response.</li>
+        </ul>
+
+        <p>
+          Do not treat a line containing the word “tool” as proof by itself. Correlate the tool name,
+          input, result, and sequence. A useful manual record looks like this:
+        </p>
+
+        <table>
+          <thead>
+            <tr>
+              <th>Evidence</th>
+              <th>What it supports</th>
+              <th>What it does not prove</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td><code>http_request</code> appears in the tool-call trace</td>
+              <td>The agent requested the HTTP tool by name.</td>
+              <td>That the remote API returned correct data.</td>
+            </tr>
+            <tr>
+              <td><code>roll_dice</code> returns <code>rolls=[...], total=...</code></td>
+              <td>The Python function executed and returned a value with the expected shape.</td>
+              <td>That the model selected the tool for every similar prompt.</td>
+            </tr>
+            <tr>
+              <td>An exception or HTTP error is logged</td>
+              <td>The failure was visible to the local process.</td>
+              <td>That the user-facing recovery message is adequate for production.</td>
+            </tr>
+          </tbody>
+        </table>
+
+        <h3 id="stronger-verification">Add explicit tool-side logging</h3>
+
+        <p>
+          Framework logs are useful, but tool-side logging gives you an additional, local signal. Add a
+          logger to the custom function if you need to verify entry and exit without relying on a
+          particular framework message format:
+        </p>
+
+        <pre><code>logger = logging.getLogger(__name__)
+
+
+@tool
+def roll_dice(expression: str) -&gt; str:
+    logger.info("roll_dice called with expression=%r", expression)
+
+    # validation and rolling code goes here
+
+    result = f"{count}d{sides}: rolls={rolls}, total={total}"
+    logger.info("roll_dice completed")
+    return result</code></pre>
+
+        <p>
+          Avoid logging credentials, authorization headers, full customer requests, or unrestricted
+          tool arguments. In this example the argument is harmless, but a production tool may receive
+          personal or confidential data.
+        </p>
+
+        <h2 id="controlled-tests">Use prompts that make verification easier</h2>
+
+        <p>
+          Natural-language tool selection is probabilistic. For a first smoke test, use a request that
+          names the intended action clearly:
+        </p>
+
+        <pre><code>Call the dice tool exactly once with 1d6. Return the tool result plainly.</code></pre>
+
+        <p>Then test the HTTP path separately:</p>
+
+        <pre><code>Use the HTTP tool to request:
+https://www.dnd5eapi.co/api/2014/rule-sections
+Summarize only the returned status or response.</code></pre>
+
+        <p>
+          Finally, test the combined flow:
+        </p>
+
+        <pre><code>Use the HTTP tool for the rules API URL, then use the dice tool once with 2d6.
+Keep the two results separate.</code></pre>
+
+        <p>
+          These are test prompts, not guarantees. If a model answers from prior knowledge instead of
+          calling a tool, make the request more explicit and inspect the trace. For deterministic
+          testing, invoke the Python function directly in a unit test and use a mocked HTTP client or
+          local fixture rather than depending on model selection or a live public endpoint.
+        </p>
+
+        <h2 id="failure-cases">Failure cases and fixes</h2>
+
+        <h3>Import error for <code>strands</code> or <code>strands_tools</code></h3>
+
+        <p>
+          Confirm that the virtual environment is active and that the packages were installed into the
+          same interpreter used to run the file:
+        </p>
+
+        <pre><code>python -c "import sys; print(sys.executable)"
+python -m pip show strands-agents strands-agents-tools</code></pre>
+
+        <h3>AWS authentication or authorization error</h3>
+
+        <p>
+          Check the active profile, Region, model access, and IAM permissions. Do not solve an
+          authentication error by putting a secret key in <code>agent.py</code>. If your organization
+          uses SSO, a role, or a credential broker, renew that session through the approved process.
+        </p>
+
+        <h3>Model not found or model access is unavailable</h3>
+
+        <p>
+          The model ID may be wrong for the selected Region, or the account may not have access. Confirm
+          the identifier and access in the AWS console or your organization’s approved provisioning
+          process. This article does not prescribe a model because availability is account-specific.
+        </p>
+
+        <h3>The agent never calls a tool</h3>
+
+        <p>
+          Check that both tools are present in the <code>tools=[...]</code> list, that the prompt
+          clearly asks for an action, and that the tool descriptions are specific. The model is allowed
+          to answer without a tool unless the model/provider configuration and prompt make tool use
+          necessary.
+        </p>
+
+        <h3>The HTTP tool fails</h3>
+
+        <p>
+          Test the URL outside the agent with a normal HTTP client if your environment permits it:
+        </p>
+
+        <pre><code>python -c "import urllib.request; print(urllib.request.urlopen('https://www.dnd5eapi.co/api/2014/rule-sections').status)"</code></pre>
+
+        <p>
+          A failure may come from DNS, a firewall, TLS inspection, the public service, rate limiting,
+          or the tool’s accepted input schema. Do not assume that a successful browser request proves
+          the agent runtime has the same network access.
+        </p>
+
+        <h3>The dice tool returns invalid input</h3>
+
+        <p>
+          The model may send a value such as “two six-sided dice” instead of <code>2d6</code>. Either
+          keep the strict contract and ask for the supported format, or expand validation deliberately.
+          Do not remove bounds merely to make an invalid call pass.
+        </p>
+
+        <h3>Logs do not show the expected framework messages</h3>
+
+        <p>
+          Logging output depends on package version, logger configuration, and the execution environment.
+          Keep the explicit log statements inside your own tools, increase the relevant logger’s level,
+          and inspect the installed package documentation. If you need durable traces, use an
+          application-level event record with redaction rather than depending on console formatting.
+        </p>
+
+        <h2 id="security">Security and operational limits</h2>
+
+        <p>
+          This demo exposes two important boundaries:
+        </p>
+
+        <ul>
+          <li>The HTTP tool can create network side effects and should not receive unrestricted URL access in production.</li>
+          <li>The custom tool executes local code, so its implementation and dependencies must be reviewed like any other application code.</li>
+        </ul>
+
+        <p>
+          Before deploying a similar agent, decide which hosts are allowed, how requests are
+          authenticated, how timeouts and retries work, how response sizes are limited, and how tool
+          errors are reported. Add structured logs with request IDs, but redact secrets and sensitive
+          arguments. Consider whether the agent should be allowed to call a tool repeatedly or in
+          parallel.
+        </p>
+
+        <p>
+          The example also has no durable state, no user authentication, no billing controls, no
+          evaluation suite, and no guarantee that an external rules API remains available. Those are
+          separate engineering tasks.
+        </p>
+
+        <h2 id="reproducibility-checklist">Reproducibility checklist</h2>
+
+        <p>Before calling your own run successful, record:</p>
+
+        <ol>
+          <li>The Python version.</li>
+          <li>The installed Strands package versions.</li>
+          <li>The AWS Region and model ID, without recording credentials.</li>
+          <li>The exact prompt used for the smoke test.</li>
+          <li>The tool names made available to the agent.</li>
+          <li>The relevant redacted log lines showing the calls and results.</li>
+          <li>Whether the rules API was reachable from the same runtime.</li>
+          <li>Any differences from the code in this article.</li>
+        </ol>
+
+        <p>
+          A reproducible record distinguishes “the model said it used a tool” from “the runtime logged
+          a tool invocation and returned a result.” That distinction becomes increasingly important as
+          tools gain access to data, networks, and business actions.
+        </p>
+
+        <h2 id="summary">Summary</h2>
+
+        <p>
+          You connected a ready-made HTTP tool and a custom <code>@tool</code>-decorated Python
+          function to a Strands agent backed by Amazon Bedrock. The HTTP tool handles the rules lookup;
+          the dice function owns validation and random-number generation. Logging and controlled prompts
+          let you inspect whether the intended calls occurred, while the failure cases show why a final
+          model answer is not enough evidence on its own.
+        </p>
+
+        <p>
+          Continue with the other <a href="guides.html">Agent Lab Journal guides</a> or look up terms in
+          the <a href="../glossary.html">glossary</a>.
+        </p>
+      </div>
+    <section class="service-note">
+  <b>We publish what works for us—and implement the same solutions for your business.</b>
+  We design AI automation, Telegram bots, chats, and AI agents for real-world processes.
+  <a href="../contacts-en.html">Discuss your project →</a>
+</section>
+</article>
+  </main>
+
+  <footer class="site-footer">
+    <div class="container">
+      <p>&copy; 2026 Agent Lab Journal</p>
+      <nav aria-label="Footer navigation">
+        <a href="guides.html">Guides</a>
+        <a href="../glossary.html">Glossary</a>
+      </nav>
+    </div>
+  </footer>
+</body>
+</html>
