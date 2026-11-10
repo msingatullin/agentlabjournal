@@ -1,0 +1,449 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>How to Automate Contracts in n8n with TurboDocx</title>
+  <meta name="description" content="How to Automate Contracts in n8n with TurboDocx: build a reproducible workflow for contract generation, Slack approval, e-signatures, status tracking, and signed PDF storage in SharePoint.">
+  <link rel="canonical" href="https://agentlabjournal.online/en/avtomatizatsiya-dogovorov-v-n8n-s-turbodocx.html">
+  <link rel="stylesheet" href="../style.css">
+  <link rel="stylesheet" href="../reading.css">
+
+  <meta property="og:type" content="article">
+  <meta property="og:locale" content="en_US">
+  <meta property="og:title" content="How to Automate Contracts in n8n with TurboDocx">
+  <meta property="og:description" content="A practical n8n workflow for generating contracts, getting Slack approval, collecting e-signatures, and storing the signed PDF in SharePoint.">
+  <meta property="og:url" content="https://agentlabjournal.online/en/avtomatizatsiya-dogovorov-v-n8n-s-turbodocx.html">
+  <meta property="og:image" content="https://agentlabjournal.online/assets/covers/llm-context-window-budget-social.png">
+
+  <meta name="twitter:card" content="summary_large_image">
+  <meta name="twitter:title" content="How to Automate Contracts in n8n with TurboDocx">
+  <meta name="twitter:description" content="Build a reproducible n8n contract workflow with TurboDocx, Slack, e-signatures, and SharePoint.">
+  <meta name="twitter:image" content="https://agentlabjournal.online/assets/covers/llm-context-window-budget-social.png">
+
+  <meta name="reading-time" content="12 minutes">
+  <meta name="article:reading_time" content="12 minutes">
+  <meta name="article:section" content="Automation">
+
+  <script type="application/ld+json">
+  {
+    "@context": "https://schema.org",
+    "@type": "Article",
+    "headline": "How to Automate Contracts in n8n with TurboDocx",
+    "description": "A practical workflow for generating contracts, getting Slack approval, collecting e-signatures, tracking status, and storing the signed PDF in SharePoint.",
+    "image": ["https://agentlabjournal.online/assets/covers/llm-context-window-budget-social.png"],
+    "dateModified": "2026-11-10",
+    "author": {
+      "@type": "Organization",
+      "name": "Agent Lab Journal"
+    },
+    "publisher": {
+      "@type": "Organization",
+      "name": "Agent Lab Journal",
+      "logo": {
+        "@type": "ImageObject",
+        "url": "https://agentlabjournal.online/assets/og/agent-lab-journal.png"
+      }
+    },
+    "mainEntityOfPage": {
+      "@type": "WebPage",
+      "@id": "https://agentlabjournal.online/en/avtomatizatsiya-dogovorov-v-n8n-s-turbodocx.html"
+    }
+  }
+  </script>
+<link rel="stylesheet" href="../homepage.css"><link rel="stylesheet" href="../max-promo.css">  <meta property="og:image:alt" content="Как автоматизировать договоры в n8n с TurboDocx">
+</head>
+<body>
+  <header class="site-header">
+    <div class="container">
+      <a class="site-logo" href="../index.html">Agent Lab Journal</a>
+      <nav aria-label="Main navigation">
+        <a href="guides.html">Guides</a>
+        <a href="../glossary.html">Glossary</a>
+      </nav>
+    </div>
+  </header>
+
+  <main>
+    <article class="reading">
+      <header class="reading-header">
+        <p class="eyebrow">Automation guide · 12 min read</p>
+        <h1>How to Automate Contracts in n8n with TurboDocx</h1>
+        <figure class="article-cover" data-editorial-cover="avtomatizatsiya-dogovorov-v-n8n-s-turbodocx"><img src="../assets/covers/llm-context-window-budget.png" alt="Как автоматизировать договоры в n8n с TurboDocx" width="1280" height="720" fetchpriority="high"><figcaption>Temporary fallback cover; replace in editorial pass.</figcaption></figure>
+        <p class="lead">A contract workflow usually breaks at the hand-offs: someone copies data into a document, waits for approval, sends a file for signing, then searches for the completed PDF. This guide connects those steps into one reproducible <a href="../glossary.html#n8n">n8n</a> workflow using <a href="../glossary.html#turbodocx">TurboDocx</a>, Slack, an e-signature provider, and SharePoint.</p>
+        <div class="reading-meta">
+          <span>12 minutes</span>
+          <span>Updated November 10, 2026</span>
+          <span>Level: from zero</span>
+        </div>
+      </header>
+
+      <section>
+        <h2>What you will build</h2>
+        <p>The workflow accepts structured contract data, creates a document from a template, asks an approver to review it in Slack, sends the approved document for <a href="../glossary.html#electronic-signature">electronic signature</a>, waits for a completed status, downloads the signed PDF, and uploads it to SharePoint.</p>
+
+        <pre><code>Input
+  ↓
+Validate contract data
+  ↓
+TurboDocx: create document
+  ↓
+Slack: request approval
+  ↓
+Approved?
+  ├─ No → stop and record rejection
+  └─ Yes
+       ↓
+E-signature provider: create signing request
+       ↓
+Wait for status callback or poll status
+       ↓
+Signed?
+  ├─ No → retry later or route to exception
+  └─ Yes
+       ↓
+Download signed PDF
+       ↓
+SharePoint: upload and return link</code></pre>
+
+        <p>The examples below use placeholders such as <code>YOUR_TURBODOCX_TOKEN</code>. Replace them with credentials stored in n8n credentials or environment variables. Do not paste live secrets into node fields, Slack messages, templates, or screenshots.</p>
+      </section>
+
+      <section>
+        <h2>Prerequisites</h2>
+        <ul>
+          <li>An n8n instance with permission to create workflows and credentials.</li>
+          <li>A TurboDocx account, a contract template, and the template's identifier.</li>
+          <li>A Slack workspace and an approval channel.</li>
+          <li>An e-signature service with an API or webhook integration.</li>
+          <li>A SharePoint site, document library, and upload permissions.</li>
+        </ul>
+
+        <p>Provider names and request fields vary by account and plan. Treat the endpoint paths and field names in this article as configuration patterns. Confirm the exact API schema in the provider documentation available to your organization before activating the workflow.</p>
+      </section>
+
+      <section>
+        <h2>1. Define one contract payload</h2>
+        <p>Start with a stable <a href="../glossary.html#json">JSON</a> shape. The same fields should drive the document template, approval message, signature request, and file name.</p>
+
+        <pre><code>{
+  "contractId": "CTR-2026-001",
+  "counterpartyName": "Example Ltd",
+  "counterpartyEmail": "signer@example.invalid",
+  "effectiveDate": "2026-11-10",
+  "totalAmount": "1500.00",
+  "currency": "EUR",
+  "ownerEmail": "owner@example.invalid",
+  "templateId": "YOUR_TEMPLATE_ID",
+  "sharePointFolder": "/Contracts/2026"
+}</code></pre>
+
+        <p>In production, validate required fields before generating a document. A missing email should stop the workflow before a signing request is created. An invalid date should be rejected before it reaches the template.</p>
+
+        <p>Add a <a href="../glossary.html#code-node">Code</a> node after the trigger with a small validation expression:</p>
+
+        <pre><code>const required = [
+  'contractId',
+  'counterpartyName',
+  'counterpartyEmail',
+  'effectiveDate',
+  'templateId'
+];
+
+const missing = required.filter((key) =&gt; !$json[key]);
+
+if (missing.length) {
+  throw new Error(`Missing contract fields: ${missing.join(', ')}`);
+}
+
+return [{ json: $json }];</code></pre>
+
+        <p>This is an example validation rule, not a substitute for legal or data-quality review.</p>
+      </section>
+
+      <section>
+        <h2>2. Generate the contract with TurboDocx</h2>
+        <p>Create a TurboDocx template with explicit placeholders, for example:</p>
+
+        <pre><code>{{contractId}}
+{{counterpartyName}}
+{{effectiveDate}}
+{{totalAmount}} {{currency}}</code></pre>
+
+        <p>In n8n, use an <a href="../glossary.html#http-request">HTTP Request</a> node or the provider's dedicated node if your installation includes one. Configure:</p>
+
+        <table>
+          <thead>
+            <tr>
+              <th>Setting</th>
+              <th>Example</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td>Method</td>
+              <td><code>POST</code></td>
+            </tr>
+            <tr>
+              <td>URL</td>
+              <td><code>https://api.example.turbodocx.invalid/v1/documents</code></td>
+            </tr>
+            <tr>
+              <td>Authentication</td>
+              <td>Credential stored in n8n</td>
+            </tr>
+            <tr>
+              <td>Body format</td>
+              <td>JSON</td>
+            </tr>
+            <tr>
+              <td>Template field</td>
+              <td><code>{{$json.templateId}}</code></td>
+            </tr>
+            <tr>
+              <td>Output name</td>
+              <td><code>{{$json.contractId}}-draft.docx</code></td>
+            </tr>
+          </tbody>
+        </table>
+
+        <p>A provider-specific request commonly has this logical shape:</p>
+
+        <pre><code>{
+  "templateId": "={{$json.templateId}}",
+  "fileName": "={{$json.contractId}}-draft.docx",
+  "data": {
+    "contractId": "={{$json.contractId}}",
+    "counterpartyName": "={{$json.counterpartyName}}",
+    "effectiveDate": "={{$json.effectiveDate}}",
+    "totalAmount": "={{$json.totalAmount}}",
+    "currency": "={{$json.currency}}"
+  }
+}</code></pre>
+
+        <p>Store the returned document ID and draft download URL in the next item. Do not assume the generated file is ready immediately; if the API returns a processing state, add a short retry branch before requesting the file.</p>
+      </section>
+
+      <section>
+        <h2>3. Ask for approval in Slack</h2>
+        <p>Use the Slack node to send a compact approval request. Include only the information an approver needs:</p>
+
+        <pre><code>Contract {{$json.contractId}}
+Counterparty: {{$json.counterpartyName}}
+Effective date: {{$json.effectiveDate}}
+Amount: {{$json.totalAmount}} {{$json.currency}}
+
+Draft: {{$json.draftUrl}}
+
+Reply with:
+APPROVE {{$json.contractId}}
+or
+REJECT {{$json.contractId}} reason</code></pre>
+
+        <p>For a button-based workflow, use a Slack app with an interaction endpoint. The button payload should contain a non-sensitive contract ID, not the entire contract or a token. Route the interaction to an n8n <a href="../glossary.html#webhook">webhook</a> and verify the Slack signature before changing the contract state.</p>
+
+        <p>A simpler first version can use a separate approval form or an n8n webhook URL. Whatever interface you choose, persist the decision with the contract ID, approver identity, timestamp, and decision. Never treat the presence of a message alone as approval.</p>
+      </section>
+
+      <section>
+        <h2>4. Send the approved document for signing</h2>
+        <p>Place an If node after the approval step:</p>
+
+        <pre><code>={{$json.decision === "approved"}}</code></pre>
+
+        <p>On the false branch, update the record to <code>rejected</code>, notify the owner, and stop. On the true branch, create the signing request through the provider's <a href="../glossary.html#api">API</a>.</p>
+
+        <pre><code>{
+  "documentId": "={{$json.documentId}}",
+  "signers": [
+    {
+      "name": "={{$json.counterpartyName}}",
+      "email": "={{$json.counterpartyEmail}}",
+      "role": "signer"
+    }
+  ],
+  "metadata": {
+    "contractId": "={{$json.contractId}}"
+  },
+  "callbackUrl": "https://YOUR_N8N_HOST/webhook/signature-status"
+}</code></pre>
+
+        <p>If your provider supports <a href="../glossary.html#oauth-2">OAuth 2.0</a>, use its credential type rather than manually managing access tokens. If it requires a bearer token, store that token in an n8n credential and reference the credential from the node.</p>
+      </section>
+
+      <section>
+        <h2>5. Track the signing status</h2>
+        <p>The preferred design is an event-driven callback. Configure the provider to call the n8n webhook when the request changes state. The webhook should:</p>
+
+        <ol>
+          <li>Verify the provider's signature or shared secret.</li>
+          <li>Read the external signing-request ID and contract ID.</li>
+          <li>Ignore duplicate events safely.</li>
+          <li>Map provider states to your internal states.</li>
+        </ol>
+
+        <table>
+          <thead>
+            <tr>
+              <th>Provider state</th>
+              <th>Internal state</th>
+              <th>Action</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td>created, sent, viewed</td>
+              <td><code>awaiting_signature</code></td>
+              <td>Keep waiting</td>
+            </tr>
+            <tr>
+              <td>completed</td>
+              <td><code>signed</code></td>
+              <td>Download the signed PDF</td>
+            </tr>
+            <tr>
+              <td>declined, expired, canceled</td>
+              <td><code>exception</code></td>
+              <td>Notify the owner</td>
+            </tr>
+          </tbody>
+        </table>
+
+        <p>If callbacks are unavailable, use a Wait node followed by an HTTP Request status check. Limit retries, for example to five checks with an increasing delay. A polling workflow must be idempotent: receiving the same status twice must not create duplicate files or duplicate notifications.</p>
+      </section>
+
+      <section>
+        <h2>6. Store the signed PDF in SharePoint</h2>
+        <p>When the state becomes <code>signed</code>, request the completed PDF from the signing provider. Keep the response as binary data in n8n. Then use the SharePoint node to upload the binary property.</p>
+
+        <table>
+          <thead>
+            <tr>
+              <th>SharePoint setting</th>
+              <th>Example value</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td>Site</td>
+              <td>Your contract-management site</td>
+            </tr>
+            <tr>
+              <td>Library</td>
+              <td>Documents</td>
+            </tr>
+            <tr>
+              <td>Folder</td>
+              <td><code>={{$json.sharePointFolder}}</code></td>
+            </tr>
+            <tr>
+              <td>File name</td>
+              <td><code>={{$json.contractId}}-signed.pdf</code></td>
+            </tr>
+            <tr>
+              <td>Binary property</td>
+              <td><code>data</code></td>
+            </tr>
+          </tbody>
+        </table>
+
+        <p>After the upload, save the returned SharePoint URL and send a final Slack message to the owner. Avoid putting the signed PDF itself in Slack; send a controlled link with appropriate access permissions.</p>
+      </section>
+
+      <section>
+        <h2>Recommended workflow layout</h2>
+        <pre><code>Webhook / Manual Trigger
+  → Code: validate input
+  → HTTP Request: create TurboDocx document
+  → Slack: request approval
+  → Webhook: receive approval
+  → If: approved?
+      ├─ false → update rejected → notify owner
+      └─ true
+           → HTTP Request: create signing request
+           → Webhook: receive signing status
+           → If: completed?
+               ├─ false → update exception or wait
+               └─ true
+                    → HTTP Request: download signed PDF
+                    → SharePoint: upload binary
+                    → Slack: send final link</code></pre>
+
+        <p>In a real workflow, store state in a database, spreadsheet, or internal system rather than relying only on the latest n8n item. At minimum, store <code>contractId</code>, document ID, signing-request ID, current state, timestamps, and the final SharePoint URL.</p>
+      </section>
+
+      <section>
+        <h2>Verification checklist</h2>
+        <p>Run these checks in a test workspace with non-production data before enabling the workflow:</p>
+
+        <ul>
+          <li>Submit a payload with a missing required field and confirm that no document is generated.</li>
+          <li>Generate a draft and confirm that every template placeholder is populated.</li>
+          <li>Reject the draft in Slack and confirm that no signing request is created.</li>
+          <li>Approve the draft and confirm that the signing request contains the intended signer.</li>
+          <li>Replay the same status event and confirm that it does not create a second SharePoint file.</li>
+          <li>Complete the signing flow and confirm that the uploaded file is a PDF with the expected name.</li>
+          <li>Send an expired or declined status and confirm that an owner notification is produced.</li>
+          <li>Inspect execution logs and remove personal data or secrets from retained test data.</li>
+        </ul>
+
+        <p>These are recommended verification steps. They are not reported test results from this article.</p>
+      </section>
+
+      <section>
+        <h2>Common failure cases</h2>
+
+        <h3>The template contains blank fields</h3>
+        <p>Compare the placeholder spelling and capitalization with the JSON keys. Log the list of keys, not the full payload. Add validation for values that must not be empty.</p>
+
+        <h3>Slack approval cannot be matched to a contract</h3>
+        <p>Put a unique contract ID in the button payload or command. Do not match on the counterparty name, because names can be duplicated or edited.</p>
+
+        <h3>The signing provider sends duplicate callbacks</h3>
+        <p>Use the provider event ID or a combination of signing-request ID and status as an idempotency key. Before uploading, check whether the signed file already exists.</p>
+
+        <h3>The PDF download returns an HTML error page</h3>
+        <p>Check the response content type and status code before passing binary data to SharePoint. Confirm that the signing request is actually complete and that the API credential can download completed documents.</p>
+
+        <h3>SharePoint upload fails for larger documents</h3>
+        <p>Check the provider and SharePoint size limits. For large files, use the provider's direct download method and SharePoint's resumable upload approach if supported.</p>
+      </section>
+
+      <section>
+        <h2>Security and operational limits</h2>
+        <ul>
+          <li>Use least-privilege credentials for TurboDocx, Slack, the signing service, and SharePoint.</li>
+          <li>Verify webhook signatures and reject requests with an invalid timestamp or replayed event.</li>
+          <li>Do not send full contract contents to Slack unless your organization's policy explicitly permits it.</li>
+          <li>Define retention rules for drafts, signed files, n8n execution data, and webhook payloads.</li>
+          <li>Keep legal review outside the automation. The workflow moves documents and records decisions; it does not determine whether contract language is legally acceptable.</li>
+          <li>Confirm identity verification, signing order, audit-trail, and jurisdiction requirements with your e-signature provider and legal team.</li>
+        </ul>
+
+        <p>The exact node names, endpoints, authentication methods, and response fields depend on the versions and plans of the services you use. Treat the workflow shape as the reusable part and map each provider's current schema into it.</p>
+      </section>
+
+      <section>
+        <h2>Conclusion</h2>
+        <p>The reliable pattern is to make the contract ID the thread connecting every system: template data, Slack approval, signing request, status event, and SharePoint file. Build the workflow around explicit states, signed callbacks, idempotent uploads, and credentials managed outside the payload. That gives you a contract process that can be inspected, retried, and reproduced without manually moving files between applications.</p>
+        <p>For related automation patterns, continue with <a href="guides.html">the guides</a> or review <a href="../glossary.html">the glossary</a>.</p>
+      </section>
+    <section class="service-note">
+  <b>We publish what works for us—and implement the same solutions for your business.</b>
+  We design AI automation, Telegram bots, chats, and AI agents for real-world processes.
+  <a href="../contacts-en.html">Discuss your project →</a>
+</section>
+</article>
+  </main>
+
+  <footer class="site-footer">
+    <div class="container">
+      <p>© Agent Lab Journal</p>
+      <nav aria-label="Footer navigation">
+        <a href="guides.html">Guides</a>
+        <a href="../glossary.html">Glossary</a>
+      </nav>
+    </div>
+  </footer>
+</body>
+</html>
