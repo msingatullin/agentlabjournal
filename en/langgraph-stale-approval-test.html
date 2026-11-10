@@ -1,0 +1,881 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Testing Protection Against Stale Human Approvals in LangGraph</title>
+  <meta name="description" content="Testing Protection Against Stale Human Approvals in LangGraph: build a reproducible test that binds approval answers to the exact interrupt request and rejects stale resumes after retries or plan changes.">
+  <link rel="canonical" href="https://agentlabjournal.online/en/langgraph-stale-approval-test.html">
+  <link rel="stylesheet" href="../style.css">
+  <link rel="stylesheet" href="../reading.css">
+
+  <meta property="og:type" content="article">
+  <meta property="og:url" content="https://agentlabjournal.online/en/langgraph-stale-approval-test.html">
+  <meta property="og:title" content="Testing Protection Against Stale Human Approvals in LangGraph">
+  <meta property="og:description" content="A practical, reproducible test for rejecting human approval answers that belong to an earlier LangGraph question.">
+  <meta property="og:image" content="https://agentlabjournal.online/assets/covers/llm-context-window-budget-social.png">
+
+  <meta name="twitter:card" content="summary_large_image">
+  <meta name="twitter:title" content="Testing Protection Against Stale Human Approvals in LangGraph">
+  <meta name="twitter:description" content="A practical, reproducible test for rejecting human approval answers that belong to an earlier LangGraph question.">
+  <meta name="twitter:image" content="https://agentlabjournal.online/assets/covers/llm-context-window-budget-social.png">
+
+  <meta name="reading-time" content="40 minutes">
+  <meta name="article:section" content="Testing">
+  <meta name="article:level" content="Advanced">
+
+  <script type="application/ld+json">
+  {
+    "@context": "https://schema.org",
+    "@type": "Article",
+    "headline": "Testing Protection Against Stale Human Approvals in LangGraph",
+    "description": "A practical, reproducible test for rejecting human approval answers that belong to an earlier LangGraph question.",
+    "image": ["https://agentlabjournal.online/assets/covers/llm-context-window-budget-social.png"],
+    "dateModified": "2026-11-10",
+    "author": {
+      "@type": "Organization",
+      "name": "Agent Lab Journal"
+    },
+    "publisher": {
+      "@type": "Organization",
+      "name": "Agent Lab Journal",
+      "url": "https://agentlabjournal.online/"
+    },
+    "mainEntityOfPage": {
+      "@type": "WebPage",
+      "@id": "https://agentlabjournal.online/en/langgraph-stale-approval-test.html"
+    }
+  }
+  </script>
+<link rel="stylesheet" href="../homepage.css"><link rel="stylesheet" href="../max-promo.css">  <meta property="og:image:alt" content="Как защитить human-in-the-loop от устаревших подтверждений в LangGraph">
+</head>
+<body>
+  <header class="site-header">
+    <div class="site-header__inner">
+      <a class="site-logo" href="../index.html">Agent Lab Journal</a>
+      <nav aria-label="Primary navigation">
+        <a href="guides.html">Guides</a>
+        <a href="../glossary.html">Glossary</a>
+      </nav>
+    </div>
+  </header>
+
+  <main>
+    <article class="reading">
+      <header class="reading-header">
+        <p class="reading-kicker">Testing · LangGraph · Advanced</p>
+        <h1>Testing Protection Against Stale Human Approvals in LangGraph</h1>
+        <figure class="article-cover" data-editorial-cover="langgraph-stale-approval-test"><img src="../assets/covers/llm-context-window-budget.png" alt="Как защитить human-in-the-loop от устаревших подтверждений в LangGraph" width="1280" height="720" fetchpriority="high"><figcaption>Temporary fallback cover; replace in editorial pass.</figcaption></figure>
+        <p class="reading-dek">
+          A human approval is only safe when it is applied to the exact question the human saw.
+          This article shows how to test that invariant when an agent retries, replans, or changes
+          the proposed action before the answer returns.
+        </p>
+        <div class="reading-meta">
+          <span>40 minute read</span>
+          <span>Updated 10 November 2026</span>
+          <span>English</span>
+        </div>
+      </header>
+
+      <div class="reading-body">
+        <p>
+          Human-in-the-loop workflows often look safe in a happy-path demo: the agent pauses,
+          a reviewer clicks “approve,” and execution continues. The dangerous case is less visible.
+          The agent pauses with question A, the run is retried or replanned, the agent now asks
+          question B, and an old approval is accidentally accepted as if it answered B.
+        </p>
+
+        <p>
+          The central test target is therefore not merely “does the graph resume?” It is:
+          <strong>does the graph reject a resume value whose identity does not match the pending
+          approval request?</strong>
+        </p>
+
+        <aside class="reading-callout">
+          <strong>Scope of this article:</strong> the code below is an illustrative Python test
+          design. It is intended to be adapted to your graph, checkpointer, API layer, and
+          exception types. No commands in this article were executed in the preparation of this
+          page.
+        </aside>
+
+        <h2>What “stale approval” means</h2>
+
+        <p>
+          <a href="../glossary.html#langgraph">LangGraph</a> can pause execution with an
+          <a href="../glossary.html#interrupt">interrupt</a> and later continue with a resume value.
+          A durable <a href="../glossary.html#checkpointer">checkpointer</a> preserves the graph
+          state between those operations, commonly under a configurable
+          <a href="../glossary.html#thread-id">thread ID</a>.
+        </p>
+
+        <p>
+          The persistence mechanism answers “where is this paused execution?” It does not, by
+          itself, prove that an approval belongs to the current request. That second property must
+          be represented and checked by the application boundary.
+        </p>
+
+        <p>
+          A stale approval is any answer created for an earlier approval request but submitted
+          after the pending request has changed. The change may come from:
+        </p>
+
+        <ul>
+          <li>a retry that regenerated the proposed action;</li>
+          <li>a planner revision after a tool failure;</li>
+          <li>a user editing the task while an older approval screen remained open;</li>
+          <li>a deployment or graph-version change;</li>
+          <li>duplicate or delayed delivery from a client or queue.</li>
+        </ul>
+
+        <p>
+          The approval may still be semantically reasonable. That is not enough. A reviewer who
+          approved “delete object X” did not necessarily approve “delete object Y,” even if both
+          actions look similar.
+        </p>
+
+        <h2>The invariant to test</h2>
+
+        <p>
+          Model every approval request with a stable identity. At minimum, the resume payload
+          should be tied to:
+        </p>
+
+        <ul>
+          <li>the execution or thread being resumed;</li>
+          <li>the specific pending interrupt;</li>
+          <li>the question or action version shown to the reviewer;</li>
+          <li>the action payload, preferably through a digest;</li>
+          <li>the graph or policy version when deployments can change behavior.</li>
+        </ul>
+
+        <p>
+          A useful invariant is:
+        </p>
+
+        <pre><code>accept(resume) only if
+    resume.thread_id == pending.thread_id
+    and resume.interrupt_id == pending.interrupt_id
+    and resume.request_version == pending.request_version
+    and resume.action_digest == pending.action_digest
+    and resume.graph_version == pending.graph_version</code></pre>
+
+        <p>
+          You may choose different field names, but the test should make the binding explicit.
+          Do not rely on a human-readable prompt, node name, timestamp, or array position as the
+          only identity. Those values can repeat or change independently of the action.
+        </p>
+
+        <h2>A concrete failure scenario</h2>
+
+        <p>
+          Consider an agent that prepares a privileged file operation. The first plan asks:
+        </p>
+
+        <pre><code>Approve moving /incoming/report.csv to /archive/report.csv?</code></pre>
+
+        <p>
+          The reviewer approves that request. Before the response reaches the worker, the plan is
+          rebuilt because the source file is no longer available. The new plan asks:
+        </p>
+
+        <pre><code>Approve moving /incoming/report.csv to /archive/2026/report.csv?</code></pre>
+
+        <p>
+          If the system accepts only a boolean such as <code>{"approved": true}</code>, the old
+          answer can be applied to the new action. The test must prove that the old approval is
+          rejected before the action executes.
+        </p>
+
+        <h2>Represent the approval request explicitly</h2>
+
+        <p>
+          The following dataclasses are deliberately small. They separate the request shown to a
+          human from the response submitted by a client. The digest is calculated from a canonical
+          representation of the action, not from display text.
+        </p>
+
+        <pre><code>from dataclasses import dataclass
+from hashlib import sha256
+import json
+
+
+def action_digest(action: dict) -&gt; str:
+    canonical = json.dumps(
+        action,
+        sort_keys=True,
+        separators=(",", ":"),
+        ensure_ascii=False,
+    ).encode("utf-8")
+    return sha256(canonical).hexdigest()
+
+
+@dataclass(frozen=True)
+class ApprovalRequest:
+    thread_id: str
+    interrupt_id: str
+    request_version: int
+    graph_version: str
+    action: dict
+    action_digest: str
+
+    @classmethod
+    def create(
+        cls,
+        *,
+        thread_id: str,
+        interrupt_id: str,
+        request_version: int,
+        graph_version: str,
+        action: dict,
+    ) -&gt; "ApprovalRequest":
+        return cls(
+            thread_id=thread_id,
+            interrupt_id=interrupt_id,
+            request_version=request_version,
+            graph_version=graph_version,
+            action=action,
+            action_digest=action_digest(action),
+        )
+
+
+@dataclass(frozen=True)
+class ApprovalResponse:
+    thread_id: str
+    interrupt_id: str
+    request_version: int
+    graph_version: str
+    action_digest: str
+    approved: bool</code></pre>
+
+        <p>
+          In production, the request identity should be stored with the paused execution or in a
+          transactionally related approval record. The client should return the identity it
+          received, rather than reconstructing it from the visible text.
+        </p>
+
+        <h2>Validate before resuming the graph</h2>
+
+        <p>
+          Put the identity check at the boundary that accepts a
+          <a href="../glossary.html#resume">resume</a>. This is important because a graph node
+          may be reached through more than one transport: an HTTP endpoint, a queue consumer, an
+          administrative tool, or a test helper.
+        </p>
+
+        <pre><code>class StaleApprovalError(Exception):
+    """The submitted answer does not identify the current approval request."""
+
+
+def validate_resume(
+    pending: ApprovalRequest,
+    response: ApprovalResponse,
+) -&gt; None:
+    fields = (
+        ("thread_id", pending.thread_id, response.thread_id),
+        ("interrupt_id", pending.interrupt_id, response.interrupt_id),
+        ("request_version", pending.request_version, response.request_version),
+        ("graph_version", pending.graph_version, response.graph_version),
+        ("action_digest", pending.action_digest, response.action_digest),
+    )
+
+    mismatches = [
+        name for name, expected, received in fields
+        if expected != received
+    ]
+
+    if mismatches:
+        raise StaleApprovalError(
+            "approval does not match pending request: "
+            + ", ".join(mismatches)
+        )
+
+
+def resume_if_current(
+    pending: ApprovalRequest,
+    response: ApprovalResponse,
+    resume_graph,
+    graph_config: dict,
+):
+    validate_resume(pending, response)
+
+    # The actual Command/import shape depends on the LangGraph version
+    # and the integration layer used by the application.
+    return resume_graph(response.approved, graph_config)</code></pre>
+
+        <p>
+          The validation function is intentionally independent from LangGraph. That makes it
+          possible to test the safety property without requiring a model, network service, or
+          particular checkpointer implementation.
+        </p>
+
+        <h2>The minimum regression test</h2>
+
+        <p>
+          The most valuable test has four phases:
+        </p>
+
+        <ol>
+          <li>create approval request A;</li>
+          <li>create a changed request B for the same thread;</li>
+          <li>submit A’s response while B is pending;</li>
+          <li>assert that validation fails and the side effect is not called.</li>
+        </ol>
+
+        <p>
+          With pytest, the core test can look like this:
+        </p>
+
+        <pre><code>import pytest
+
+
+def test_old_approval_is_rejected_after_plan_change():
+    request_a = ApprovalRequest.create(
+        thread_id="thread-1",
+        interrupt_id="interrupt-1",
+        request_version=1,
+        graph_version="policy-v7",
+        action={
+            "operation": "move",
+            "source": "/incoming/report.csv",
+            "destination": "/archive/report.csv",
+        },
+    )
+
+    response_for_a = ApprovalResponse(
+        thread_id=request_a.thread_id,
+        interrupt_id=request_a.interrupt_id,
+        request_version=request_a.request_version,
+        graph_version=request_a.graph_version,
+        action_digest=request_a.action_digest,
+        approved=True,
+    )
+
+    request_b = ApprovalRequest.create(
+        thread_id="thread-1",
+        interrupt_id="interrupt-2",
+        request_version=2,
+        graph_version="policy-v7",
+        action={
+            "operation": "move",
+            "source": "/incoming/report.csv",
+            "destination": "/archive/2026/report.csv",
+        },
+    )
+
+    with pytest.raises(StaleApprovalError):
+        validate_resume(request_b, response_for_a)</code></pre>
+
+        <p>
+          This test does not claim that LangGraph itself creates or rejects these identifiers.
+          It verifies the application invariant around the graph’s interrupt and resume flow.
+        </p>
+
+        <h2>Prove that no side effect occurs</h2>
+
+        <p>
+          Rejecting the response is necessary but not sufficient. A regression test should also
+          prove that the protected operation was not called.
+        </p>
+
+        <pre><code>from unittest.mock import Mock
+
+
+def test_stale_approval_cannot_execute_action():
+    execute_action = Mock()
+
+    request_a = ApprovalRequest.create(
+        thread_id="thread-1",
+        interrupt_id="interrupt-1",
+        request_version=1,
+        graph_version="policy-v7",
+        action={
+            "operation": "delete",
+            "resource_id": "object-a",
+        },
+    )
+
+    stale_response = ApprovalResponse(
+        thread_id=request_a.thread_id,
+        interrupt_id=request_a.interrupt_id,
+        request_version=request_a.request_version,
+        graph_version=request_a.graph_version,
+        action_digest=request_a.action_digest,
+        approved=True,
+    )
+
+    request_b = ApprovalRequest.create(
+        thread_id="thread-1",
+        interrupt_id="interrupt-2",
+        request_version=2,
+        graph_version="policy-v7",
+        action={
+            "operation": "delete",
+            "resource_id": "object-b",
+        },
+    )
+
+    with pytest.raises(StaleApprovalError):
+        validate_resume(request_b, stale_response)
+
+    execute_action.assert_not_called()</code></pre>
+
+        <p>
+          In an integrated test, replace the mock with the function that would send the
+          <a href="../glossary.html#side-effect">side effect</a>: a database mutation, tool call,
+          message publication, or external API request. The assertion belongs as close as possible
+          to the action boundary.
+        </p>
+
+        <h2>Test the digest mismatch separately</h2>
+
+        <p>
+          A request can retain the same interrupt identifier while its action changes if the
+          application reuses identifiers incorrectly. That deserves a separate test.
+        </p>
+
+        <pre><code>def test_same_interrupt_id_does_not_hide_changed_action():
+    request_a = ApprovalRequest.create(
+        thread_id="thread-1",
+        interrupt_id="interrupt-reused-by-bug",
+        request_version=1,
+        graph_version="policy-v7",
+        action={"operation": "refund", "amount": "10.00"},
+    )
+
+    request_b = ApprovalRequest.create(
+        thread_id="thread-1",
+        interrupt_id="interrupt-reused-by-bug",
+        request_version=2,
+        graph_version="policy-v7",
+        action={"operation": "refund", "amount": "100.00"},
+    )
+
+    response_for_a = ApprovalResponse(
+        thread_id=request_a.thread_id,
+        interrupt_id=request_a.interrupt_id,
+        request_version=request_a.request_version,
+        graph_version=request_a.graph_version,
+        action_digest=request_a.action_digest,
+        approved=True,
+    )
+
+    with pytest.raises(StaleApprovalError):
+        validate_resume(request_b, response_for_a)</code></pre>
+
+        <p>
+          The version mismatch already protects this example. The digest is still valuable as a
+          defense in depth and as an audit field: it lets operators compare the exact action
+          approved with the exact action executed.
+        </p>
+
+        <h2>Test retry and replan behavior at the graph boundary</h2>
+
+        <p>
+          Unit tests validate the identity function. An integration test should exercise the
+          lifecycle that caused the bug:
+        </p>
+
+        <pre><code>def test_retry_creates_new_pending_question_and_invalidates_old_answer(
+    graph_runner,
+    approval_store,
+    execute_action,
+):
+    thread_id = "thread-retry-1"
+
+    first_pause = graph_runner.start(
+        thread_id=thread_id,
+        task="archive the report",
+    )
+
+    old_request = approval_store.get_pending(thread_id)
+    assert old_request.interrupt_id == first_pause.interrupt_id
+
+    # A transient failure causes the planner to produce a new action.
+    graph_runner.retry(thread_id=thread_id, reason="source changed")
+
+    new_request = approval_store.get_pending(thread_id)
+    assert new_request.request_version > old_request.request_version
+    assert new_request.action_digest != old_request.action_digest
+
+    old_response = ApprovalResponse(
+        thread_id=old_request.thread_id,
+        interrupt_id=old_request.interrupt_id,
+        request_version=old_request.request_version,
+        graph_version=old_request.graph_version,
+        action_digest=old_request.action_digest,
+        approved=True,
+    )
+
+    with pytest.raises(StaleApprovalError):
+        graph_runner.resume(
+            thread_id=thread_id,
+            response=old_response,
+        )
+
+    execute_action.assert_not_called()</code></pre>
+
+        <p>
+          This is a contract test for your integration layer, not a claim about a specific
+          LangGraph release. Adapt <code>start</code>, <code>retry</code>, and
+          <code>resume</code> to the functions your application actually exposes.
+        </p>
+
+        <h2>Make the test concurrency-aware</h2>
+
+        <p>
+          Two approval submissions can race. Both requests may pass an in-memory check before one
+          of them marks the interrupt as consumed. Your persistence layer should enforce
+          single-use semantics atomically.
+        </p>
+
+        <p>
+          A useful database-level rule is equivalent to:
+        </p>
+
+        <pre><code>UPDATE approval_requests
+SET status = 'consumed',
+    consumed_at = :now
+WHERE thread_id = :thread_id
+  AND interrupt_id = :interrupt_id
+  AND request_version = :request_version
+  AND action_digest = :action_digest
+  AND status = 'pending';</code></pre>
+
+        <p>
+          The application should require exactly one affected row. Zero rows means that the
+          request is stale, already consumed, cancelled, or otherwise not eligible. The graph
+          resume should happen only after this conditional update succeeds, preferably within a
+          transaction strategy that matches your durability requirements.
+        </p>
+
+        <p>
+          A concurrency test can use a barrier so two workers submit the same response at nearly
+          the same time:
+        </p>
+
+        <pre><code>def test_only_one_duplicate_approval_can_be_consumed(
+    approval_store,
+    concurrent_submit,
+):
+    request = approval_store.create(
+        thread_id="thread-concurrent-1",
+        interrupt_id="interrupt-1",
+        request_version=1,
+        graph_version="policy-v7",
+        action={"operation": "publish", "document_id": "doc-1"},
+    )
+
+    response = ApprovalResponse(
+        thread_id=request.thread_id,
+        interrupt_id=request.interrupt_id,
+        request_version=request.request_version,
+        graph_version=request.graph_version,
+        action_digest=request.action_digest,
+        approved=True,
+    )
+
+    results = concurrent_submit(
+        lambda: approval_store.consume_if_current(request, response),
+        count=2,
+    )
+
+    assert sorted(results) == [False, True]</code></pre>
+
+        <p>
+          The helper in this example is a test fixture. Its implementation must use the real
+          database transaction or compare-and-set mechanism used by the service.
+        </p>
+
+        <h2>Verify the actual interrupt payload</h2>
+
+        <p>
+          A common mistake is to test only the approval store while the graph emits a different
+          identity at runtime. Add an inspection step around the interrupt payload and record the
+          fields that the client must return.
+        </p>
+
+        <pre><code>def test_interrupt_payload_contains_resume_identity(graph_runner):
+    pause = graph_runner.start(
+        thread_id="thread-payload-1",
+        task="archive the report",
+    )
+
+    assert pause.payload["thread_id"] == "thread-payload-1"
+    assert pause.payload["interrupt_id"]
+    assert pause.payload["request_version"] == 1
+    assert pause.payload["graph_version"]
+    assert pause.payload["action_digest"]
+    assert pause.payload["action"]</code></pre>
+
+        <p>
+          If the framework exposes an interrupt object with a different shape, map it into your
+          application’s approval DTO before it reaches the UI or API response. The important
+          point is that the identity travels with the human-visible request.
+        </p>
+
+        <h2>Do not use the prompt as the identity</h2>
+
+        <p>
+          Text comparison is tempting:
+        </p>
+
+        <pre><code>if submitted_prompt == current_prompt:
+    resume()</code></pre>
+
+        <p>
+          It is fragile for several reasons:
+        </p>
+
+        <ul>
+          <li>formatting, localization, and whitespace can change;</li>
+          <li>the same text can describe different hidden parameters;</li>
+          <li>the displayed prompt may omit fields that affect execution;</li>
+          <li>model-generated wording is not a stable protocol identifier;</li>
+          <li>two distinct requests can legitimately have identical text.</li>
+        </ul>
+
+        <p>
+          Use a structured action and a digest for binding. Keep the prompt for humans.
+        </p>
+
+        <h2>Failure cases the test suite should cover</h2>
+
+        <p>
+          A compact matrix helps prevent a test suite from proving only the happy path.
+        </p>
+
+        <table>
+          <thead>
+            <tr>
+              <th>Case</th>
+              <th>Expected result</th>
+              <th>Why it matters</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td>All identity fields match</td>
+              <td>Resume accepted once</td>
+              <td>Confirms the normal workflow remains usable</td>
+            </tr>
+            <tr>
+              <td>Wrong thread ID</td>
+              <td>Reject</td>
+              <td>Prevents cross-thread approval reuse</td>
+            </tr>
+            <tr>
+              <td>Wrong interrupt ID</td>
+              <td>Reject</td>
+              <td>Prevents answers for another pause being applied</td>
+            </tr>
+            <tr>
+              <td>Older request version</td>
+              <td>Reject</td>
+              <td>Protects retries and replans</td>
+            </tr>
+            <tr>
+              <td>Changed action digest</td>
+              <td>Reject</td>
+              <td>Protects against hidden payload changes</td>
+            </tr>
+            <tr>
+              <td>Changed graph or policy version</td>
+              <td>Reject or require re-review</td>
+              <td>Prevents old policy assumptions from authorizing new behavior</td>
+            </tr>
+            <tr>
+              <td>Duplicate matching response</td>
+              <td>First accepted, second rejected</td>
+              <td>Enforces single-use approval semantics</td>
+            </tr>
+            <tr>
+              <td>Malformed or missing identity</td>
+              <td>Reject without graph resume</td>
+              <td>Prevents fail-open parsing behavior</td>
+            </tr>
+            <tr>
+              <td>Cancelled request</td>
+              <td>Reject</td>
+              <td>Ensures cancellation is a real state transition</td>
+            </tr>
+          </tbody>
+        </table>
+
+        <h2>Example API contract</h2>
+
+        <p>
+          An approval response can be explicit without exposing secrets or personal data:
+        </p>
+
+        <pre><code>{
+  "thread_id": "thread-1",
+  "interrupt_id": "interrupt-2",
+  "request_version": 2,
+  "graph_version": "policy-v7",
+  "action_digest": "sha256:...",
+  "approved": true
+}</code></pre>
+
+        <p>
+          Treat the digest as an opaque value at the API boundary. Do not let clients submit an
+          arbitrary action alongside approval and then calculate the digest from that submitted
+          action. The server should load the pending action, compare the returned digest, and
+          resume only the stored pending execution.
+        </p>
+
+        <h2>Observability for rejected answers</h2>
+
+        <p>
+          A stale response is often a useful operational signal. Log enough to diagnose the
+          mismatch without logging sensitive action contents:
+        </p>
+
+        <ul>
+          <li>thread ID or an internal redacted correlation ID;</li>
+          <li>pending interrupt ID and submitted interrupt ID;</li>
+          <li>pending and submitted request versions;</li>
+          <li>pending and submitted graph versions;</li>
+          <li>whether the digest matched;</li>
+          <li>the final rejection reason.</li>
+        </ul>
+
+        <p>
+          Avoid recording credentials, access tokens, raw personal data, or complete action
+          payloads in ordinary application logs. If an audit record requires the action, apply the
+          retention and access controls appropriate to that data.
+        </p>
+
+        <h2>Commands for a local verification loop</h2>
+
+        <p>
+          If the test is stored in <code>tests/test_stale_approval.py</code>, a typical local
+          command is:
+        </p>
+
+        <pre><code>python -m pytest -q tests/test_stale_approval.py</code></pre>
+
+        <p>
+          To focus on the identity and side-effect assertions:
+        </p>
+
+        <pre><code>python -m pytest -q \
+  tests/test_stale_approval.py \
+  -k "stale or digest or duplicate"</code></pre>
+
+        <p>
+          These commands are examples of a verification workflow; they were not run for this
+          article. Record the actual command, environment, dependency versions, and result in your
+          project’s test report when you execute them.
+        </p>
+
+        <h2>What a passing test should establish</h2>
+
+        <p>
+          A useful test report should let a reviewer answer all of these questions:
+        </p>
+
+        <ul>
+          <li>Was an approval request created before the plan changed?</li>
+          <li>Did the retry or replan create a distinct current request?</li>
+          <li>Was the old response submitted against the new request?</li>
+          <li>Did the validation reject it for an observable reason?</li>
+          <li>Was the protected side effect not called?</li>
+          <li>Does a current, matching response still resume successfully?</li>
+          <li>Does a duplicate response fail after the first response is consumed?</li>
+        </ul>
+
+        <p>
+          If the test checks only for an exception, it may miss a dangerous implementation that
+          raises after already performing the side effect. Place the side-effect assertion in the
+          same test or in a closely coupled integration test.
+        </p>
+
+        <h2>Limitations and design choices</h2>
+
+        <p>
+          Identity binding reduces one class of approval bugs; it does not make every human-in-
+          the-loop system safe.
+        </p>
+
+        <ul>
+          <li>
+            It does not prove that the reviewer understood the action or that the UI rendered it
+            correctly.
+          </li>
+          <li>
+            It does not replace authorization checks. The submitting principal still needs
+            permission to approve the action.
+          </li>
+          <li>
+            A digest is only as meaningful as the canonical action representation. Exclude no
+            execution-relevant field from the digest.
+          </li>
+          <li>
+            Graph-version binding can cause more re-review after deployments. That is usually a
+            deliberate safety trade-off.
+          </li>
+          <li>
+            Atomic consumption protects against duplicate submission, but external side effects
+            may still require idempotency keys and reconciliation.
+          </li>
+          <li>
+            A durable checkpointer preserves state; it does not automatically define your business
+            rules for expiration, cancellation, or approval authority.
+          </li>
+        </ul>
+
+        <h2>Recommended implementation checklist</h2>
+
+        <ol>
+          <li>Give every pending approval a server-generated interrupt ID.</li>
+          <li>Increment a request version whenever the proposed action changes.</li>
+          <li>Canonicalize all execution-relevant action fields.</li>
+          <li>Store a digest of that canonical action with the pending request.</li>
+          <li>Return the identity fields to the approval client.</li>
+          <li>Validate every field before invoking the graph resume.</li>
+          <li>Consume the request atomically and only once.</li>
+          <li>Assert that stale responses cannot trigger side effects.</li>
+          <li>Exercise retries, replans, cancellations, duplicate delivery, and concurrency.</li>
+          <li>Log mismatch reasons without exposing secrets or unnecessary personal data.</li>
+        </ol>
+
+        <h2>Conclusion</h2>
+
+        <p>
+          The safety property is simple to state: an approval must authorize one specific pending
+          request, not merely a thread or a boolean decision. The practical way to protect it is to
+          make request identity explicit, validate it before resuming the graph, consume it
+          atomically, and test that an old answer is rejected after a retry or plan change.
+        </p>
+
+        <p>
+          Start with the focused regression test, then add the graph-boundary and concurrency
+          tests. That progression gives you a small, framework-independent proof of the invariant
+          and a larger test that protects the real execution path.
+        </p>
+
+        <p class="reading-next">
+          Continue with the site’s <a href="guides.html">guides</a> or look up related terms in
+          the <a href="../glossary.html">glossary</a>.
+        </p>
+      </div>
+    <section class="service-note">
+  <b>We publish what works for us—and implement the same solutions for your business.</b>
+  We design AI automation, Telegram bots, chats, and AI agents for real-world processes.
+  <a href="../contacts-en.html">Discuss your project →</a>
+</section>
+</article>
+  </main>
+
+  <footer class="site-footer">
+    <div class="site-footer__inner">
+      <span>© Agent Lab Journal</span>
+      <nav aria-label="Footer navigation">
+        <a href="guides.html">Guides</a>
+        <a href="../glossary.html">Glossary</a>
+      </nav>
+    </div>
+  </footer>
+</body>
+</html>

@@ -1,0 +1,433 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Как защитить human-in-the-loop от устаревших подтверждений в LangGraph</title>
+  <meta name="description" content="Как защитить human-in-the-loop от устаревших подтверждений в LangGraph: проверяем идентичность interrupt-запроса и отклоняем устаревший ответ при возобновлении.">
+  <link rel="canonical" href="https://agentlabjournal.online/langgraph-stale-approval-test.html">
+  <link rel="stylesheet" href="style.css">
+  <link rel="stylesheet" href="reading.css">
+
+  <meta property="og:type" content="article">
+  <meta property="og:title" content="Как защитить human-in-the-loop от устаревших подтверждений в LangGraph">
+  <meta property="og:description" content="Практический тест на идентичность interrupt-запроса и отказ при возобновлении LangGraph устаревшим ответом.">
+  <meta property="og:url" content="https://agentlabjournal.online/langgraph-stale-approval-test.html">
+  <meta property="og:site_name" content="Agent Lab Journal">
+
+  <meta name="twitter:card" content="summary">
+  <meta name="twitter:title" content="Как защитить human-in-the-loop от устаревших подтверждений в LangGraph">
+  <meta name="twitter:description" content="Проверяем, что подтверждение человека относится именно к текущему вопросу и ревизии плана агента.">
+
+  <script type="application/ld+json">
+  {
+    "@context": "https://schema.org",
+    "@type": "Article",
+    "headline": "Как защитить human-in-the-loop от устаревших подтверждений в LangGraph",
+    "description": "Практическая проверка идентичности interrupt-запроса и отказ при попытке возобновить выполнение устаревшим ответом.",
+    "url": "https://agentlabjournal.online/langgraph-stale-approval-test.html",
+    "inLanguage": "ru",
+    "publisher": {
+      "@type": "Organization",
+      "name": "Agent Lab Journal",
+      "url": "https://agentlabjournal.online/"
+    },
+    "author": {
+      "@type": "Organization",
+      "name": "Agent Lab Journal"
+    }
+  }
+  </script>
+<link rel="stylesheet" href="homepage.css"><link rel="stylesheet" href="max-promo.css">  <meta property="og:image" content="https://agentlabjournal.online/assets/covers/llm-context-window-budget-social.png">
+  <meta property="og:image:alt" content="Как защитить human-in-the-loop от устаревших подтверждений в LangGraph">
+  <meta name="twitter:image" content="https://agentlabjournal.online/assets/covers/llm-context-window-budget-social.png">
+</head>
+<body>
+  <header class="site-header">
+    <div class="reading-shell">
+      <a class="site-brand" href="index.html">Agent Lab Journal</a>
+      <nav aria-label="Основная навигация">
+        <a href="guides.html">Гайды</a>
+        <a href="glossary.html">Глоссарий</a>
+      </nav>
+    </div>
+  </header>
+
+  <main>
+    <article class="reading">
+<a href="https://max.ru/channel_AgentLab?utm_source=agentlabjournal&utm_medium=article&utm_campaign=max_channel&utm_content=article_footer" class="max-promo-block" target="_blank" rel="noopener noreferrer" aria-label="Самое важное из мира AI в канале MAX AgentLab">
+  <span class="max-promo-block__icon" aria-hidden="true"></span>
+  <span class="max-promo-block__content"><span class="max-promo-block__title">Самое важное из мира AI — в канале MAX AgentLab</span><span class="max-promo-block__desc">Отдельные разборы, инструменты и практические схемы</span></span>
+  <span class="max-promo-block__arrow" aria-hidden="true">→</span>
+</a>
+<a href="https://t.me/pelmenews?utm_source=agentlabjournal&utm_medium=article&utm_campaign=telegram_channel&utm_content=article_intro" class="telegram-promo-block" target="_blank" rel="noopener noreferrer" aria-label="Читайте Agent Lab в Telegram">
+  <span class="telegram-promo-block__icon" aria-hidden="true"></span>
+  <span class="telegram-promo-block__content">
+    <span class="telegram-promo-block__title">Читайте Agent Lab в Telegram</span>
+    <span class="telegram-promo-block__desc">Разборы, кейсы и новости о практических AI-агентах без лишней воды.</span>
+  </span>
+  <span class="telegram-promo-block__arrow" aria-hidden="true">→</span>
+</a>
+      <div class="reading-meta">
+        <span>Практика</span>
+        <span>LangGraph</span>
+        <span>До 12 минут</span>
+      </div>
+
+      <h1>Как защитить human-in-the-loop от устаревших подтверждений в LangGraph</h1>
+        <figure class="article-cover" data-editorial-cover="langgraph-stale-approval-test"><img src="assets/covers/llm-context-window-budget.png" alt="Как защитить human-in-the-loop от устаревших подтверждений в LangGraph" width="1280" height="720" fetchpriority="high"><figcaption>Temporary fallback cover; replace in editorial pass.</figcaption></figure>
+
+      <p class="lead">
+        <a href="glossary.html#human-in-the-loop">Human-in-the-loop</a> полезен там, где агенту нельзя самостоятельно выполнить рискованное действие. Но одно только наличие паузы не гарантирует безопасность: человек может ответить на старую версию вопроса, а граф уже успеет повториться, изменить план или сформировать новый запрос.
+      </p>
+
+      <p>
+        В этой статье соберём минимальный защитный слой вокруг <code>interrupt()</code>. Каждый запрос на подтверждение будет содержать идентификатор запроса, ревизию плана и отпечаток полезной нагрузки. При возобновлении граф сверит эти поля с текущим ожиданием и откажется принимать устаревший ответ.
+      </p>
+
+      <h2>Почему обычного «да» недостаточно</h2>
+
+      <p>
+        В LangGraph выполнение приостанавливается на <code>interrupt()</code>, а затем продолжается через <code>Command(resume=...)</code>. Значение, переданное в <code>resume</code>, возвращается из вызова <code>interrupt()</code> внутри узла.
+      </p>
+
+      <p>
+        Если приложение передаёт в resume только строку вроде <code>"approved"</code>, сама строка не говорит, к какому запросу она относится. После повтора узла или пересборки плана такое подтверждение может быть применено к другой операции.
+      </p>
+
+      <p>Безопасная модель должна проверять как минимум:</p>
+
+      <ul>
+        <li><strong>request_id</strong> — уникальный идентификатор конкретного interrupt-запроса;</li>
+        <li><strong>plan_revision</strong> — версию плана агента, для которой был задан вопрос;</li>
+        <li><strong>payload_hash</strong> — отпечаток существенных данных операции.</li>
+      </ul>
+
+      <p>
+        Важно: эти поля не заменяют авторизацию и контроль доступа. Они решают более узкую задачу — не дать ответу из одного контекста пройти проверку в другом.
+      </p>
+
+      <h2>Воспроизводимый пример</h2>
+
+      <p>
+        Ниже приведён компактный пример для Python. Он использует <code>MemorySaver</code> только для локального теста. Для рабочего приложения нужен постоянный checkpointer и стабильный <code>thread_id</code>.
+      </p>
+
+      <h3>1. Подготовьте окружение</h3>
+
+      <pre><code>python -m venv .venv
+. .venv/bin/activate
+python -m pip install -U langgraph pytest</code></pre>
+
+      <p>
+        Команды не создают внешние ресурсы и не требуют ключей API. Если в вашем окружении уже есть проект, выполняйте их в отдельном виртуальном окружении или используйте существующие зависимости.
+      </p>
+
+      <h3>2. Добавьте проверку идентичности</h3>
+
+      <pre><code>from __future__ import annotations
+
+import hashlib
+import json
+from typing import TypedDict
+
+from langgraph.checkpoint.memory import MemorySaver
+from langgraph.graph import END, START, StateGraph
+from langgraph.types import Command, interrupt
+
+
+class State(TypedDict):
+    plan_revision: str
+    operation: dict
+    result: str
+
+
+class StaleApprovalError(RuntimeError):
+    pass
+
+
+def stable_hash(value: object) -&gt; str:
+    encoded = json.dumps(
+        value,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()
+
+
+def make_request_id(
+    plan_revision: str,
+    operation: dict,
+) -&gt; str:
+    return stable_hash({
+        "plan_revision": plan_revision,
+        "operation": operation,
+    })
+
+
+def approve_operation(state: State):
+    plan_revision = state["plan_revision"]
+    operation = state["operation"]
+
+    request_id = make_request_id(plan_revision, operation)
+    payload_hash = stable_hash(operation)
+
+    approval_request = {
+        "kind": "approval",
+        "request_id": request_id,
+        "plan_revision": plan_revision,
+        "payload_hash": payload_hash,
+        "operation": operation,
+    }
+
+    answer = interrupt(approval_request)
+
+    if not isinstance(answer, dict):
+        raise StaleApprovalError("Ответ должен быть объектом с идентичностью запроса")
+
+    expected = {
+        "request_id": request_id,
+        "plan_revision": plan_revision,
+        "payload_hash": payload_hash,
+    }
+
+    received = {
+        key: answer.get(key)
+        for key in expected
+    }
+
+    if received != expected:
+        raise StaleApprovalError(
+            "Отклонено: подтверждение относится к другой версии запроса"
+        )
+
+    if answer.get("approved") is not True:
+        return {"result": "rejected"}
+
+    return {"result": "approved"}
+
+
+builder = StateGraph(State)
+builder.add_node("approve_operation", approve_operation)
+builder.add_edge(START, "approve_operation")
+builder.add_edge("approve_operation", END)
+
+graph = builder.compile(checkpointer=MemorySaver())</code></pre>
+
+      <p>
+        В примере идентификатор вычисляется детерминированно из ревизии плана и операции. Это удобно для демонстрации и теста: изменение любого существенного поля создаёт другой идентификатор. В реальном приложении можно использовать случайный UUID, но тогда исходный запрос и его идентичность нужно надёжно хранить вместе с состоянием ожидания.
+      </p>
+
+      <h3>3. Возобновите граф корректным ответом</h3>
+
+      <pre><code>config = {
+    "configurable": {
+        "thread_id": "demo-thread-1",
+    }
+}
+
+initial_state = {
+    "plan_revision": "plan-7",
+    "operation": {
+        "action": "send_email",
+        "recipient": "user@example.test",
+    },
+    "result": "",
+}
+
+paused = graph.invoke(initial_state, config)
+
+request = paused["__interrupt__"][0].value
+
+approved = {
+    "approved": True,
+    "request_id": request["request_id"],
+    "plan_revision": request["plan_revision"],
+    "payload_hash": request["payload_hash"],
+}
+
+completed = graph.invoke(Command(resume=approved), config)
+
+assert completed["result"] == "approved"</code></pre>
+
+      <p>
+        Для интерфейса подтверждения лучше передавать пользователю весь объект <code>request</code>, а не только текстовое описание. Поля идентичности можно показывать как технические данные или хранить в скрытых полях формы, но сервер обязан проверять их сам.
+      </p>
+
+      <h2>Тест на устаревший ответ</h2>
+
+      <p>
+        Следующий тест сначала получает interrupt-запрос для старой операции, затем пытается возобновить граф ответом, который был сформирован для другой операции. Ожидаемый результат — <code>StaleApprovalError</code>.
+      </p>
+
+      <pre><code>import pytest
+
+from langgraph.types import Command
+
+from app import StaleApprovalError, graph
+
+
+def test_stale_approval_is_rejected():
+    config = {
+        "configurable": {
+            "thread_id": "stale-approval-test",
+        }
+    }
+
+    old_state = {
+        "plan_revision": "plan-7",
+        "operation": {
+            "action": "send_email",
+            "recipient": "old@example.test",
+        },
+        "result": "",
+    }
+
+    paused = graph.invoke(old_state, config)
+    old_request = paused["__interrupt__"][0].value
+
+    stale_answer = {
+        "approved": True,
+        "request_id": old_request["request_id"],
+        "plan_revision": old_request["plan_revision"],
+        "payload_hash": old_request["payload_hash"],
+    }
+
+    new_state = {
+        "plan_revision": "plan-8",
+        "operation": {
+            "action": "send_email",
+            "recipient": "new@example.test",
+        },
+        "result": "",
+    }
+
+    graph.invoke(new_state, config)
+
+    with pytest.raises(StaleApprovalError, match="Отклонено"):
+        graph.invoke(Command(resume=stale_answer), config)</code></pre>
+
+      <p>
+        Запустите тест из каталога проекта:
+      </p>
+
+      <pre><code>pytest -q</code></pre>
+
+      <p>
+        Тест проверяет именно контракт идентичности. Он не доказывает, что отправка письма, транзакция или другая бизнес-операция безопасны сама по себе.
+      </p>
+
+      <h2>Что происходит при повторе узла</h2>
+
+      <p>
+        После возобновления LangGraph может повторно выполнить код узла до точки прерывания. Поэтому код до <code>interrupt()</code> должен быть идемпотентным: не отправляйте письмо, не списывайте деньги и не вызывайте необратимый внешний API до того, как проверка ответа завершилась успешно.
+      </p>
+
+      <p>
+        Безопасная последовательность выглядит так:
+      </p>
+
+      <ol>
+        <li>Сформировать актуальный план и существенные параметры операции.</li>
+        <li>Создать interrupt-запрос с идентичностью.</li>
+        <li>Приостановить выполнение.</li>
+        <li>Получить ответ человека.</li>
+        <li>Сверить идентичность ответа с текущим запросом.</li>
+        <li>Только после успешной проверки выполнить действие.</li>
+      </ol>
+
+      <p>
+        Если бизнес-данные могут измениться между показом запроса и ответом человека, одного хеша из исходного состояния мало. Перед фактическим действием повторно загрузите актуальные данные и убедитесь, что они всё ещё соответствуют подтверждённой операции.
+      </p>
+
+      <h2>Типовые ошибки</h2>
+
+      <h3>Подтверждение только по булевому флагу</h3>
+
+      <p>
+        Ответ <code>{"approved": true}</code> не содержит связи с вопросом. Добавьте идентичность запроса и проверяйте её на сервере.
+      </p>
+
+      <h3>Идентификатор хранится только в браузере</h3>
+
+      <p>
+        Клиентский интерфейс может быть закрыт, продублирован или отправить старую форму. Сервер должен извлекать ожидающий запрос из состояния графа или из доверенного хранилища, а не принимать эталонные значения от клиента.
+      </p>
+
+      <h3>В хеш попадает слишком мало данных</h3>
+
+      <p>
+        Если отпечаток включает только название действия, но не включает получателя, сумму, права или параметры, изменение этих полей не будет обнаружено. Состав payload нужно определить по риску конкретной операции.
+      </p>
+
+      <h3>Ожидание не привязано к thread_id</h3>
+
+      <p>
+        Нестабильный или повторно используемый <code>thread_id</code> может смешать состояния разных запусков. Выберите правило владения thread_id и проверяйте, что возобновление выполняется в правильном пользовательском или рабочем контексте.
+      </p>
+
+      <h2>Ограничения паттерна</h2>
+
+      <p>
+        Такой тест защищает от устаревшего или перемещённого между контекстами ответа, но не решает все проблемы human-in-the-loop. Он не заменяет проверку полномочий, защиту от повторной отправки, аудит, транзакционность, блокировку конкурентных изменений и валидацию бизнес-правил.
+      </p>
+
+      <p>
+        Для критичных действий добавьте одноразовость подтверждения: после успешной проверки сохраните факт использования request_id и отклоняйте повторную отправку того же ответа. Для конкурентных изменений используйте версию записи или другой механизм optimistic locking.
+      </p>
+
+      <h2>Проверка результата</h2>
+
+      <p>Минимальный критерий готовности:</p>
+
+      <ul>
+        <li>корректный ответ для текущего запроса приводит к продолжению графа;</li>
+        <li>ответ со старым <code>request_id</code> отклоняется;</li>
+        <li>ответ с другой <code>plan_revision</code> отклоняется;</li>
+        <li>ответ с изменённым <code>payload_hash</code> отклоняется;</li>
+        <li>повторное использование уже принятого ответа обрабатывается отдельно;</li>
+        <li>после ошибки внешнее действие ещё не было выполнено.</li>
+      </ul>
+
+      <p>
+        Главная идея проста: подтверждать нужно не абстрактное действие, а конкретный снимок запроса. Если агент изменил план, пользователь ответил на другой экран или старый callback пришёл позже нового, проверка идентичности должна остановить выполнение до побочного эффекта.
+      </p>
+
+      <p>
+        Дополнительные практические материалы: <a href="guides.html">гайды Agent Lab Journal</a> и <a href="glossary.html">глоссарий терминов</a>.
+      </p>
+<aside class="service-note" aria-label="Связаться по проекту">
+  <div class="service-note__copy">
+    <p class="service-note__label">Связь с Agent Lab</p>
+    <p class="service-note__title">Внедрим такой контур в ваш процесс</p>
+    <p class="service-note__text">Напишите инженеру Agent Lab в Telegram: опишите задачу, бота или интеграцию — предложим пилот с проверками и понятными границами.</p>
+  </div>
+  <a class="service-note__link" href="https://t.me/msrzn007?utm_source=journal&amp;utm_medium=article&amp;utm_campaign=service_note" target="_blank" rel="noopener">Написать в Telegram
+    <svg viewBox="0 0 16 16" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"><path d="M3 13 13 3M6 3h7v7"/></svg>
+  </a>
+</aside>
+<aside class="service-note service-note--sitevisor" aria-label="Экспресс-аудит сайта">
+  <div class="service-note__copy">
+    <p class="service-note__label">SiteVisor</p>
+    <p class="service-note__title">Проверьте техническое состояние и готовность вашего сайта к рекламе</p>
+    <p class="service-note__text">Экспресс-аудит на SiteVisor.pro: индексация, скорость, разметка, аналитика и точки конверсии.</p>
+  </div>
+  <a class="service-note__link" href="https://sitevisor.pro/?utm_source=journal&amp;utm_medium=article&amp;utm_campaign=leadmagnet" target="_blank" rel="noopener">Экспресс-аудит на SiteVisor.pro
+    <svg viewBox="0 0 16 16" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"><path d="M3 13 13 3M6 3h7v7"/></svg>
+  </a>
+</aside>
+</article>
+  </main>
+
+  <footer class="site-footer">
+    <div class="reading-shell">
+      <span>© Agent Lab Journal</span>
+      <nav aria-label="Навигация в подвале">
+        <a href="guides.html">Гайды</a>
+        <a href="glossary.html">Глоссарий</a>
+      </nav>
+    </div>
+  </footer>
+</body>
+</html>
