@@ -1,0 +1,461 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Карта кода вместо десятков MCP-инструментов для coding agent</title>
+  <meta name="description" content="Карта кода вместо десятков MCP-инструментов для coding agent: практический сценарий построения графа репозитория и сравнения с grep и чтением файлов.">
+  <link rel="canonical" href="https://agentlabjournal.online/code-graph-mcp-agent-navigation.html">
+  <link rel="stylesheet" href="style.css">
+  <link rel="stylesheet" href="reading.css">
+
+  <meta property="og:type" content="article">
+  <meta property="og:locale" content="ru_RU">
+  <meta property="og:title" content="Карта кода вместо десятков MCP-инструментов для coding agent">
+  <meta property="og:description" content="Практический сценарий построения графа репозитория и измерения навигации по коду.">
+  <meta property="og:url" content="https://agentlabjournal.online/code-graph-mcp-agent-navigation.html">
+
+  <meta name="twitter:card" content="summary">
+  <meta name="twitter:title" content="Карта кода вместо десятков MCP-инструментов для coding agent">
+  <meta name="twitter:description" content="Как сократить контекст при поиске связей между функциями в большом репозитории.">
+
+  <script type="application/ld+json">
+  {
+    "@context": "https://schema.org",
+    "@type": "Article",
+    "headline": "Карта кода вместо десятков MCP-инструментов для coding agent",
+    "description": "Практический сценарий построения графа репозитория и сравнения его с поиском через grep и чтением файлов.",
+    "url": "https://agentlabjournal.online/code-graph-mcp-agent-navigation.html",
+    "inLanguage": "ru-RU",
+    "author": {
+      "@type": "Organization",
+      "name": "Agent Lab Journal"
+    },
+    "publisher": {
+      "@type": "Organization",
+      "name": "Agent Lab Journal"
+    },
+    "isPartOf": {
+      "@type": "WebSite",
+      "name": "Agent Lab Journal",
+      "url": "https://agentlabjournal.online/"
+    }
+  }
+  </script>
+<link rel="stylesheet" href="homepage.css"><link rel="stylesheet" href="max-promo.css">  <meta property="og:image" content="https://agentlabjournal.online/assets/covers/llm-context-window-budget-social.png">
+  <meta property="og:image:alt" content="Карта кода вместо десятков MCP-инструментов для coding agent">
+  <meta name="twitter:image" content="https://agentlabjournal.online/assets/covers/llm-context-window-budget-social.png">
+</head>
+<body>
+  <header class="site-header">
+    <div class="container">
+      <a class="site-brand" href="/">Agent Lab Journal</a>
+      <nav aria-label="Основная навигация">
+        <a href="guides.html">Гайды</a>
+        <a href="glossary.html">Глоссарий</a>
+      </nav>
+    </div>
+  </header>
+
+  <main>
+    <article class="reading">
+      <header class="reading-header">
+        <p class="eyebrow">Практика · навигация по коду</p>
+        <h1>Карта кода вместо десятков MCP-инструментов для coding agent</h1>
+        <figure class="article-cover" data-editorial-cover="code-graph-mcp-agent-navigation"><img src="assets/covers/llm-context-window-budget.png" alt="Карта кода вместо десятков MCP-инструментов для coding agent" width="1280" height="720" fetchpriority="high"><figcaption>Temporary fallback cover; replace in editorial pass.</figcaption></figure>
+        <div class="reading-meta">
+          <span>Продвинутый уровень</span>
+          <span>До 12 минут</span>
+          <span>Без внешних сервисов</span>
+        </div>
+      </header>
+<a href="https://max.ru/channel_AgentLab?utm_source=agentlabjournal&utm_medium=article&utm_campaign=max_channel&utm_content=article_footer" class="max-promo-block" target="_blank" rel="noopener noreferrer" aria-label="Самое важное из мира AI в канале MAX AgentLab">
+  <span class="max-promo-block__icon" aria-hidden="true"></span>
+  <span class="max-promo-block__content"><span class="max-promo-block__title">Самое важное из мира AI — в канале MAX AgentLab</span><span class="max-promo-block__desc">Отдельные разборы, инструменты и практические схемы</span></span>
+  <span class="max-promo-block__arrow" aria-hidden="true">→</span>
+</a>
+<a href="https://t.me/pelmenews?utm_source=agentlabjournal&utm_medium=article&utm_campaign=telegram_channel&utm_content=article_intro" class="telegram-promo-block" target="_blank" rel="noopener noreferrer" aria-label="Читайте Agent Lab в Telegram">
+  <span class="telegram-promo-block__icon" aria-hidden="true"></span>
+  <span class="telegram-promo-block__content">
+    <span class="telegram-promo-block__title">Читайте Agent Lab в Telegram</span>
+    <span class="telegram-promo-block__desc">Разборы, кейсы и новости о практических AI-агентах без лишней воды.</span>
+  </span>
+  <span class="telegram-promo-block__arrow" aria-hidden="true">→</span>
+</a>
+
+      <p class="lead">
+        В большом репозитории агенту редко нужно сразу читать весь файл. Обычно ему нужно ответить на более узкий вопрос: кто вызывает функцию, какие модули зависят от интерфейса и где меняется значение. Для этого полезнее сначала построить
+        <a href="glossary.html#graph-repository">граф репозитория</a>,
+        а уже потом открывать несколько подтверждающих фрагментов.
+      </p>
+
+      <p>
+        Такой подход не отменяет grep, индексацию или MCP. Он меняет порядок действий: компактная карта помогает выбрать следующий файл, а полный текст используется для проверки гипотезы. В результате в контекст попадает не поток совпадений, а короткий маршрут по зависимостям.
+      </p>
+
+      <h2>Что именно измеряем</h2>
+
+      <p>
+        Сравним два сценария поиска одной и той же связи. Запрос сформулирован так: «найди путь от функции <code>createInvoice</code> до HTTP-обработчика и покажи места, где меняется объект платежа».
+      </p>
+
+      <ol>
+        <li><strong>Линейный поиск:</strong> несколько вызовов <code>grep</code> или <code>rg</code>, затем чтение найденных файлов.</li>
+        <li><strong>Навигация по карте:</strong> чтение индекса узлов и рёбер, выбор короткого пути, затем чтение только нужных диапазонов.</li>
+      </ol>
+
+      <p>
+        Измеряем не «умность» агента, а стоимость навигации: число команд, объём выведенного текста и приблизительный объём контекста. Последняя величина здесь является оценкой: делим число байт UTF-8 на четыре. Реальное токенизирование зависит от модели и языка.
+      </p>
+
+      <h2>Минимальная модель графа</h2>
+
+      <p>
+        Для первого прохода достаточно трёх типов данных:
+      </p>
+
+      <ul>
+        <li><code>node</code> — файл, функция или класс с координатой;</li>
+        <li><code>edge</code> — связь «вызывает», «импортирует» или «реализует»;</li>
+        <li><code>evidence</code> — строка и короткий фрагмент, подтверждающие связь.</li>
+      </ul>
+
+      <p>
+        Не стоит пытаться получить семантически совершенный граф одной регуляркой. Цель индекса — быстро сузить область поиска. Спорные связи помечайте как кандидаты и перепроверяйте чтением исходника.
+      </p>
+
+      <pre><code>nodes.tsv:
+kind    id                              file                    line    name
+fn      src/billing/invoice.ts:12       src/billing/invoice.ts  12      createInvoice
+fn      src/billing/payment.ts:31       src/billing/payment.ts  31      createPayment
+route   src/http/billing.ts:18          src/http/billing.ts     18      POST /billing
+
+edges.tsv:
+from                            relation    to
+src/http/billing.ts:18           calls       src/billing/invoice.ts:12
+src/billing/invoice.ts:12        calls       src/billing/payment.ts:31</code></pre>
+
+      <h2>Воспроизводимый сценарий построения карты</h2>
+
+      <p>
+        Ниже — безопасный пример для Unix-подобной среды. Команды только читают рабочее дерево и создают файлы в отдельном каталоге <code>.agent-map</code>. Перед запуском замените <code>REPO</code> на путь к копии репозитория или текущего проекта.
+      </p>
+
+      <h3>1. Подготовьте каталог результатов</h3>
+
+      <pre><code>set -eu
+
+REPO="${REPO:-.}"
+OUT="${OUT:-.agent-map}"
+
+mkdir -p "$OUT"
+: &gt; "$OUT/nodes.tsv"
+: &gt; "$OUT/candidates.tsv"</code></pre>
+
+      <p>
+        Переменная <code>OUT</code> намеренно указывает на узкий каталог. Не направляйте вывод в системные директории и не запускайте команды с удалением файлов.
+      </p>
+
+      <h3>2. Соберите кандидатов на определения</h3>
+
+      <p>
+        Этот вариант рассчитан на TypeScript и JavaScript. Он ищет распространённые формы объявлений, но не является полноценным парсером.
+      </p>
+
+      <pre><code>rg -n --no-heading \
+  --glob '*.ts' --glob '*.tsx' --glob '*.js' --glob '*.jsx' \
+  '(^|[[:space:]])(export[[:space:]]+)?(async[[:space:]]+)?function[[:space:]]+[A-Za-z_$][A-Za-z0-9_$]*|(^|[[:space:]])(export[[:space:]]+)?(const|let)[[:space:]]+[A-Za-z_$][A-Za-z0-9_$]*[[:space:]]*=' \
+  "$REPO" \
+  &gt; "$OUT/function-definitions.txt"</code></pre>
+
+      <p>
+        Если в репозитории есть сгенерированные файлы, vendor-каталоги или большие фикстуры, добавьте исключения:
+      </p>
+
+      <pre><code>rg -n --no-heading \
+  --glob '*.ts' --glob '*.tsx' \
+  --glob '!node_modules/**' \
+  --glob '!dist/**' \
+  --glob '!coverage/**' \
+  'createInvoice|createPayment' \
+  "$REPO" \
+  &gt; "$OUT/target-search.txt"</code></pre>
+
+      <h3>3. Сформируйте индекс символов</h3>
+
+      <p>
+        Для практической навигации удобно хранить файл, строку и имя символа. Если в проекте уже есть LSP-индекс, tree-sitter или ctags, используйте его как источник узлов. Ниже — упрощённый TSV-формат, который можно заполнить из существующего вывода инструмента.
+      </p>
+
+      <pre><code>printf '%s\n' \
+  $'fn\tsrc/billing/invoice.ts:12\tsrc/billing/invoice.ts\t12\tcreateInvoice' \
+  $'fn\tsrc/billing/payment.ts:31\tsrc/billing/payment.ts\t31\tcreatePayment' \
+  $'route\tsrc/http/billing.ts:18\tsrc/http/billing.ts\t18\tPOST /billing' \
+  &gt; "$OUT/nodes.tsv"</code></pre>
+
+      <p>
+        Это данные примера, а не утверждение о структуре конкретного проекта. В реальной сборке строки должны поступать из проверяемого индекса.
+      </p>
+
+      <h3>4. Извлеките кандидатов на вызовы</h3>
+
+      <pre><code>rg -n --no-heading \
+  --glob '*.ts' --glob '*.tsx' --glob '*.js' --glob '*.jsx' \
+  --glob '!node_modules/**' \
+  --glob '!dist/**' \
+  'createInvoice[[:space:]]*\(' \
+  "$REPO" \
+  &gt; "$OUT/create-invoice-calls.txt"
+
+rg -n --no-heading \
+  --glob '*.ts' --glob '*.tsx' --glob '*.js' --glob '*.jsx' \
+  --glob '!node_modules/**' \
+  'createPayment[[:space:]]*\(' \
+  "$REPO" \
+  &gt; "$OUT/create-payment-calls.txt"</code></pre>
+
+      <p>
+        Далее агент или небольшой скрипт сопоставляет найденный файл с узлом и записывает ребро. Важно сохранять исходную строку как доказательство:
+      </p>
+
+      <pre><code>printf '%s\n' \
+  $'src/http/billing.ts:18\tcalls\tsrc/billing/invoice.ts:12\t18' \
+  $'src/billing/invoice.ts:12\tcalls\tsrc/billing/payment.ts:31\t27' \
+  &gt; "$OUT/edges.tsv"</code></pre>
+
+      <h3>5. Найдите маршрут между узлами</h3>
+
+      <p>
+        Для небольшого TSV можно использовать Python только для чтения локальных файлов и обхода рёбер. Скрипт не исполняет код репозитория:
+      </p>
+
+      <pre><code>python3 - "$OUT/edges.tsv" &lt;&lt;'PY'
+import collections
+import sys
+
+edges = collections.defaultdict(list)
+
+with open(sys.argv[1], encoding="utf-8") as stream:
+    for line in stream:
+        parts = line.rstrip("\n").split("\t")
+        if len(parts) &gt;= 3:
+            source, relation, target = parts[:3]
+            edges[source].append((target, relation))
+
+start = "src/http/billing.ts:18"
+goal = "src/billing/payment.ts:31"
+
+queue = collections.deque([(start, [start])])
+seen = {start}
+
+while queue:
+    current, path = queue.popleft()
+    if current == goal:
+        print("\n".join(path))
+        break
+    for target, _relation in edges[current]:
+        if target not in seen:
+            seen.add(target)
+            queue.append((target, path + [target]))
+else:
+    print("path not found")
+PY</code></pre>
+
+      <p>
+        В production-индексе вместо координаты файла можно использовать стабильный идентификатор символа: имя модуля, qualified name и хэш сигнатуры. Это уменьшает число ложных совпадений при одинаковых именах функций.
+      </p>
+
+      <h2>Как сравнить карту с grep и чтением файлов</h2>
+
+      <p>
+        Сравнение должно быть одинаковым по задаче и правилам остановки. Например, агент останавливается, когда может назвать цепочку вызовов и показать по одному подтверждающему фрагменту на каждое ребро.
+      </p>
+
+      <h3>Метрики</h3>
+
+      <table>
+        <thead>
+          <tr>
+            <th>Метрика</th>
+            <th>Как считать</th>
+            <th>Зачем нужна</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>Команды</td>
+            <td>Число команд поиска и чтения</td>
+            <td>Показывает операционную стоимость</td>
+          </tr>
+          <tr>
+            <td>Вывод</td>
+            <td><code>wc -c</code> для всех переданных фрагментов</td>
+            <td>Приближает размер контекста</td>
+          </tr>
+          <tr>
+            <td>Открытые файлы</td>
+            <td>Уникальные пути в ответе</td>
+            <td>Показывает ширину разведки</td>
+          </tr>
+          <tr>
+            <td>Доказанные рёбра</td>
+            <td>Число связей с файлом и строкой</td>
+            <td>Проверяет полноту результата</td>
+          </tr>
+          <tr>
+            <td>Ложные кандидаты</td>
+            <td>Совпадения, исключённые после чтения</td>
+            <td>Показывает шум индекса</td>
+          </tr>
+        </tbody>
+      </table>
+
+      <h3>Запустите одинаковые прогоны</h3>
+
+      <p>
+        Сначала сохраните вывод линейного поиска:
+      </p>
+
+      <pre><code>/usr/bin/time -v sh -c '
+  rg -n --glob "*.ts" --glob "*.tsx" "createInvoice" src
+  rg -n --glob "*.ts" --glob "*.tsx" "createPayment" src
+  sed -n "1,180p" src/http/billing.ts
+  sed -n "1,180p" src/billing/invoice.ts
+  sed -n "1,120p" src/billing/payment.ts
+' &gt; .agent-map/grep-run.txt 2&gt; .agent-map/grep-time.txt
+
+wc -c .agent-map/grep-run.txt</code></pre>
+
+      <p>
+        Затем сохраните вывод сценария с картой:
+      </p>
+
+      <pre><code>/usr/bin/time -v sh -c '
+  sed -n "1,120p" .agent-map/nodes.tsv
+  sed -n "1,120p" .agent-map/edges.tsv
+  python3 - .agent-map/edges.tsv &lt; /dev/null
+  sed -n "1,80p" src/http/billing.ts
+  sed -n "1,100p" src/billing/invoice.ts
+  sed -n "1,80p" src/billing/payment.ts
+' &gt; .agent-map/graph-run.txt 2&gt; .agent-map/graph-time.txt
+
+wc -c .agent-map/graph-run.txt</code></pre>
+
+      <p>
+        Последняя команда в примере лишь показывает место, где запускается обход; подставьте в неё ваш валидный запрос маршрута. Для оценки токенов используйте одну и ту же формулу:
+      </p>
+
+      <pre><code>awk '{ total += $1 } END { printf "approx_tokens=%.0f\n", total / 4 }' \
+  &lt; &lt;(wc -c .agent-map/grep-run.txt .agent-map/graph-run.txt)</code></pre>
+
+      <p>
+        Полученные числа нельзя объявлять универсальным результатом. Они зависят от размера файлов, качества индекса, выбранных исключений и конкретного запроса. Их смысл — в сравнении двух подходов на одном репозитории и наборе задач.
+      </p>
+
+      <h2>Практический критерий успеха</h2>
+
+      <p>
+        Карта полезна, если она снижает объём первичной разведки, не скрывая неопределённость. Введите простой протокол из пяти шагов:
+      </p>
+
+      <ol>
+        <li>Возьмите 10–20 реальных задач навигации из истории изменений или списка дефектов.</li>
+        <li>Для каждой задачи зафиксируйте стартовый символ, целевой символ и критерий достаточного доказательства.</li>
+        <li>Случайно выберите порядок: сначала grep или сначала граф.</li>
+        <li>Запишите команды, байты вывода, уникальные файлы и найденные рёбра.</li>
+        <li>Сравните медиану, а не только среднее: один огромный файл может исказить результат.</li>
+      </ol>
+
+      <p>
+        Основная метрика для контекстного бюджета — байты или токены до первого корректного маршрута. Вторая по важности — доля задач, где граф привёл к правильным файлам без дополнительных широких поисков.
+      </p>
+
+      <h2>Типовые ошибки</h2>
+
+      <h3>Индекс превращается в копию репозитория</h3>
+      <p>
+        Если в карту попадают тела функций, документация и большие сниппеты, преимущество исчезает. Храните в индексе координаты, тип связи и короткое доказательство; исходник открывайте только после выбора маршрута.
+      </p>
+
+      <h3>Регулярное выражение принимают за семантический анализ</h3>
+      <p>
+        Вызов через алиас, динамический импорт, реэкспорт или dependency injection может не совпасть с именем. Помечайте рёбра как «кандидат» и добавляйте confidence. Низкая уверенность должна запускать проверку файла, а не становиться фактом.
+      </p>
+
+      <h3>Не исключают generated и vendor-код</h3>
+      <p>
+        Сгенерированные файлы часто создают тысячи ложных совпадений. Используйте явные <code>--glob '!path/**'</code> и храните список исключений рядом с конфигурацией индекса.
+      </p>
+
+      <h3>Сравнивают разные правила остановки</h3>
+      <p>
+        Если grep-сценарий обязан доказать три связи, а графу достаточно назвать одну, измерение нечестно. До запуска эксперимента запишите одинаковый критерий готовности ответа.
+      </p>
+
+      <h3>Путают экономию контекста и экономию времени</h3>
+      <p>
+        Граф может уменьшить текст в контексте, но потребовать предварительной индексации. Измеряйте отдельно стоимость обновления карты и стоимость запроса. Для часто меняющегося монорепозитория инкрементальное обновление важнее полной пересборки.
+      </p>
+
+      <h2>Ограничения подхода</h2>
+
+      <p>
+        Граф не заменяет компилятор, language server и тесты. Он особенно слаб в динамических языках, метапрограммировании, рефлексии, генерации кода во время сборки и системах, где связь определяется конфигурацией.
+      </p>
+
+      <p>
+        Не следует давать агенту безоговорочное право менять код только на основании ребра из индекса. Карта отвечает на вопрос «куда смотреть дальше», а не «какое поведение гарантировано». Гарантией остаются исходник, типы, тесты и проверка результата.
+      </p>
+
+      <p>
+        Наконец, граф может быть устаревшим. Добавляйте к индексу версию коммита или хэш набора файлов и проверяйте её перед использованием. Если карта старше текущего состояния, агент должен явно сообщить об этом и перейти к локальной проверке.
+      </p>
+
+      <h2>Итог</h2>
+
+      <p>
+        Для coding agent полезна не коллекция из десятков узких инструментов, а компактный навигационный слой: узлы, рёбра, координаты и уровень уверенности. Он сокращает число широких поисков и помогает читать только те файлы, которые подтверждают конкретный маршрут.
+      </p>
+
+      <p>
+        Начните с TSV-индекса и измерения байтов вывода. Если на ваших задачах граф стабильно уменьшает первичный контекст при сохранении числа доказанных связей, его можно подключать к MCP как один инструмент навигации — с понятными командами обновления и проверкой актуальности.
+      </p>
+
+      <aside class="reading-note">
+        <strong>Дальше:</strong>
+        смотрите практические материалы в <a href="guides.html">разделе guides</a> и определения терминов в <a href="glossary.html">глоссарии</a>.
+      </aside>
+<aside class="service-note" aria-label="Связаться по проекту">
+  <div class="service-note__copy">
+    <p class="service-note__label">Связь с Agent Lab</p>
+    <p class="service-note__title">Внедрим такой контур в ваш процесс</p>
+    <p class="service-note__text">Напишите инженеру Agent Lab в Telegram: опишите задачу, бота или интеграцию — предложим пилот с проверками и понятными границами.</p>
+  </div>
+  <a class="service-note__link" href="https://t.me/msrzn007?utm_source=journal&amp;utm_medium=article&amp;utm_campaign=service_note" target="_blank" rel="noopener">Написать в Telegram
+    <svg viewBox="0 0 16 16" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"><path d="M3 13 13 3M6 3h7v7"/></svg>
+  </a>
+</aside>
+<aside class="service-note service-note--sitevisor" aria-label="Экспресс-аудит сайта">
+  <div class="service-note__copy">
+    <p class="service-note__label">SiteVisor</p>
+    <p class="service-note__title">Проверьте техническое состояние и готовность вашего сайта к рекламе</p>
+    <p class="service-note__text">Экспресс-аудит на SiteVisor.pro: индексация, скорость, разметка, аналитика и точки конверсии.</p>
+  </div>
+  <a class="service-note__link" href="https://sitevisor.pro/?utm_source=journal&amp;utm_medium=article&amp;utm_campaign=leadmagnet" target="_blank" rel="noopener">Экспресс-аудит на SiteVisor.pro
+    <svg viewBox="0 0 16 16" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"><path d="M3 13 13 3M6 3h7v7"/></svg>
+  </a>
+</aside>
+</article>
+  </main>
+
+  <footer class="site-footer">
+    <div class="container">
+      <p>Agent Lab Journal · Практика для coding agents</p>
+      <nav aria-label="Навигация в подвале">
+        <a href="guides.html">Гайды</a>
+        <a href="glossary.html">Глоссарий</a>
+      </nav>
+    </div>
+  </footer>
+</body>
+</html>

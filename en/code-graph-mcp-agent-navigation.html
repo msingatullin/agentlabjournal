@@ -1,0 +1,481 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>A Code Map Instead of Dozens of MCP Tools for Coding Agents</title>
+  <meta name="description" content="A Code Map Instead of Dozens of MCP Tools for Coding Agents: build a reproducible repository graph and measure it against grep-based search and file reading.">
+  <link rel="canonical" href="https://agentlabjournal.online/en/code-graph-mcp-agent-navigation.html">
+  <link rel="stylesheet" href="../style.css">
+  <link rel="stylesheet" href="../reading.css">
+
+  <meta property="og:type" content="article">
+  <meta property="og:title" content="A Code Map Instead of Dozens of MCP Tools for Coding Agents">
+  <meta property="og:description" content="A reproducible method for reducing context use while tracing function relationships in a large repository.">
+  <meta property="og:url" content="https://agentlabjournal.online/en/code-graph-mcp-agent-navigation.html">
+  <meta property="og:image" content="https://agentlabjournal.online/assets/covers/llm-context-window-budget-social.png">
+
+  <meta name="twitter:card" content="summary_large_image">
+  <meta name="twitter:title" content="A Code Map Instead of Dozens of MCP Tools for Coding Agents">
+  <meta name="twitter:description" content="Build a repository graph and compare it with grep-based search and file reading.">
+  <meta name="twitter:image" content="https://agentlabjournal.online/assets/covers/llm-context-window-budget-social.png">
+
+  <meta name="reading-time" content="18 minutes">
+  <meta name="article:section" content="Coding agents">
+  <meta name="article:level" content="Advanced">
+  <meta name="article:published_time" content="2026-11-16">
+  <meta name="article:modified_time" content="2026-11-16">
+
+  <script type="application/ld+json">
+  {
+    "@context": "https://schema.org",
+    "@type": "Article",
+    "headline": "A Code Map Instead of Dozens of MCP Tools for Coding Agents",
+    "description": "A reproducible method for reducing context use while tracing function relationships in a large repository.",
+    "image": ["https://agentlabjournal.online/assets/covers/llm-context-window-budget-social.png"],
+    "dateModified": "2026-11-16",
+    "author": {
+      "@type": "Organization",
+      "name": "Agent Lab Journal"
+    },
+    "publisher": {
+      "@type": "Organization",
+      "name": "Agent Lab Journal",
+      "logo": {
+        "@type": "ImageObject",
+        "url": "https://agentlabjournal.online/assets/images/logo.png"
+      }
+    },
+    "mainEntityOfPage": {
+      "@type": "WebPage",
+      "@id": "https://agentlabjournal.online/en/code-graph-mcp-agent-navigation.html"
+    }
+  }
+  </script>
+<link rel="stylesheet" href="../homepage.css"><link rel="stylesheet" href="../max-promo.css">  <meta property="og:image:alt" content="Карта кода вместо десятков MCP-инструментов для coding agent">
+</head>
+<body>
+  <header class="site-header">
+    <a href="../index.html" class="site-logo">Agent Lab Journal</a>
+    <nav aria-label="Primary navigation">
+      <a href="guides.html">Guides</a>
+      <a href="../glossary.html">Glossary</a>
+    </nav>
+  </header>
+
+  <main>
+    <article class="reading">
+      <div class="reading-meta">
+        <span>Advanced</span>
+        <span>18 min read</span>
+        <span>Updated 16 November 2026</span>
+      </div>
+
+      <h1>A Code Map Instead of Dozens of MCP Tools for Coding Agents</h1>
+        <figure class="article-cover" data-editorial-cover="code-graph-mcp-agent-navigation"><img src="../assets/covers/llm-context-window-budget.png" alt="Карта кода вместо десятков MCP-инструментов для coding agent" width="1280" height="720" fetchpriority="high"><figcaption>Temporary fallback cover; replace in editorial pass.</figcaption></figure>
+
+      <p class="lead">When an agent has to trace a function through a large repository, the expensive part is often not the final answer. It is the navigation: searching for a symbol, opening a file, following an import, searching again, and repeatedly reloading context that has already been inferred. A compact repository graph can turn that navigation into a small number of targeted lookups.</p>
+
+      <p>This article presents a reproducible setup for an <a href="../glossary.html#repository-graph">repository graph</a>, using a Python example because the call relationships are easy to inspect. It also defines a measurement method for comparing graph navigation with <a href="../glossary.html#grep">grep-based search</a> and sequential file reading. The commands below are a method, not a report of results: no repository benchmark was run for this article, and the example numbers are intentionally omitted.</p>
+
+      <h2>The navigation problem</h2>
+
+      <p>Suppose an agent receives a task such as:</p>
+
+      <blockquote>
+        <p>“Find where an incoming order becomes an invoice, then identify the validation and persistence functions involved.”</p>
+      </blockquote>
+
+      <p>A conventional workflow may look like this:</p>
+
+      <ol>
+        <li>Search for <code>create_invoice</code>.</li>
+        <li>Read the containing file.</li>
+        <li>Find the caller.</li>
+        <li>Open the caller’s module.</li>
+        <li>Resolve an imported helper.</li>
+        <li>Repeat until the relationship is clear.</li>
+      </ol>
+
+      <p>Each step creates new <a href="../glossary.html#context-window">context-window</a> pressure. The agent may need only a few lines from each file, but a tool interface commonly returns whole files, broad search matches, or repeated directory listings. The problem is not that search is incorrect. It is that search exposes text while the task asks about structure.</p>
+
+      <p>A graph changes the unit of navigation. Instead of asking “which files contain this string?”, the agent can ask:</p>
+
+      <ul>
+        <li>Which functions call <code>create_invoice</code>?</li>
+        <li>Which functions does <code>create_invoice</code> call?</li>
+        <li>Where is the symbol defined?</li>
+        <li>Which module owns the definition?</li>
+        <li>What is the shortest path between two symbols?</li>
+      </ul>
+
+      <p>The graph does not replace source code. It narrows the source-code reading set.</p>
+
+      <h2>What the graph should contain</h2>
+
+      <p>For agent navigation, a useful first graph needs only a small schema:</p>
+
+      <pre><code>nodes(
+  id,
+  kind,
+  name,
+  qualified_name,
+  file,
+  line
+)
+
+edges(
+  source_id,
+  target_id,
+  kind
+)</code></pre>
+
+      <p>Typical node kinds are functions, classes, methods, modules, and files. Typical edge kinds are:</p>
+
+      <ul>
+        <li><code>defines</code>: a module or class defines a symbol.</li>
+        <li><code>calls</code>: one function invokes another.</li>
+        <li><code>imports</code>: one module imports another.</li>
+        <li><code>inherits</code>: one class derives from another.</li>
+      </ul>
+
+      <p>Start with definitions and calls. Imports and inheritance are useful later, but adding every possible relation before measuring the navigation task makes the experiment harder to interpret.</p>
+
+      <h2>A reproducible Python setup</h2>
+
+      <p>The following setup uses <a href="../glossary.html#pyan">pyan3</a> to extract Python definitions and calls, Graphviz to render a visual inspection artifact, and SQLite to provide a compact query surface. These tools are examples of an implementation path; their output should be checked against the repository’s language features before being treated as authoritative.</p>
+
+      <h3>1. Create an isolated environment</h3>
+
+      <pre><code>python3 -m venv .venv
+. .venv/bin/activate
+python -m pip install --upgrade pip
+python -m pip install pyan3</code></pre>
+
+      <p>Install Graphviz separately if you want a rendered image. On Debian or Ubuntu, one possible command is:</p>
+
+      <pre><code>sudo apt-get install graphviz</code></pre>
+
+      <p>Do not put credentials, production configuration, or private repository contents into a public benchmark directory. The graph may expose internal names even when it contains no source code.</p>
+
+      <h3>2. Generate a raw call graph</h3>
+
+      <p>From the repository root, select the application package explicitly. Replace <code>src/myapp</code> with the directory that should be analyzed.</p>
+
+      <pre><code>pyan3 src/myapp/**/*.py \
+  --uses \
+  --defines \
+  --colored \
+  --dot \
+  &gt; artifacts/call-graph.dot</code></pre>
+
+      <p>Shell glob behavior differs across environments. If the command does not expand recursive globs, use a file list:</p>
+
+      <pre><code>find src/myapp -name '*.py' -print0 \
+  | xargs -0 pyan3 --uses --defines --dot \
+  &gt; artifacts/call-graph.dot</code></pre>
+
+      <p>Render the graph for a human sanity check:</p>
+
+      <pre><code>dot -Tsvg artifacts/call-graph.dot \
+  -o artifacts/call-graph.svg</code></pre>
+
+      <p>A successful command is not proof that the graph is complete. Inspect a few known functions and compare their actual callers with the generated edges.</p>
+
+      <h3>3. Load a compact query database</h3>
+
+      <p>The DOT file is convenient for visualization but inconvenient for repeated agent queries. A small import script can store the graph in SQLite. The exact parser depends on the pyan3 version and DOT output, so treat the following as a deliberately narrow adapter: it supports simple quoted node and edge lines and should be extended only after inspecting the generated file.</p>
+
+      <pre><code># tools/dot_to_sqlite.py
+import re
+import sqlite3
+import sys
+from pathlib import Path
+
+DOT_NODE = re.compile(
+    r'^\s*"([^"]+)"\s+\[.*?label="([^"]+)".*\];\s*$'
+)
+DOT_EDGE = re.compile(
+    r'^\s*"([^"]+)"\s+-&gt;\s+"([^"]+)".*;\s*$'
+)
+
+def main(dot_path, db_path):
+    conn = sqlite3.connect(db_path)
+    conn.executescript("""
+    create table if not exists nodes (
+      id text primary key,
+      label text not null
+    );
+    create table if not exists edges (
+      source_id text not null,
+      target_id text not null,
+      kind text not null default 'calls'
+    );
+    create index if not exists edges_source on edges(source_id);
+    create index if not exists edges_target on edges(target_id);
+    """)
+
+    for line in Path(dot_path).read_text().splitlines():
+        node = DOT_NODE.match(line)
+        if node:
+            conn.execute(
+                "insert or replace into nodes(id, label) values (?, ?)",
+                node.groups()
+            )
+            continue
+
+        edge = DOT_EDGE.match(line)
+        if edge:
+            conn.execute(
+                "insert into edges(source_id, target_id) values (?, ?)",
+                edge.groups()
+            )
+
+    conn.commit()
+    conn.close()
+
+if __name__ == "__main__":
+    if len(sys.argv) != 3:
+        raise SystemExit(
+            "usage: python tools/dot_to_sqlite.py graph.dot graph.sqlite"
+        )
+    main(sys.argv[1], sys.argv[2])</code></pre>
+
+      <p>Run it with:</p>
+
+      <pre><code>mkdir -p artifacts
+python tools/dot_to_sqlite.py \
+  artifacts/call-graph.dot \
+  artifacts/call-graph.sqlite</code></pre>
+
+      <p>The adapter is intentionally conservative. If the DOT labels contain escaped quotes, HTML labels, or multiple node categories, the importer may need a repository-specific parser. That is a failure case to detect, not silently ignore.</p>
+
+      <h2>Queries an agent can use</h2>
+
+      <p>A graph-backed tool does not need dozens of operations. A small read-only interface can expose a few parameterized queries.</p>
+
+      <h3>Find a symbol</h3>
+
+      <pre><code>select id, label
+from nodes
+where id like '%' || :term || '%'
+   or label like '%' || :term || '%'
+order by id
+limit 20;</code></pre>
+
+      <h3>Find callers</h3>
+
+      <pre><code>select e.source_id, n.label
+from edges e
+left join nodes n on n.id = e.source_id
+where e.target_id = :symbol
+order by e.source_id;</code></pre>
+
+      <h3>Find callees</h3>
+
+      <pre><code>select e.target_id, n.label
+from edges e
+left join nodes n on n.id = e.target_id
+where e.source_id = :symbol
+order by e.target_id;</code></pre>
+
+      <h3>Return a small neighborhood</h3>
+
+      <pre><code>select e.source_id, e.kind, e.target_id
+from edges e
+where e.source_id = :symbol
+   or e.target_id = :symbol
+limit 100;</code></pre>
+
+      <p>These queries are intentionally bounded. A tool should return identifiers, labels, file paths, and line numbers first. The agent can then request the relevant source ranges. Returning a complete connected component is often just another form of context flooding.</p>
+
+      <h2>Keep graph lookup separate from source reading</h2>
+
+      <p>The practical pattern is:</p>
+
+      <pre><code>graph lookup
+    ↓
+candidate symbols
+    ↓
+small source ranges
+    ↓
+semantic verification
+    ↓
+answer or patch</code></pre>
+
+      <p>The graph answers “what is connected?” Source reading answers “what does this code actually do?” A call edge may be wrong because of dynamic dispatch, decorators, reflection, generated code, conditional imports, or parser limitations. The graph should therefore be treated as a navigation index, not as a substitute for execution or review.</p>
+
+      <h2>How to measure the comparison</h2>
+
+      <p>The useful comparison is not “which tool feels faster?” Define a fixed tracing task and record the same fields for each navigation method.</p>
+
+      <h3>Choose representative tasks</h3>
+
+      <p>Prepare at least three tasks with known answers. For example:</p>
+
+      <ol>
+        <li>Trace a request handler to the function that writes an invoice.</li>
+        <li>Find all callers of a validation function and identify the production path.</li>
+        <li>Trace a background job through a service layer into a repository method.</li>
+      </ol>
+
+      <p>Do not choose tasks only because they are easy for the graph. Include at least one path involving an indirect call or framework convention, because that exposes the graph’s limits.</p>
+
+      <h3>Fix the starting conditions</h3>
+
+      <p>For every method, begin with the same:</p>
+
+      <ul>
+        <li>repository revision;</li>
+        <li>task description;</li>
+        <li>symbol or entry point, if the task specifies one;</li>
+        <li>maximum wall-clock time;</li>
+        <li>tool timeout;</li>
+        <li>definition of a correct answer.</li>
+      </ul>
+
+      <p>Use a clean working tree and record the commit identifier. Do not compare a graph generated from one revision with source files from another.</p>
+
+      <h3>Compare three navigation modes</h3>
+
+      <p><strong>Mode A: grep plus file reading.</strong> Permit recursive search and opening files. Record every search query, every file or source range returned to the agent, and the total text passed into the model.</p>
+
+      <p><strong>Mode B: graph plus targeted file reading.</strong> Permit the graph queries above and source-range reads. Record graph rows returned, source lines returned, and the same total text metric.</p>
+
+      <p><strong>Mode C: file reading baseline.</strong> Permit directory listing and direct file reads but no graph or text search. This is useful as a deliberately inefficient baseline when the repository is unfamiliar.</p>
+
+      <h3>Record comparable metrics</h3>
+
+      <pre><code>task_id,mode,success,elapsed_ms,
+search_calls,graph_calls,
+files_opened,source_lines_returned,
+result_chars,estimated_tokens,
+wrong_turns,notes</code></pre>
+
+      <p>Use the same tokenizer for every mode if token counts matter. If the model’s tokenizer is unavailable, record character count or byte count and label it clearly as a proxy. Do not present a character count as a token count.</p>
+
+      <p>For a simple token proxy, keep the calculation separate from the experiment:</p>
+
+      <pre><code>python - &lt;&lt;'PY'
+from pathlib import Path
+
+text = Path("artifacts/transcript.txt").read_text()
+print({
+    "characters": len(text),
+    "bytes": len(text.encode("utf-8")),
+    "rough_4_chars_per_token_proxy": len(text) / 4
+})
+PY</code></pre>
+
+      <p>The final field is only a rough heuristic. It is useful for a before-and-after comparison when the same encoding is used consistently, but it is not a tokenizer measurement.</p>
+
+      <h3>Define success before running</h3>
+
+      <p>A tracing task should count as successful only if the answer contains the required relationship and the supporting source location. For example:</p>
+
+      <pre><code>success =
+  target_function_identified
+  and complete_path_returned
+  and source_location_verified</code></pre>
+
+      <p>Record partial paths separately. An agent that finds the right endpoint by reading half the repository has not produced the same result as an agent that finds and verifies the path with a small neighborhood lookup.</p>
+
+      <h2>Verification checks for the graph</h2>
+
+      <p>Before using the graph as an agent dependency, run checks that can expose silent incompleteness.</p>
+
+      <h3>Check known definitions</h3>
+
+      <pre><code>sqlite3 artifacts/call-graph.sqlite \
+  "select id, label from nodes where label like '%create_invoice%';"</code></pre>
+
+      <p>Verify the result against the source file and line number. If the graph has no line information, add it to the extraction format or keep source lookup as a required second step.</p>
+
+      <h3>Check known callers and callees</h3>
+
+      <pre><code>sqlite3 artifacts/call-graph.sqlite \
+  "select source_id, target_id from edges
+   where target_id like '%create_invoice%';"</code></pre>
+
+      <p>Pick a small sample of edges and inspect the corresponding source. This catches malformed DOT parsing, namespace collisions, and accidental edge duplication.</p>
+
+      <h3>Check graph freshness</h3>
+
+      <p>Store the analyzed commit beside the database:</p>
+
+      <pre><code>git rev-parse HEAD &gt; artifacts/repository-revision.txt</code></pre>
+
+      <p>At query time, compare that value with the working revision. A stale graph can be worse than no graph because it gives precise-looking answers about code that no longer exists.</p>
+
+      <h3>Check parser coverage</h3>
+
+      <p>Use a small fixture directory containing decorators, nested functions, imported aliases, class methods, and conditional imports. The fixture should have an expected set of nodes and edges checked into the benchmark. If the extractor misses a construct, document the miss and exclude that construct from claims about coverage.</p>
+
+      <h2>Failure cases</h2>
+
+      <h3>Dynamic dispatch</h3>
+
+      <p>When a function is selected through a registry, dependency injection container, plugin table, or reflection, a static call graph may not know the runtime target. The graph can identify the registry and nearby definitions, but runtime or test evidence may be necessary to resolve the path.</p>
+
+      <h3>Generated code</h3>
+
+      <p>Frameworks may generate routes, serializers, ORM methods, or client code. The source graph may show declarations without the generated relationship. Include generated artifacts only if they are stable, reproducible, and part of the repository’s intended build.</p>
+
+      <h3>Aliases and re-exports</h3>
+
+      <p>Two names can refer to one object, or one exported name can hide the defining module. Normalize qualified names where possible, but preserve the original file and line location so the agent can verify the result.</p>
+
+      <h3>Parser and language-version mismatch</h3>
+
+      <p>A graph extractor that parses an older language version may skip newer syntax or fail on valid files. Pin the interpreter and extractor versions used for the benchmark. A successful process exit is not enough; inspect warnings and node counts.</p>
+
+      <h3>Large connected components</h3>
+
+      <p>Framework bootstrap code can connect hundreds or thousands of symbols. Do not return the entire component by default. Add depth limits, edge-kind filters, result limits, and pagination.</p>
+
+      <h2>Limitations of the method</h2>
+
+      <p>This setup is intentionally narrow. It focuses on static function relationships in Python and does not establish accuracy for other languages. A production repository may need language-specific indexers, a <a href="../glossary.html#language-server">language server</a>, build metadata, type information, or runtime traces.</p>
+
+      <p>The comparison also measures navigation efficiency, not total engineering quality. A graph may reduce returned context while increasing setup and maintenance cost. It may also make an incorrect relationship look authoritative. The right question is not whether a graph eliminates source reading; it is whether it helps the agent reach the correct source locations with fewer irrelevant reads.</p>
+
+      <p>Finally, tool-call count is not the same as context cost. One broad call can be more expensive than several small calls. Report both call count and returned content size.</p>
+
+      <h2>A minimal operating policy for coding agents</h2>
+
+      <p>A practical policy can be expressed as five rules:</p>
+
+      <ol>
+        <li>Use the graph first for symbol discovery and relationship tracing.</li>
+        <li>Limit graph responses to identifiers, locations, edge kinds, and bounded neighborhoods.</li>
+        <li>Read source ranges only after selecting candidate symbols.</li>
+        <li>Verify graph-derived paths in source before making a code change.</li>
+        <li>Regenerate or invalidate the graph when the repository revision changes.</li>
+      </ol>
+
+      <p>This gives the agent a small, stable navigation surface instead of a long menu of overlapping tools. The graph is not another general-purpose MCP server with every repository operation attached. It is a focused index with a measurable job: reduce irrelevant context while preserving enough evidence to verify the path.</p>
+
+      <h2>Conclusion</h2>
+
+      <p>A code map is valuable when the agent’s task is relational: callers, callees, ownership, inheritance, or paths through a service. The reproducible approach is to build a bounded graph, expose a few read-only queries, fetch targeted source ranges, and measure success and returned content on fixed tracing tasks.</p>
+
+      <p>Do not claim a reduction until the repository, revision, tasks, tokenizer, and logging method are recorded. Run the same tasks through grep-based search, graph-assisted navigation, and a file-reading baseline. Then report the measured trade-off: setup cost, correctness, elapsed time, tool calls, and context volume.</p>
+
+      <p>For related terminology, see the <a href="../glossary.html">Agent Lab Journal glossary</a>. Continue with the <a href="guides.html">coding-agent guides</a>.</p>
+    <section class="service-note">
+  <b>We publish what works for us—and implement the same solutions for your business.</b>
+  We design AI automation, Telegram bots, chats, and AI agents for real-world processes.
+  <a href="../contacts-en.html">Discuss your project →</a>
+</section>
+</article>
+  </main>
+
+  <footer class="site-footer">
+    <p>&copy; 2026 Agent Lab Journal</p>
+    <nav aria-label="Footer navigation">
+      <a href="guides.html">Guides</a>
+      <a href="../glossary.html">Glossary</a>
+    </nav>
+  </footer>
+</body>
+</html>
