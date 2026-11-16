@@ -1,0 +1,661 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>How to Create Portable Skills for AI Agents</title>
+  <meta name="description" content="How to Create Portable Skills for AI Agents: design a reusable engineering process that preserves host-specific context, tools, and permissions.">
+  <link rel="canonical" href="https://agentlabjournal.online/en/skills-dlya-ai-agentov.html">
+  <link rel="stylesheet" href="../style.css">
+  <link rel="stylesheet" href="../reading.css">
+
+  <meta property="og:type" content="article">
+  <meta property="og:title" content="How to Create Portable Skills for AI Agents">
+  <meta property="og:description" content="A practical method for designing reusable agent skills that retain host-specific context, tools, and permissions.">
+  <meta property="og:url" content="https://agentlabjournal.online/en/skills-dlya-ai-agentov.html">
+  <meta property="og:image" content="https://agentlabjournal.online/assets/covers/llm-context-window-budget-social.png">
+  <meta property="og:site_name" content="Agent Lab Journal">
+  <meta property="og:locale" content="en_US">
+
+  <meta name="twitter:card" content="summary_large_image">
+  <meta name="twitter:title" content="How to Create Portable Skills for AI Agents">
+  <meta name="twitter:description" content="A reproducible framework for building and testing portable skills for AI agents.">
+  <meta name="twitter:image" content="https://agentlabjournal.online/assets/covers/llm-context-window-budget-social.png">
+
+  <script type="application/ld+json">
+  {
+    "@context": "https://schema.org",
+    "@type": "Article",
+    "headline": "How to Create Portable Skills for AI Agents",
+    "description": "A practical method for designing reusable agent skills that retain host-specific context, tools, and permissions.",
+    "image": ["https://agentlabjournal.online/assets/covers/llm-context-window-budget-social.png"],
+    "dateModified": "2026-11-16",
+    "author": {
+      "@type": "Organization",
+      "name": "Agent Lab Journal"
+    },
+    "publisher": {
+      "@type": "Organization",
+      "name": "Agent Lab Journal",
+      "url": "https://agentlabjournal.online/"
+    },
+    "mainEntityOfPage": {
+      "@type": "WebPage",
+      "@id": "https://agentlabjournal.online/en/skills-dlya-ai-agentov.html"
+    }
+  }
+  </script>
+<link rel="stylesheet" href="../homepage.css"><link rel="stylesheet" href="../max-promo.css">  <meta property="og:image:alt" content="Как создавать переносимые навыки для AI-агентов">
+</head>
+<body>
+  <header class="site-header">
+    <div class="container">
+      <a href="../index.html" class="site-logo">Agent Lab Journal</a>
+      <nav aria-label="Primary navigation">
+        <a href="../guides.html">Guides</a>
+        <a href="../glossary.html">Glossary</a>
+      </nav>
+    </div>
+  </header>
+
+  <main>
+    <article class="reading">
+      <div class="reading-meta">
+        <span>Engineering guide</span>
+        <span>·</span>
+        <span>25 min read</span>
+        <span>·</span>
+        <time datetime="2026-11-16">Updated November 16, 2026</time>
+      </div>
+
+      <h1>How to Create Portable Skills for AI Agents</h1>
+        <figure class="article-cover" data-editorial-cover="skills-dlya-ai-agentov"><img src="../assets/covers/llm-context-window-budget.png" alt="Как создавать переносимые навыки для AI-агентов" width="1280" height="720" fetchpriority="high"><figcaption>Temporary fallback cover; replace in editorial pass.</figcaption></figure>
+
+      <p class="lead">
+        A useful skill is more than a prompt saved in a folder. It is a small,
+        reproducible engineering process: a clear trigger, explicit inputs,
+        bounded permissions, host adapters, verification steps, and a predictable
+        handoff. This article shows how to package that process so it can move
+        between AI agents without pretending that every host has the same tools
+        or security model.
+      </p>
+
+      <p>
+        The central problem is easy to state and difficult to solve: how do you
+        describe a repeatable engineering process once, then run it across
+        different agents while preserving the context, tools, and permissions
+        supplied by each host?
+      </p>
+
+      <p>
+        The answer is to separate the process from its environment. The process
+        defines what must happen and how success is checked. The environment
+        supplies the available model, filesystem, tools, credentials, approval
+        rules, and runtime conventions. Portability comes from making that
+        boundary explicit.
+      </p>
+
+      <h2>What “portable” means</h2>
+
+      <p>
+        In this guide, a <a href="../glossary.html#skill">skill</a> is a
+        documented procedure that an agent can apply when a task matches its
+        purpose. A portable skill does not require identical agents. It requires
+        that different hosts can interpret the same contract and provide their
+        own implementation details.
+      </p>
+
+      <p>
+        Portability therefore has three levels:
+      </p>
+
+      <ul>
+        <li><strong>Text portability:</strong> the instructions can be read without relying on one vendor’s hidden terminology.</li>
+        <li><strong>Operational portability:</strong> the host can map required actions to its own tools and permission model.</li>
+        <li><strong>Outcome portability:</strong> equivalent inputs produce artifacts that satisfy the same acceptance criteria.</li>
+      </ul>
+
+      <p>
+        A skill can be text-portable but not operationally portable. For example,
+        “inspect the repository” is understandable everywhere, but one host may
+        expose a shell while another only exposes a repository browser. The
+        portable contract should describe the intent and the evidence required;
+        the host adapter should describe how to obtain that evidence.
+      </p>
+
+      <h2>A concrete case: a repository review skill</h2>
+
+      <p>
+        Consider a skill called <em>repository-review</em>. Its job is to inspect
+        a codebase, identify relevant files, analyze an implementation against a
+        stated requirement, and report findings with file references. It should
+        not modify files unless the caller explicitly requests a fix.
+      </p>
+
+      <p>
+        The same process may run in three environments:
+      </p>
+
+      <ul>
+        <li>an agent with shell access and a local checkout;</li>
+        <li>an agent with read-only repository tools;</li>
+        <li>an agent that can inspect uploaded files but cannot access a network or external service.</li>
+      </ul>
+
+      <p>
+        The review logic is the same. Discovery, evidence collection, analysis,
+        and reporting remain stable. The available search command, repository
+        location, and approval flow vary by host.
+      </p>
+
+      <h2>The portable skill contract</h2>
+
+      <p>
+        Start with a short contract before writing detailed instructions. The
+        contract should answer six questions:
+      </p>
+
+      <ol>
+        <li>When should the skill activate?</li>
+        <li>What inputs must be present?</li>
+        <li>What context may it read?</li>
+        <li>What actions may it perform?</li>
+        <li>What evidence must it produce?</li>
+        <li>What should it do when a requirement cannot be verified?</li>
+      </ol>
+
+      <p>
+        A useful contract is specific enough to test but abstract enough to
+        survive a change of host. For the repository-review example:
+      </p>
+
+      <pre><code>name: repository-review
+purpose: Review an implementation against an explicit requirement.
+activation:
+  - the user asks for diagnosis, review, or verification
+required_inputs:
+  - requirement or review question
+  - repository or file scope
+read_actions:
+  - list files
+  - read relevant files
+  - inspect available tests and configuration
+write_actions: none unless explicitly authorized
+output:
+  - findings ordered by severity
+  - evidence with file paths and relevant locations
+  - unverified assumptions and missing access
+  - concise conclusion
+failure_policy:
+  - never convert unavailable evidence into a claim</code></pre>
+
+      <p>
+        Notice what this contract does not contain: a vendor-specific command,
+        a secret, a hard-coded workspace path, or an assumption that every host
+        has the same approval mechanism.
+      </p>
+
+      <h2>Recommended directory structure</h2>
+
+      <p>
+        Keep the portable core small. Put host-specific material in adapters or
+        deployment notes rather than mixing it into the procedure.
+      </p>
+
+      <pre><code>repository-review/
+├── SKILL.md
+├── references/
+│   ├── review-checklist.md
+│   └── evidence-format.md
+├── examples/
+│   ├── request.md
+│   └── report.md
+├── adapters/
+│   ├── shell.md
+│   ├── readonly-repository.md
+│   └── uploaded-files.md
+└── tests/
+    ├── cases.md
+    └── expected-behavior.md</code></pre>
+
+      <p>
+        <code>SKILL.md</code> is the entry point. It should explain purpose,
+        activation conditions, inputs, procedure, boundaries, and output format.
+        References contain detail that is useful during execution but not
+        necessary in every invocation. Examples show shape, not guaranteed
+        results. Adapters map abstract actions to host capabilities.
+      </p>
+
+      <h2>Writing the core instructions</h2>
+
+      <p>
+        Write the core as a sequence of observable stages. Avoid instructions
+        such as “be careful” or “use your best judgment” unless you also define
+        what careful behavior looks like.
+      </p>
+
+      <pre><code># Repository Review
+
+## Purpose
+
+Review a specified implementation against a stated requirement and return
+evidence-bounded findings. This skill is read-only by default.
+
+## Before starting
+
+Confirm:
+- the review question is explicit;
+- the file or repository scope is known;
+- the host's available read and search capabilities are known.
+
+If a required input is missing, ask for it before analyzing.
+
+## Procedure
+
+1. Restate the review question in one sentence.
+2. Discover the scoped files using the host's available read/search mechanism.
+3. Read the smallest set of files that can answer the question.
+4. Trace relevant data or control flow.
+5. Compare observed behavior with the requirement.
+6. Record each finding with:
+   - severity;
+   - claim;
+   - evidence;
+   - impact;
+   - recommended next action.
+7. List assumptions and checks that could not be performed.
+8. Separate verified observations from suggestions.
+
+## Boundaries
+
+- Do not edit, delete, commit, or publish files unless explicitly authorized.
+- Do not expose secrets or personal data in the report.
+- Do not claim that a test, build, or command ran unless its output was observed.
+
+## Output
+
+Return:
+- scope;
+- findings;
+- evidence;
+- limitations;
+- conclusion.</code></pre>
+
+      <p>
+        This structure is deliberately procedural. Each step creates an
+        intermediate artifact or decision that can be checked. That makes the
+        skill easier to debug when two hosts produce different results.
+      </p>
+
+      <h2>Preserving host-specific context</h2>
+
+      <p>
+        Host context should be injected, not assumed. A host can provide a small
+        runtime block before the skill runs:
+      </p>
+
+      <pre><code>runtime:
+  workspace: /workspace/project
+  readable_tools:
+    - file_list
+    - file_read
+    - text_search
+  writable_tools: []
+  network: disabled
+  approval_required_for:
+    - file_write
+    - external_message
+  available_tests:
+    - project-defined commands only</code></pre>
+
+      <p>
+        This is an illustrative configuration, not a universal standard. Its
+        value is the explicit distinction between capability and permission.
+        A tool may exist but still be unavailable for this task. A command may
+        be documented but not executable in the current environment.
+      </p>
+
+      <p>
+        The skill should use the runtime block to make decisions:
+      </p>
+
+      <ul>
+        <li>If search is available, use it to narrow the reading scope.</li>
+        <li>If only file reads are available, state that discovery was limited.</li>
+        <li>If writes require approval, stop before proposing an implicit edit.</li>
+        <li>If network access is disabled, do not imply that external sources were checked.</li>
+      </ul>
+
+      <p>
+        Avoid embedding credentials, absolute personal paths, machine-specific
+        usernames, or undocumented environment variables. If a secret is
+        required, name the required capability without reproducing the secret:
+        “the host must provide authenticated access to the repository.”
+      </p>
+
+      <h2>Designing adapters</h2>
+
+      <p>
+        An adapter translates the portable action into a host-specific action.
+        It should be short and mechanical. For example:
+      </p>
+
+      <pre><code>## Shell adapter
+
+Portable action: discover files in the review scope.
+
+Preferred operation:
+- use `rg --files` from the repository root;
+- narrow results with an explicit path or file pattern;
+- record the scope used.
+
+Fallback:
+- use the host's file listing tool;
+- if recursive discovery is unavailable, ask for a narrower scope.
+
+Evidence:
+- include the discovered paths in the working notes;
+- do not report a file as inspected unless it was actually read.</code></pre>
+
+      <p>
+        The adapter should not redefine the review method. If one adapter starts
+        adding a different severity model, output schema, or decision rule, it
+        has become a fork of the skill rather than a host integration.
+      </p>
+
+      <h2>Permissions are part of the interface</h2>
+
+      <p>
+        A portable skill must declare side effects explicitly. “Read-only by
+        default” is useful, but a stronger interface names each class of action:
+      </p>
+
+      <table>
+        <thead>
+          <tr>
+            <th>Action</th>
+            <th>Default</th>
+            <th>Required handling</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>Read scoped files</td>
+            <td>Allowed</td>
+            <td>Stay within the declared scope.</td>
+          </tr>
+          <tr>
+            <td>Search text</td>
+            <td>Allowed when available</td>
+            <td>Report the search mechanism if it affects coverage.</td>
+          </tr>
+          <tr>
+            <td>Run tests or builds</td>
+            <td>Conditional</td>
+            <td>Run only when the host and request authorize it; record observed output.</td>
+          </tr>
+          <tr>
+            <td>Write files</td>
+            <td>Not allowed</td>
+            <td>Request explicit authorization before writing.</td>
+          </tr>
+          <tr>
+            <td>Send external messages</td>
+            <td>Not allowed</td>
+            <td>Require a separate approval and destination.</td>
+          </tr>
+        </tbody>
+      </table>
+
+      <p>
+        This table is not merely documentation. It is a testable boundary. A
+        host can verify that a read-only invocation does not call a write tool,
+        while a reviewer can identify whether a requested action exceeds the
+        skill’s contract.
+      </p>
+
+      <h2>Verification without invented evidence</h2>
+
+      <p>
+        The most important portability rule is evidence discipline. The skill
+        must distinguish among:
+      </p>
+
+      <ul>
+        <li><strong>Observed:</strong> directly read or produced during the current run.</li>
+        <li><strong>Reported:</strong> supplied by the user or another system but not independently checked.</li>
+        <li><strong>Inferred:</strong> a reasoned conclusion based on observed evidence.</li>
+        <li><strong>Unavailable:</strong> a check the host could not perform.</li>
+      </ul>
+
+      <p>
+        A portable report can use a compact evidence record:
+      </p>
+
+      <pre><code>finding:
+  severity: medium
+  status: observed
+  claim: "The handler accepts an unvalidated identifier."
+  evidence:
+    - path: src/handlers/orders.ts
+      location: "createOrder"
+      observation: "The input is passed to the service without schema validation."
+  impact: "Malformed input may reach the service layer."
+  next_action: "Confirm the intended validation boundary and add a focused test."</code></pre>
+
+      <p>
+        If the host could not run the test suite, the report should say exactly
+        that. “No failing tests found” and “tests were not run” are different
+        statements and must never be merged.
+      </p>
+
+      <h2>A reproducible portability test plan</h2>
+
+      <p>
+        Test the skill as a process, not only as a text file. Use the same
+        fixture repository and the same review question across environments.
+        Keep the fixture synthetic and free of credentials or personal data.
+      </p>
+
+      <h3>1. Define the fixture</h3>
+
+      <p>
+        Create a small repository containing a known issue, a relevant test, an
+        irrelevant directory, and a configuration file. Write down the expected
+        findings before running the skill. The expected result is the oracle for
+        comparison; it is not a claim about any production codebase.
+      </p>
+
+      <h3>2. Define the invariant output</h3>
+
+      <p>
+        Compare stable fields rather than raw wording:
+      </p>
+
+      <ul>
+        <li>the requested scope was respected;</li>
+        <li>the known issue was identified;</li>
+        <li>the finding includes evidence;</li>
+        <li>unavailable checks were disclosed;</li>
+        <li>no unauthorized write or external action occurred.</li>
+      </ul>
+
+      <h3>3. Run capability variants</h3>
+
+      <p>
+        At minimum, test:
+      </p>
+
+      <ol>
+        <li>full read and search access;</li>
+        <li>read-only access without shell execution;</li>
+        <li>limited file access with an intentionally incomplete scope;</li>
+        <li>a host where a requested test command is unavailable.</li>
+      </ol>
+
+      <p>
+        Each run should record the host capabilities, inputs, actions requested,
+        output, and limitations. Do not compare a host with network access to a
+        host without network access as if they had identical evidence.
+      </p>
+
+      <h3>4. Check side effects</h3>
+
+      <p>
+        Before and after each run, inspect the fixture for unexpected changes.
+        For a read-only skill, the expected result is no file modification. If
+        the host exposes tool-call logs, inspect those logs for write, delete,
+        commit, upload, or messaging actions.
+      </p>
+
+      <h3>5. Compare results</h3>
+
+      <p>
+        Portability does not mean identical prose. It means equivalent
+        decisions under equivalent evidence. Differences should be classified:
+      </p>
+
+      <ul>
+        <li><strong>Acceptable variation:</strong> different commands, formatting, or ordering.</li>
+        <li><strong>Coverage variation:</strong> one host could inspect less because it had fewer capabilities.</li>
+        <li><strong>Semantic drift:</strong> hosts disagree about the finding despite equivalent evidence.</li>
+        <li><strong>Boundary violation:</strong> a host performs an unauthorized side effect.</li>
+      </ul>
+
+      <h2>Useful commands for a local fixture</h2>
+
+      <p>
+        The following commands are examples for a Unix-like shell. They are not
+        evidence that they were run for this article, and a host may provide
+        different tools.
+      </p>
+
+      <pre><code># Discover files without printing file contents
+rg --files ./fixture
+
+# Search for the fixture marker
+rg -n "TODO|validate|AUTH" ./fixture
+
+# Inspect repository changes after a read-only run
+git -C ./fixture status --short
+
+# Record a file checksum before and after an authorized test
+sha256sum ./fixture/src/example.ts</code></pre>
+
+      <p>
+        A Windows host, a web interface, or a restricted agent may need a
+        different implementation. The test plan remains valid if the adapter
+        records equivalent evidence.
+      </p>
+
+      <h2>Common failure cases</h2>
+
+      <h3>Hidden host assumptions</h3>
+
+      <p>
+        A skill says “open the repository root,” but the host provides only
+        uploaded files. Fix this by making the scope an explicit input and
+        defining a fallback when root discovery is unavailable.
+      </p>
+
+      <h3>Tool-name coupling</h3>
+
+      <p>
+        A skill instructs the agent to call a particular tool name. This breaks
+        as soon as another host uses a different interface. Describe the
+        capability first—search, read, execute, write—and map it in an adapter.
+      </p>
+
+      <h3>Permission leakage</h3>
+
+      <p>
+        A review skill silently edits a configuration file while “testing” a
+        hypothesis. Make writes a separate phase requiring explicit approval.
+        If a fix is useful, return a patch proposal or a follow-up plan.
+      </p>
+
+      <h3>Over-broad context</h3>
+
+      <p>
+        Reading an entire repository can expose unrelated secrets and make the
+        result less reproducible. Start with the smallest scope that can answer
+        the question, then expand only when evidence shows that more context is
+        needed.
+      </p>
+
+      <h3>False portability</h3>
+
+      <p>
+        Two hosts produce similar prose, but one could not perform the required
+        checks. Compare evidence and limitations, not tone. A shorter report
+        with explicit uncertainty is more portable than a confident report
+        built on unavailable context.
+      </p>
+
+      <h2>Limitations</h2>
+
+      <p>
+        A portable skill cannot remove differences in model behavior, tool
+        quality, filesystem semantics, isolation, or approval policy. It also
+        cannot guarantee that two hosts interpret ambiguous natural language in
+        the same way. These differences must be reduced with explicit inputs,
+        structured outputs, fixtures, and acceptance criteria.
+      </p>
+
+      <p>
+        Portability is also relative to a capability envelope. If a task
+        requires compilation, a host that cannot execute a compiler can still
+        run the skill, but only in a limited mode. The correct result is a
+        disclosed limitation—not an invented build result.
+      </p>
+
+      <h2>A practical checklist</h2>
+
+      <ul>
+        <li>Does the skill have one clear purpose and activation condition?</li>
+        <li>Are required inputs and scope explicit?</li>
+        <li>Are abstract capabilities separated from host-specific tool names?</li>
+        <li>Are reads, writes, execution, network access, and external messages bounded?</li>
+        <li>Does the output distinguish observed, reported, inferred, and unavailable evidence?</li>
+        <li>Can the skill run in a reduced-capability mode?</li>
+        <li>Is there a synthetic fixture with expected behavior?</li>
+        <li>Are side effects checked after each run?</li>
+        <li>Are differences between hosts classified rather than hidden?</li>
+        <li>Does the skill avoid secrets, personal data, and undocumented assumptions?</li>
+      </ul>
+
+      <h2>Conclusion</h2>
+
+      <p>
+        The reusable unit is not a universal command sequence. It is a stable
+        process contract surrounded by explicit host adapters. Define the
+        invariant work, declare the required evidence, keep permissions visible,
+        and test the same fixture under different capabilities. That is enough
+        to make a skill transferable without pretending that environments are
+        identical.
+      </p>
+
+      <p>
+        For related implementation patterns, continue with the
+        <a href="../guides.html">guides</a> or look up unfamiliar terms in the
+        <a href="../glossary.html">glossary</a>.
+      </p>
+    <section class="service-note">
+  <b>We publish what works for us—and implement the same solutions for your business.</b>
+  We design AI automation, Telegram bots, chats, and AI agents for real-world processes.
+  <a href="../contacts-en.html">Discuss your project →</a>
+</section>
+</article>
+  </main>
+
+  <footer class="site-footer">
+    <div class="container">
+      <p>&copy; Agent Lab Journal</p>
+      <nav aria-label="Footer navigation">
+        <a href="../guides.html">Guides</a>
+        <a href="../glossary.html">Glossary</a>
+      </nav>
+    </div>
+  </footer>
+</body>
+</html>
