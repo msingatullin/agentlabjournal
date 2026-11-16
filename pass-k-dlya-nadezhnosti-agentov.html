@@ -1,0 +1,519 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Как измерять надежность AI-агента: pass^k вместо одной попытки</title>
+  <meta name="description" content="Как измерять надежность AI-агента: pass^k вместо одной попытки — практические формулы, Python-код, pass@k и проверка стабильности повторяющихся действий.">
+  <link rel="canonical" href="https://agentlabjournal.online/pass-k-dlya-nadezhnosti-agentov.html">
+  <link rel="stylesheet" href="style.css">
+  <link rel="stylesheet" href="reading.css">
+
+  <meta property="og:type" content="article">
+  <meta property="og:locale" content="ru_RU">
+  <meta property="og:title" content="Как измерять надежность AI-агента: pass^k вместо одной попытки">
+  <meta property="og:description" content="Практический способ измерить стабильность AI-агента с помощью pass^k и pass@k.">
+  <meta property="og:url" content="https://agentlabjournal.online/pass-k-dlya-nadezhnosti-agentov.html">
+  <meta property="og:site_name" content="Agent Lab Journal">
+
+  <meta name="twitter:card" content="summary">
+  <meta name="twitter:title" content="Как измерять надежность AI-агента: pass^k вместо одной попытки">
+  <meta name="twitter:description" content="Формулы и Python-код для расчета pass^k и pass@k на собственных тестовых задачах.">
+
+  <script type="application/ld+json">
+  {
+    "@context": "https://schema.org",
+    "@type": "Article",
+    "headline": "Как измерять надежность AI-агента: pass^k вместо одной попытки",
+    "description": "Практическая статья о том, как измерять надежность AI-агента с помощью pass^k и pass@k.",
+    "inLanguage": "ru-RU",
+    "mainEntityOfPage": {
+      "@type": "WebPage",
+      "@id": "https://agentlabjournal.online/pass-k-dlya-nadezhnosti-agentov.html"
+    },
+    "publisher": {
+      "@type": "Organization",
+      "name": "Agent Lab Journal"
+    },
+    "author": {
+      "@type": "Organization",
+      "name": "Agent Lab Journal"
+    }
+  }
+  </script>
+<link rel="stylesheet" href="homepage.css"><link rel="stylesheet" href="max-promo.css">  <meta property="og:image" content="https://agentlabjournal.online/assets/covers/llm-context-window-budget-social.png">
+  <meta property="og:image:alt" content="Как измерять надежность AI-агента: pass^k вместо одной попытки">
+  <meta name="twitter:image" content="https://agentlabjournal.online/assets/covers/llm-context-window-budget-social.png">
+</head>
+<body>
+  <header class="site-header">
+    <div class="reading-container">
+      <a href="index.html" class="site-brand">Agent Lab Journal</a>
+      <nav aria-label="Основная навигация">
+        <a href="guides.html">Гайды</a>
+        <a href="glossary.html">Глоссарий</a>
+      </nav>
+    </div>
+  </header>
+
+  <main>
+    <article class="reading">
+      <div class="reading-container">
+        <div class="reading-meta">
+          <span>Практика</span>
+          <span>До 12 минут</span>
+          <span>Уровень: средний</span>
+        </div>
+
+        <header class="article-header">
+          <h1>Как измерять надежность AI-агента: pass^k вместо одной попытки</h1>
+        <figure class="article-cover" data-editorial-cover="pass-k-dlya-nadezhnosti-agentov"><img src="assets/covers/llm-context-window-budget.png" alt="Как измерять надежность AI-агента: pass^k вместо одной попытки" width="1280" height="720" fetchpriority="high"><figcaption>Temporary fallback cover; replace in editorial pass.</figcaption></figure>
+          <p class="lead">
+            Один успешный запуск показывает, что агент может решить задачу. Но он почти ничего не говорит о том,
+            насколько стабильно агент повторит результат. Для повторяющихся действий полезнее измерять
+            <a href="glossary.html#pass-k">pass<sup>k</sup></a> — вероятность того, что агент успешно выполнит
+            одну и ту же задачу несколько раз подряд.
+          </p>
+        </header>
+<a href="https://max.ru/channel_AgentLab?utm_source=agentlabjournal&utm_medium=article&utm_campaign=max_channel&utm_content=article_footer" class="max-promo-block" target="_blank" rel="noopener noreferrer" aria-label="Самое важное из мира AI в канале MAX AgentLab">
+  <span class="max-promo-block__icon" aria-hidden="true"></span>
+  <span class="max-promo-block__content"><span class="max-promo-block__title">Самое важное из мира AI — в канале MAX AgentLab</span><span class="max-promo-block__desc">Отдельные разборы, инструменты и практические схемы</span></span>
+  <span class="max-promo-block__arrow" aria-hidden="true">→</span>
+</a>
+<a href="https://t.me/pelmenews?utm_source=agentlabjournal&utm_medium=article&utm_campaign=telegram_channel&utm_content=article_intro" class="telegram-promo-block" target="_blank" rel="noopener noreferrer" aria-label="Читайте Agent Lab в Telegram">
+  <span class="telegram-promo-block__icon" aria-hidden="true"></span>
+  <span class="telegram-promo-block__content">
+    <span class="telegram-promo-block__title">Читайте Agent Lab в Telegram</span>
+    <span class="telegram-promo-block__desc">Разборы, кейсы и новости о практических AI-агентах без лишней воды.</span>
+  </span>
+  <span class="telegram-promo-block__arrow" aria-hidden="true">→</span>
+</a>
+
+        <section>
+          <h2>Почему одной попытки недостаточно</h2>
+          <p>
+            Представим агента, который в среднем успешно выполняет задачу в 90% запусков. На первый взгляд показатель
+            выглядит высоким: девять попыток из десяти заканчиваются успехом. Но если тот же агент должен выполнить
+            десять независимых действий без ошибки, вероятность полного успеха будет заметно ниже.
+          </p>
+
+          <p>
+            Если вероятность успеха одной попытки равна <code>p</code>, то для <code>k</code> последовательных успешных
+            попыток при независимости запусков:
+          </p>
+
+          <div class="formula" role="math" aria-label="pass k равно p в степени k">
+            pass<sup>k</sup> = p<sup>k</sup>
+          </div>
+
+          <p>
+            При <code>p = 0.9</code> и <code>k = 10</code> получаем примерно <code>0.349</code>, то есть около 34,9%.
+            Это не означает, что агент «стал хуже». Меняется вопрос измерения: вместо единичного успеха мы проверяем
+            устойчивость серии.
+          </p>
+
+          <aside class="note">
+            <strong>Важно.</strong> Формула <code>p<sup>k</sup></code> предполагает независимость попыток и постоянную
+            вероятность успеха. В реальном агенте ошибки могут быть связаны между собой: например, неверное состояние
+            памяти или неудачный план будет влиять на несколько следующих запусков. Поэтому фактический pass<sup>k</sup>
+            лучше считать непосредственно по сериям тестов.
+          </aside>
+        </section>
+
+        <section>
+          <h2>Что именно измеряют pass<sup>k</sup> и pass@k</h2>
+
+          <h3>pass<sup>k</sup>: стабильность последовательности</h3>
+          <p>
+            <code>pass<sup>k</sup></code> отвечает на вопрос: «Как часто агент успешно проходит все
+            <code>k</code> повторений одной задачи?»
+          </p>
+
+          <p>
+            Пусть есть <code>n</code> серий, каждая серия состоит из <code>k</code> запусков. Для серии <code>i</code>
+            введем индикатор:
+          </p>
+
+          <div class="formula">
+            S<sub>i</sub> =
+            <span class="formula-brace">{</span>
+            1, если все k запусков успешны;<br>
+            0, если хотя бы один запуск завершился ошибкой.
+          </div>
+
+          <p>Тогда наблюдаемый показатель равен:</p>
+
+          <div class="formula">
+            pass<sup>k</sup> = (S<sub>1</sub> + S<sub>2</sub> + ... + S<sub>n</sub>) / n
+          </div>
+
+          <p>
+            Например, если из 100 серий по пять запусков полностью успешными оказались 72 серии, то
+            <code>pass<sup>5</sup> = 0.72</code>.
+          </p>
+
+          <h3>pass@k: успех хотя бы в одной попытке</h3>
+          <p>
+            <code>pass@k</code> отвечает на другой вопрос: «Какова вероятность получить хотя бы один успешный результат
+            среди <code>k</code> попыток?»
+          </p>
+
+          <p>При независимых попытках и вероятности успеха одной попытки <code>p</code>:</p>
+
+          <div class="formula">
+            pass@k = 1 - (1 - p)<sup>k</sup>
+          </div>
+
+          <p>
+            Поэтому pass@k растет с увеличением количества попыток: система может не справиться сразу, но найти рабочее
+            решение после повторного запуска. Для задач, где важен любой приемлемый результат, это полезная метрика.
+            Для платежа, миграции данных, отправки письма или изменения конфигурации часто важнее pass<sup>k</sup>:
+            операция должна быть успешной и безопасной на каждом шаге.
+          </p>
+        </section>
+
+        <section>
+          <h2>Минимальный протокол измерения</h2>
+
+          <ol>
+            <li>
+              <strong>Опишите задачу и критерий успеха.</strong>
+              Критерий должен проверяться автоматически или по заранее заданному чек-листу. Формулировка «ответ
+              выглядит разумно» слишком субъективна.
+            </li>
+            <li>
+              <strong>Зафиксируйте окружение.</strong>
+              Запишите версию агента, модель, параметры генерации, доступные инструменты, исходные данные и время
+              запуска. Это нужно для воспроизводимости.
+            </li>
+            <li>
+              <strong>Выберите размер серии.</strong>
+              Для начала можно сравнить <code>k = 1</code>, <code>k = 3</code>, <code>k = 5</code> и
+              <code>k = 10</code>. Это пример стартового набора, а не универсальный стандарт.
+            </li>
+            <li>
+              <strong>Разделите серии.</strong>
+              Каждая серия должна иметь собственный идентификатор. Не смешивайте запуски из разных версий агента
+              в один расчет.
+            </li>
+            <li>
+              <strong>Сохраните результат каждого запуска.</strong>
+              Минимальный набор полей: идентификатор серии, номер запуска, статус успеха, причина ошибки и версия
+              теста.
+            </li>
+            <li>
+              <strong>Посчитайте обе метрики.</strong>
+              pass<sup>k</sup> покажет надежность полной серии, а pass@k — пользу повторных попыток.
+            </li>
+          </ol>
+
+          <p>
+            Не запускайте тесты с реальными побочными эффектами без изоляции. Для проверки действий агента используйте
+            тестовую базу, фиктивные адреса, локальные файлы или режим предварительного просмотра, если это поддерживает
+            ваше приложение.
+          </p>
+        </section>
+
+        <section>
+          <h2>Воспроизводимый Python-код</h2>
+
+          <p>
+            Ниже — самостоятельный расчет по уже собранным результатам. Значение <code>True</code> означает, что запуск
+            прошел проверку, <code>False</code> — что нет.
+          </p>
+
+          <pre><code>from collections.abc import Sequence
+
+def pass_at_k(results: Sequence[bool], k: int) -&gt; float:
+    """Доля серий, где хотя бы один из первых k запусков успешен."""
+    if k &lt; 1:
+        raise ValueError("k должен быть положительным")
+    if len(results) &lt; k:
+        raise ValueError("Недостаточно результатов для указанного k")
+
+    return sum(any(results[i:i + k]) for i in range(0, len(results), k)
+               if len(results[i:i + k]) == k) / (len(results) // k)
+
+
+def pass_power_k(results: Sequence[bool], k: int) -&gt; float:
+    """Доля серий, где все k запусков успешны."""
+    if k &lt; 1:
+        raise ValueError("k должен быть положительным")
+    if len(results) &lt; k:
+        raise ValueError("Недостаточно результатов для указанного k")
+
+    series_count = len(results) // k
+    complete_series = [
+        results[i:i + k]
+        for i in range(0, series_count * k, k)
+    ]
+
+    return sum(all(series) for series in complete_series) / series_count
+
+
+results = [
+    True, True, True, False, True,
+    True, True, True, True, True,
+    True, False, True, True, True,
+]
+
+print("pass^3 =", pass_power_k(results, k=3))
+print("pass@3 =", pass_at_k(results, k=3))</code></pre>
+
+          <p>
+            В этом примере список разбивается на серии по три запуска. Функция <code>pass_power_k</code> считает серию
+            успешной только при трех значениях <code>True</code>. Функция <code>pass_at_k</code> считает серию успешной,
+            если внутри нее встретилось хотя бы одно значение <code>True</code>.
+          </p>
+
+          <p>
+            Для запуска сохраните код в локальный файл, например <code>metrics.py</code>, и выполните:
+          </p>
+
+          <pre><code>python3 metrics.py</code></pre>
+
+          <p>
+            Команда только обрабатывает локальные данные и не обращается к сети. Перед запуском проверьте, что
+            используете нужную версию Python:
+          </p>
+
+          <pre><code>python3 --version</code></pre>
+
+          <p>
+            Для этого расчета сторонние пакеты не нужны. Если вы создаете виртуальное окружение для более крупного
+            тестового стенда, безопасный базовый вариант выглядит так:
+          </p>
+
+          <pre><code>python3 -m venv .venv
+. .venv/bin/activate
+python3 metrics.py</code></pre>
+        </section>
+
+        <section>
+          <h2>Расчет по отдельным задачам</h2>
+
+          <p>
+            Один общий показатель может скрыть, что агент надежен на простых задачах и нестабилен на сложных. Поэтому
+            полезно считать метрики отдельно для каждой задачи, а затем агрегировать их.
+          </p>
+
+          <pre><code>from collections import defaultdict
+
+runs = [
+    {"task": "extract_email", "series": 1, "run": 1, "success": True},
+    {"task": "extract_email", "series": 1, "run": 2, "success": True},
+    {"task": "extract_email", "series": 1, "run": 3, "success": True},
+    {"task": "extract_email", "series": 2, "run": 1, "success": True},
+    {"task": "extract_email", "series": 2, "run": 2, "success": False},
+    {"task": "extract_email", "series": 2, "run": 3, "success": True},
+]
+
+def pass_power_k_by_task(rows, k):
+    grouped = defaultdict(lambda: defaultdict(list))
+
+    for row in rows:
+        grouped[row["task"]][row["series"]].append(row["success"])
+
+    output = {}
+
+    for task, series_map in grouped.items():
+        complete_series = [
+            values for values in series_map.values()
+            if len(values) == k
+        ]
+
+        if not complete_series:
+            output[task] = None
+            continue
+
+        output[task] = sum(
+            all(values) for values in complete_series
+        ) / len(complete_series)
+
+    return output
+
+print(pass_power_k_by_task(runs, k=3))</code></pre>
+
+          <p>
+            Здесь серия с неполными данными не включается в расчет. Это лучше, чем молча считать пропущенный запуск
+            успешным или неуспешным. В рабочем тестовом стенде такие серии стоит отдельно помечать как
+            <code>incomplete</code> и разбирать причину пропуска.
+          </p>
+        </section>
+
+        <section>
+          <h2>Как читать результаты</h2>
+
+          <table>
+            <thead>
+              <tr>
+                <th>Наблюдение</th>
+                <th>Возможная интерпретация</th>
+                <th>Что проверить</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td>Высокий pass@k, низкий pass<sup>k</sup></td>
+                <td>Повторные попытки иногда помогают, но результат нестабилен.</td>
+                <td>Причины первых ошибок, состояние памяти, идемпотентность действий.</td>
+              </tr>
+              <tr>
+                <td>Высокие обе метрики</td>
+                <td>Агент часто находит результат и обычно повторяет успешное поведение.</td>
+                <td>Размер выборки и переносимость на новые задачи.</td>
+              </tr>
+              <tr>
+                <td>Низкий pass@k и низкий pass<sup>k</sup></td>
+                <td>Повторный запуск почти не компенсирует ошибки.</td>
+                <td>Планирование, инструменты, формат входных данных, критерий успеха.</td>
+              </tr>
+              <tr>
+                <td>Метрики сильно меняются между наборами</td>
+                <td>Сложность задач неоднородна или тестовый набор мал.</td>
+                <td>Разбивку по классам задач и доверительные интервалы.</td>
+              </tr>
+            </tbody>
+          </table>
+
+          <p>
+            Не сравнивайте значения без одинакового определения успеха. Агент может получить высокий pass@k за счет
+            множества попыток, но при этом создавать нежелательные побочные эффекты. Для действий, которые нельзя
+            безопасно повторять, количество попыток должно быть ограничено заранее.
+          </p>
+        </section>
+
+        <section>
+          <h2>Доверительный интервал и размер выборки</h2>
+
+          <p>
+            Значение pass<sup>k</sup> по 10 сериям и значение по 1 000 сериям могут совпасть, но доверять им одинаково
+            нельзя. Чем меньше серий, тем сильнее оценка зависит от случайности.
+          </p>
+
+          <p>
+            Для каждой серии pass<sup>k</sup> — это бинарный исход: полная серия успешна или нет. Поэтому можно
+            оценивать неопределенность как для доли успешных испытаний. Практический минимум — показывать вместе со
+            значением число серий: например, <code>0.72 (72 из 100)</code>, а не только <code>0.72</code>.
+          </p>
+
+          <p>
+            Если тестов мало, не делайте сильных выводов о небольших различиях. Разница между 0,72 и 0,76 может
+            исчезнуть при повторном наборе задач. Сначала увеличьте число независимых серий или разбейте измерение на
+            несколько запусков эксперимента.
+          </p>
+        </section>
+
+        <section>
+          <h2>Типовые ошибки</h2>
+
+          <ul>
+            <li>
+              <strong>Считать несколько попыток одним успехом.</strong>
+              Это повышает pass@k, но не показывает стабильность серии.
+            </li>
+            <li>
+              <strong>Перемешивать данные разных версий.</strong>
+              Изменение модели, промпта или инструмента должно начинать новый эксперимент.
+            </li>
+            <li>
+              <strong>Не фиксировать ошибки.</strong>
+              Одного флага «неуспех» недостаточно для улучшения агента. Сохраняйте категорию и краткую причину.
+            </li>
+            <li>
+              <strong>Игнорировать зависимость попыток.</strong>
+              Если второй запуск использует состояние первого, формула независимых испытаний неприменима без оговорок.
+            </li>
+            <li>
+              <strong>Оценивать только среднее.</strong>
+              Средний показатель может скрывать провалы на конкретном классе задач.
+            </li>
+            <li>
+              <strong>Повторять опасное действие в продакшене.</strong>
+              Тесты должны быть изолированы или использовать безопасные заглушки.
+            </li>
+          </ul>
+        </section>
+
+        <section>
+          <h2>Ограничения метода</h2>
+
+          <p>
+            pass<sup>k</sup> не измеряет всё качество агента. Он не показывает стоимость запуска, задержку, полезность
+            частично выполненной работы, качество объяснения или тяжесть ошибки. Два агента с одинаковым pass<sup>k</sup>
+            могут иметь совершенно разный риск: один иногда ошибается без последствий, другой редко, но необратимо.
+          </p>
+
+          <p>
+            Поэтому pass<sup>k</sup> стоит использовать как часть набора метрик. Для действий с побочными эффектами
+            добавьте отдельные проверки безопасности, корректности состояния после выполнения и возможности отката.
+            Для задач с несколькими уровнями качества заранее определите, что считается успехом, частичным успехом и
+            критическим отказом.
+          </p>
+
+          <p>
+            Еще одно ограничение — репрезентативность тестов. Хороший результат на искусственном наборе не доказывает,
+            что агент так же надежен на реальных входах. Тестовые задачи должны отражать типичные сценарии и редкие,
+            но важные ошибки.
+          </p>
+        </section>
+
+        <section>
+          <h2>Короткий чек-лист</h2>
+
+          <ol>
+            <li>Определите проверяемый критерий успеха.</li>
+            <li>Сформируйте независимые серии длиной <code>k</code>.</li>
+            <li>Сохраняйте результат каждого запуска и причину ошибки.</li>
+            <li>Посчитайте pass<sup>k</sup> для полной серии.</li>
+            <li>Посчитайте pass@k для успеха хотя бы в одной попытке.</li>
+            <li>Разделите результаты по задачам, версиям и классам ошибок.</li>
+            <li>Укажите число серий и ограничения интерпретации.</li>
+            <li>Не запускайте небезопасные действия на реальных данных.</li>
+          </ol>
+
+          <p>
+            Главная идея проста: показатель одной попытки отвечает на вопрос, может ли агент справиться. pass<sup>k</sup>
+            отвечает на более строгий вопрос — сможет ли он справиться снова и снова. Для оценки надежности
+            повторяющихся действий именно эта разница часто определяет, готов ли агент к практическому использованию.
+          </p>
+        </section>
+
+<aside class="service-note" aria-label="Связаться по проекту">
+  <div class="service-note__copy">
+    <p class="service-note__label">Связь с Agent Lab</p>
+    <p class="service-note__title">Внедрим такой контур в ваш процесс</p>
+    <p class="service-note__text">Напишите инженеру Agent Lab в Telegram: опишите задачу, бота или интеграцию — предложим пилот с проверками и понятными границами.</p>
+  </div>
+  <a class="service-note__link" href="https://t.me/msrzn007?utm_source=journal&amp;utm_medium=article&amp;utm_campaign=service_note" target="_blank" rel="noopener">Написать в Telegram
+    <svg viewBox="0 0 16 16" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"><path d="M3 13 13 3M6 3h7v7"/></svg>
+  </a>
+</aside>
+<aside class="service-note service-note--sitevisor" aria-label="Экспресс-аудит сайта">
+  <div class="service-note__copy">
+    <p class="service-note__label">SiteVisor</p>
+    <p class="service-note__title">Проверьте техническое состояние и готовность вашего сайта к рекламе</p>
+    <p class="service-note__text">Экспресс-аудит на SiteVisor.pro: индексация, скорость, разметка, аналитика и точки конверсии.</p>
+  </div>
+  <a class="service-note__link" href="https://sitevisor.pro/?utm_source=journal&amp;utm_medium=article&amp;utm_campaign=leadmagnet" target="_blank" rel="noopener">Экспресс-аудит на SiteVisor.pro
+    <svg viewBox="0 0 16 16" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"><path d="M3 13 13 3M6 3h7v7"/></svg>
+  </a>
+</aside>
+        <footer class="article-footer">
+          <p>
+            См. также:
+            <a href="guides.html">практические гайды</a> и
+            <a href="glossary.html">глоссарий терминов</a>.
+          </p>
+        </footer>
+      </div>
+</article>
+  </main>
+
+  <footer class="site-footer">
+    <div class="reading-container">
+      <p>Agent Lab Journal — практические материалы о разработке и оценке AI-агентов.</p>
+    </div>
+  </footer>
+</body>
+</html>
