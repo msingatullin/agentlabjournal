@@ -1,0 +1,405 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Diagnosing a RAG Index with Embedding Projection Maps</title>
+  <meta name="description" content="Diagnosing a RAG Index with Embedding Projection Maps: a reproducible method for measuring retained neighbors, checking exact cosine neighbors, and finding chunk-boundary defects.">
+  <link rel="canonical" href="https://agentlabjournal.online/en/rag-vector-projection-diagnostics.html">
+  <link rel="stylesheet" href="../style.css">
+  <link rel="stylesheet" href="../reading.css">
+
+  <meta property="og:type" content="article">
+  <meta property="og:site_name" content="Agent Lab Journal">
+  <meta property="og:title" content="Diagnosing a RAG Index with Embedding Projection Maps">
+  <meta property="og:description" content="A reproducible diagnostic method for using embedding projections to uncover chunking and indexing problems in a RAG system.">
+  <meta property="og:url" content="https://agentlabjournal.online/en/rag-vector-projection-diagnostics.html">
+  <meta property="og:image" content="https://agentlabjournal.online/assets/covers/llm-context-window-budget-social.png">
+
+  <meta name="twitter:card" content="summary_large_image">
+  <meta name="twitter:title" content="Diagnosing a RAG Index with Embedding Projection Maps">
+  <meta name="twitter:description" content="Measure retained neighbors, verify exact cosine neighbors, and identify chunk-boundary defects in a RAG index.">
+  <meta name="twitter:image" content="https://agentlabjournal.online/assets/covers/llm-context-window-budget-social.png">
+
+  <meta name="reading-time" content="15 minutes">
+  <meta name="article:reading_time" content="15 minutes">
+  <meta name="article:level" content="Advanced">
+
+  <script type="application/ld+json">
+  {
+    "@context": "https://schema.org",
+    "@type": "Article",
+    "headline": "Diagnosing a RAG Index with Embedding Projection Maps",
+    "description": "A reproducible diagnostic method for using embedding projections to uncover chunking and indexing problems in a RAG system.",
+    "image": ["https://agentlabjournal.online/assets/covers/llm-context-window-budget-social.png"],
+    "dateModified": "2026-11-17",
+    "author": {
+      "@type": "Organization",
+      "name": "Agent Lab Journal"
+    },
+    "publisher": {
+      "@type": "Organization",
+      "name": "Agent Lab Journal"
+    },
+    "mainEntityOfPage": {
+      "@type": "WebPage",
+      "@id": "https://agentlabjournal.online/en/rag-vector-projection-diagnostics.html"
+    }
+  }
+  </script>
+<link rel="stylesheet" href="../homepage.css"><link rel="stylesheet" href="../max-promo.css">  <meta property="og:image:alt" content="Диагностируем RAG-индекс по картам векторных представлений">
+</head>
+<body>
+  <header class="site-header">
+    <a href="../index.html" class="site-logo">Agent Lab Journal</a>
+    <nav aria-label="Primary navigation">
+      <a href="../guides.html">Guides</a>
+      <a href="../glossary.html">Glossary</a>
+    </nav>
+  </header>
+
+  <main>
+    <article class="reading">
+      <header class="reading-header">
+        <p class="reading-kicker">RAG diagnostics · Advanced · 15 min read</p>
+        <h1>Diagnosing a RAG Index with Embedding Projection Maps</h1>
+        <figure class="article-cover" data-editorial-cover="rag-vector-projection-diagnostics"><img src="../assets/covers/llm-context-window-budget.png" alt="Диагностируем RAG-индекс по картам векторных представлений" width="1280" height="720" fetchpriority="high"><figcaption>Temporary fallback cover; replace in editorial pass.</figcaption></figure>
+        <p class="reading-meta">A reproducible method for testing whether a projection reveals chunking and indexing defects</p>
+      </header>
+
+      <p class="lead">
+        A projection map can make a retrieval system look understandable without proving that it retrieves the right evidence. The useful question is narrower: can the map help you find suspicious neighborhoods that you then verify against the original vectors, metadata, and source text? This guide presents that workflow.
+      </p>
+
+      <p>
+        In a <a href="../glossary.html#retrieval-augmented-generation">retrieval-augmented generation (RAG)</a> system, a query is embedded, compared with indexed document chunks, and passed to a language model as context. When answers become inconsistent, the defect may be in the embedding model, the <a href="../glossary.html#chunking">chunking</a> policy, metadata filters, vector normalization, or the approximate nearest-neighbor index. A two-dimensional picture can suggest where to look, but it cannot replace retrieval evaluation.
+      </p>
+
+      <aside class="reading-callout">
+        <strong>Core rule:</strong> use the projection to generate hypotheses; use exact cosine search and source-level inspection to verify them.
+      </aside>
+
+      <h2>What the map can and cannot tell you</h2>
+
+      <p>
+        A projection such as <a href="../glossary.html#umap">UMAP</a> or <a href="../glossary.html#t-sne">t-SNE</a> maps high-dimensional embedding vectors into two dimensions. It preserves some relationships, but not all of them. Distances, cluster sizes, empty regions, and apparent boundaries can change during projection.
+      </p>
+
+      <p>The map is useful for asking questions such as:</p>
+
+      <ul>
+        <li>Do chunks from the same document form isolated groups when they should be interleaved by topic?</li>
+        <li>Do chunks with the same section or parent identifier appear far apart?</li>
+        <li>Are many chunks identical or nearly identical?</li>
+        <li>Do chunks from unrelated documents occupy the same local neighborhood?</li>
+        <li>Are suspected neighbors actually neighbors in the original vector space?</li>
+      </ul>
+
+      <p>
+        It is not sufficient evidence for claims such as “the index is correct,” “this cluster is a topic,” or “the model understands document structure.” Those claims require measurements in the original vector space and, where possible, labeled retrieval tests.
+      </p>
+
+      <h2>A concrete diagnostic case</h2>
+
+      <p>
+        Consider an internal policy collection. Each source file contains headings, paragraphs, lists, and tables. A retrieval failure is reported as follows: a question about a password-reset exception retrieves the general password policy, but not the short exception section that follows it.
+      </p>
+
+      <p>
+        There are several plausible causes. The exception may have been split from its heading; a table may have been flattened into unrelated rows; the chunk may have been indexed with the wrong tenant or document identifier; or the approximate index may be returning a different neighbor from the exact cosine search.
+      </p>
+
+      <p>
+        The diagnostic dataset should therefore retain, for every vector, the chunk text or a secure reference to it, the source document identifier, the page or section identifier, the character offsets, the embedding-model identifier, the chunking configuration, and the index-build identifier. Without those fields, a visual anomaly is difficult to trace back to an actionable defect.
+      </p>
+
+      <h2>Step 1: Freeze the experiment inputs</h2>
+
+      <p>
+        Do not begin by exporting an arbitrary sample from a live index. Create a reproducible snapshot or manifest. Record the exact vector IDs, vector dimension, distance metric, normalization rule, embedding model and version, chunking configuration, metadata-filter policy, and index parameters.
+      </p>
+
+      <p>A minimal manifest can look like this:</p>
+
+      <pre><code>{
+  "snapshot": "2026-11-17T12:00:00Z",
+  "embedding_model": "example-model-id",
+  "dimension": 1536,
+  "metric": "cosine",
+  "normalized": true,
+  "chunking": {
+    "strategy": "heading_aware",
+    "target_tokens": 450,
+    "overlap_tokens": 60
+  },
+  "index": {
+    "type": "example-ann-index",
+    "build_id": "example-build-id"
+  }
+}</code></pre>
+
+      <p>
+        The identifiers above are placeholders, not observed production values. Replace them with values from the system under investigation. Keep credentials and raw personal data out of the diagnostic export.
+      </p>
+
+      <h2>Step 2: Build a projection with traceable points</h2>
+
+      <p>
+        Sample vectors deterministically or project the complete bounded snapshot. A deterministic sample makes reruns comparable. Color points by a field that is independent of the projection, such as source document or section, and use shape or a second view for chunk position. Avoid coloring only by an inferred topic: that can make the desired pattern appear by construction.
+      </p>
+
+      <p>The following Python sketch shows the data flow. It is an example, not a claim that it was executed here:</p>
+
+      <pre><code>import json
+import numpy as np
+import pandas as pd
+from sklearn.manifold import TSNE
+
+# vectors.npy: shape (n_items, dimension)
+# chunks.parquet: id, document_id, section_id, text, offset_start, offset_end
+vectors = np.load("vectors.npy")
+chunks = pd.read_parquet("chunks.parquet")
+
+assert len(vectors) == len(chunks)
+assert np.isfinite(vectors).all()
+
+# For cosine diagnostics, normalize explicitly unless the export is known
+# to contain unit-length vectors.
+norms = np.linalg.norm(vectors, axis=1, keepdims=True)
+unit_vectors = vectors / np.maximum(norms, 1e-12)
+
+rng = np.random.default_rng(41)
+sample_size = min(10000, len(unit_vectors))
+sample_idx = np.sort(rng.choice(len(unit_vectors), sample_size, replace=False))
+
+projected = TSNE(
+    n_components=2,
+    metric="cosine",
+    init="random",
+    random_state=41,
+    perplexity=30
+).fit_transform(unit_vectors[sample_idx])
+
+out = chunks.iloc[sample_idx].copy()
+out["x"] = projected[:, 0]
+out["y"] = projected[:, 1]
+out.to_parquet("projection.parquet", index=False)</code></pre>
+
+      <p>
+        For large collections, fit the projection on a fixed sample and then transform only if the chosen method supports a reliable transform operation. If it does not, state clearly that separate runs are not directly comparable. Change one parameter at a time and record it with the output.
+      </p>
+
+      <h2>Step 3: Measure retained neighbors</h2>
+
+      <p>
+        A projection is most useful when you quantify how much local structure it retains. For each sampled point, compute its exact top-<em>k</em> neighbors in the original vector space. Then compute its top-<em>k</em> neighbors in the two-dimensional projection. The retained-neighbor rate is the intersection size divided by <em>k</em>.
+      </p>
+
+      <p>
+        For a point <em>i</em>, let <em>N<sub>high</sub>(i)</em> be its exact high-dimensional neighbors and <em>N<sub>map</sub>(i)</em> be its projected-space neighbors. The per-point score is:
+      </p>
+
+      <pre><code>retained_neighbors(i, k) =
+    |N_high(i) ∩ N_map(i)| / k</code></pre>
+
+      <p>
+        Report the median, lower quantiles, and distribution of this score, not only a single average. A map with a moderate global score may still be useful for locating dense suspicious regions, while a low score means that visual proximity should be treated very cautiously.
+      </p>
+
+      <p>Example diagnostic code for a bounded sample:</p>
+
+      <pre><code>from sklearn.metrics import pairwise_distances
+from sklearn.neighbors import NearestNeighbors
+
+k = 10
+
+high_nn = NearestNeighbors(
+    n_neighbors=k + 1,
+    metric="cosine"
+).fit(unit_vectors[sample_idx])
+
+_, high_ids = high_nn.kneighbors(unit_vectors[sample_idx])
+high_ids = high_ids[:, 1:]  # remove self
+
+map_nn = NearestNeighbors(
+    n_neighbors=k + 1,
+    metric="euclidean"
+).fit(projected)
+
+_, map_ids = map_nn.kneighbors(projected)
+map_ids = map_ids[:, 1:]  # remove self
+
+retained = np.array([
+    len(set(a).intersection(b)) / k
+    for a, b in zip(high_ids, map_ids)
+])
+
+summary = {
+    "n_points": int(len(retained)),
+    "k": k,
+    "median": float(np.median(retained)),
+    "p10": float(np.quantile(retained, 0.10)),
+    "p90": float(np.quantile(retained, 0.90))
+}
+print(summary)</code></pre>
+
+      <p>
+        This measures agreement between two neighbor graphs on the same sample. It does not measure retrieval quality for user queries. To measure that, use a separate query set with expected documents or passages.
+      </p>
+
+      <h2>Step 4: Check exact cosine neighbors</h2>
+
+      <p>
+        Approximate nearest-neighbor search is an optimization. It may return a neighbor set that differs from an exhaustive search, especially when vectors are close in similarity or when search parameters are intentionally low for latency. Verify suspicious points against exact cosine neighbors.
+      </p>
+
+      <p>
+        If vectors are unit-normalized, cosine similarity is the dot product. For a query vector <em>q</em> and chunk vector <em>x</em>:
+      </p>
+
+      <pre><code>cosine(q, x) = q · x</code></pre>
+
+      <p>
+        The exact reference implementation below is suitable for a bounded diagnostic batch. It is not intended to replace a production index:
+      </p>
+
+      <pre><code>def exact_cosine_top_k(query_vectors, document_vectors, k):
+    # Both inputs should be normalized before this function.
+    scores = query_vectors @ document_vectors.T
+    top = np.argpartition(-scores, kth=k - 1, axis=1)[:, :k]
+
+    rows = []
+    for row, candidate_ids in enumerate(top):
+        ordered = candidate_ids[
+            np.argsort(-scores[row, candidate_ids])
+        ]
+        rows.append([
+            (int(idx), float(scores[row, idx]))
+            for idx in ordered
+        ])
+    return rows
+
+# Example use:
+# exact = exact_cosine_top_k(unit_queries, unit_vectors, k=10)</code></pre>
+
+      <p>
+        Compare the exact result with the result returned by the deployed index for the same vector, filters, and <em>k</em>. Record overlap, rank changes, and similarity margins. A mismatch is a lead, not automatically a bug. Check index configuration, deleted-vector handling, filter semantics, quantization, and whether the two paths use the same normalization.
+      </p>
+
+      <h2>Step 5: Trace suspicious neighborhoods to chunk boundaries</h2>
+
+      <p>
+        The most actionable use of a projection is often not “finding topics.” It is finding local groups whose source boundaries look wrong.
+      </p>
+
+      <p>For each suspicious neighborhood:</p>
+
+      <ol>
+        <li>List the vector IDs and exact cosine similarities.</li>
+        <li>Join them to document, section, page, and character-offset metadata.</li>
+        <li>Sort the source records by document and source offset.</li>
+        <li>Read the preceding and following chunks, not only the retrieved text.</li>
+        <li>Check whether headings, definitions, table headers, list labels, and exceptions were separated from the content they govern.</li>
+        <li>Re-embed a small corrected set and compare the exact neighbor lists.</li>
+      </ol>
+
+      <p>
+        Common boundary defects include a heading placed in the previous chunk, a table split between rows and its header, a definition separated from its term, a sentence cut between a condition and its exception, and overlap that copies boilerplate while omitting the decisive sentence. These are source-structure defects; a map can help locate them, but only the source text confirms them.
+      </p>
+
+      <h2>Useful indicators</h2>
+
+      <table>
+        <thead>
+          <tr>
+            <th>Indicator</th>
+            <th>What to calculate</th>
+            <th>What it can suggest</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>Neighbor retention</td>
+            <td>Intersection of exact and projected top-k neighbors</td>
+            <td>Whether local visual proximity is a reasonable inspection aid</td>
+          </tr>
+          <tr>
+            <td>Exact/ANN overlap</td>
+            <td>Intersection of exhaustive and deployed-index results</td>
+            <td>Possible index, metric, filter, or normalization mismatch</td>
+          </tr>
+          <tr>
+            <td>Duplicate rate</td>
+            <td>Repeated hashes or near-identical vectors</td>
+            <td>Repeated ingestion, empty chunks, or parser failures</td>
+          </tr>
+          <tr>
+            <td>Boundary continuity</td>
+            <td>Neighbor metadata versus source offsets and section IDs</td>
+            <td>Chunks that split semantic units or lose structural context</td>
+          </tr>
+          <tr>
+            <td>Query recall</td>
+            <td>Expected passage presence in top-k results</td>
+            <td>Whether the index serves the task, independently of the map</td>
+          </tr>
+        </tbody>
+      </table>
+
+      <h2>Verification protocol</h2>
+
+      <p>
+        A practical verification run should produce an artifact containing the manifest, sampled IDs, projection parameters, retained-neighbor summary, exact-versus-ANN comparison, and a review table for suspicious neighborhoods. The review table should include a verdict such as “confirmed chunk boundary defect,” “index mismatch,” “projection artifact,” or “inconclusive,” with a short reason.
+      </p>
+
+      <p>
+        Re-run the same snapshot with the same random seed. The sampled IDs and summary should remain stable. Then change one controlled variable: for example, the projection seed, the sample size, the ANN search parameter, or the chunking configuration. A conclusion that disappears under a harmless projection change is weak evidence; a source-level defect that persists across exact-neighbor checks is stronger evidence.
+      </p>
+
+      <p>
+        For query evaluation, keep a held-out set of questions and expected evidence. Report recall at the chosen <em>k</em>, rank distribution, and failure examples. Do not infer query recall from cluster appearance or neighbor-retention scores.
+      </p>
+
+      <h2>Failure cases and limitations</h2>
+
+      <ul>
+        <li><strong>Projection distortion:</strong> two points that look close may be far apart in the original space, and a visible gap may be artificial.</li>
+        <li><strong>Parameter sensitivity:</strong> UMAP and t-SNE can produce different structures from different seeds and settings.</li>
+        <li><strong>Sampling bias:</strong> a projection of one document subset may hide defects in another tenant, language, or content type.</li>
+        <li><strong>Metadata leakage:</strong> coloring by document, label, or manually curated category can make separation look stronger than it is.</li>
+        <li><strong>Metric mismatch:</strong> comparing cosine neighbors with Euclidean neighbors on unnormalized vectors can create a false diagnosis.</li>
+        <li><strong>Filter mismatch:</strong> exact verification must use the same authorization and metadata filters as production retrieval.</li>
+        <li><strong>Index freshness:</strong> a correct vector export may not represent the deployed index if ingestion is asynchronous.</li>
+        <li><strong>Short-text ambiguity:</strong> a small chunk can be semantically valid but under-specified without its heading or neighboring context.</li>
+      </ul>
+
+      <h2>What a defensible conclusion looks like</h2>
+
+      <p>
+        A defensible conclusion connects three layers of evidence: the projection identifies a candidate neighborhood; exact cosine search confirms or rejects the original-space relationship; and source inspection explains the behavior in terms of chunk boundaries, metadata, or index configuration.
+      </p>
+
+      <p>
+        For example, it is reasonable to write: “In the fixed snapshot, several exception chunks were isolated from their headings. Their exact cosine neighbors were dominated by generic policy chunks, and re-chunking the source kept the heading with the exception in a bounded test.” It is not reasonable to write: “The map proves the embedding model is confused.”
+      </p>
+
+      <p>
+        That distinction is the point of the method. Embedding projection maps are valuable as an inspection surface, but the diagnosis comes from reproducible measurements and traceable source evidence.
+      </p>
+
+      <footer class="reading-footer">
+        <p>Continue with the <a href="../guides.html">Agent Lab Journal guides</a> or look up terms in the <a href="../glossary.html">glossary</a>.</p>
+      </footer>
+    <section class="service-note">
+  <b>We publish what works for us—and implement the same solutions for your business.</b>
+  We design AI automation, Telegram bots, chats, and AI agents for real-world processes.
+  <a href="../contacts-en.html">Discuss your project →</a>
+</section>
+</article>
+  </main>
+
+  <footer class="site-footer">
+    <p>&copy; Agent Lab Journal</p>
+  </footer>
+</body>
+</html>

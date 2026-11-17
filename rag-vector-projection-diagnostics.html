@@ -1,0 +1,381 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Диагностируем RAG-индекс по картам векторных представлений</title>
+  <meta name="description" content="Диагностируем RAG-индекс по картам векторных представлений: измеряем сохранённых соседей, проверяем исходных cosine-neighbors и находим дефекты границ чанков.">
+  <link rel="canonical" href="https://agentlabjournal.online/rag-vector-projection-diagnostics.html">
+  <link rel="stylesheet" href="style.css">
+  <link rel="stylesheet" href="reading.css">
+
+  <meta property="og:type" content="article">
+  <meta property="og:title" content="Диагностируем RAG-индекс по картам векторных представлений">
+  <meta property="og:description" content="Практический метод диагностики RAG-индекса по проекции embedding-пространства и исходным cosine-соседям.">
+  <meta property="og:url" content="https://agentlabjournal.online/rag-vector-projection-diagnostics.html">
+  <meta property="og:site_name" content="Agent Lab Journal">
+
+  <meta name="twitter:card" content="summary">
+  <meta name="twitter:title" content="Диагностируем RAG-индекс по картам векторных представлений">
+  <meta name="twitter:description" content="Как проверить, помогает ли карта векторных представлений найти проблемы чанкинга и индекса RAG.">
+
+  <script type="application/ld+json">
+  {
+    "@context": "https://schema.org",
+    "@type": "Article",
+    "headline": "Диагностируем RAG-индекс по картам векторных представлений",
+    "description": "Практический метод диагностики RAG-индекса по проекции embedding-пространства и исходным cosine-соседям.",
+    "mainEntityOfPage": {
+      "@type": "WebPage",
+      "@id": "https://agentlabjournal.online/rag-vector-projection-diagnostics.html"
+    },
+    "publisher": {
+      "@type": "Organization",
+      "name": "Agent Lab Journal"
+    },
+    "inLanguage": "ru"
+  }
+  </script>
+<link rel="stylesheet" href="homepage.css"><link rel="stylesheet" href="max-promo.css">  <meta property="og:image" content="https://agentlabjournal.online/assets/covers/llm-context-window-budget-social.png">
+  <meta property="og:image:alt" content="Диагностируем RAG-индекс по картам векторных представлений">
+  <meta name="twitter:image" content="https://agentlabjournal.online/assets/covers/llm-context-window-budget-social.png">
+</head>
+<body>
+  <header class="site-header">
+    <div class="site-header__inner">
+      <a class="site-header__brand" href="index.html">Agent Lab Journal</a>
+      <nav aria-label="Основная навигация">
+        <a href="guides.html">Гайды</a>
+        <a href="glossary.html">Глоссарий</a>
+      </nav>
+    </div>
+  </header>
+
+  <main>
+    <article class="reading">
+      <div class="reading-meta">
+        <span>Практика</span>
+        <span>RAG · embeddings · диагностика</span>
+        <span>До 12 минут</span>
+      </div>
+
+      <header class="reading-header">
+        <h1>Диагностируем RAG-индекс по картам векторных представлений</h1>
+        <figure class="article-cover" data-editorial-cover="rag-vector-projection-diagnostics"><img src="assets/covers/llm-context-window-budget.png" alt="Диагностируем RAG-индекс по картам векторных представлений" width="1280" height="720" fetchpriority="high"><figcaption>Temporary fallback cover; replace in editorial pass.</figcaption></figure>
+        <p class="reading-lead">
+          Карта embedding-пространства полезна не сама по себе. Она становится диагностическим инструментом только тогда, когда её выводы можно сопоставить с исходными расстояниями, соседями в индексе и структурой документов.
+        </p>
+      </header>
+<a href="https://max.ru/channel_AgentLab?utm_source=agentlabjournal&utm_medium=article&utm_campaign=max_channel&utm_content=article_footer" class="max-promo-block" target="_blank" rel="noopener noreferrer" aria-label="Самое важное из мира AI в канале MAX AgentLab">
+  <span class="max-promo-block__icon" aria-hidden="true"></span>
+  <span class="max-promo-block__content"><span class="max-promo-block__title">Самое важное из мира AI — в канале MAX AgentLab</span><span class="max-promo-block__desc">Отдельные разборы, инструменты и практические схемы</span></span>
+  <span class="max-promo-block__arrow" aria-hidden="true">→</span>
+</a>
+<a href="https://t.me/pelmenews?utm_source=agentlabjournal&utm_medium=article&utm_campaign=telegram_channel&utm_content=article_intro" class="telegram-promo-block" target="_blank" rel="noopener noreferrer" aria-label="Читайте Agent Lab в Telegram">
+  <span class="telegram-promo-block__icon" aria-hidden="true"></span>
+  <span class="telegram-promo-block__content">
+    <span class="telegram-promo-block__title">Читайте Agent Lab в Telegram</span>
+    <span class="telegram-promo-block__desc">Разборы, кейсы и новости о практических AI-агентах без лишней воды.</span>
+  </span>
+  <span class="telegram-promo-block__arrow" aria-hidden="true">→</span>
+</a>
+
+      <section>
+        <h2>Что именно нужно доказать</h2>
+        <p>
+          Визуализация проекции векторов часто выглядит убедительно: документы образуют острова, похожие чанки оказываются рядом, а выбросы заметны почти сразу. Но двумерная карта может скрыть важную информацию. Проекция сжимает пространство, меняет расстояния и иногда создаёт видимые кластеры там, где в исходных векторах их нет.
+        </p>
+        <p>
+          Поэтому вопрос диагностики формулируется строже: помогает ли карта находить дефекты, которые подтверждаются измерениями в исходном пространстве? Для этого нужны три независимые проверки:
+        </p>
+        <ul>
+          <li>сколько исходных ближайших соседей сохранилось после проекции;</li>
+          <li>совпадают ли визуально близкие точки с настоящими <code>cosine-neighbors</code>;</li>
+          <li>связаны ли подозрительные области с конкретными границами чанков, метаданными или ошибками индекса.</li>
+        </ul>
+      </section>
+
+      <section>
+        <h2>Минимальная схема данных</h2>
+        <p>
+          Для воспроизводимой диагностики сохраните не только векторы. На каждую точку нужны идентификатор, идентификатор документа, порядковый номер чанка, текст или безопасный фрагмент текста, а также метаданные источника.
+        </p>
+        <pre><code>{
+  "id": "doc-17:chunk-04",
+  "document_id": "doc-17",
+  "chunk_index": 4,
+  "text": "...",
+  "embedding": [0.012, -0.083, 0.441],
+  "metadata": {
+    "source": "handbook.md",
+    "start": 1840,
+    "end": 2360
+  }
+}</code></pre>
+        <p>
+          Если полные тексты нельзя выносить в диагностический артефакт, используйте хеш, короткий превью-фрагмент или ссылку на локальный идентификатор. Карта не должна случайно раскрывать содержимое закрытого корпуса.
+        </p>
+      </section>
+
+      <section>
+        <h2>Шаг 1. Зафиксируйте базовую выборку</h2>
+        <p>
+          Не начинайте с красивой картинки. Сначала зафиксируйте корпус, модель эмбеддингов, нормализацию, размерность, число точек и параметры индекса. Для сравнения двух версий индекса эти значения должны быть неизменными.
+        </p>
+        <p>
+          Пример безопасной проверки локального файла не меняет данные и не отправляет их наружу:
+        </p>
+        <pre><code>python - &lt;&lt;'PY'
+import json
+from pathlib import Path
+
+path = Path("chunks.jsonl")
+rows = [json.loads(line) for line in path.read_text().splitlines() if line.strip()]
+
+assert rows, "Пустой набор"
+dims = {len(row["embedding"]) for row in rows}
+assert len(dims) == 1, f"Разные размерности: {dims}"
+
+print("chunks:", len(rows))
+print("dimensions:", dims.pop())
+print("documents:", len({row["document_id"] for row in rows}))
+PY</code></pre>
+        <p>
+          На этом этапе не делайте выводов о качестве. Цель — убедиться, что последующие измерения относятся к одному и тому же набору точек.
+        </p>
+      </section>
+
+      <section>
+        <h2>Шаг 2. Посчитайте исходных cosine-neighbors</h2>
+        <p>
+          Для каждого вектора найдите <code>k</code> ближайших соседей по cosine similarity. Если векторы нормализованы, косинусное сходство можно считать обычным скалярным произведением. Не смешивайте в одном сравнении cosine, евклидово расстояние и метрику, которую фактически использует production-индекс.
+        </p>
+        <pre><code>python - &lt;&lt;'PY'
+import json
+import numpy as np
+from pathlib import Path
+
+rows = [json.loads(line) for line in Path("chunks.jsonl").read_text().splitlines() if line.strip()]
+X = np.asarray([row["embedding"] for row in rows], dtype=np.float32)
+
+norms = np.linalg.norm(X, axis=1, keepdims=True)
+X = X / np.maximum(norms, 1e-12)
+
+similarity = X @ X.T
+np.fill_diagonal(similarity, -np.inf)
+
+k = 10
+neighbors = np.argsort(-similarity, axis=1)[:, :k]
+
+with Path("cosine-neighbors.jsonl").open("w") as output:
+    for i, row in enumerate(rows):
+        output.write(json.dumps({
+            "id": row["id"],
+            "neighbors": [
+                {"id": rows[j]["id"], "score": float(similarity[i, j])}
+                for j in neighbors[i]
+            ]
+        }, ensure_ascii=False) + "\n")
+PY</code></pre>
+        <p>
+          Для большого корпуса полная матрица <code>X @ X.T</code> может быть слишком дорогой. Тогда используйте батчи или тот же approximate nearest neighbor-индекс, но отдельно сохраните его параметры и отличайте приближённый результат от точного эталона.
+        </p>
+      </section>
+
+      <section>
+        <h2>Шаг 3. Постройте карту, но не называйте её доказательством</h2>
+        <p>
+          Выберите метод проекции и зафиксируйте seed, если он поддерживается. Для диагностики полезно построить хотя бы две карты с разными параметрами или методами. Устойчивая закономерность, которая повторяется на нескольких проекциях, заслуживает проверки; одиночный визуальный эффект — только гипотеза.
+        </p>
+        <p>
+          В файл карты добавьте исходный идентификатор точки. Не заменяйте его порядковым номером строки: после фильтрации или пересортировки это приводит к неверному сопоставлению карты с индексом.
+        </p>
+        <pre><code>id,x,y,document_id,chunk_index
+doc-17:chunk-04,-1.283,0.441,doc-17,4
+doc-17:chunk-05,-1.190,0.398,doc-17,5</code></pre>
+        <p>
+          Цветом можно показать документ, тип источника или версию чанкинга. Однако не кодируйте слишком много признаков одновременно: карта должна помогать увидеть структуру, а не превращаться в легенду из десятков категорий.
+        </p>
+      </section>
+
+      <section>
+        <h2>Шаг 4. Измерьте сохранённых соседей</h2>
+        <p>
+          Главная проверка — пересечение множеств соседей до и после проекции. Для точки <code>i</code> обозначим исходных соседей как <code>N<sub>i</sub></code>, а соседей на карте — как <code>P<sub>i</sub></code>. Тогда:
+        </p>
+        <pre><code>recall_at_k(i) = |N_i ∩ P_i| / k</code></pre>
+        <p>
+          Среднее значение показывает общую сохранность локальной структуры, но медиана и нижние квантили важнее для поиска дефектов. Отдельно посчитайте метрику для разных типов чанков, документов и областей карты.
+        </p>
+        <pre><code>python - &lt;&lt;'PY'
+import json
+import numpy as np
+from pathlib import Path
+
+original = {
+    row["id"]: {item["id"] for item in row["neighbors"]}
+    for row in map(json.loads, Path("cosine-neighbors.jsonl").read_text().splitlines())
+}
+
+projected = {
+    row["id"]: set(row["neighbors"])
+    for row in map(json.loads, Path("projected-neighbors.jsonl").read_text().splitlines())
+}
+
+scores = []
+for point_id, expected in original.items():
+    actual = projected.get(point_id, set())
+    scores.append(len(expected & actual) / max(len(expected), 1))
+
+values = np.asarray(scores)
+print("mean:", float(values.mean()))
+print("median:", float(np.median(values)))
+print("p10:", float(np.quantile(values, 0.10)))
+print("below_0.30:", int((values < 0.30).sum()))
+PY</code></pre>
+        <p>
+          Порог <code>0.30</code> в примере не является универсальным нормативом. Это рабочий фильтр для осмотра, который нужно заменить порогом, выбранным по вашему корпусу и задаче. Факт ухудшения подтверждается не порогом, а сравнением с базовой версией и ручной проверкой примеров.
+        </p>
+      </section>
+
+      <section>
+        <h2>Шаг 5. Проверьте визуально близкие точки в исходном пространстве</h2>
+        <p>
+          Обратная проверка ловит другую ошибку. Выберите пары, которые оказались рядом на карте, и пересчитайте их cosine similarity по исходным векторам. Если визуально близкая пара имеет низкое сходство, проекция создаёт ложное соседство.
+        </p>
+        <p>
+          Удобный отчёт содержит для каждой пары четыре поля: расстояние на карте, исходное cosine similarity, документ и отношение к границе чанка. Отсортируйте его по наибольшему расхождению между визуальной близостью и исходной близостью.
+        </p>
+        <pre><code>map_distance | cosine_similarity | left_id | right_id | same_document
+0.041        | 0.982              | ...     | ...      | yes
+0.052        | 0.214              | ...     | ...      | no</code></pre>
+        <p>
+          Первая строка похожа на подтверждённое соседство. Вторая — кандидат на ложный визуальный кластер. Но даже она не доказывает дефект индекса: возможно, карта просто потеряла одну из размерностей. Поэтому такие пары нужно проверять на нескольких проекциях и возвращать в retrieval-тест.
+        </p>
+      </section>
+
+      <section>
+        <h2>Шаг 6. Найдите дефекты границ чанков</h2>
+        <p>
+          Для RAG особенно важны не только кластеры документов, но и последовательность соседних чанков одного документа. Проверьте пары <code>chunk_index = n</code> и <code>chunk_index = n + 1</code>. Если они должны продолжать один смысловой фрагмент, но их векторы резко расходятся, причина может быть в границе чанка.
+        </p>
+        <p>
+          Ищите четыре характерных сигнала:
+        </p>
+        <ul>
+          <li>соседние по тексту чанки неожиданно удалены друг от друга;</li>
+          <li>один чанк стабильно тянется к документам другой темы;</li>
+          <li>в начале или конце чанков повторяются обрезанные предложения;</li>
+          <li>одинаковые заголовки создают отдельные ложные кластеры.</li>
+        </ul>
+        <p>
+          Разделите случаи на «граница внутри предложения», «граница между абзацами» и «граница между смысловыми блоками». Наличие первой категории — сильный повод проверить splitter. Но близость соседних чанков не всегда желательна: таблицы, списки и смена темы могут корректно разделять их.
+        </p>
+      </section>
+
+      <section>
+        <h2>Шаг 7. Сопоставьте карту с реальным индексом</h2>
+        <p>
+          Нельзя считать, что точный поиск по массиву векторов автоматически описывает production-поведение. Сравните для одной и той же контрольной выборки:
+        </p>
+        <ul>
+          <li>точных cosine-neighbors;</li>
+          <li>соседей, возвращённых ANN-индексом;</li>
+          <li>результаты после фильтров по метаданным;</li>
+          <li>итоговые чанки, которые получает генератор ответа.</li>
+        </ul>
+        <p>
+          Если точные соседи хорошие, а ANN возвращает другие точки, исследуйте параметры индекса и размер кандидатов. Если ANN совпадает с эталоном, но ответный retrieval теряет нужный чанк, ищите проблему в фильтрах, дедупликации, ограничении <code>top_k</code> или постобработке.
+        </p>
+      </section>
+
+      <section>
+        <h2>Как выглядит убедительный результат</h2>
+        <p>
+          Диагностика считается полезной, если она приводит к проверяемому действию. Хороший отчёт для каждой найденной области содержит:
+        </p>
+        <ol>
+          <li>идентификаторы подозрительных чанков;</li>
+          <li>их исходных ближайших соседей и значения cosine similarity;</li>
+          <li>recall локальных соседей после проекции;</li>
+          <li>границы текста и метаданные источника;</li>
+          <li>гипотезу: splitter, модель, нормализация, ANN или фильтр;</li>
+          <li>повторную проверку после изменения только одного фактора.</li>
+        </ol>
+        <p>
+          Например, карта показывает разрыв последовательных чанков, а исходное пространство подтверждает низкое сходство только у чанков, обрезанных посреди предложения. После изменения размера overlap повторная выборка уменьшает число таких разрывов, а retrieval-проверка возвращает нужный контекст чаще. Это уже диагностическая цепочка, а не интерпретация изображения.
+        </p>
+      </section>
+
+      <section>
+        <h2>Типовые ошибки</h2>
+        <ul>
+          <li><strong>Считать кластеры фактом.</strong> Проекция — способ сформулировать гипотезу, не замена метрике.</li>
+          <li><strong>Сравнивать разные корпуса.</strong> Изменение модели, нормализации или фильтров ломает прямое сравнение.</li>
+          <li><strong>Терять идентификаторы.</strong> Сопоставление по позиции строки после сортировки даёт ложные выводы.</li>
+          <li><strong>Проверять только среднее.</strong> Средняя сохранность соседей может скрывать провал на одном типе документов.</li>
+          <li><strong>Смешивать точный и ANN-поиск.</strong> У них разные источники расхождений и разные параметры.</li>
+          <li><strong>Публиковать сырой текст.</strong> Диагностический файл может содержать конфиденциальные данные.</li>
+        </ul>
+      </section>
+
+      <section>
+        <h2>Ограничения метода</h2>
+        <p>
+          Карта не восстанавливает исходную геометрию и не оценивает качество ответов сама по себе. Сохранённые соседи измеряют локальную структуру, но не полноту retrieval по пользовательским вопросам. Низкий recall на проекции может быть следствием агрессивного сжатия, а не дефекта индекса.
+        </p>
+        <p>
+          Поэтому итоговую проверку проводите на трёх уровнях: геометрия исходных embedding, поведение индекса и качество найденного контекста на заранее зафиксированной контрольной выборке. Не меняйте splitter и модель одновременно: иначе карта покажет разницу, но не объяснит её причину.
+        </p>
+      </section>
+
+      <section>
+        <h2>Короткий протокол</h2>
+        <ol>
+          <li>Зафиксировать корпус, модель, нормализацию и параметры индекса.</li>
+          <li>Посчитать исходных cosine-neighbors.</li>
+          <li>Построить проекцию с сохранёнными идентификаторами.</li>
+          <li>Измерить recall сохранённых соседей по точкам и группам.</li>
+          <li>Проверить визуально близкие пары в исходном пространстве.</li>
+          <li>Сопоставить выбросы с границами чанков.</li>
+          <li>Сравнить точный поиск, ANN и retrieval с фильтрами.</li>
+          <li>Повторить измерение после одного контролируемого изменения.</li>
+        </ol>
+        <p>
+          Дополнительные практические материалы собраны в <a href="guides.html">разделе guides</a>, а определения терминов — в <a href="glossary.html">глоссарии</a>.
+        </p>
+      </section>
+<aside class="service-note" aria-label="Связаться по проекту">
+  <div class="service-note__copy">
+    <p class="service-note__label">Связь с Agent Lab</p>
+    <p class="service-note__title">Внедрим такой контур в ваш процесс</p>
+    <p class="service-note__text">Напишите инженеру Agent Lab в Telegram: опишите задачу, бота или интеграцию — предложим пилот с проверками и понятными границами.</p>
+  </div>
+  <a class="service-note__link" href="https://t.me/msrzn007?utm_source=journal&amp;utm_medium=article&amp;utm_campaign=service_note" target="_blank" rel="noopener">Написать в Telegram
+    <svg viewBox="0 0 16 16" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"><path d="M3 13 13 3M6 3h7v7"/></svg>
+  </a>
+</aside>
+<aside class="service-note service-note--sitevisor" aria-label="Экспресс-аудит сайта">
+  <div class="service-note__copy">
+    <p class="service-note__label">SiteVisor</p>
+    <p class="service-note__title">Проверьте техническое состояние и готовность вашего сайта к рекламе</p>
+    <p class="service-note__text">Экспресс-аудит на SiteVisor.pro: индексация, скорость, разметка, аналитика и точки конверсии.</p>
+  </div>
+  <a class="service-note__link" href="https://sitevisor.pro/?utm_source=journal&amp;utm_medium=article&amp;utm_campaign=leadmagnet" target="_blank" rel="noopener">Экспресс-аудит на SiteVisor.pro
+    <svg viewBox="0 0 16 16" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"><path d="M3 13 13 3M6 3h7v7"/></svg>
+  </a>
+</aside>
+</article>
+  </main>
+
+  <footer class="site-footer">
+    <div class="site-footer__inner">
+      <span>Agent Lab Journal</span>
+      <nav aria-label="Дополнительная навигация">
+        <a href="guides.html">Гайды</a>
+        <a href="glossary.html">Глоссарий</a>
+      </nav>
+    </div>
+  </footer>
+</body>
+</html>
