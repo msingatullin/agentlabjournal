@@ -1,0 +1,655 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>AI Gateway on ECS Fargate: Per-Application Budgets, Retries, and Isolation Testing</title>
+  <meta name="description" content="AI Gateway on ECS Fargate: Per-Application Budgets, Retries, and Isolation Testing. Build a reproducible OpenAI-compatible gateway backed by Amazon Bedrock with per-key budgets, predictable retries, fallback tests, and cleanup procedures.">
+  <link rel="canonical" href="https://agentlabjournal.online/en/ai-gateway-ecs-fargate-budgets-retries.html">
+  <link rel="stylesheet" href="../style.css">
+  <link rel="stylesheet" href="../reading.css">
+
+  <meta property="og:type" content="article">
+  <meta property="og:title" content="AI Gateway on ECS Fargate: Per-Application Budgets, Retries, and Isolation Testing">
+  <meta property="og:description" content="A reproducible guide to an OpenAI-compatible gateway on ECS Fargate with Amazon Bedrock, per-application budgets, retries, fallbacks, and isolation tests.">
+  <meta property="og:url" content="https://agentlabjournal.online/en/ai-gateway-ecs-fargate-budgets-retries.html">
+  <meta property="og:image" content="https://agentlabjournal.online/assets/covers/llm-context-window-budget-social.png">
+
+  <meta name="twitter:card" content="summary_large_image">
+  <meta name="twitter:title" content="AI Gateway on ECS Fargate: Per-Application Budgets, Retries, and Isolation Testing">
+  <meta name="twitter:description" content="Deploy and test an OpenAI-compatible Bedrock gateway on ECS Fargate with per-key budgets, retries, fallbacks, and isolation controls.">
+  <meta name="twitter:image" content="https://agentlabjournal.online/assets/covers/llm-context-window-budget-social.png">
+
+  <meta name="reading-time" content="35 minutes">
+  <meta name="article:section" content="Infrastructure">
+  <meta name="article:level" content="Advanced">
+  <meta name="article:date_modified" content="2026-11-17">
+
+  <script type="application/ld+json">
+  {
+    "@context": "https://schema.org",
+    "@type": "Article",
+    "headline": "AI Gateway on ECS Fargate: Per-Application Budgets, Retries, and Isolation Testing",
+    "description": "A reproducible guide to an OpenAI-compatible gateway on ECS Fargate with Amazon Bedrock, per-application budgets, retries, fallbacks, and isolation tests.",
+    "image": ["https://agentlabjournal.online/assets/covers/llm-context-window-budget-social.png"],
+    "dateModified": "2026-11-17",
+    "author": {
+      "@type": "Organization",
+      "name": "Agent Lab Journal"
+    },
+    "publisher": {
+      "@type": "Organization",
+      "name": "Agent Lab Journal",
+      "url": "https://agentlabjournal.online/"
+    },
+    "mainEntityOfPage": {
+      "@type": "WebPage",
+      "@id": "https://agentlabjournal.online/en/ai-gateway-ecs-fargate-budgets-retries.html"
+    }
+  }
+  </script>
+<link rel="stylesheet" href="../homepage.css"><link rel="stylesheet" href="../max-promo.css">  <meta property="og:image:alt" content="AI Gateway на ECS Fargate: бюджеты приложений, retries и проверка изоляции">
+</head>
+<body>
+  <header class="site-header">
+    <div class="site-header__inner">
+      <a class="site-brand" href="../index.html">Agent Lab Journal</a>
+      <nav aria-label="Primary navigation">
+        <a href="guides.html">Guides</a>
+        <a href="../glossary.html">Glossary</a>
+      </nav>
+    </div>
+  </header>
+
+  <main>
+    <article class="reading">
+      <header class="reading-header">
+        <p class="reading-kicker">Infrastructure · Advanced · 35 min read</p>
+        <h1>AI Gateway on ECS Fargate: Per-Application Budgets, Retries, and Isolation Testing</h1>
+        <figure class="article-cover" data-editorial-cover="ai-gateway-ecs-fargate-budgets-retries"><img src="../assets/covers/llm-context-window-budget.png" alt="AI Gateway на ECS Fargate: бюджеты приложений, retries и проверка изоляции" width="1280" height="720" fetchpriority="high"><figcaption>Temporary fallback cover; replace in editorial pass.</figcaption></figure>
+        <p class="reading-lede">
+          A shared model endpoint is easy to centralize and surprisingly difficult to control. One application can consume the budget, retry a provider outage into a traffic storm, or exhaust concurrency needed by every other application. This guide builds a reproducible control plane around an OpenAI-compatible gateway running on Amazon ECS Fargate, with Amazon Bedrock as the provider, separate application keys, explicit budgets, bounded retries, fallback routing, and tests for isolation.
+        </p>
+        <div class="reading-meta" aria-label="Article metadata">
+          <span>Updated 17 November 2026</span>
+          <span>Advanced</span>
+          <span>35 min read</span>
+        </div>
+      </header>
+
+      <aside class="reading-callout">
+        <strong>Evidence boundary.</strong>
+        The commands and configuration below are a repeatable implementation pattern, not a report of a deployment performed for this article. Replace placeholders, pin the gateway image and provider model IDs, then run the verification checks in your own AWS account. Do not copy credentials into shell history, task definitions, or source control.
+      </aside>
+
+      <section>
+        <h2>The concrete problem</h2>
+        <p>
+          Imagine a team with two internal applications. <code>summarizer</code> processes user-uploaded documents. <code>support-assistant</code> serves interactive requests. Both applications call one <a href="../glossary.html#ai-gateway">AI gateway</a>, and the gateway calls Bedrock. The team wants the following behavior:
+        </p>
+        <ul>
+          <li><code>summarizer</code> has a monthly spend ceiling and cannot consume the interactive application's allocation.</li>
+          <li>A temporary provider error produces a small, bounded number of retries rather than an unbounded retry loop.</li>
+          <li>If the primary model is unavailable, requests can use an explicitly approved fallback model.</li>
+          <li>One application's burst does not starve the other application's requests.</li>
+          <li>Operators can prove these properties with repeatable tests and inspect the evidence afterward.</li>
+        </ul>
+        <p>
+          The gateway is a policy boundary, not a billing system. It can reject requests based on configured keys, rate limits, budgets, and routing rules, but the authoritative spend record remains the provider and your own accounting pipeline. Treat gateway budget enforcement as a safety control and reconcile it against provider usage data.
+        </p>
+      </section>
+
+      <section>
+        <h2>Target architecture</h2>
+        <p>
+          The design uses one stateless gateway service behind an Application Load Balancer. The service runs on ECS Fargate in private subnets. It reaches Bedrock through the appropriate AWS network path and receives its gateway configuration from a secret store or injected configuration mechanism. Applications receive different gateway keys and use the same OpenAI-compatible endpoint.
+        </p>
+
+        <pre><code>application A ── key_summarizer ──┐
+                                  ├── ALB ── ECS Fargate gateway ── Bedrock
+application B ── key_support ─────┘
+                                      │
+                                      ├── logs and metrics
+                                      └── secret/config store
+
+</code></pre>
+
+        <p>
+          The important isolation boundary is the application key. A shared key makes attribution, budget enforcement, and incident containment ambiguous. A key should identify an application or workload, not an individual employee. If a workload has materially different risk or budget classes, give it a separate key even when it uses the same model.
+        </p>
+
+        <h3>Control-plane responsibilities</h3>
+        <table>
+          <thead>
+            <tr>
+              <th>Control</th>
+              <th>Purpose</th>
+              <th>What to verify</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td>Application key</td>
+              <td>Attributes traffic to one workload</td>
+              <td>Each request carries only the intended key</td>
+            </tr>
+            <tr>
+              <td>Budget</td>
+              <td>Stops or restricts a workload after its allowance</td>
+              <td>One key is rejected while another remains usable</td>
+            </tr>
+            <tr>
+              <td>Rate and concurrency limits</td>
+              <td>Protects service capacity and provider quotas</td>
+              <td>A burst does not exhaust all gateway workers</td>
+            </tr>
+            <tr>
+              <td>Retry policy</td>
+              <td>Recovers from transient failures without amplification</td>
+              <td>Attempts are finite and observable</td>
+            </tr>
+            <tr>
+              <td>Fallback route</td>
+              <td>Provides an approved alternative model</td>
+              <td>Fallback occurs only for configured failure classes</td>
+            </tr>
+            <tr>
+              <td>IAM role</td>
+              <td>Limits what the task can call and read</td>
+              <td>The task role has only required Bedrock and secret permissions</td>
+            </tr>
+          </tbody>
+        </table>
+      </section>
+
+      <section>
+        <h2>Prerequisites and safe variables</h2>
+        <p>
+          Prepare an AWS account, an ECS cluster, a VPC with private subnets, an Application Load Balancer, and provider model access for the Bedrock models you intend to use. The exact model IDs and regional availability are account- and region-dependent, so keep them as variables rather than copying an example value.
+        </p>
+
+        <pre><code>export AWS_REGION="replace-with-your-region"
+export AWS_ACCOUNT_ID="replace-with-your-account-id"
+export ECS_CLUSTER="ai-gateway-cluster"
+export ECS_SERVICE="ai-gateway"
+export GATEWAY_HOST="gateway.example.internal"
+export PRIMARY_MODEL="replace-with-approved-primary-model-id"
+export FALLBACK_MODEL="replace-with-approved-fallback-model-id"
+
+# Do not put real API keys in this file.
+export SUMMARIZER_KEY="test-only-key-for-local-shell"
+export SUPPORT_KEY="test-only-key-for-local-shell"
+</code></pre>
+
+        <p>
+          Use a shell session with a short lifetime, a password manager, or an approved secret manager for real credentials. The values above are placeholders. They are not valid credentials and do not represent a customer configuration.
+        </p>
+      </section>
+
+      <section>
+        <h2>Choose the gateway configuration</h2>
+        <p>
+          The example below uses a gateway that exposes an OpenAI-compatible API and supports virtual keys, per-key budgets, model aliases, and provider fallbacks. Pin the gateway image to a reviewed version. Do not use a floating <code>latest</code> tag in a production task definition.
+        </p>
+
+        <p>
+          The names of configuration fields vary by gateway version. Treat this as a configuration shape to adapt to the pinned version you have selected. Before deploying, validate the fields against that version's documentation and run a configuration check in CI.
+        </p>
+
+        <pre><code># gateway-config.yaml — illustrative configuration
+model_list:
+  - model_name: primary
+    litellm_params:
+      model: bedrock/&lt;PRIMARY_MODEL_ID&gt;
+      aws_region_name: &lt;AWS_REGION&gt;
+
+  - model_name: fallback
+    litellm_params:
+      model: bedrock/&lt;FALLBACK_MODEL_ID&gt;
+      aws_region_name: &lt;AWS_REGION&gt;
+
+router_settings:
+  routing_strategy: simple-shuffle
+  num_retries: 2
+  timeout: 45
+  fallbacks:
+    - primary: ["fallback"]
+
+general_settings:
+  master_key: os.environ/GATEWAY_MASTER_KEY
+  database_url: os.environ/GATEWAY_DATABASE_URL
+
+# Exact key and budget syntax is version-specific.
+# Keep the policy data in a protected store and render this file during deployment.
+virtual_keys:
+  - key: os.environ/SUMMARIZER_KEY
+    alias: summarizer
+    models: ["primary", "fallback"]
+    max_budget: 100
+    budget_duration: 30d
+    rpm_limit: 30
+
+  - key: os.environ/SUPPORT_KEY
+    alias: support-assistant
+    models: ["primary", "fallback"]
+    max_budget: 100
+    budget_duration: 30d
+    rpm_limit: 120
+</code></pre>
+
+        <p>
+          The budget values are deliberately examples. They are not prices, forecasts, or recommendations. Select amounts from your own allocation policy and reconcile them with the provider's reported usage. If your gateway stores budget state in a database, use a durable database rather than local container storage; Fargate task replacement must not reset budget state.
+        </p>
+
+        <h3>Budget design rules</h3>
+        <ul>
+          <li>Define whether a budget is a hard stop, a soft alert, or a routing downgrade. Document the behavior visible to callers.</li>
+          <li>Define the time window explicitly. “Monthly” can mean a calendar month or a rolling duration.</li>
+          <li>Keep budget state outside the task filesystem.</li>
+          <li>Account for retries. A failed attempt may still consume provider capacity or incur usage depending on the failure point.</li>
+          <li>Use separate keys for production, staging, load tests, and incident experiments.</li>
+          <li>Do not assume a gateway budget is an exact provider invoice limit.</li>
+        </ul>
+      </section>
+
+      <section>
+        <h2>Package the gateway for ECS Fargate</h2>
+        <p>
+          The container should start one gateway process, listen on a health-check path, write structured logs to standard output, and receive configuration through environment variables, mounted secrets, or a protected configuration service.
+        </p>
+
+        <pre><code># Dockerfile — adapt the image and startup command to the pinned gateway
+FROM &lt;reviewed-gateway-image&gt;
+
+COPY gateway-config.yaml /app/gateway-config.yaml
+
+ENV PORT=4000
+EXPOSE 4000
+
+CMD ["&lt;gateway-command&gt;", "--config", "/app/gateway-config.yaml", "--port", "4000"]
+</code></pre>
+
+        <p>
+          Do not bake production keys into the image. A safer pattern is to render configuration at startup from secrets and non-secret variables, or use the gateway's supported secret references. Ensure that debug logging does not print authorization headers, prompt content, or full provider responses.
+        </p>
+
+        <h3>Task definition concerns</h3>
+        <p>
+          The ECS task definition should include a task execution role and a separate task role. The execution role pulls the image and writes logs. The task role grants only the actions needed by the gateway, such as calling the selected Bedrock APIs and reading the selected secret. Keep the policy resource scope as narrow as the service permits.
+        </p>
+
+        <pre><code>{
+  "family": "ai-gateway",
+  "networkMode": "awsvpc",
+  "requiresCompatibilities": ["FARGATE"],
+  "cpu": "1024",
+  "memory": "2048",
+  "containerDefinitions": [
+    {
+      "name": "gateway",
+      "image": "&lt;account&gt;.dkr.ecr.&lt;region&gt;.amazonaws.com/ai-gateway:&lt;pinned-tag-or-digest&gt;",
+      "essential": true,
+      "portMappings": [
+        { "containerPort": 4000, "protocol": "tcp" }
+      ],
+      "environment": [
+        { "name": "AWS_REGION", "value": "&lt;region&gt;" },
+        { "name": "GATEWAY_CONFIG", "value": "/run/config/gateway-config.yaml" }
+      ],
+      "secrets": [
+        {
+          "name": "GATEWAY_MASTER_KEY",
+          "valueFrom": "&lt;secret-arn&gt;:master_key::"
+        }
+      ],
+      "healthCheck": {
+        "command": [
+          "CMD-SHELL",
+          "curl -fsS http://localhost:4000/health/liveliness || exit 1"
+        ],
+        "interval": 30,
+        "timeout": 5,
+        "retries": 3,
+        "startPeriod": 60
+      },
+      "logConfiguration": {
+        "logDriver": "awslogs",
+        "options": {
+          "awslogs-region": "&lt;region&gt;",
+          "awslogs-group": "/ecs/ai-gateway",
+          "awslogs-stream-prefix": "gateway"
+        }
+      }
+    }
+  ]
+}
+</code></pre>
+
+        <p>
+          The health endpoint should answer whether the process is alive. A separate readiness check should represent whether the task has loaded its configuration and can accept traffic. Avoid making a provider call on every load-balancer health check; that can create hidden provider traffic and make a transient provider outage look like a crashed container.
+        </p>
+      </section>
+
+      <section>
+        <h2>Deploy the service</h2>
+        <p>
+          The exact AWS CLI commands depend on how your VPC, load balancer, secrets, and logging are managed. The following sequence shows the dependency order. Replace every placeholder and review the resulting resource ARNs before applying.
+        </p>
+
+        <pre><code># Build and push a pinned image.
+docker build -t ai-gateway:&lt;version&gt; .
+docker tag ai-gateway:&lt;version&gt; \
+  "$AWS_ACCOUNT_ID.dkr.ecr.$AWS_REGION.amazonaws.com/ai-gateway:&lt;version&gt;"
+
+aws ecr get-login-password --region "$AWS_REGION" |
+  docker login --username AWS --password-stdin \
+  "$AWS_ACCOUNT_ID.dkr.ecr.$AWS_REGION.amazonaws.com"
+
+docker push \
+  "$AWS_ACCOUNT_ID.dkr.ecr.$AWS_REGION.amazonaws.com/ai-gateway:&lt;version&gt;"
+
+# Register the reviewed task definition.
+aws ecs register-task-definition \
+  --cli-input-json file://task-definition.json
+
+# Create or update the service with your existing networking identifiers.
+aws ecs update-service \
+  --cluster "$ECS_CLUSTER" \
+  --service "$ECS_SERVICE" \
+  --task-definition "ai-gateway:&lt;revision&gt;" \
+  --desired-count 2 \
+  --deployment-configuration "maximumPercent=200,minimumHealthyPercent=100"
+</code></pre>
+
+        <p>
+          Two tasks are useful for basic rolling deployment behavior, but they do not by themselves provide application isolation. A single gateway process can still accept traffic for both keys. Isolation is established by policy, durable budget state, concurrency controls, and tests.
+        </p>
+      </section>
+
+      <section>
+        <h2>Call the OpenAI-compatible endpoint</h2>
+        <p>
+          Keep application code pointed at the gateway's base URL. The application should not receive AWS credentials or call Bedrock directly.
+        </p>
+
+        <pre><code>curl --fail-with-body "$GATEWAY_HOST/v1/chat/completions" \
+  -H "Authorization: Bearer $SUMMARIZER_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "primary",
+    "messages": [
+      {
+        "role": "user",
+        "content": "Return one sentence explaining why request budgets need durable state."
+      }
+    ],
+    "temperature": 0
+  }'
+</code></pre>
+
+        <p>
+          Record a request identifier from the gateway response or response headers if available. Correlate it with gateway logs, ECS task logs, and provider-side usage records. Avoid logging full prompts by default; log metadata such as application alias, model alias, status class, latency, retry count, and token counts when those fields are safe and available.
+        </p>
+      </section>
+
+      <section>
+        <h2>Retries and fallbacks: make the policy explicit</h2>
+        <p>
+          A <a href="../glossary.html#retry">retry</a> is useful only when the failure is likely to be temporary and another attempt will not create unacceptable load. Configure a small maximum attempt count, a request timeout, and backoff. Do not retry authentication failures, malformed requests, invalid model names, or budget rejections.
+        </p>
+
+        <p>
+          A fallback is a routing decision, not a promise that two models are interchangeable. The fallback may have different context limits, latency, safety behavior, or output quality. Document the approved fallback and test the application against its output contract.
+        </p>
+
+        <pre><code>retryable:
+  - provider_timeout
+  - connection_reset
+  - throttling
+  - selected_5xx
+
+not_retryable:
+  - invalid_request
+  - authentication_failure
+  - authorization_failure
+  - budget_exceeded
+  - unknown_model
+
+retry:
+  max_attempts: 3
+  backoff: exponential
+  initial_delay_ms: 250
+  max_delay_ms: 2000
+  request_timeout_seconds: 45
+
+fallback:
+  primary: fallback
+  only_for:
+    - provider_timeout
+    - throttling
+    - selected_5xx
+</code></pre>
+
+        <p>
+          The field names above are illustrative. The safety property is the important part: finite attempts, bounded waits, a narrow retryable error set, and an explicit fallback map. If both the gateway and the application implement retries, multiply the attempt counts mentally. A gateway limit of three attempts combined with an application limit of three attempts can produce up to nine provider calls for one user action.
+        </p>
+      </section>
+
+      <section>
+        <h2>Isolation test plan</h2>
+        <p>
+          Run these tests in a non-production environment with test-only keys and a deliberately small allocation. The examples describe expected assertions, not observed results. Mark each test pass or fail from your own logs and response data.
+        </p>
+
+        <h3>1. Key attribution</h3>
+        <p>
+          Send one request with each key and confirm that logs identify the expected application alias. Then send a request with an unknown key and confirm that it is rejected without a provider call.
+        </p>
+
+        <pre><code>curl -sS -o /tmp/unknown-response -w "%{http_code}\n" \
+  "$GATEWAY_HOST/v1/chat/completions" \
+  -H "Authorization: Bearer test-invalid-key" \
+  -H "Content-Type: application/json" \
+  -d '{"model":"primary","messages":[{"role":"user","content":"test"}]}"
+
+# Inspect only status and sanitized metadata.
+jq '{status, error}' /tmp/unknown-response
+</code></pre>
+
+        <p>
+          Evidence to retain: HTTP status, sanitized gateway log entry, and confirmation that no provider request was emitted for the invalid key.
+        </p>
+
+        <h3>2. Budget boundary</h3>
+        <p>
+          Use a test key with a small configured allowance. Send requests until the gateway reports the documented budget-exceeded behavior. Then send a request with the support key and verify that it remains eligible.
+        </p>
+
+        <p>
+          This test must distinguish a gateway rejection from provider throttling. Compare the response body, gateway status fields, retry count, and provider-side evidence. A budget rejection should not trigger retries.
+        </p>
+
+        <h3>3. Rate and concurrency isolation</h3>
+        <p>
+          Generate a controlled burst for <code>summarizer</code> while sending a low-rate probe with <code>support-assistant</code>. The success criterion is not that every summarizer request succeeds. The criterion is that the support probe remains within its documented latency and admission policy while the summarizer key is throttled or queued according to its own limits.
+        </p>
+
+        <pre><code># Example only. Use a load tool that you have approved for your environment.
+for n in $(seq 1 20); do
+  curl -sS "$GATEWAY_HOST/v1/chat/completions" \
+    -H "Authorization: Bearer $SUMMARIZER_KEY" \
+    -H "Content-Type: application/json" \
+    -d '{"model":"primary","messages":[{"role":"user","content":"short test"}]}' \
+    &gt; "summarizer-$n.json" &
+done
+wait
+
+curl --fail-with-body "$GATEWAY_HOST/v1/chat/completions" \
+  -H "Authorization: Bearer $SUPPORT_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"model":"primary","messages":[{"role":"user","content":"support probe"}]}'
+</code></pre>
+
+        <p>
+          For a meaningful result, collect timestamps, response classes, gateway queue or concurrency metrics, ECS CPU and memory, and provider throttling signals. A single successful probe is not proof of isolation; repeat the test with different burst sizes and task counts.
+        </p>
+
+        <h3>4. Retry count</h3>
+        <p>
+          Use a controlled fault mechanism that your test environment supports, such as a provider throttle response, a temporary route failure, or a gateway test hook. Do not simulate failure by corrupting production configuration.
+        </p>
+
+        <p>
+          Assert that the request produces no more than the configured number of attempts, that backoff is bounded, and that the final response identifies the terminal failure class. Verify that a non-retryable error produces one attempt.
+        </p>
+
+        <h3>5. Fallback behavior</h3>
+        <p>
+          Force a failure that is explicitly mapped to the fallback route. Confirm that the gateway uses the approved fallback model and that the response contains enough metadata to diagnose the route without exposing secrets. Then force an invalid-request error and confirm that it does not fall through to a different model.
+        </p>
+
+        <h3>6. Task replacement</h3>
+        <p>
+          Restart one task during a test window. Confirm that the service becomes healthy again, that durable budget state is preserved, and that in-flight requests fail or complete according to the documented behavior. A replacement task starting with a fresh local budget is an isolation defect.
+        </p>
+      </section>
+
+      <section>
+        <h2>Verification checklist</h2>
+        <p>
+          Use this checklist after deployment. The article does not claim these checks have been run; they are the minimum evidence to collect in the target environment.
+        </p>
+
+        <ul>
+          <li>Container image is pinned by reviewed tag or digest.</li>
+          <li>ECS task reaches healthy status through the load balancer health check.</li>
+          <li>Gateway accepts a valid test key and rejects an invalid key.</li>
+          <li>Each test key maps to the expected application alias.</li>
+          <li>Budget state survives a task replacement.</li>
+          <li>Budget rejection is not retried.</li>
+          <li>Retryable provider failures stop at the configured attempt limit.</li>
+          <li>Backoff and request timeout stay within the documented bounds.</li>
+          <li>Fallback routing occurs only for configured failure classes.</li>
+          <li>A burst from one key does not remove the other key's ability to make an admitted request.</li>
+          <li>Logs contain request metadata but not authorization headers or sensitive prompt content.</li>
+          <li>CloudWatch alarms or equivalent monitoring cover task health, error rate, latency, throttling, and budget events.</li>
+          <li>Provider usage can be reconciled to application identity using gateway records.</li>
+        </ul>
+      </section>
+
+      <section>
+        <h2>Failure cases and how to reason about them</h2>
+
+        <h3>Every application is blocked after one application exceeds budget</h3>
+        <p>
+          This usually indicates a global budget, a shared key, a gateway-wide rate limit, or a shared provider quota rather than a per-application policy. Check the key attached to each request, the budget scope, and whether the limit is applied before or after key resolution.
+        </p>
+
+        <h3>Budget resets after deployment</h3>
+        <p>
+          The gateway is probably storing state locally or using an ephemeral database. Move budget state to a durable store and test task replacement explicitly. Increasing the desired task count will not fix this problem.
+        </p>
+
+        <h3>Retries make an outage worse</h3>
+        <p>
+          Check for retries at every layer: client SDK, gateway, load balancer, provider SDK, and queue worker. Reduce the total attempt budget, add exponential backoff, and exclude deterministic errors. A timeout should also include a request deadline so attempts cannot overlap indefinitely.
+        </p>
+
+        <h3>Fallback hides a configuration error</h3>
+        <p>
+          A fallback map that catches every error can turn invalid credentials, malformed requests, and missing model access into misleading success or inconsistent output. Keep fallback conditions narrow and test non-retryable errors separately.
+        </p>
+
+        <h3>Support traffic still becomes slow during a summarizer burst</h3>
+        <p>
+          Key-level rate limits may not be enough if all requests share the same worker pool, CPU, memory, connection pool, or provider quota. Add per-key concurrency controls, reserve capacity for latency-sensitive traffic, or split workloads across services when the required isolation is stronger than a shared process can provide.
+        </p>
+
+        <h3>Logs cannot explain the result</h3>
+        <p>
+          Add structured fields for application alias, key identifier hash, model alias, provider model, attempt number, terminal status, latency, token counts, and request correlation ID. Hash or truncate identifiers where possible. Never solve observability gaps by logging raw secrets or full user content.
+        </p>
+      </section>
+
+      <section>
+        <h2>Security and operational limits</h2>
+        <p>
+          A gateway key is a credential. Store it like one, rotate it, and give each application a separate value. If a key leaks, revoke only that key where possible. Use TLS at the load balancer and private networking for the tasks. Restrict security groups so only the intended callers can reach the gateway.
+        </p>
+        <p>
+          Per-key budgets do not prevent a caller from creating many keys unless key issuance is also controlled. They do not replace provider account quotas, organizational budgets, or invoice reconciliation. They also cannot guarantee perfect cost isolation when provider pricing, token accounting, retries, or asynchronous processing are still being finalized.
+        </p>
+        <p>
+          Model fallback is an application decision. A cheaper or more available model may not preserve output quality, structured-output guarantees, context capacity, or safety behavior. Treat fallback responses as a separately tested contract.
+        </p>
+        <p>
+          Finally, a shared gateway is a shared failure domain. If one tenant requires hard CPU, memory, network, or data-plane isolation, deploy separate services or accounts. A key boundary is appropriate for many logical workloads; it is not equivalent to a dedicated runtime boundary.
+        </p>
+      </section>
+
+      <section>
+        <h2>Cleanup procedure</h2>
+        <p>
+          Remove temporary test traffic first, then revoke test keys and delete test secrets. Preserve logs and test evidence for the retention period required by your process. Before deleting infrastructure, identify whether the ECS service, load balancer, log group, ECR repository, database, secrets, or network components are shared by other workloads.
+        </p>
+
+        <pre><code># Review before changing anything.
+aws ecs describe-services \
+  --cluster "$ECS_CLUSTER" \
+  --services "$ECS_SERVICE"
+
+aws ecs list-task-definitions \
+  --family-prefix ai-gateway
+
+aws logs describe-log-groups \
+  --log-group-name-prefix /ecs/ai-gateway
+
+# Example scale-down for an isolated test service.
+aws ecs update-service \
+  --cluster "$ECS_CLUSTER" \
+  --service "$ECS_SERVICE" \
+  --desired-count 0
+
+# Delete only after confirming ownership and retention requirements.
+# aws ecs delete-service --cluster "$ECS_CLUSTER" --service "$ECS_SERVICE"
+# aws logs delete-log-group --log-group-name /ecs/ai-gateway
+# aws ecr batch-delete-image --repository-name ai-gateway --image-ids imageTag=&lt;test-tag&gt;
+</code></pre>
+
+        <p>
+          The deletion commands are intentionally commented out. Destructive cleanup must be performed only after checking resource ownership, dependencies, and retention requirements. Remove unused IAM roles, security groups, secrets, and load-balancer target groups when they are confirmed to be test-only.
+        </p>
+      </section>
+
+      <section>
+        <h2>What “done” means</h2>
+        <p>
+          The deployment is ready for a controlled pilot when each application has its own key, budget state is durable, retries are finite and observable, fallbacks are explicit, and the isolation tests produce evidence that can be reviewed later. The strongest result is not a successful chat response. It is a predictable response under budget exhaustion, provider failure, task replacement, and competing traffic.
+        </p>
+        <p>
+          Keep the gateway configuration versioned, keep secrets outside source control, pin the runtime image, and rerun the isolation suite whenever you change gateway versions, provider models, retry settings, budget storage, or ECS capacity.
+        </p>
+      </section>
+
+      <footer class="reading-footer">
+        <p>Continue with the <a href="guides.html">Agent Lab Journal guides</a> or look up terms in the <a href="../glossary.html">glossary</a>.</p>
+      </footer>
+    <section class="service-note">
+  <b>We publish what works for us—and implement the same solutions for your business.</b>
+  We design AI automation, Telegram bots, chats, and AI agents for real-world processes.
+  <a href="../contacts-en.html">Discuss your project →</a>
+</section>
+</article>
+  </main>
+
+  <footer class="site-footer">
+    <div class="site-footer__inner">
+      <p>© Agent Lab Journal</p>
+      <nav aria-label="Footer navigation">
+        <a href="guides.html">Guides</a>
+        <a href="../glossary.html">Glossary</a>
+      </nav>
+    </div>
+  </footer>
+</body>
+</html>

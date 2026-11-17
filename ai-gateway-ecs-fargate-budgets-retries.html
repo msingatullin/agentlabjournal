@@ -1,0 +1,486 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>AI Gateway на ECS Fargate: бюджеты приложений, retries и проверка изоляции</title>
+  <meta name="description" content="AI Gateway на ECS Fargate: бюджеты приложений, retries и проверка изоляции — практическая статья о шлюзе с Bedrock, лимитами на ключ и тестами отказоустойчивости.">
+  <link rel="canonical" href="https://agentlabjournal.online/ai-gateway-ecs-fargate-budgets-retries.html">
+  <link rel="stylesheet" href="style.css">
+  <link rel="stylesheet" href="reading.css">
+
+  <meta property="og:type" content="article">
+  <meta property="og:title" content="AI Gateway на ECS Fargate: бюджеты приложений, retries и проверка изоляции">
+  <meta property="og:description" content="Практическая схема OpenAI-совместимого AI Gateway на ECS Fargate с Bedrock, бюджетами на ключ и проверкой retry/fallback.">
+  <meta property="og:url" content="https://agentlabjournal.online/ai-gateway-ecs-fargate-budgets-retries.html">
+  <meta property="og:site_name" content="Agent Lab Journal">
+
+  <meta name="twitter:card" content="summary">
+  <meta name="twitter:title" content="AI Gateway на ECS Fargate: бюджеты приложений, retries и проверка изоляции">
+  <meta name="twitter:description" content="Как построить и проверить общий AI-шлюз с бюджетами приложений, retry-политикой и изоляцией клиентов.">
+
+  <script type="application/ld+json">
+  {
+    "@context": "https://schema.org",
+    "@type": "Article",
+    "headline": "AI Gateway на ECS Fargate: бюджеты приложений, retries и проверка изоляции",
+    "description": "Практическая статья об OpenAI-совместимом AI Gateway на ECS Fargate с Bedrock, бюджетами на ключ и проверкой retry/fallback.",
+    "url": "https://agentlabjournal.online/ai-gateway-ecs-fargate-budgets-retries.html",
+    "inLanguage": "ru",
+    "author": {
+      "@type": "Organization",
+      "name": "Agent Lab Journal"
+    },
+    "publisher": {
+      "@type": "Organization",
+      "name": "Agent Lab Journal"
+    }
+  }
+  </script>
+<link rel="stylesheet" href="homepage.css"><link rel="stylesheet" href="max-promo.css">  <meta property="og:image" content="https://agentlabjournal.online/assets/covers/llm-context-window-budget-social.png">
+  <meta property="og:image:alt" content="AI Gateway на ECS Fargate: бюджеты приложений, retries и проверка изоляции">
+  <meta name="twitter:image" content="https://agentlabjournal.online/assets/covers/llm-context-window-budget-social.png">
+</head>
+<body>
+  <header class="site-header">
+    <div class="container">
+      <a class="site-brand" href="index.html">Agent Lab Journal</a>
+      <nav aria-label="Основная навигация">
+        <a href="guides.html">Гайды</a>
+        <a href="glossary.html">Глоссарий</a>
+      </nav>
+    </div>
+  </header>
+
+  <main>
+    <article class="reading">
+      <header class="reading-header">
+        <p class="reading-kicker">Инфраструктура · AWS · AI Gateway</p>
+        <h1>AI Gateway на ECS Fargate: бюджеты приложений, retries и проверка изоляции</h1>
+        <figure class="article-cover" data-editorial-cover="ai-gateway-ecs-fargate-budgets-retries"><img src="assets/covers/llm-context-window-budget.png" alt="AI Gateway на ECS Fargate: бюджеты приложений, retries и проверка изоляции" width="1280" height="720" fetchpriority="high"><figcaption>Temporary fallback cover; replace in editorial pass.</figcaption></figure>
+        <div class="reading-meta">
+          <span>Уровень: продвинутый</span>
+          <span>Время чтения: до 12 минут</span>
+          <span>Формат: воспроизводимый практический сценарий</span>
+        </div>
+      </header>
+<a href="https://max.ru/channel_AgentLab?utm_source=agentlabjournal&utm_medium=article&utm_campaign=max_channel&utm_content=article_footer" class="max-promo-block" target="_blank" rel="noopener noreferrer" aria-label="Самое важное из мира AI в канале MAX AgentLab">
+  <span class="max-promo-block__icon" aria-hidden="true"></span>
+  <span class="max-promo-block__content"><span class="max-promo-block__title">Самое важное из мира AI — в канале MAX AgentLab</span><span class="max-promo-block__desc">Отдельные разборы, инструменты и практические схемы</span></span>
+  <span class="max-promo-block__arrow" aria-hidden="true">→</span>
+</a>
+<a href="https://t.me/pelmenews?utm_source=agentlabjournal&utm_medium=article&utm_campaign=telegram_channel&utm_content=article_intro" class="telegram-promo-block" target="_blank" rel="noopener noreferrer" aria-label="Читайте Agent Lab в Telegram">
+  <span class="telegram-promo-block__icon" aria-hidden="true"></span>
+  <span class="telegram-promo-block__content">
+    <span class="telegram-promo-block__title">Читайте Agent Lab в Telegram</span>
+    <span class="telegram-promo-block__desc">Разборы, кейсы и новости о практических AI-агентах без лишней воды.</span>
+  </span>
+  <span class="telegram-promo-block__arrow" aria-hidden="true">→</span>
+</a>
+
+      <p><strong><a href="glossary.html#ai-gateway">AI Gateway</a></strong> — это общий HTTP-шлюз между приложениями и провайдерами моделей. Для команды он удобен: клиенты получают единый OpenAI-совместимый API, а маршрутизация, лимиты и обработка ошибок остаются в одном месте.</p>
+
+      <p>Проблема появляется, когда один ключ начинает расходовать общий лимит или провайдер временно отвечает ошибками. Шлюз должен остановить конкретное приложение, не затронув остальные, и повторять только те запросы, которые безопасно повторять. Ниже — схема для ECS Fargate с Amazon Bedrock, бюджетами на ключ, retry/fallback и тестами изоляции.</p>
+
+      <aside class="reading-note">
+        <strong>Граница примера.</strong> В статье приведены шаблоны конфигурации и команд. Имена ресурсов, значения лимитов, регионы и идентификаторы моделей нужно заменить на значения вашей среды. Здесь не используются реальные секреты, клиенты или цены.
+      </aside>
+
+      <h2>Что строим</h2>
+
+      <p>Минимальная схема состоит из четырёх частей:</p>
+
+      <ul>
+        <li>приложения вызывают один OpenAI-совместимый endpoint;</li>
+        <li>шлюз извлекает идентификатор приложения из API-ключа;</li>
+        <li>Redis или совместимое хранилище атомарно учитывает бюджет и rate limit;</li>
+        <li>адаптер Bedrock выполняет запрос, применяя ограниченную retry-политику.</li>
+      </ul>
+
+      <pre><code>client
+  │  Authorization: Bearer app_key_...
+  ▼
+ALB → ECS Fargate: gateway
+          ├── budget store
+          ├── retry policy
+          └── Bedrock adapter
+                    └── Amazon Bedrock</code></pre>
+
+      <p>Бюджет лучше связывать с приложением, а не с задачей ECS. При масштабировании шлюза несколько экземпляров должны видеть один и тот же счётчик. Локальный счётчик в памяти контейнера подходит только для демонстрации: после перезапуска он теряет состояние, а параллельные задачи считают расходы независимо.</p>
+
+      <h2>Модель бюджета на ключ</h2>
+
+      <p>Для каждого приложения заведите запись с явным состоянием:</p>
+
+      <pre><code>{
+  "key_id": "app-a",
+  "period": "2026-11",
+  "limit_units": 100000,
+  "used_units": 4200,
+  "reserved_units": 800,
+  "status": "active"
+}</code></pre>
+
+      <p>Названия полей здесь условны. В реальной системе единица списания должна быть определена заранее: токены, нормализованные условные единицы или другой измеритель, согласованный с вашим адаптером. Не смешивайте в одном счётчике входные и выходные значения без явного правила.</p>
+
+      <p>Проверка бюджета должна происходить до отправки запроса провайдеру. Для параллельных запросов используйте атомарную операцию:</p>
+
+      <pre><code>available = limit_units - used_units - reserved_units
+
+if available &lt; estimated_request_units:
+    return 429, "application budget exceeded"
+
+reserve(estimated_request_units)
+send_request()
+commit(actual_usage)
+release(reserved_minus_actual)</code></pre>
+
+      <p>Если провайдер не вернул фактическое использование, не списывайте «примерное» значение молча. Запишите событие с признаком неполного учёта и выберите заранее определённое правило: например, закрывать резерв по верхней границе или отправлять запрос на ручную сверку.</p>
+
+      <h3>Почему нужен резерв</h3>
+
+      <p>Без резерва два параллельных запроса могут одновременно увидеть один и тот же остаток. Оба пройдут проверку, а итоговый расход превысит лимит. Резерв не делает оценку точной, но предотвращает очевидное перепродавание доступного бюджета.</p>
+
+      <p>Отдельно храните:</p>
+
+      <ul>
+        <li>использованный объём;</li>
+        <li>объём, временно зарезервированный активными запросами;</li>
+        <li>идентификатор операции и время её изменения;</li>
+        <li>причину отказа: бюджет, rate limit, провайдер или внутренняя ошибка.</li>
+      </ul>
+
+      <h2>OpenAI-совместимый контракт</h2>
+
+      <p>Клиенту не нужно знать, что за шлюзом находится Bedrock. Снаружи оставьте привычный маршрут, например <code>POST /v1/chat/completions</code>, и нормализуйте ответ в одном формате.</p>
+
+      <pre><code>curl --fail-with-body \
+  -X POST "https://gateway.example.invalid/v1/chat/completions" \
+  -H "Authorization: Bearer ${APP_A_KEY}" \
+  -H "Content-Type: application/json" \
+  --data '{
+    "model": "gateway-default",
+    "messages": [
+      {"role": "user", "content": "Проверка шлюза"}
+    ],
+    "max_tokens": 64
+  }'</code></pre>
+
+      <p>Домен и ключ в команде — placeholders. Не вставляйте секрет в shell history, CI-логи или документацию. Для ручной проверки передавайте ключ через переменную окружения, секрет-менеджер или безопасный механизм вашего CI.</p>
+
+      <p>Внутри шлюз должен разделять ошибки по смыслу:</p>
+
+      <table>
+        <thead>
+          <tr>
+            <th>Ситуация</th>
+            <th>Ответ клиенту</th>
+            <th>Повторять?</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>Бюджет приложения исчерпан</td>
+            <td>429</td>
+            <td>Нет</td>
+          </tr>
+          <tr>
+            <td>Неверный ключ или формат запроса</td>
+            <td>401 или 400</td>
+            <td>Нет</td>
+          </tr>
+          <tr>
+            <td>Временная ошибка провайдера</td>
+            <td>502 или 503 после исчерпания попыток</td>
+            <td>Ограниченно</td>
+          </tr>
+          <tr>
+            <td>Превышен лимит провайдера</td>
+            <td>429 или 503 после обработки Retry-After</td>
+            <td>Ограниченно</td>
+          </tr>
+          <tr>
+            <td>Сбой в шлюзе</td>
+            <td>500</td>
+            <td>Только если операция безопасна</td>
+          </tr>
+        </tbody>
+      </table>
+
+      <h2>Retry без лавины запросов</h2>
+
+      <p>Retry — это не «попробовать ещё раз при любой ошибке». Повторная отправка допустима только для временных сбоев, а количество попыток должно быть ограничено. Для потоковой генерации и операций с побочными эффектами политика может отличаться от обычного chat-запроса.</p>
+
+      <p>Практичная базовая политика:</p>
+
+      <pre><code>max_attempts: 3
+backoff: exponential
+jitter: full
+retryable:
+  - timeout
+  - connection_reset
+  - 429
+  - 502
+  - 503
+  - 504
+never_retry:
+  - 400
+  - 401
+  - 403
+  - invalid_request
+  - budget_exceeded</code></pre>
+
+      <p>Пауза должна учитывать <code>Retry-After</code>, если его вернул провайдер или промежуточный слой. Если заголовка нет, используйте экспоненциальную задержку с небольшим случайным разбросом. Все попытки должны иметь общий deadline: иначе три отдельных тайм-аута превратят короткий запрос в долгую блокировку воркера.</p>
+
+      <p>Считайте каждую попытку в метриках, но не списывайте бюджет несколько раз за один логический запрос, если провайдерская модель учёта этого не требует. На уровне журнала полезно хранить <code>request_id</code>, <code>attempt</code>, <code>provider_status</code> и <code>final_status</code>.</p>
+
+      <h3>Fallback</h3>
+
+      <p>Fallback имеет смысл только при заранее согласованном контракте: другая модель может иначе отвечать, иметь другой лимит контекста или не поддерживать нужный формат. Не переключайте модель автоматически при ошибке валидации запроса — это скрывает проблему клиента.</p>
+
+      <pre><code>primary model
+  ├── success → return response
+  ├── retryable error → bounded retry
+  └── still unavailable → fallback, if allowed
+                                  └── failure → normalized 503</code></pre>
+
+      <p>Решение о fallback принимайте до списания окончательного usage. Если первая попытка была принята провайдером, но ответ потерялся, повтор может создать дубликат операции. Для chat completion это обычно означает повтор генерации, поэтому клиенту нужно сообщить о неопределённом результате, если ваша бизнес-логика не допускает такой риск.</p>
+
+      <h2>Развёртывание на ECS Fargate</h2>
+
+      <p>Для задачи Fargate задайте отдельную IAM task role с минимальными разрешениями на вызов нужных моделей Bedrock. Не помещайте долгоживущие ключи AWS в переменные окружения контейнера. Секреты приложения храните в Secrets Manager или другом согласованном хранилище, а задаче выдавайте доступ через IAM.</p>
+
+      <p>В task definition должны быть как минимум:</p>
+
+      <ul>
+        <li>образ шлюза с фиксированным тегом или digest;</li>
+        <li>порт приложения;</li>
+        <li>health check;</li>
+        <li>лимиты CPU и памяти;</li>
+        <li>переменные конфигурации без секретных значений;</li>
+        <li>логирование stdout/stderr;</li>
+        <li>task role для вызова Bedrock и чтения нужных секретов.</li>
+      </ul>
+
+      <p>Пример фрагмента конфигурации:</p>
+
+      <pre><code>{
+  "name": "ai-gateway",
+  "image": ["https://agentlabjournal.online/assets/covers/llm-context-window-budget-social.png"],
+  "essential": true,
+  "portMappings": [
+    {"containerPort": 8080, "protocol": "tcp"}
+  ],
+  "environment": [
+    {"name": "PORT", "value": "8080"},
+    {"name": "BUDGET_STORE_URL", "value": "rediss://budget-store.internal"}
+  ],
+  "secrets": [
+    {"name": "GATEWAY_SIGNING_KEY", "valueFrom": "SECRET_ARN"}
+  ],
+  "healthCheck": {
+    "command": ["CMD-SHELL", "curl -fsS http://localhost:8080/health || exit 1"],
+    "interval": 30,
+    "timeout": 5,
+    "retries": 3
+  }
+}</code></pre>
+
+      <p>Значения <code>REGISTRY</code>, <code>IMAGE_TAG</code>, <code>SECRET_ARN</code> и URL — placeholders. Перед применением проверьте, что security group разрешает только необходимые направления: вход от балансировщика, выход к Bedrock и хранилищу бюджета.</p>
+
+      <p>Безопасная последовательность обновления:</p>
+
+      <pre><code># Примеры команд. Перед запуском проверьте регион и имена ресурсов.
+aws ecs describe-services \
+  --cluster "$ECS_CLUSTER" \
+  --services "$ECS_SERVICE" \
+  --region "$AWS_REGION"
+
+aws ecs update-service \
+  --cluster "$ECS_CLUSTER" \
+  --service "$ECS_SERVICE" \
+  --force-new-deployment \
+  --region "$AWS_REGION"
+
+aws ecs wait services-stable \
+  --cluster "$ECS_CLUSTER" \
+  --services "$ECS_SERVICE" \
+  --region "$AWS_REGION"</code></pre>
+
+      <p>Команды ничего не удаляют, но всё равно требуют проверки переменных. Не используйте <code>--force-new-deployment</code> как замену контролируемому rollout, если изменение образа или конфигурации должно пройти через ваш обычный pipeline.</p>
+
+      <h2>Проверка изоляции бюджетов</h2>
+
+      <p>Создайте минимум два тестовых ключа: <code>app-a</code> и <code>app-b</code>. Установите для них разные тестовые лимиты в вашем budget store. Значения лимитов — часть тестового стенда, а не универсальная рекомендация.</p>
+
+      <p>Сценарий проверки:</p>
+
+      <ol>
+        <li>Отправьте запрос от <code>app-a</code> и убедитесь, что бюджет уменьшился только у него.</li>
+        <li>Создайте параллельную нагрузку от <code>app-a</code>, достаточную для перехода в состояние budget exceeded.</li>
+        <li>Проверьте, что новые запросы <code>app-a</code> получают 429 без обращения к Bedrock.</li>
+        <li>Сразу отправьте запрос от <code>app-b</code>.</li>
+        <li>Убедитесь, что <code>app-b</code> получает нормальный ответ, а его счётчик не смешивается с <code>app-a</code>.</li>
+      </ol>
+
+      <pre><code>for i in $(seq 1 20); do
+  curl --silent --show-error --fail-with-body \
+    -X POST "$GATEWAY_URL/v1/chat/completions" \
+    -H "Authorization: Bearer $APP_A_KEY" \
+    -H "Content-Type: application/json" \
+    --data '{"model":"gateway-default","messages":[{"role":"user","content":"budget test"}],"max_tokens":16}' &
+done
+wait
+
+curl --silent --show-error --fail-with-body \
+  -X POST "$GATEWAY_URL/v1/chat/completions" \
+  -H "Authorization: Bearer $APP_B_KEY" \
+  -H "Content-Type: application/json" \
+  --data '{"model":"gateway-default","messages":[{"role":"user","content":"isolation test"}],"max_tokens":16}'</code></pre>
+
+      <p>Количество запросов в примере не означает конкретную нагрузочную норму. Подберите его под искусственно уменьшенный лимит тестового стенда. Не запускайте этот цикл на рабочем ключе: даже при корректном budget guard он создаёт реальный трафик.</p>
+
+      <p>Тест считается успешным, если одновременно выполнены четыре условия:</p>
+
+      <ul>
+        <li>все отклонённые запросы принадлежат только исчерпавшему лимит ключу;</li>
+        <li>после отказа нет новых вызовов Bedrock для этого ключа;</li>
+        <li>второй ключ продолжает обслуживаться;</li>
+        <li>итоговые счётчики сходятся с журналом операций и резервов.</li>
+      </ul>
+
+      <h2>Тесты retry и fallback</h2>
+
+      <p>Не пытайтесь проверять retry реальным отключением продакшен-провайдера. В тестовом окружении используйте адаптер или управляемый mock, который возвращает последовательность статусов.</p>
+
+      <pre><code>case_1:
+  responses: [503, 200]
+  expected_attempts: 2
+  expected_result: 200
+
+case_2:
+  responses: [429, 429, 503]
+  expected_attempts: 3
+  expected_result: 503
+
+case_3:
+  responses: [400]
+  expected_attempts: 1
+  expected_result: 400
+
+case_4:
+  primary: [503, 503, 503]
+  fallback: [200]
+  expected_result: fallback_success</code></pre>
+
+      <p>Проверьте не только финальный HTTP-код. Зафиксируйте число попыток, задержки, обработку <code>Retry-After</code>, списание бюджета и отсутствие retry для 400/401/403. Для fallback дополнительно проверьте, что ответ содержит признак использованного маршрута, если это нужно клиенту и не раскрывает внутреннюю конфигурацию.</p>
+
+      <h2>Наблюдаемость</h2>
+
+      <p>Минимальный набор метрик:</p>
+
+      <ul>
+        <li><code>gateway_requests_total</code> с разрезом по приложению и финальному статусу;</li>
+        <li><code>gateway_retry_attempts_total</code> с разрезом по причине;</li>
+        <li><code>gateway_budget_used</code> и <code>gateway_budget_remaining</code>;</li>
+        <li><code>gateway_provider_latency_seconds</code>;</li>
+        <li><code>gateway_fallback_total</code>;</li>
+        <li><code>gateway_inflight_reservations</code>.</li>
+      </ul>
+
+      <p>Не помещайте полный API-ключ в логи. Используйте стабильный внутренний <code>key_id</code>, а сам запрос связывайте с корреляционным идентификатором. Текст пользовательского prompt также не должен попадать в логи по умолчанию: он может содержать персональные или коммерческие данные.</p>
+
+      <h2>Типовые ошибки</h2>
+
+      <h3>Лимит хранится внутри контейнера</h3>
+      <p>После масштабирования каждый экземпляр видит свой счётчик. Вынесите состояние в общий store и добавьте атомарный reserve/commit.</p>
+
+      <h3>Retry повторяет любую ошибку</h3>
+      <p>Так появляются лишние запросы при неверном payload и быстрый расход бюджета. Составьте allowlist временных ошибок и ограничьте общий deadline.</p>
+
+      <h3>Fallback меняет модель при любой проблеме</h3>
+      <p>Ошибка валидации не исправляется другой моделью. Переключение должно быть разрешено только для определённых временных отказов и совместимых моделей.</p>
+
+      <h3>Бюджет списывается до проверки результата</h3>
+      <p>При retry и fallback это приводит к двойному учёту или расходящимся данным. Разделите резерв, фактическое списание и освобождение остатка резерва.</p>
+
+      <h3>Health check проверяет только процесс</h3>
+      <p>Процесс может отвечать на <code>/health</code>, но не иметь сетевого доступа к Bedrock или store. Добавьте отдельную диагностическую проверку зависимости, не делая её причиной бесконечного рестарта при кратком внешнем сбое.</p>
+
+      <h2>Очистка ресурсов</h2>
+
+      <p>После тестов удаляйте только ресурсы, созданные для стенда. Перед удалением сохраните логи и итоговые данные о бюджетах, если они нужны для разбора.</p>
+
+      <pre><code># Сначала прочитайте текущую конфигурацию.
+aws ecs describe-services \
+  --cluster "$TEST_CLUSTER" \
+  --services "$TEST_SERVICE" \
+  --region "$AWS_REGION"
+
+# После проверки остановите сервис тестового окружения.
+aws ecs update-service \
+  --cluster "$TEST_CLUSTER" \
+  --service "$TEST_SERVICE" \
+  --desired-count 0 \
+  --region "$AWS_REGION"</code></pre>
+
+      <p>Очистка обычно включает временный ECS service, тестовые task definitions, load balancer listeners, security groups, временный store и тестовые секреты. Не удаляйте общую VPC, shared security group или production secret только по совпадению имени. Для каждого ресурса сначала подтвердите владельца, окружение и зависимости.</p>
+
+      <h2>Ограничения решения</h2>
+
+      <p>Бюджет на ключ не заменяет биллинг провайдера: фактический счёт и задержка поступления usage могут отличаться от локального счётчика. Retry не гарантирует доставку ответа и может повторить генерацию после неопределённого сетевого сбоя. Fargate упрощает запуск контейнеров, но не решает автоматически вопросы IAM, сетевой маршрутизации, секретов и наблюдаемости.</p>
+
+      <p>Перед рабочим запуском отдельно проверьте требования к потоковым ответам, большие payload, отмену запроса клиентом, idempotency, лимиты контекста и поведение при перезапуске задачи. Эти случаи часто меняют правила резервирования и повторов.</p>
+
+      <h2>Итоговая проверка</h2>
+
+      <p>Шлюз можно считать готовым к следующему этапу, когда:</p>
+
+      <ul>
+        <li>клиенты используют единый OpenAI-совместимый endpoint;</li>
+        <li>каждый ключ имеет отдельный счётчик и атомарный резерв;</li>
+        <li>исчерпание бюджета возвращает 429 до вызова провайдера;</li>
+        <li>retry ограничен типами ошибок, числом попыток и общим deadline;</li>
+        <li>fallback включается только для разрешённых маршрутов;</li>
+        <li>тестовый ключ с исчерпанным лимитом не блокирует другой ключ;</li>
+        <li>логи и метрики не раскрывают секреты и пользовательские prompts;</li>
+        <li>ресурсы тестового окружения можно безопасно удалить.</li>
+      </ul>
+
+      <p>Сохраните сценарии изоляции и retry как автоматические интеграционные тесты. Тогда изменение адаптера Bedrock, лимитов или retry-политики не останется непроверенным до первой реальной аварии.</p>
+
+      <p class="reading-next">Продолжение: <a href="guides.html">другие практические гайды Agent Lab Journal</a> и определения терминов в <a href="glossary.html">глоссарии</a>.</p>
+<aside class="service-note" aria-label="Связаться по проекту">
+  <div class="service-note__copy">
+    <p class="service-note__label">Связь с Agent Lab</p>
+    <p class="service-note__title">Внедрим такой контур в ваш процесс</p>
+    <p class="service-note__text">Напишите инженеру Agent Lab в Telegram: опишите задачу, бота или интеграцию — предложим пилот с проверками и понятными границами.</p>
+  </div>
+  <a class="service-note__link" href="https://t.me/msrzn007?utm_source=journal&amp;utm_medium=article&amp;utm_campaign=service_note" target="_blank" rel="noopener">Написать в Telegram
+    <svg viewBox="0 0 16 16" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"><path d="M3 13 13 3M6 3h7v7"/></svg>
+  </a>
+</aside>
+<aside class="service-note service-note--sitevisor" aria-label="Экспресс-аудит сайта">
+  <div class="service-note__copy">
+    <p class="service-note__label">SiteVisor</p>
+    <p class="service-note__title">Проверьте техническое состояние и готовность вашего сайта к рекламе</p>
+    <p class="service-note__text">Экспресс-аудит на SiteVisor.pro: индексация, скорость, разметка, аналитика и точки конверсии.</p>
+  </div>
+  <a class="service-note__link" href="https://sitevisor.pro/?utm_source=journal&amp;utm_medium=article&amp;utm_campaign=leadmagnet" target="_blank" rel="noopener">Экспресс-аудит на SiteVisor.pro
+    <svg viewBox="0 0 16 16" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"><path d="M3 13 13 3M6 3h7v7"/></svg>
+  </a>
+</aside>
+</article>
+  </main>
+
+  <footer class="site-footer">
+    <div class="container">
+      <span>Agent Lab Journal</span>
+      <nav aria-label="Навигация в подвале">
+        <a href="guides.html">Гайды</a>
+        <a href="glossary.html">Глоссарий</a>
+      </nav>
+    </div>
+  </footer>
+</body>
+</html>
