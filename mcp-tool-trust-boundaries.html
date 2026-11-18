@@ -1,0 +1,456 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Проектирование доверия в MCP-инструментах</title>
+  <meta name="description" content="Проектирование доверия в MCP-инструментах: практический прототип с ограниченными действиями, подтверждением опасных операций, аудитом и трассировкой.">
+  <link rel="canonical" href="https://agentlabjournal.online/mcp-tool-trust-boundaries.html">
+  <link rel="stylesheet" href="style.css">
+  <link rel="stylesheet" href="reading.css">
+
+  <meta property="og:type" content="article">
+  <meta property="og:locale" content="ru_RU">
+  <meta property="og:title" content="Проектирование доверия в MCP-инструментах">
+  <meta property="og:description" content="Как построить безопасный прототип MCP-интеграции с ограниченными инструментами, подтверждением опасных действий, аудитом и трассировкой.">
+  <meta property="og:url" content="https://agentlabjournal.online/mcp-tool-trust-boundaries.html">
+
+  <meta name="twitter:card" content="summary">
+  <meta name="twitter:title" content="Проектирование доверия в MCP-инструментах">
+  <meta name="twitter:description" content="Практическая статья о границах доверия, авторизации, prompt injection, идемпотентности и наблюдаемости в MCP-интеграциях.">
+
+  <script type="application/ld+json">
+  {
+    "@context": "https://schema.org",
+    "@type": "Article",
+    "headline": "Проектирование доверия в MCP-инструментах",
+    "description": "Практическое руководство по созданию безопасного прототипа MCP-интеграции с ограниченными инструментами, подтверждением опасных действий, аудитом и трассировкой.",
+    "inLanguage": "ru-RU",
+    "mainEntityOfPage": {
+      "@type": "WebPage",
+      "@id": "https://agentlabjournal.online/mcp-tool-trust-boundaries.html"
+    },
+    "author": {
+      "@type": "Organization",
+      "name": "Agent Lab Journal"
+    },
+    "publisher": {
+      "@type": "Organization",
+      "name": "Agent Lab Journal"
+    }
+  }
+  </script>
+<link rel="stylesheet" href="homepage.css"><link rel="stylesheet" href="max-promo.css">  <meta property="og:image" content="https://agentlabjournal.online/assets/covers/llm-context-window-budget-social.png">
+  <meta property="og:image:alt" content="Проектирование доверия в MCP-инструментах">
+  <meta name="twitter:image" content="https://agentlabjournal.online/assets/covers/llm-context-window-budget-social.png">
+</head>
+<body>
+  <header class="site-header">
+    <div class="container">
+      <a class="site-brand" href="index.html">Agent Lab Journal</a>
+      <nav aria-label="Основная навигация">
+        <a href="guides.html">Guides</a>
+        <a href="glossary.html">Глоссарий</a>
+      </nav>
+    </div>
+  </header>
+
+  <main>
+    <article class="reading">
+      <header class="reading-header">
+        <p class="eyebrow">Безопасность агентных систем · Практика</p>
+        <h1>Проектирование доверия в MCP-инструментах</h1>
+        <figure class="article-cover" data-editorial-cover="mcp-tool-trust-boundaries"><img src="assets/covers/llm-context-window-budget.png" alt="Проектирование доверия в MCP-инструментах" width="1280" height="720" fetchpriority="high"><figcaption>Temporary fallback cover; replace in editorial pass.</figcaption></figure>
+        <p class="lead">MCP упрощает подключение моделей к внешним действиям, но сам по себе не отвечает на главный инженерный вопрос: чему именно можно доверять — модели, серверу, аргументам вызова или результату операции?</p>
+        <div class="reading-meta">
+          <span>Продвинутый уровень</span>
+          <span>До 12 минут</span>
+          <span>Обновляемый прототип</span>
+        </div>
+      </header>
+<a href="https://max.ru/channel_AgentLab?utm_source=agentlabjournal&utm_medium=article&utm_campaign=max_channel&utm_content=article_footer" class="max-promo-block" target="_blank" rel="noopener noreferrer" aria-label="Самое важное из мира AI в канале MAX AgentLab">
+  <span class="max-promo-block__icon" aria-hidden="true"></span>
+  <span class="max-promo-block__content"><span class="max-promo-block__title">Самое важное из мира AI — в канале MAX AgentLab</span><span class="max-promo-block__desc">Отдельные разборы, инструменты и практические схемы</span></span>
+  <span class="max-promo-block__arrow" aria-hidden="true">→</span>
+</a>
+<a href="https://t.me/pelmenews?utm_source=agentlabjournal&utm_medium=article&utm_campaign=telegram_channel&utm_content=article_intro" class="telegram-promo-block" target="_blank" rel="noopener noreferrer" aria-label="Читайте Agent Lab в Telegram">
+  <span class="telegram-promo-block__icon" aria-hidden="true"></span>
+  <span class="telegram-promo-block__content">
+    <span class="telegram-promo-block__title">Читайте Agent Lab в Telegram</span>
+    <span class="telegram-promo-block__desc">Разборы, кейсы и новости о практических AI-агентах без лишней воды.</span>
+  </span>
+  <span class="telegram-promo-block__arrow" aria-hidden="true">→</span>
+</a>
+
+      <aside class="callout callout-warning">
+        <strong>Идея статьи.</strong>
+        Доверие к инструменту нужно проектировать как набор проверяемых границ: минимальные права, серверная авторизация, подтверждение опасных действий, идемпотентность, аудит и трассировка.
+      </aside>
+
+      <section>
+        <h2>Почему наличие MCP-инструмента не означает безопасность</h2>
+        <p><a href="glossary.html#term-mcp">MCP</a> стандартизирует способ описания и вызова инструментов. Это уменьшает количество интеграционного кода, но не превращает внешний инструмент в доверенный компонент.</p>
+        <p>Нельзя считать безопасным инструмент только потому, что:</p>
+        <ul>
+          <li>его название выглядит понятным;</li>
+          <li>модель получила корректную схему аргументов;</li>
+          <li>сервер работает в локальной сети;</li>
+          <li>пользователь однажды разрешил подключение;</li>
+          <li>результат вернулся без ошибки.</li>
+        </ul>
+        <p>Вызов может быть формально валидным и всё равно не соответствовать намерению пользователя. Например, инструмент <code>delete_file</code> может получить правильный путь, но путь будет выбран из недоверенного контекста ответа модели. Поэтому граница доверия должна проходить не вокруг MCP-сервера целиком, а вокруг каждого действия и его параметров.</p>
+      </section>
+
+      <section>
+        <h2>Модель угроз для прототипа</h2>
+        <p>Для воспроизводимого прототипа достаточно рассмотреть пять классов риска:</p>
+
+        <ol>
+          <li><strong>Избыточные права.</strong> Инструмент умеет больше, чем требуется текущему сценарию.</li>
+          <li><strong>Prompt injection.</strong> Недоверенный текст пытается изменить инструкции модели или заставить её вызвать инструмент.</li>
+          <li><strong>Подмена контекста.</strong> Аргумент выглядит допустимым, но относится к другой рабочей области, пользователю или ресурсу.</li>
+          <li><strong>Повтор операции.</strong> Сетевой сбой приводит к повторному списанию, удалению или отправке.</li>
+          <li><strong>Невидимый отказ.</strong> Нельзя восстановить, кто запросил действие, какие аргументы были проверены и почему вызов завершился ошибкой.</li>
+        </ol>
+
+        <p>Пример ниже не является готовой библиотекой авторизации. Это минимальная схема, которую можно адаптировать под конкретный MCP-клиент и сервер.</p>
+      </section>
+
+      <section>
+        <h2>Шаг 1. Разделите инструменты по уровню опасности</h2>
+        <p>Начните не со списка всех доступных API, а со списка намерений. Для каждого намерения определите минимальное действие.</p>
+
+        <table>
+          <thead>
+            <tr>
+              <th>Класс</th>
+              <th>Пример</th>
+              <th>Защита</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td>Наблюдение</td>
+              <td><code>read_report</code></td>
+              <td>Проверка области видимости и прав чтения</td>
+            </tr>
+            <tr>
+              <td>Подготовка</td>
+              <td><code>build_draft</code></td>
+              <td>Изоляция результата, отсутствие внешнего эффекта</td>
+            </tr>
+            <tr>
+              <td>Изменение</td>
+              <td><code>update_record</code></td>
+              <td>Авторизация, валидация полей, идемпотентный ключ</td>
+            </tr>
+            <tr>
+              <td>Опасное действие</td>
+              <td><code>delete_record</code></td>
+              <td>Явное подтверждение пользователя и усиленный аудит</td>
+            </tr>
+          </tbody>
+        </table>
+
+        <p>Не объединяйте чтение и изменение в универсальный инструмент вроде <code>manage_resource</code>. Узкое имя уменьшает пространство для неоднозначных решений и упрощает политики.</p>
+      </section>
+
+      <section>
+        <h2>Шаг 2. Опишите контракт инструмента</h2>
+        <p>Контракт должен описывать не только типы аргументов, но и границы действия. В качестве иллюстрации можно использовать такой JSON:</p>
+
+        <pre><code>{
+  "name": "update_record",
+  "description": "Изменяет только поля draft_title и draft_body в записи черновика",
+  "risk": "write",
+  "requires_confirmation": false,
+  "scope": "drafts:write",
+  "idempotency_required": true,
+  "input": {
+    "type": "object",
+    "required": ["record_id", "patch", "idempotency_key"],
+    "properties": {
+      "record_id": { "type": "string", "pattern": "^draft_[a-z0-9]+$" },
+      "patch": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "draft_title": { "type": "string", "maxLength": 160 },
+          "draft_body": { "type": "string", "maxLength": 20000 }
+        }
+      },
+      "idempotency_key": { "type": "string", "minLength": 16 }
+    },
+    "additionalProperties": false
+  }
+}</code></pre>
+
+        <p>Поле <code>description</code> помогает модели, но не является механизмом безопасности. Сервер обязан повторно проверить имя инструмента, область, схему, доступ пользователя и допустимые значения.</p>
+      </section>
+
+      <section>
+        <h2>Шаг 3. Введите серверную авторизацию</h2>
+        <p>Авторизацию нельзя оставлять на стороне модели или интерфейса подтверждения. Сервер должен получать контекст вызывающего субъекта и проверять разрешение непосредственно перед выполнением операции.</p>
+
+        <pre><code>function authorize(ctx, tool, args) {
+  if (!ctx.userId) {
+    throw new Error("AUTH_REQUIRED");
+  }
+
+  const policy = policyFor(ctx.userId, tool);
+
+  if (!policy.allowed) {
+    throw new Error("TOOL_NOT_ALLOWED");
+  }
+
+  if (!policy.scopes.includes(tool.scope)) {
+    throw new Error("SCOPE_DENIED");
+  }
+
+  if (!recordBelongsToWorkspace(args.record_id, ctx.workspaceId)) {
+    throw new Error("RESOURCE_OUT_OF_SCOPE");
+  }
+
+  return true;
+}</code></pre>
+
+        <p>Это псевдокод, а не готовая реализация. В рабочей системе решение должно учитывать срок действия учетных данных, отзыв разрешений, разделение рабочих областей и защиту от повторного использования контекста.</p>
+
+        <aside class="callout">
+          <strong>Практическое правило.</strong>
+          Если пользователь может потерять право на действие между планированием и выполнением, проверяйте право на выполнение непосредственно перед вызовом внешней системы.
+        </aside>
+      </section>
+
+      <section>
+        <h2>Шаг 4. Обрабатывайте prompt injection как недоверенный ввод</h2>
+        <p>Текст из файлов, страниц, писем, тикетов и ответов внешних API нужно рассматривать как данные, а не как инструкции. Даже если этот текст содержит фразы вроде «игнорируй предыдущие правила» или «вызови инструмент с такими аргументами», он не должен автоматически менять политику выполнения.</p>
+
+        <p>Разделите поток на четыре части:</p>
+
+        <ol>
+          <li><strong>Данные.</strong> Содержимое, которое модель анализирует.</li>
+          <li><strong>Политика.</strong> Ограничения, заданные приложением и сервером.</li>
+          <li><strong>Предложение действия.</strong> Намерение модели с аргументами.</li>
+          <li><strong>Решение о выполнении.</strong> Серверная проверка и, если нужно, подтверждение человека.</li>
+        </ol>
+
+        <p>Недоверенный текст может быть причиной для предложения действия, но не должен быть источником полномочий. Полномочия должны приходить из контекста сеанса, политики и разрешений пользователя.</p>
+      </section>
+
+      <section>
+        <h2>Шаг 5. Сделайте опасные действия двухфазными</h2>
+        <p>Для удаления, публикации, отправки сообщения, изменения прав или финансового действия используйте разделение на подготовку и выполнение:</p>
+
+        <pre><code>1. Модель формирует предложение:
+   tool = "delete_record"
+   args = { "record_id": "draft_7f2a" }
+
+2. Сервер проверяет:
+   - пользователь имеет право удаления;
+   - запись существует и принадлежит рабочей области;
+   - аргументы соответствуют схеме;
+   - предложение не создано из запрещённого контекста.
+
+3. Интерфейс показывает:
+   - точное имя действия;
+   - ресурс;
+   - необратимые последствия;
+   - срок действия подтверждения.
+
+4. Пользователь подтверждает действие.
+
+5. Сервер исполняет вызов с одноразовым confirmation_token.</code></pre>
+
+        <p>Подтверждение должно быть связано с конкретным набором аргументов. Нельзя выдавать общий токен «разрешить удаления» и применять его к любому ресурсу. Если изменился хотя бы один значимый аргумент, требуется новое подтверждение.</p>
+      </section>
+
+      <section>
+        <h2>Шаг 6. Добавьте идемпотентность</h2>
+        <p>Идемпотентность нужна там, где повтор вызова может создать второй внешний эффект. Таймаут не означает, что операция не произошла: клиент мог потерять ответ после успешного выполнения.</p>
+
+        <pre><code>function executeOnce(ctx, request) {
+  const key = `${ctx.userId}:${request.tool}:${request.idempotency_key}`;
+
+  const previous = idempotencyStore.get(key);
+  if (previous) {
+    return previous.result;
+  }
+
+  const result = performAuthorizedAction(ctx, request);
+
+  idempotencyStore.put(key, {
+    status: "completed",
+    result: result,
+    created_at: now()
+  });
+
+  return result;
+}</code></pre>
+
+        <p>В реальной реализации запись ключа и внешний эффект должны быть согласованы настолько, насколько это позволяет конкретная система. Для критичных операций понадобится транзакционный журнал, outbox-паттерн или иной механизм восстановления. Само наличие строки <code>idempotency_key</code> проблему не решает.</p>
+      </section>
+
+      <section>
+        <h2>Шаг 7. Ведите аудит и трассировку</h2>
+        <p>Логи должны отвечать на вопросы: кто вызвал инструмент, почему вызов был разрешён или отклонён, какие аргументы прошли валидацию и какой внешний эффект возник.</p>
+
+        <p>Минимальное событие аудита:</p>
+
+        <pre><code>{
+  "event": "tool.invocation",
+  "trace_id": "trace-example",
+  "request_id": "request-example",
+  "user_id": "user-example",
+  "workspace_id": "workspace-example",
+  "tool": "update_record",
+  "risk": "write",
+  "authorization": "allowed",
+  "confirmation": "not_required",
+  "idempotency_key_hash": "hash-example",
+  "result": "success",
+  "created_at": "2026-01-01T00:00:00Z"
+}</code></pre>
+
+        <p>Значения выше — демонстрационный пример, а не реальные идентификаторы. Не записывайте в аудит токены, пароли, полные персональные данные и секреты. Для корреляции используйте <code>trace_id</code> и <code>request_id</code>, а для идемпотентного ключа — хеш или безопасный отпечаток.</p>
+
+        <p>Трассировка полезна, когда один пользовательский запрос вызывает несколько инструментов. Связывайте родительский span с дочерними вызовами, отдельно отмечайте этапы планирования, авторизации, подтверждения и исполнения.</p>
+      </section>
+
+      <section>
+        <h2>Безопасный локальный сценарий проверки</h2>
+        <p>Ниже — последовательность, которую можно воспроизвести в тестовом окружении без доступа к настоящим данным:</p>
+
+        <ol>
+          <li>Создайте отдельную рабочую область с фиктивной записью.</li>
+          <li>Разрешите только <code>read_report</code> и <code>update_record</code>.</li>
+          <li>Убедитесь, что <code>delete_record</code> отсутствует в опубликованном списке инструментов или требует отдельного подтверждения.</li>
+          <li>Отправьте в модель текст, имитирующий prompt injection, и проверьте, что он не расширяет права.</li>
+          <li>Повторите один и тот же вызов с одинаковым ключом идемпотентности.</li>
+          <li>Проверьте, что второй вызов возвращает сохранённый результат и не создаёт второй эффект.</li>
+          <li>Проверьте аудит по одному <code>trace_id</code>: должны быть видны авторизация, решение о подтверждении и итог.</li>
+          <li>Измените один аргумент после подтверждения и убедитесь, что старый токен больше не принимается.</li>
+        </ol>
+
+        <p>Команды и конкретные клиенты зависят от реализации MCP-сервера, поэтому здесь намеренно не приводится команда, которая могла бы ошибочно выглядеть универсальной. Используйте только тестовую рабочую область и фиктивные учетные данные.</p>
+      </section>
+
+      <section>
+        <h2>Как проверить результат</h2>
+
+        <table>
+          <thead>
+            <tr>
+              <th>Проверка</th>
+              <th>Ожидаемый результат</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td>Вызов без пользователя</td>
+              <td>Отклонён до обращения к внешней системе</td>
+            </tr>
+            <tr>
+              <td>Ресурс из другой рабочей области</td>
+              <td>Отклонён как <code>RESOURCE_OUT_OF_SCOPE</code></td>
+            </tr>
+            <tr>
+              <td>Опасное действие без подтверждения</td>
+              <td>Не исполняется</td>
+            </tr>
+            <tr>
+              <td>Изменение аргументов после подтверждения</td>
+              <td>Требует нового подтверждения</td>
+            </tr>
+            <tr>
+              <td>Повтор с тем же ключом</td>
+              <td>Возвращается прежний результат без повторного эффекта</td>
+            </tr>
+            <tr>
+              <td>Любой отказ</td>
+              <td>Есть событие аудита с причиной и корреляционными идентификаторами</td>
+            </tr>
+          </tbody>
+        </table>
+      </section>
+
+      <section>
+        <h2>Типовые ошибки</h2>
+
+        <h3>«Мы доверяем описанию инструмента»</h3>
+        <p>Описание предназначено для понимания, а не для принудительного контроля. Все ограничения должны дублироваться в серверной политике и проверке аргументов.</p>
+
+        <h3>«Подтверждение пользователя решает всё»</h3>
+        <p>Пользователь может подтвердить непонятный или подменённый экран. Показывайте конкретный ресурс, действие, последствия и аргументы, а токен связывайте с их точным отпечатком.</p>
+
+        <h3>«Лог вызова — это аудит»</h3>
+        <p>Обычный лог часто не содержит решения авторизации, версии политики и статуса подтверждения. Аудит должен быть структурированным и пригодным для расследования.</p>
+
+        <h3>«Повторный запрос безопасен»</h3>
+        <p>Без идемпотентности повтор может снова отправить сообщение, создать запись или изменить состояние. Учитывайте повторы на всех границах: клиент, MCP-сервер, очередь и внешний API.</p>
+
+        <h3>«Недоверенный текст можно поместить в системную инструкцию»</h3>
+        <p>Так вы стираете границу между данными и политикой. Храните происхождение данных и передавайте их модели в явно обозначенном недоверенном контексте.</p>
+      </section>
+
+      <section>
+        <h2>Ограничения прототипа</h2>
+        <p>Описанная схема не заменяет полноценную модель угроз и не гарантирует безопасность конкретной интеграции. Она не рассматривает детально управление секретами, ротацию ключей, изоляцию процессов, безопасность транспорта, мультиарендность, требования законодательства и восстановление после компрометации.</p>
+
+        <p>Также нельзя сделать вывод, что MCP-сервер безопасен только потому, что прошёл локальную проверку. Нужны отдельные проверки зависимостей, инфраструктуры, прав доступа, хранения журналов и поведения внешних систем.</p>
+      </section>
+
+      <section>
+        <h2>Итоговая схема доверия</h2>
+        <p>Безопасный прототип MCP-интеграции строится вокруг последовательности, где ни один слой не считается достаточным сам по себе:</p>
+
+        <pre><code>Запрос пользователя
+        ↓
+Недоверенные данные отделены от инструкций
+        ↓
+Модель предлагает узкий инструмент и аргументы
+        ↓
+Сервер валидирует схему, область и права
+        ↓
+Опасное действие получает одноразовое подтверждение
+        ↓
+Идемпотентный исполнитель предотвращает повторный эффект
+        ↓
+Аудит и трассировка фиксируют решение и результат</code></pre>
+
+        <p>Такой подход переводит разговор о доверии из области предположений в область проверяемых свойств. Инструмент не обязан быть «доверенным целиком»: достаточно явно определить, какие действия разрешены, в каком контексте, с каким подтверждением и каким следом в аудите.</p>
+      </section>
+
+<aside class="service-note" aria-label="Связаться по проекту">
+  <div class="service-note__copy">
+    <p class="service-note__label">Связь с Agent Lab</p>
+    <p class="service-note__title">Внедрим такой контур в ваш процесс</p>
+    <p class="service-note__text">Напишите инженеру Agent Lab в Telegram: опишите задачу, бота или интеграцию — предложим пилот с проверками и понятными границами.</p>
+  </div>
+  <a class="service-note__link" href="https://t.me/msrzn007?utm_source=journal&amp;utm_medium=article&amp;utm_campaign=service_note" target="_blank" rel="noopener">Написать в Telegram
+    <svg viewBox="0 0 16 16" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"><path d="M3 13 13 3M6 3h7v7"/></svg>
+  </a>
+</aside>
+<aside class="service-note service-note--sitevisor" aria-label="Экспресс-аудит сайта">
+  <div class="service-note__copy">
+    <p class="service-note__label">SiteVisor</p>
+    <p class="service-note__title">Проверьте техническое состояние и готовность вашего сайта к рекламе</p>
+    <p class="service-note__text">Экспресс-аудит на SiteVisor.pro: индексация, скорость, разметка, аналитика и точки конверсии.</p>
+  </div>
+  <a class="service-note__link" href="https://sitevisor.pro/?utm_source=journal&amp;utm_medium=article&amp;utm_campaign=leadmagnet" target="_blank" rel="noopener">Экспресс-аудит на SiteVisor.pro
+    <svg viewBox="0 0 16 16" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"><path d="M3 13 13 3M6 3h7v7"/></svg>
+  </a>
+</aside>
+      <footer class="article-footer">
+        <p>Продолжите изучение темы в <a href="guides.html">практических guides</a> и сверяйтесь с <a href="glossary.html">глоссарием терминов</a>.</p>
+      </footer>
+</article>
+  </main>
+
+  <footer class="site-footer">
+    <div class="container">
+      <p>Agent Lab Journal · Практика безопасных агентных систем</p>
+    </div>
+  </footer>
+</body>
+</html>
