@@ -1,0 +1,562 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>AI Itineraries Without Invented Data: Separating Suggestions, Places, and Routes</title>
+  <meta name="description" content="AI Itineraries Without Invented Data: Separating Suggestions, Places, and Routes. A reproducible prototype architecture for separating suggestions, verified places, routes, and user confirmation.">
+  <link rel="canonical" href="https://agentlabjournal.online/en/ai-roteiro-dados-mest-i-marshruty.html">
+  <link rel="stylesheet" href="../style.css">
+  <link rel="stylesheet" href="../reading.css">
+
+  <meta property="og:type" content="article">
+  <meta property="og:title" content="AI Itineraries Without Invented Data: Separating Suggestions, Places, and Routes">
+  <meta property="og:description" content="A reproducible prototype architecture for separating generated suggestions, verifiable places, route calculations, and user confirmation.">
+  <meta property="og:url" content="https://agentlabjournal.online/en/ai-roteiro-dados-mest-i-marshruty.html">
+  <meta property="og:image" content="https://agentlabjournal.online/assets/covers/llm-context-window-budget-social.png">
+
+  <meta name="twitter:card" content="summary_large_image">
+  <meta name="twitter:title" content="AI Itineraries Without Invented Data: Separating Suggestions, Places, and Routes">
+  <meta name="twitter:description" content="A practical architecture for building travel itineraries without presenting generated suggestions as verified facts.">
+  <meta name="twitter:image" content="https://agentlabjournal.online/assets/covers/llm-context-window-budget-social.png">
+
+  <meta name="reading-time" content="20 minutes">
+  <meta name="article:reading_time" content="20 minutes">
+
+  <script type="application/ld+json">
+  {
+    "@context": "https://schema.org",
+    "@type": "Article",
+    "headline": "AI Itineraries Without Invented Data: Separating Suggestions, Places, and Routes",
+    "description": "A reproducible prototype architecture for separating generated suggestions, verifiable places, route calculations, and user confirmation.",
+    "image": ["https://agentlabjournal.online/assets/covers/llm-context-window-budget-social.png"],
+    "dateModified": "2026-11-18",
+    "author": {
+      "@type": "Organization",
+      "name": "Agent Lab Journal"
+    },
+    "publisher": {
+      "@type": "Organization",
+      "name": "Agent Lab Journal"
+    },
+    "mainEntityOfPage": {
+      "@type": "WebPage",
+      "@id": "https://agentlabjournal.online/en/ai-roteiro-dados-mest-i-marshruty.html"
+    }
+  }
+  </script>
+<link rel="stylesheet" href="../homepage.css"><link rel="stylesheet" href="../max-promo.css">  <meta property="og:image:alt" content="AI-маршруты без выдуманных данных: разделяем предложения, места и маршруты">
+</head>
+<body>
+  <header class="site-header">
+    <div class="container">
+      <a href="../index.html" class="site-brand">Agent Lab Journal</a>
+      <nav aria-label="Primary navigation">
+        <a href="../guides.html">Guides</a>
+        <a href="../glossary.html">Glossary</a>
+      </nav>
+    </div>
+  </header>
+
+  <main>
+    <article class="reading">
+      <header class="reading-header">
+        <p class="reading-kicker">Advanced guide · 20 min read</p>
+        <h1>AI Itineraries Without Invented Data: Separating Suggestions, Places, and Routes</h1>
+        <figure class="article-cover" data-editorial-cover="ai-roteiro-dados-mest-i-marshruty"><img src="../assets/covers/llm-context-window-budget.png" alt="AI-маршруты без выдуманных данных: разделяем предложения, места и маршруты" width="1280" height="720" fetchpriority="high"><figcaption>Temporary fallback cover; replace in editorial pass.</figcaption></figure>
+        <p class="reading-meta">Updated November 18, 2026 · Practical prototype architecture</p>
+        <p class="reading-lead">
+          A useful travel assistant must be creative about what a traveller might enjoy and conservative about what it claims to know. The safest design treats an itinerary as a pipeline: interpret the request, generate candidate ideas, resolve selected places through a place-data provider, calculate routes through a routing service, and ask the user to confirm important choices before presenting a plan.
+        </p>
+      </header>
+
+      <section>
+        <h2>The boundary that prevents invented travel facts</h2>
+
+        <p>
+          The central failure mode is <a href="../glossary.html#hallucination">hallucination</a>: a model produces a plausible restaurant, opening time, address, travel duration, or attraction name that was never verified. Travel prompts make this especially easy because they combine soft preferences with hard constraints. “Plan a relaxed Saturday around independent bookstores and vegetarian food” invites useful synthesis, but it does not authorize the system to invent businesses or assert that a venue is open.
+        </p>
+
+        <p>
+          Separate the output into three data classes:
+        </p>
+
+        <ul>
+          <li><strong>Suggestions:</strong> generated hypotheses about activities, neighbourhoods, themes, or search directions. They may be helpful without being factual claims.</li>
+          <li><strong>Places:</strong> records returned by a place provider or entered by the user. They have identifiers, coordinates, names, addresses, and provider metadata.</li>
+          <li><strong>Routes:</strong> calculations made from resolved coordinates, travel mode, departure assumptions, and a routing provider. They are not opinions generated by the language model.</li>
+        </ul>
+
+        <p>
+          The model may propose “look for a small independent bookshop near the museum district.” It should not silently turn that sentence into a real business. A place enters the itinerary only after <a href="../glossary.html#geocoding">geocoding</a> or place search returns a usable record. A route enters the itinerary only after a <a href="../glossary.html#routing-engine">routing engine</a> calculates it.
+        </p>
+      </section>
+
+      <section>
+        <h2>A reproducible prototype architecture</h2>
+
+        <p>
+          The prototype can be implemented as four explicit stages with typed boundaries:
+        </p>
+
+        <ol>
+          <li><strong>Intent interpretation:</strong> convert natural language into constraints and preferences.</li>
+          <li><strong>Suggestion generation:</strong> produce candidate activities or search queries, clearly marked as unverified.</li>
+          <li><strong>Place lookup:</strong> resolve candidates through a provider and retain the provider’s identifiers and raw evidence.</li>
+          <li><strong>Route calculation and confirmation:</strong> calculate travel between confirmed places, expose assumptions, and request user approval.</li>
+        </ol>
+
+        <p>
+          A language model can operate in the first two stages. It should not be the source of truth for the last two stages.
+        </p>
+
+        <pre><code>{
+  "request": {
+    "text": "A relaxed Saturday in Lisbon, mostly on foot, with bookstores and vegetarian lunch",
+    "origin": null,
+    "date": null
+  },
+  "intent": {
+    "city": "Lisbon",
+    "date": null,
+    "travel_mode": "walking",
+    "pace": "relaxed",
+    "themes": ["independent bookstores", "vegetarian lunch"],
+    "max_stops": 4,
+    "unknowns": ["starting point", "time window"]
+  },
+  "suggestions": [
+    {
+      "label": "Find an independent bookstore in the central area",
+      "status": "unverified",
+      "query": "independent bookstore Lisbon central"
+    }
+  ],
+  "places": [],
+  "routes": [],
+  "confirmation": {
+    "required": true,
+    "questions": [
+      "Where should the walk start?",
+      "What time window should be used?"
+    ]
+  }
+}</code></pre>
+
+        <p>
+          This example is a proposed data shape, not a report of a tested integration. The important property is that each stage has a visible status and that unresolved values remain unresolved.
+        </p>
+      </section>
+
+      <section>
+        <h2>Stage one: interpret intent without pretending to know the answer</h2>
+
+        <p>
+          Intent interpretation should extract constraints, preferences, and missing information. It should not fill gaps with plausible defaults unless the product explicitly documents those defaults.
+        </p>
+
+        <p>
+          Useful fields include:
+        </p>
+
+        <ul>
+          <li>destination or geographic area;</li>
+          <li>starting point and endpoint;</li>
+          <li>date and time window;</li>
+          <li>travel mode;</li>
+          <li>pace and maximum number of stops;</li>
+          <li>accessibility requirements;</li>
+          <li>budget or dietary preferences;</li>
+          <li>must-include and must-avoid constraints;</li>
+          <li>unknown values that require a question.</li>
+        </ul>
+
+        <p>
+          Do not infer that “Saturday” means the next Saturday, that “near the hotel” means a known hotel, or that “open” means open at the current time. Store these as unresolved constraints until the user supplies them or a clearly documented product rule resolves them.
+        </p>
+
+        <p>
+          A compact <a href="../glossary.html#intent-schema">intent schema</a> might look like this:
+        </p>
+
+        <pre><code>{
+  "destination": {
+    "value": "Lisbon",
+    "source": "user",
+    "confidence": "explicit"
+  },
+  "travel_mode": {
+    "value": "walking",
+    "source": "user",
+    "confidence": "explicit"
+  },
+  "time_window": {
+    "value": null,
+    "source": null,
+    "confidence": "missing"
+  },
+  "preferences": [
+    {
+      "value": "vegetarian lunch",
+      "source": "user",
+      "confidence": "explicit"
+    }
+  ]
+}</code></pre>
+
+        <p>
+          The <code>source</code> field is more useful than a single model confidence score. It distinguishes user-provided information from an inferred preference and from provider-returned data.
+        </p>
+      </section>
+
+      <section>
+        <h2>Stage two: generate suggestions as proposals</h2>
+
+        <p>
+          Suggestions are where generative systems add value. They can propose a sequence such as “bookstore first, lunch nearby, then a quiet public garden.” But every generated entity should carry a status such as <code>unverified</code> until a provider resolves it.
+        </p>
+
+        <p>
+          Prefer suggestion objects that describe the search task rather than fabricate names:
+        </p>
+
+        <pre><code>{
+  "suggestion_id": "s-001",
+  "kind": "place_search",
+  "label": "Independent bookstore near the central area",
+  "search_query": {
+    "text": "independent bookstore",
+    "area": "central Lisbon"
+  },
+  "reason": "Matches the user's bookstore preference and relaxed pace",
+  "status": "unverified"
+}</code></pre>
+
+        <p>
+          If the model offers a specific venue name, treat it as a query string, not as a fact. The lookup stage must verify whether the name exists, where it is located, and whether the returned record is a plausible match. A generated name is not evidence.
+        </p>
+
+        <p>
+          Keep the recommendation rationale separate from the factual record. “This may fit the requested pace” is a judgement. “The place is at this address” is provider data. Mixing them makes it difficult for a user or reviewer to see what needs checking.
+        </p>
+      </section>
+
+      <section>
+        <h2>Stage three: resolve places and preserve provenance</h2>
+
+        <p>
+          A place lookup service may return several candidates. The application should retain the provider response, selected <a href="../glossary.html#canonical-place-id">canonical place ID</a>, coordinates, display name, address, categories, and retrieval time. The exact fields depend on the provider; do not assume that every provider supplies opening hours, accessibility attributes, or current availability.
+        </p>
+
+        <pre><code>{
+  "place_id": "provider-specific-id",
+  "source": {
+    "provider": "place-provider",
+    "retrieved_at": "2026-11-18T08:00:00Z"
+  },
+  "name": "Provider-returned display name",
+  "address": "Provider-returned address",
+  "coordinates": {
+    "latitude": 0.0,
+    "longitude": 0.0
+  },
+  "categories": ["bookstore"],
+  "match": {
+    "query": "independent bookstore",
+    "selection": "user_confirmed"
+  },
+  "status": "resolved"
+}</code></pre>
+
+        <p>
+          The values above are structural placeholders, not real place data. In a working implementation, coordinates and identifiers must come from the provider response or the user’s own input.
+        </p>
+
+        <p>
+          Matching deserves a confirmation step. If several results have similar names, show the user enough information to distinguish them. If the provider returns no suitable match, preserve the suggestion as unresolved and offer a revised search. Never replace a failed lookup with a model-generated address.
+        </p>
+      </section>
+
+      <section>
+        <h2>Stage four: calculate routes only from resolved points</h2>
+
+        <p>
+          A route request should accept place IDs or coordinates that have already passed validation. It should also include travel mode and any assumptions that affect the result.
+        </p>
+
+        <pre><code>{
+  "origin": {
+    "place_id": "confirmed-origin-id",
+    "coordinates": {
+      "latitude": 0.0,
+      "longitude": 0.0
+    }
+  },
+  "destination": {
+    "place_id": "confirmed-destination-id",
+    "coordinates": {
+      "latitude": 0.0,
+      "longitude": 0.0
+    }
+  },
+  "travel_mode": "walking",
+  "departure_time": null
+}</code></pre>
+
+        <p>
+          A route response should be treated as time-sensitive calculation output. It may contain distance, duration, geometry, warnings, and provider metadata. It should not be rewritten into a stronger claim such as “this takes exactly 12 minutes” when the request lacks a departure time or the provider reports an estimate.
+        </p>
+
+        <p>
+          If a route service is unavailable, the application can say that routing is unavailable. It may still display the confirmed places and the unresolved order, but it should not estimate travel time from memory or from a language model.
+        </p>
+      </section>
+
+      <section>
+        <h2>User confirmation is a data boundary</h2>
+
+        <p>
+          Confirmation is not merely a user-interface courtesy. It is the point where a candidate becomes an accepted itinerary input.
+        </p>
+
+        <p>
+          Ask for confirmation when:
+        </p>
+
+        <ul>
+          <li>a place match is ambiguous;</li>
+          <li>the starting point is missing;</li>
+          <li>the route depends on a date or departure time;</li>
+          <li>the itinerary includes a meaningful assumption about accessibility, opening hours, or reservations;</li>
+          <li>the system is about to commit to a long or expensive journey;</li>
+          <li>the user’s request contains conflicting constraints.</li>
+        </ul>
+
+        <p>
+          A confirmation card can show three separate labels: “Suggested by the assistant,” “Found by place search,” and “Route calculated for walking.” That language teaches the user how much trust to place in each field.
+        </p>
+
+        <p>
+          Do not hide uncertainty in a footnote. Put it beside the relevant item. For example: “Opening hours were not verified for this plan” is more actionable than a general disclaimer at the bottom of the page.
+        </p>
+      </section>
+
+      <section>
+        <h2>Minimal orchestration logic</h2>
+
+        <p>
+          The orchestration layer should enforce the boundaries in code. The model can return structured suggestions, but only the application can promote them to resolved places or route inputs.
+        </p>
+
+        <pre><code>async function buildItinerary(userRequest) {
+  const intent = await interpretIntent(userRequest);
+
+  if (intent.unknowns.length > 0) {
+    return {
+      status: "needs_confirmation",
+      intent,
+      suggestions: [],
+      places: [],
+      routes: []
+    };
+  }
+
+  const suggestions = await generateSuggestions(intent);
+
+  const places = [];
+  for (const suggestion of suggestions) {
+    if (suggestion.kind !== "place_search") continue;
+
+    const matches = await searchPlaces(suggestion.search_query);
+    places.push({
+      suggestion_id: suggestion.suggestion_id,
+      matches,
+      status: "awaiting_selection"
+    });
+  }
+
+  return {
+    status: "awaiting_place_selection",
+    intent,
+    suggestions,
+    places,
+    routes: []
+  };
+}</code></pre>
+
+        <p>
+          A second request can resolve selected places and calculate routes:
+        </p>
+
+        <pre><code>async function calculateConfirmedRoute(origin, destination, mode) {
+  assert(origin.status === "user_confirmed");
+  assert(destination.status === "user_confirmed");
+  assert(origin.coordinates);
+  assert(destination.coordinates);
+
+  return routeProvider.calculate({
+    origin: origin.coordinates,
+    destination: destination.coordinates,
+    mode
+  });
+}</code></pre>
+
+        <p>
+          The assertions are conceptual. Adapt them to the language and provider used by the prototype. Their purpose is to make invalid transitions visible: an unverified suggestion cannot become a route endpoint.
+        </p>
+      </section>
+
+      <section>
+        <h2>Configuration and provider adapters</h2>
+
+        <p>
+          Keep external services behind narrow adapters. The itinerary domain should not depend on a particular provider’s response format.
+        </p>
+
+        <pre><code>PLACE_PROVIDER=example-place-provider
+ROUTE_PROVIDER=example-route-provider
+ROUTE_DEFAULT_MODE=walking
+REQUIRE_USER_CONFIRMATION=true
+STORE_PROVIDER_RESPONSES=false</code></pre>
+
+        <p>
+          These are example configuration keys. Do not place API keys in source code, HTML, prompts, logs, screenshots, or article examples. Use the secret-management mechanism appropriate to the deployment environment.
+        </p>
+
+        <p>
+          A place adapter should expose operations such as <code>search(query, area)</code> and <code>getById(id)</code>. A route adapter should expose an operation such as <code>calculate(origin, destination, mode, departureTime)</code>. The adapter should normalize provider responses while preserving the provider identifier and retrieval metadata.
+        </p>
+      </section>
+
+      <section>
+        <h2>Verification: tests that prove the boundary</h2>
+
+        <p>
+          Verification should test state transitions, not just whether the model produces fluent text. The following cases are suitable for a prototype test suite:
+        </p>
+
+        <ol>
+          <li><strong>Unknown start:</strong> a request without a starting point returns a confirmation question and does not call the route provider.</li>
+          <li><strong>Generated venue:</strong> a model-suggested venue remains <code>unverified</code> until a place lookup returns a match.</li>
+          <li><strong>Ambiguous match:</strong> multiple place results remain selectable and do not automatically become an itinerary stop.</li>
+          <li><strong>Failed lookup:</strong> no place result is replaced with a generated address or coordinate.</li>
+          <li><strong>Unconfirmed route:</strong> the route adapter rejects endpoints that are not user-confirmed or otherwise explicitly accepted.</li>
+          <li><strong>Missing route:</strong> a provider error is displayed as unavailable routing, not as an estimated duration.</li>
+          <li><strong>Provenance:</strong> each resolved place and route retains its provider and retrieval metadata.</li>
+        </ol>
+
+        <p>
+          Example command structure:
+        </p>
+
+        <pre><code># Adapt these commands to the project’s package manager.
+npm test -- --runInBand
+npm run lint
+npm run typecheck</code></pre>
+
+        <p>
+          These commands are illustrative. No test results are claimed here because this article does not run a project-specific test suite.
+        </p>
+      </section>
+
+      <section>
+        <h2>Failure cases and safe responses</h2>
+
+        <table>
+          <thead>
+            <tr>
+              <th>Failure</th>
+              <th>Unsafe response</th>
+              <th>Safe response</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td>No place provider result</td>
+              <td>Invent an address or use a plausible coordinate</td>
+              <td>Keep the suggestion unresolved and ask for another search or user input</td>
+            </tr>
+            <tr>
+              <td>Opening hours unavailable</td>
+              <td>Say the place is open</td>
+              <td>State that hours were not verified</td>
+            </tr>
+            <tr>
+              <td>Ambiguous place name</td>
+              <td>Select the first result silently</td>
+              <td>Show candidates and request selection</td>
+            </tr>
+            <tr>
+              <td>Routing service timeout</td>
+              <td>Estimate travel time from memory</td>
+              <td>Report that route calculation is unavailable</td>
+            </tr>
+            <tr>
+              <td>Conflicting preferences</td>
+              <td>Choose one without explanation</td>
+              <td>Ask which constraint has priority</td>
+            </tr>
+            <tr>
+              <td>Stale provider data</td>
+              <td>Present it as current certainty</td>
+              <td>Show retrieval time and recommend checking before departure</td>
+            </tr>
+          </tbody>
+        </table>
+      </section>
+
+      <section>
+        <h2>What this architecture does not solve</h2>
+
+        <p>
+          Separation reduces a major class of errors, but it does not make travel information permanently correct. A provider may have stale listings. A route may change because of closures, weather, construction, or accessibility conditions. A place can be correctly identified but unsuitable for a user’s needs if the provider lacks relevant attributes.
+        </p>
+
+        <p>
+          The architecture also does not decide whether a recommendation is good. Ranking suggestions still requires product policy, user preferences, and transparent reasoning. “Best” is not a provider field unless the application defines what it means.
+        </p>
+
+        <p>
+          Finally, confirmation does not transfer responsibility for hidden assumptions to the user. The application should still show which facts were checked, which were not available, and which choices came from the user.
+        </p>
+      </section>
+
+      <section>
+        <h2>A practical implementation checklist</h2>
+
+        <ul>
+          <li>Represent suggestions, places, and routes as different types.</li>
+          <li>Attach source and status metadata to every external fact.</li>
+          <li>Keep unknown values explicit instead of filling them with plausible defaults.</li>
+          <li>Use model output to create search tasks, not to manufacture place records.</li>
+          <li>Resolve places before calculating routes.</li>
+          <li>Require confirmation for ambiguous or consequential choices.</li>
+          <li>Pass only resolved coordinates or provider IDs to the routing adapter.</li>
+          <li>Show route assumptions such as travel mode and departure time.</li>
+          <li>Test rejected transitions as carefully as successful ones.</li>
+          <li>Do not claim current opening hours, availability, prices, or travel times without corresponding evidence.</li>
+        </ul>
+
+        <p>
+          The resulting system is less magical, but more dependable. The assistant can still provide creative structure and useful next steps. It simply makes a visible distinction between an idea worth checking, a place returned by a data source, and a route calculated from confirmed endpoints.
+        </p>
+      </section>
+
+      <footer class="reading-footer">
+        <p>Continue with the <a href="../guides.html">Agent Lab Journal guides</a> or review the <a href="../glossary.html">glossary</a> for the terms used in this article.</p>
+      </footer>
+    <section class="service-note">
+  <b>We publish what works for us—and implement the same solutions for your business.</b>
+  We design AI automation, Telegram bots, chats, and AI agents for real-world processes.
+  <a href="../contacts-en.html">Discuss your project →</a>
+</section>
+</article>
+  </main>
+
+  <footer class="site-footer">
+    <div class="container">
+      <p>&copy; Agent Lab Journal</p>
+    </div>
+  </footer>
+</body>
+</html>
