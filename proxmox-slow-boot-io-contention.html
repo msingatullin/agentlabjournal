@@ -1,0 +1,373 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Почему Proxmox отвечает 502 после перезагрузки: диагностика IO-затора</title>
+  <meta name="description" content="Почему Proxmox отвечает 502 после перезагрузки: диагностика IO-затора. Практические шаги для проверки диска, процессов D и безопасного восстановления веб-интерфейса.">
+  <link rel="canonical" href="https://agentlabjournal.online/proxmox-slow-boot-io-contention.html">
+  <link rel="stylesheet" href="style.css">
+  <link rel="stylesheet" href="reading.css">
+
+  <meta property="og:type" content="article">
+  <meta property="og:title" content="Почему Proxmox отвечает 502 после перезагрузки: диагностика IO-затора">
+  <meta property="og:description" content="Как отличить зависший сервис Proxmox от процесса, заблокированного медленным диском во время загрузки виртуальных машин и контейнеров.">
+  <meta property="og:url" content="https://agentlabjournal.online/proxmox-slow-boot-io-contention.html">
+  <meta property="og:site_name" content="Agent Lab Journal">
+
+  <meta name="twitter:card" content="summary">
+  <meta name="twitter:title" content="Почему Proxmox отвечает 502 после перезагрузки: диагностика IO-затора">
+  <meta name="twitter:description" content="Практическая диагностика IO-нагрузки и безопасное восстановление Proxmox после перезагрузки.">
+
+  <script type="application/ld+json">
+  {
+    "@context": "https://schema.org",
+    "@type": "Article",
+    "headline": "Почему Proxmox отвечает 502 после перезагрузки: диагностика IO-затора",
+    "description": "Практическая диагностика IO-нагрузки после перезагрузки Proxmox: процессы в состоянии D, медленный диск и временная остановка второстепенной нагрузки.",
+    "mainEntityOfPage": {
+      "@type": "WebPage",
+      "@id": "https://agentlabjournal.online/proxmox-slow-boot-io-contention.html"
+    },
+    "publisher": {
+      "@type": "Organization",
+      "name": "Agent Lab Journal",
+      "url": "https://agentlabjournal.online/"
+    },
+    "inLanguage": "ru"
+  }
+  </script>
+<link rel="stylesheet" href="homepage.css"><link rel="stylesheet" href="max-promo.css">  <meta property="og:image" content="https://agentlabjournal.online/assets/covers/llm-context-window-budget-social.png">
+  <meta property="og:image:alt" content="Почему Proxmox отвечает 502 после перезагрузки: диагностика IO-затора">
+  <meta name="twitter:image" content="https://agentlabjournal.online/assets/covers/llm-context-window-budget-social.png">
+</head>
+<body>
+  <header class="site-header">
+    <div class="container">
+      <a class="site-brand" href="index.html">Agent Lab Journal</a>
+      <nav aria-label="Основная навигация">
+        <a href="guides.html">Гайды</a>
+        <a href="glossary.html">Глоссарий</a>
+      </nav>
+    </div>
+  </header>
+
+  <main>
+    <article class="reading">
+      <div class="reading-meta">
+        <span>Практический разбор</span>
+        <span>До 12 минут чтения</span>
+        <span>Уровень: средний</span>
+      </div>
+
+      <header class="article-header">
+        <h1>Почему Proxmox отвечает 502 после перезагрузки: диагностика IO-затора</h1>
+        <figure class="article-cover" data-editorial-cover="proxmox-slow-boot-io-contention"><img src="assets/covers/llm-context-window-budget.png" alt="Почему Proxmox отвечает 502 после перезагрузки: диагностика IO-затора" width="1280" height="720" fetchpriority="high"><figcaption>Temporary fallback cover; replace in editorial pass.</figcaption></figure>
+        <p class="lead">
+          Ошибка 502 сразу после перезагрузки узла Proxmox не всегда означает, что
+          веб-сервис сломан. Часто интерфейс ждёт ответ от компонентов, которые
+          одновременно запускают виртуальные машины и контейнеры, а дисковая
+          подсистема не успевает обработать очередь запросов.
+        </p>
+      </header>
+<a href="https://max.ru/channel_AgentLab?utm_source=agentlabjournal&utm_medium=article&utm_campaign=max_channel&utm_content=article_footer" class="max-promo-block" target="_blank" rel="noopener noreferrer" aria-label="Самое важное из мира AI в канале MAX AgentLab">
+  <span class="max-promo-block__icon" aria-hidden="true"></span>
+  <span class="max-promo-block__content"><span class="max-promo-block__title">Самое важное из мира AI — в канале MAX AgentLab</span><span class="max-promo-block__desc">Отдельные разборы, инструменты и практические схемы</span></span>
+  <span class="max-promo-block__arrow" aria-hidden="true">→</span>
+</a>
+<a href="https://t.me/pelmenews?utm_source=agentlabjournal&utm_medium=article&utm_campaign=telegram_channel&utm_content=article_intro" class="telegram-promo-block" target="_blank" rel="noopener noreferrer" aria-label="Читайте Agent Lab в Telegram">
+  <span class="telegram-promo-block__icon" aria-hidden="true"></span>
+  <span class="telegram-promo-block__content">
+    <span class="telegram-promo-block__title">Читайте Agent Lab в Telegram</span>
+    <span class="telegram-promo-block__desc">Разборы, кейсы и новости о практических AI-агентах без лишней воды.</span>
+  </span>
+  <span class="telegram-promo-block__arrow" aria-hidden="true">→</span>
+</a>
+
+      <section>
+        <h2>Что означает 502 в этой ситуации</h2>
+        <p>
+          В Proxmox веб-интерфейс обслуживается процессом <code>pveproxy</code>.
+          Он принимает HTTPS-запрос, проверяет права и обращается к локальным
+          службам, включая <code>pvedaemon</code> и <code>pvestatd</code>. Если
+          зависимый компонент не отвечает вовремя, браузер или обратный прокси
+          может показать 502.
+        </p>
+        <p>
+          Это симптом недоступности цепочки управления, а не доказательство того,
+          что сам веб-сервис завершился. После массового запуска гостевых систем
+          узел может одновременно читать конфигурации, диски виртуальных машин,
+          журналы и данные контейнеров. При этом управляющие процессы остаются
+          запущенными, но ждут завершения операций ввода-вывода.
+        </p>
+        <p>
+          <a href="glossary.html#io-zator">IO-затор</a> — это ситуация, когда
+          множество операций чтения и записи образуют очередь, а время ожидания
+          диска становится главным ограничением для всей системы.
+        </p>
+      </section>
+
+      <section>
+        <h2>Главный признак: сервис жив, но процессы ждут диск</h2>
+        <p>
+          Сначала подключитесь к узлу по SSH или откройте локальную консоль.
+          Не начинайте с перезапуска всех служб: сначала зафиксируйте состояние.
+        </p>
+
+        <pre><code>date
+uptime
+systemctl --failed
+systemctl status pveproxy pvedaemon pvestatd --no-pager</code></pre>
+
+        <p>
+          Если службы имеют состояние <code>active (running)</code>, но интерфейс
+          всё равно отвечает 502, проверьте процессы и нагрузку на диск.
+        </p>
+
+        <pre><code>ps -eo state,pid,ppid,comm,wchan:32,cmd --sort=state | sed -n '1,80p'
+vmstat 1 5
+iostat -xz 1 5</code></pre>
+
+        <p>
+          В выводе <code>vmstat</code> обратите внимание на
+          <code>wa</code> — долю времени ожидания ввода-вывода. В
+          <code>iostat</code> полезны поля <code>await</code>,
+          <code>aqu-sz</code> и <code>%util</code>. Высокие значения сами по себе
+          не доказывают неисправность: важна их связь с моментом запуска гостей.
+        </p>
+      </section>
+
+      <section>
+        <h2>Как распознать состояние D</h2>
+        <p>
+          Состояние <code>D</code> означает непрерываемое ожидание, обычно
+          связанное с операцией ядра или драйвера. Такие процессы часто выглядят
+          «зависшими», но команда остановки не обязана сработать немедленно:
+          процесс сначала должен вернуться из системного вызова.
+        </p>
+
+        <pre><code>ps -eo state,pid,ppid,comm,wchan:32,cmd | awk '$1 ~ /^D/ {print}'</code></pre>
+
+        <p>
+          Если среди процессов в <code>D</code> есть задачи QEMU, контейнеров,
+          <code>pvedaemon</code> или процессы, связанные с хранилищем, это сильный
+          признак IO-затора. Полезно посмотреть, на каком хранилище лежат гости и
+          нет ли ошибок ядра:
+        </p>
+
+        <pre><code>findmnt
+lsblk -o NAME,TYPE,SIZE,FSTYPE,MOUNTPOINTS,MODEL
+dmesg -T | tail -n 100</code></pre>
+
+        <p>
+          В <code>dmesg</code> ищите сообщения о тайм-аутах, сбоях диска, ошибках
+          файловой системы, проблемах multipath, NFS или сетевого хранилища.
+          Само наличие процесса в <code>D</code> не позволяет определить причину
+          без проверки этих сообщений.
+        </p>
+      </section>
+
+      <section>
+        <h2>Отличаем медленный диск от действительно зависшего сервиса</h2>
+
+        <table>
+          <thead>
+            <tr>
+              <th>Наблюдение</th>
+              <th>Вероятная причина</th>
+              <th>Что делать</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td><code>pveproxy</code> активен, есть процессы в <code>D</code>, растёт <code>await</code></td>
+              <td>Конкуренция за диск</td>
+              <td>Снизить второстепенную нагрузку и наблюдать динамику</td>
+            </tr>
+            <tr>
+              <td>Служба не запущена, в журнале есть ошибка запуска</td>
+              <td>Ошибка конфигурации или зависимости</td>
+              <td>Изучить журнал конкретной службы</td>
+            </tr>
+            <tr>
+              <td>Высокий <code>wa</code>, но ошибок диска нет</td>
+              <td>Очередь операций после массового старта</td>
+              <td>Дождаться снижения очереди, временно остановить необязательных гостей</td>
+            </tr>
+            <tr>
+              <td>Ошибки I/O, тайм-ауты, отвалившееся хранилище</td>
+              <td>Проблема устройства или пути к хранилищу</td>
+              <td>Не перегружать узел многократно; проверять инфраструктуру хранения</td>
+            </tr>
+          </tbody>
+        </table>
+
+        <p>
+          Для точной проверки состояния служб используйте журналы, а не только
+          сообщение браузера:
+        </p>
+
+        <pre><code>journalctl -b -u pveproxy --no-pager -n 100
+journalctl -b -u pvedaemon --no-pager -n 100
+journalctl -b -u pvestatd --no-pager -n 100
+journalctl -b -p warning..alert --no-pager</code></pre>
+      </section>
+
+      <section>
+        <h2>Безопасный способ ускорить восстановление</h2>
+        <p>
+          Если узел отвечает по SSH, а причина похожа на конкуренцию за диск,
+          временно остановите второстепенную нагрузку. Начните с гостевых систем,
+          которые не нужны для восстановления сервиса. Делайте это через штатный
+          интерфейс Proxmox или команду, соответствующую вашей политике
+          эксплуатации.
+        </p>
+
+        <p>Перед остановкой найдите идентификаторы и состояние гостей:</p>
+
+        <pre><code>qm list
+pct list</code></pre>
+
+        <p>
+          Затем остановите только выбранную виртуальную машину или контейнер,
+          например:
+        </p>
+
+        <pre><code>qm shutdown &lt;VMID&gt; --timeout 60
+pct shutdown &lt;CTID&gt; --timeout 60</code></pre>
+
+        <p>
+          Заменяйте <code>&lt;VMID&gt;</code> и <code>&lt;CTID&gt;</code> реальными
+          идентификаторами. Не отправляйте массовую команду остановки, если ещё
+          не определили, какие гости второстепенны. После уменьшения нагрузки
+          повторите наблюдение:
+        </p>
+
+        <pre><code>vmstat 1 5
+iostat -xz 1 5
+systemctl status pveproxy pvedaemon pvestatd --no-pager</code></pre>
+
+        <p>
+          Если очередь диска и время ожидания снижаются, а 502 исчезает, причина
+          была связана с перегрузкой или медленным хранилищем. Это рабочая
+          диагностика по наблюдаемой динамике, а не доказательство исправности
+          самого диска.
+        </p>
+      </section>
+
+      <section>
+        <h2>Чего не делать</h2>
+        <ul>
+          <li>Не перезапускайте процесс в состоянии <code>D</code> в надежде мгновенно освободить диск.</li>
+          <li>Не выполняйте повторные перезагрузки, пока не проверили ошибки ядра и хранилища.</li>
+          <li>Не удаляйте lock-файлы и не меняйте конфигурацию гостя без понимания причины блокировки.</li>
+          <li>Не запускайте все виртуальные машины и контейнеры одновременно после аварийного восстановления.</li>
+          <li>Не принимайте единичное значение <code>%util</code> за окончательный диагноз: учитывайте тип диска, RAID, SSD, сеть и характер нагрузки.</li>
+        </ul>
+        <p>
+          Перезапуск <code>pveproxy</code> может быть оправдан, если служба
+          действительно не запущена или её журнал указывает на отдельную
+          ошибку. Но при активных процессах в <code>D</code> это не устранит
+          ожидание диска и иногда добавит новую очередь операций.
+        </p>
+      </section>
+
+      <section>
+        <h2>Проверка результата</h2>
+        <ol>
+          <li>Повторно откройте веб-интерфейс и проверьте, исчез ли 502.</li>
+          <li>Убедитесь, что <code>pveproxy</code>, <code>pvedaemon</code> и <code>pvestatd</code> активны.</li>
+          <li>Проверьте, что число процессов в состоянии <code>D</code> уменьшается.</li>
+          <li>Сравните <code>wa</code>, <code>await</code> и очередь диска до и после остановки второстепенной нагрузки.</li>
+          <li>Проверьте журналы на новые ошибки после восстановления доступа.</li>
+        </ol>
+        <p>
+          Если интерфейс восстановился, но ошибки I/O продолжаются, не считайте
+          проблему закрытой. Веб-доступ может вернуться раньше, чем хранилище
+          стабилизируется.
+        </p>
+      </section>
+
+      <section>
+        <h2>Типовые ошибки диагностики</h2>
+        <p>
+          Первая ошибка — путать 502 с полной остановкой узла. Проверяйте SSH,
+          локальную консоль и состояние служб независимо друг от друга.
+        </p>
+        <p>
+          Вторая — смотреть только на загрузку CPU. При IO-заторе процессор может
+          быть недогружен, пока процессы проводят время в ожидании диска.
+        </p>
+        <p>
+          Третья — завершать процессы сигналом <code>kill -9</code>. Для
+          процесса в <code>D</code> сигнал не решает первопричину и может не
+          дать немедленного результата. Сначала разгрузите хранилище и проверьте
+          доступность устройства.
+        </p>
+        <p>
+          Четвёртая — считать, что медленный запуск всегда вызван Proxmox.
+          Причина может находиться ниже: в RAID, локальном диске, сетевом
+          хранилище, файловой системе, кабеле, контроллере или перегруженном
+          сервере хранения.
+        </p>
+      </section>
+
+      <section>
+        <h2>Ограничения метода</h2>
+        <p>
+          Эти команды показывают состояние узла в момент проверки. Короткая
+          выборка из пяти секунд может пропустить периодические пики. Для
+          длительного анализа нужны заранее настроенный мониторинг, метрики
+          хранилища и история загрузки.
+        </p>
+        <p>
+          Команды <code>qm</code> и <code>pct</code> требуют корректного
+          идентификатора и достаточных прав. Остановка гостя может прервать
+          работу приложения, поэтому второстепенной нагрузкой следует считать
+          только то, что разрешено вашей эксплуатационной процедурой.
+        </p>
+      </section>
+
+      <aside class="article-note">
+        <strong>Короткий вывод.</strong>
+        502 после перезагрузки Proxmox может быть следствием очереди дисковых
+        операций, а не падения веб-сервиса. Проверяйте состояние служб, ищите
+        процессы в <code>D</code>, сопоставляйте их с <code>iostat</code> и
+        временно снижайте второстепенную нагрузку. Это безопаснее, чем
+        многократно перезапускать процессы, которые ждут медленный диск.
+      </aside>
+
+      <nav class="article-links" aria-label="Дополнительные материалы">
+        <a href="guides.html">Все практические гайды</a>
+        <a href="glossary.html">Глоссарий терминов</a>
+      </nav>
+<aside class="service-note" aria-label="Связаться по проекту">
+  <div class="service-note__copy">
+    <p class="service-note__label">Связь с Agent Lab</p>
+    <p class="service-note__title">Внедрим такой контур в ваш процесс</p>
+    <p class="service-note__text">Напишите инженеру Agent Lab в Telegram: опишите задачу, бота или интеграцию — предложим пилот с проверками и понятными границами.</p>
+  </div>
+  <a class="service-note__link" href="https://t.me/msrzn007?utm_source=journal&amp;utm_medium=article&amp;utm_campaign=service_note" target="_blank" rel="noopener">Написать в Telegram
+    <svg viewBox="0 0 16 16" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"><path d="M3 13 13 3M6 3h7v7"/></svg>
+  </a>
+</aside>
+<aside class="service-note service-note--sitevisor" aria-label="Экспресс-аудит сайта">
+  <div class="service-note__copy">
+    <p class="service-note__label">SiteVisor</p>
+    <p class="service-note__title">Проверьте техническое состояние и готовность вашего сайта к рекламе</p>
+    <p class="service-note__text">Экспресс-аудит на SiteVisor.pro: индексация, скорость, разметка, аналитика и точки конверсии.</p>
+  </div>
+  <a class="service-note__link" href="https://sitevisor.pro/?utm_source=journal&amp;utm_medium=article&amp;utm_campaign=leadmagnet" target="_blank" rel="noopener">Экспресс-аудит на SiteVisor.pro
+    <svg viewBox="0 0 16 16" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"><path d="M3 13 13 3M6 3h7v7"/></svg>
+  </a>
+</aside>
+</article>
+  </main>
+
+  <footer class="site-footer">
+    <div class="container">
+      <p>Agent Lab Journal — практические материалы для эксплуатации инфраструктуры.</p>
+    </div>
+  </footer>
+</body>
+</html>
