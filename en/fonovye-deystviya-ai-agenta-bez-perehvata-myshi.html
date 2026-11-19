@@ -1,0 +1,665 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>An AI Agent Without Mouse Hijacking: Background Window Control on Windows</title>
+  <meta name="description" content="An AI Agent Without Mouse Hijacking: Background Window Control on Windows — build a safer Windows prototype with window restrictions, Arm mode, verification, and audit logging.">
+  <link rel="canonical" href="https://agentlabjournal.online/en/fonovye-deystviya-ai-agenta-bez-perehvata-myshi.html">
+  <link rel="stylesheet" href="../style.css">
+  <link rel="stylesheet" href="../reading.css">
+
+  <meta property="og:type" content="article">
+  <meta property="og:title" content="An AI Agent Without Mouse Hijacking: Background Window Control on Windows">
+  <meta property="og:description" content="A reproducible, safety-first prototype for controlling approved Windows application windows without taking over the user's mouse or focus.">
+  <meta property="og:url" content="https://agentlabjournal.online/en/fonovye-deystviya-ai-agenta-bez-perehvata-myshi.html">
+  <meta property="og:image" content="https://agentlabjournal.online/assets/covers/llm-context-window-budget-social.png">
+  <meta property="og:locale" content="en_US">
+  <meta property="article:published_time" content="2026-11-19">
+  <meta property="article:modified_time" content="2026-11-19">
+  <meta property="article:author" content="Agent Lab Journal">
+
+  <meta name="twitter:card" content="summary_large_image">
+  <meta name="twitter:title" content="An AI Agent Without Mouse Hijacking: Background Window Control on Windows">
+  <meta name="twitter:description" content="Build a safer Windows background-control prototype with restrictions, Arm mode, verification, and audit logging.">
+  <meta name="twitter:image" content="https://agentlabjournal.online/assets/covers/llm-context-window-budget-social.png">
+
+  <script type="application/ld+json">
+  {
+    "@context": "https://schema.org",
+    "@type": "Article",
+    "headline": "An AI Agent Without Mouse Hijacking: Background Window Control on Windows",
+    "description": "A reproducible, safety-first prototype for controlling approved Windows application windows without taking over the user's mouse or focus.",
+    "image": ["https://agentlabjournal.online/assets/covers/llm-context-window-budget-social.png"],
+    "dateModified": "2026-11-19",
+    "author": {
+      "@type": "Organization",
+      "name": "Agent Lab Journal"
+    },
+    "publisher": {
+      "@type": "Organization",
+      "name": "Agent Lab Journal",
+      "logo": {
+        "@type": "ImageObject",
+        "url": "https://agentlabjournal.online/assets/og/agent-lab-journal.png"
+      }
+    },
+    "mainEntityOfPage": {
+      "@type": "WebPage",
+      "@id": "https://agentlabjournal.online/en/fonovye-deystviya-ai-agenta-bez-perehvata-myshi.html"
+    }
+  }
+  </script>
+<link rel="stylesheet" href="../homepage.css"><link rel="stylesheet" href="../max-promo.css">  <meta property="og:image:alt" content="AI-агент без перехвата мыши: фоновое управление окнами в Windows">
+</head>
+<body>
+  <header class="site-header">
+    <div class="container">
+      <a class="site-brand" href="../index.html">Agent Lab Journal</a>
+      <nav aria-label="Primary navigation">
+        <a href="guides.html">Guides</a>
+        <a href="../glossary.html">Glossary</a>
+      </nav>
+    </div>
+  </header>
+
+  <main>
+    <article class="reading">
+      <header class="reading-header">
+        <p class="reading-kicker">Windows automation · Advanced</p>
+        <h1>An AI Agent Without Mouse Hijacking: Background Window Control on Windows</h1>
+        <figure class="article-cover" data-editorial-cover="fonovye-deystviya-ai-agenta-bez-perehvata-myshi"><img src="../assets/covers/llm-context-window-budget.png" alt="AI-агент без перехвата мыши: фоновое управление окнами в Windows" width="1280" height="720" fetchpriority="high"><figcaption>Temporary fallback cover; replace in editorial pass.</figcaption></figure>
+        <div class="reading-meta">
+          <span>40 min read</span>
+          <span>Updated November 19, 2026</span>
+          <span>By Agent Lab Journal</span>
+        </div>
+      </header>
+
+      <p class="lead">A <a href="../glossary.html#computer-use-agent">computer-use agent</a> that moves the physical mouse and activates windows is easy to demonstrate and difficult to share with a human operator. The agent can steal focus while someone is typing, move the pointer under a person’s hand, or click an unrelated application after a layout change.</p>
+
+      <p>This article develops a safer prototype for Windows: the agent sends narrowly scoped messages to an approved background window, refuses ambiguous targets, supports an explicit <a href="../glossary.html#arm-mode">Arm mode</a>, verifies the result after every action, and writes an <a href="../glossary.html#audit-log">audit log</a>. The design is intentionally conservative. It is not a universal remote-control layer and it does not prove that an application is safe to automate.</p>
+
+      <aside class="reading-note">
+        <strong>Evidence boundary.</strong> The code and commands below are a reproducible prototype design. They have not been executed as part of this article. Validate them on a disposable Windows test account and a non-production application before connecting an AI model.
+      </aside>
+
+      <h2>The concrete problem</h2>
+
+      <p>Consider a person working in a browser, terminal, or document editor while an agent performs a repetitive task in a separate desktop application. A conventional <a href="../glossary.html#computer-use">computer-use</a> loop usually looks like this:</p>
+
+      <ol>
+        <li>capture the screen;</li>
+        <li>move the system cursor to a coordinate;</li>
+        <li>click or type;</li>
+        <li>inspect the new screen;</li>
+        <li>repeat.</li>
+      </ol>
+
+      <p>That loop changes global state. It changes the physical cursor, the active window, and the destination of keyboard input. Even if each individual action is correct, the person and the agent are competing for the same interaction channel.</p>
+
+      <p>Background control changes the channel. Instead of asking Windows to activate a window and inject input into the foreground desktop, the prototype addresses a specific window handle and sends only the messages that the target control is documented or observed to accept. The human’s <a href="../glossary.html#window-focus">window focus</a>, pointer position, and active application remain outside the agent’s control path.</p>
+
+      <h2>What the prototype will and will not do</h2>
+
+      <p>The prototype has five boundaries:</p>
+
+      <ul>
+        <li><strong>Window restriction:</strong> actions are allowed only for a configured process and title pattern.</li>
+        <li><strong>Control restriction:</strong> the action names map to a small set of explicit operations such as setting text or pressing a button.</li>
+        <li><strong>Arm mode:</strong> potentially consequential actions require a human-controlled state transition.</li>
+        <li><strong>Post-action verification:</strong> each action has a predicate that must be checked after the message is sent.</li>
+        <li><strong>Audit logging:</strong> the request, resolved target, action, result, and verification outcome are recorded without secrets.</li>
+      </ul>
+
+      <p>The prototype will not promise compatibility with every Windows application. It will not bypass permission boundaries, defeat secure desktop prompts, automate protected controls, or guarantee that a message was interpreted by the target application. Those limitations are central to the safety model.</p>
+
+      <h2>Why background messages are different</h2>
+
+      <p>Windows applications expose several possible automation surfaces. They are not interchangeable.</p>
+
+      <h3>Win32 messages</h3>
+
+      <p><a href="../glossary.html#win32">Win32</a> applications communicate with controls through window messages. A text box may accept <code>WM_SETTEXT</code>; a button may respond to <code>BM_CLICK</code>; a list or custom control may implement its own protocol. The message is addressed to a window handle, or <code>HWND</code>, rather than to the screen coordinate under the mouse.</p>
+
+      <p>This is useful because it avoids foreground activation. It is also fragile because message behavior is control-specific. Sending <code>WM_SETTEXT</code> to a custom-rendered editor may do nothing, while sending <code>BM_CLICK</code> to the wrong child window may produce an unexpected result.</p>
+
+      <h3>UI Automation</h3>
+
+      <p><a href="../glossary.html#ui-automation">UI Automation</a> exposes semantic elements and patterns such as Value, Invoke, Toggle, and Selection. It is usually a better fit when the application exposes a complete accessibility tree. It can still fail when elements are virtualized, custom-drawn, remote, elevated, or implemented with an incomplete provider.</p>
+
+      <h3>Physical input</h3>
+
+      <p>Physical mouse and keyboard injection is the broadest fallback and the worst default for shared use. It necessarily interacts with the foreground desktop. Treat it as a separate, visibly announced mode with stronger confirmation requirements, not as an invisible fallback when background control fails.</p>
+
+      <h2>Threat model for a shared workstation</h2>
+
+      <p>Assume the human and agent use the same interactive Windows session. The agent may receive malformed model output, stale screenshots, a wrong window title, or an instruction that is valid in one application state but unsafe in another.</p>
+
+      <p>The relevant failures are not limited to malicious behavior:</p>
+
+      <ul>
+        <li>The target window is closed and a new window reuses a stale handle.</li>
+        <li>Two windows have similar titles.</li>
+        <li>The application opens a modal dialog and the expected child control changes.</li>
+        <li>A button action succeeds but the UI takes time to update.</li>
+        <li>A message returns success while the application ignores it.</li>
+        <li>The model supplies a coordinate even though coordinates are not part of the approved action schema.</li>
+        <li>The action changes external state, but the verifier checks only that a message was delivered.</li>
+      </ul>
+
+      <p>The design therefore treats a window handle as an ephemeral reference, not an identity. It resolves the target immediately before each action, checks its process and title, performs one action, then verifies an observable state change.</p>
+
+      <h2>Project layout</h2>
+
+      <p>Create a small .NET console project on a Windows test machine:</p>
+
+      <pre><code>dotnet new console -n BackgroundControlPrototype
+cd BackgroundControlPrototype</code></pre>
+
+      <p>The prototype can begin with one source file and a configuration file:</p>
+
+      <pre><code>BackgroundControlPrototype/
+  Program.cs
+  policy.json</code></pre>
+
+      <p>Use a real test application that you control. A simple Win32 sample with a text field and button is preferable because you know which messages its controls accept. Do not begin with a password manager, financial application, administrator console, or any application containing personal data.</p>
+
+      <h2>Policy before implementation</h2>
+
+      <p>Keep policy outside the model prompt. The model may propose an action, but it must not define the set of applications or message types that are permitted.</p>
+
+      <pre><code>{
+  "allowedWindows": [
+    {
+      "processName": "SampleTarget",
+      "titleContains": "Background Test",
+      "allowedActions": [
+        "setText",
+        "invokeButton"
+      ]
+    }
+  ],
+  "armRequiredFor": [
+    "invokeButton"
+  ],
+  "verificationTimeoutMs": 1500,
+  "auditPath": "audit.jsonl"
+}</code></pre>
+
+      <p>The process name and title are only an initial filter. In a stronger implementation, add a signed executable identity, a known installation path, a parent-process constraint, or an operator-approved application identifier. A title substring alone is not a sufficient security boundary.</p>
+
+      <h2>Resolve a window without activating it</h2>
+
+      <p>The first implementation step is enumerating visible top-level windows, reading their process names and titles, and returning a candidate only when exactly one window matches.</p>
+
+      <pre><code>using System;
+using System.Collections.Generic;
+using System.Diagnostics;
+using System.Runtime.InteropServices;
+using System.Text;
+
+internal static class WindowResolver
+{
+    private delegate bool EnumWindowsProc nint hwnd, nint lParam);
+
+    [DllImport("user32.dll")]
+    private static extern bool EnumWindows(EnumWindowsProc callback, nint lParam);
+
+    [DllImport("user32.dll", CharSet = CharSet.Unicode)]
+    private static extern int GetWindowText(nint hWnd, StringBuilder text, int count);
+
+    [DllImport("user32.dll")]
+    private static extern uint GetWindowThreadProcessId(nint hWnd, out uint processId);
+
+    [DllImport("user32.dll")]
+    private static extern bool IsWindowVisible(nint hWnd);
+
+    public sealed record Candidate(nint Hwnd, string Title, string ProcessName, uint ProcessId);
+
+    public static Candidate Resolve(string processName, string titleContains)
+    {
+        var matches = new List&lt;Candidate&gt;();
+
+        EnumWindows((hwnd, _) =>
+        {
+            if (!IsWindowVisible(hwnd))
+                return true;
+
+            var titleBuffer = new StringBuilder(512);
+            GetWindowText(hwnd, titleBuffer, titleBuffer.Capacity);
+
+            if (!GetWindowThreadProcessId(hwnd, out var pid))
+                return true;
+
+            try
+            {
+                using var process = Process.GetProcessById((int)pid);
+                var actualName = process.ProcessName;
+
+                if (actualName.Equals(processName, StringComparison.OrdinalIgnoreCase) &&
+                    titleBuffer.ToString().Contains(titleContains, StringComparison.OrdinalIgnoreCase))
+                {
+                    matches.Add(new Candidate(
+                        hwnd,
+                        titleBuffer.ToString(),
+                        actualName,
+                        pid));
+                }
+            }
+            catch (ArgumentException)
+            {
+                // The process exited while the window list was being inspected.
+            }
+
+            return true;
+        }, nint.Zero);
+
+        return matches.Count switch
+        {
+            1 => matches[0],
+            0 => throw new InvalidOperationException("No allowed window matched."),
+            _ => throw new InvalidOperationException("More than one allowed window matched.")
+        };
+    }
+}</code></pre>
+
+      <p>The exact delegate declaration in a compilable project is:</p>
+
+      <pre><code>private delegate bool EnumWindowsProc(nint hwnd, nint lParam);</code></pre>
+
+      <p>The split-out declaration is intentional here because it makes the safety rule visible: zero matches and multiple matches are both failures. Do not silently choose the first result.</p>
+
+      <h2>Find child controls by stable properties</h2>
+
+      <p>A top-level window is not enough. An action must also identify the intended child control. For a controlled Win32 test application, a child control ID is preferable to a screen coordinate. If the application does not expose stable IDs, use UI Automation with an explicit control type, automation ID, and accessible name, then fail when the match is not unique.</p>
+
+      <p>For a small Win32 sample, a child enumeration helper can inspect class names and control IDs:</p>
+
+      <pre><code>internal static class ChildFinder
+{
+    private delegate bool EnumChildProc(nint hwnd, nint lParam);
+
+    [DllImport("user32.dll")]
+    private static extern bool EnumChildWindows(nint parent, EnumChildProc callback, nint lParam);
+
+    [DllImport("user32.dll")]
+    private static extern int GetDlgCtrlID(nint hwnd);
+
+    [DllImport("user32.dll", CharSet = CharSet.Unicode)]
+    private static extern int GetClassName(nint hwnd, StringBuilder className, int maxCount);
+
+    public static nint FindById(nint parent, int expectedId)
+    {
+        nint found = nint.Zero;
+        var count = 0;
+
+        EnumChildWindows(parent, (hwnd, _) =>
+        {
+            if (GetDlgCtrlID(hwnd) == expectedId)
+            {
+                found = hwnd;
+                count++;
+            }
+            return true;
+        }, nint.Zero);
+
+        if (count != 1)
+            throw new InvalidOperationException("Child control ID was not unique.");
+
+        return found;
+    }
+}</code></pre>
+
+      <p>Do not use a child ID from an untrusted model response. Put the ID in the application policy and associate it with a named action such as <code>setText</code>.</p>
+
+      <h2>Implement a narrow message adapter</h2>
+
+      <p>The adapter should expose intent-level operations and keep raw Windows message constants out of the model-facing interface. In this example, the model can request <code>setText</code>, but it cannot choose an arbitrary message number or target handle.</p>
+
+      <pre><code>internal static class BackgroundActions
+{
+    private const uint WM_SETTEXT = 0x000C;
+    private const uint BM_CLICK = 0x00F5;
+
+    [DllImport("user32.dll", CharSet = CharSet.Unicode)]
+    private static extern IntPtr SendMessage(
+        nint hWnd,
+        uint message,
+        nint wParam,
+        string? lParam);
+
+    [DllImport("user32.dll")]
+    private static extern bool IsWindow(nint hWnd);
+
+    public static void SetText(nint control, string value)
+    {
+        if (!IsWindow(control))
+            throw new InvalidOperationException("The target control no longer exists.");
+
+        if (value.Length > 1000)
+            throw new ArgumentOutOfRangeException(nameof(value));
+
+        var result = SendMessage(control, WM_SETTEXT, nint.Zero, value);
+
+        // For WM_SETTEXT, a nonzero result indicates success for the target control.
+        if (result == nint.Zero)
+            throw new InvalidOperationException("The control rejected WM_SETTEXT.");
+    }
+
+    public static void InvokeButton(nint button)
+    {
+        if (!IsWindow(button))
+            throw new InvalidOperationException("The target button no longer exists.");
+
+        SendMessage(button, BM_CLICK, nint.Zero, null);
+    }
+}</code></pre>
+
+      <p>This is an intentionally small adapter. It does not call <code>SetForegroundWindow</code>, <code>SetCursorPos</code>, <code>mouse_event</code>, <code>keybd_event</code>, or a global keyboard hook. Those omissions are the point of the prototype.</p>
+
+      <p>For a production implementation, prefer <code>SendMessageTimeout</code> with a bounded timeout when the target application may block. A hung target should produce a failed action and an audit record, not an indefinitely waiting agent process.</p>
+
+      <h2>Arm mode as a state machine</h2>
+
+      <p><a href="../glossary.html#arm-mode">Arm mode</a> should not be a Boolean hidden in a prompt. Treat it as an explicit state with an expiry and a scope. A useful minimum is:</p>
+
+      <ul>
+        <li><strong>Disarmed:</strong> inspection and read-only verification are allowed.</li>
+        <li><strong>Armed:</strong> a human has approved a named action class for a short period.</li>
+        <li><strong>Expired:</strong> the approval window elapsed; return to disarmed.</li>
+      </ul>
+
+      <pre><code>internal sealed class ArmState
+{
+    private DateTimeOffset? expiresAt;
+    private string? scope;
+
+    public void Arm(string actionScope, TimeSpan duration)
+    {
+        if (duration &lt;= TimeSpan.Zero || duration &gt; TimeSpan.FromMinutes(10))
+            throw new ArgumentOutOfRangeException(nameof(duration));
+
+        scope = actionScope;
+        expiresAt = DateTimeOffset.UtcNow.Add(duration);
+    }
+
+    public bool Allows(string actionName)
+    {
+        if (expiresAt is null || DateTimeOffset.UtcNow &gt;= expiresAt)
+            return false;
+
+        return string.Equals(scope, actionName, StringComparison.Ordinal);
+    }
+
+    public void Disarm()
+    {
+        scope = null;
+        expiresAt = null;
+    }
+}</code></pre>
+
+      <p>The human approval event should be outside the model’s control. Examples include a local console command, a tray UI button, or a hardware confirmation step. The audit record should identify who or what initiated arming without storing credentials or personal data.</p>
+
+      <p>Use separate scopes for low-risk and consequential actions. Setting draft text may be allowed while disarmed; clicking “Send”, “Delete”, “Publish”, or “Apply” should require an explicit scope such as <code>invokeButton:publish</code>.</p>
+
+      <h2>Post-action verification</h2>
+
+      <p>A successful API return is not proof that the intended application state changed. Verification must observe the target state through an independent read path.</p>
+
+      <p>For text entry, read the control’s current value and compare it with an expected value. For a button, verify a state transition such as a status label changing, a row appearing, or a dialog opening with an expected title. Avoid verifying only that the target window still exists.</p>
+
+      <pre><code>internal static class ControlReadback
+{
+    [DllImport("user32.dll", CharSet = CharSet.Unicode)]
+    private static extern int GetWindowText(
+        nint hWnd,
+        StringBuilder text,
+        int count);
+
+    public static string ReadText(nint control)
+    {
+        var buffer = new StringBuilder(2048);
+        GetWindowText(control, buffer, buffer.Capacity);
+        return buffer.ToString();
+    }
+
+    public static bool WaitForText(
+        nint control,
+        string expected,
+        TimeSpan timeout)
+    {
+        var deadline = DateTimeOffset.UtcNow + timeout;
+
+        while (DateTimeOffset.UtcNow &lt; deadline)
+        {
+            if (ReadText(control) == expected)
+                return true;
+
+            Thread.Sleep(50);
+        }
+
+        return false;
+    }
+}</code></pre>
+
+      <p>For asynchronous applications, use bounded polling with a short interval and a clear timeout. If the verifier fails, do not automatically repeat a consequential action. The correct recovery may be inspection, operator review, or a separate idempotent retry policy.</p>
+
+      <h2>Audit logging without secrets</h2>
+
+      <p>Use newline-delimited JSON so each action is independently parseable. Log identifiers and hashes where possible, not document contents, passwords, tokens, or full screenshots.</p>
+
+      <pre><code>using System.Text.Json;
+
+internal sealed record AuditEvent(
+    DateTimeOffset Timestamp,
+    string Event,
+    string Action,
+    string ProcessName,
+    uint ProcessId,
+    string WindowTitle,
+    string Result,
+    string? Verification,
+    string? ErrorCode);
+
+internal static class AuditLog
+{
+    public static void Append(string path, AuditEvent item)
+    {
+        var line = JsonSerializer.Serialize(item);
+        File.AppendAllText(path, line + Environment.NewLine);
+    }
+}</code></pre>
+
+      <p>Useful events include <code>window_resolved</code>, <code>action_requested</code>, <code>action_rejected</code>, <code>action_sent</code>, <code>verification_passed</code>, <code>verification_failed</code>, <code>arm_enabled</code>, and <code>arm_expired</code>.</p>
+
+      <p>Keep the log append-only for the prototype. Restrict its file permissions, rotate it, and define a retention period before using it on a shared machine. If the log itself can contain sensitive titles or values, hash or redact those fields before writing them.</p>
+
+      <h2>Put the pieces behind one guarded operation</h2>
+
+      <p>The model-facing function should accept a small typed request. It should not accept arbitrary DLL names, message IDs, window handles, coordinates, or shell commands.</p>
+
+      <pre><code>internal sealed record AgentAction(
+    string Name,
+    string? Text);
+
+internal sealed class GuardedExecutor
+{
+    private readonly ArmState arm = new();
+
+    public void Execute(AgentAction request)
+    {
+        var started = DateTimeOffset.UtcNow;
+
+        try
+        {
+            var policy = LoadPolicyFor(request.Name);
+
+            if (policy.RequiresArm && !arm.Allows(request.Name))
+                throw new InvalidOperationException("Action requires Arm mode.");
+
+            var window = WindowResolver.Resolve(
+                policy.ProcessName,
+                policy.TitleContains);
+
+            var control = ChildFinder.FindById(
+                window.Hwnd,
+                policy.ControlId);
+
+            if (request.Name == "setText")
+            {
+                BackgroundActions.SetText(control, request.Text ?? "");
+                var verified = ControlReadback.WaitForText(
+                    control,
+                    request.Text ?? "",
+                    TimeSpan.FromMilliseconds(policy.TimeoutMs));
+
+                if (!verified)
+                    throw new InvalidOperationException("Text verification failed.");
+            }
+            else if (request.Name == "invokeButton")
+            {
+                BackgroundActions.InvokeButton(control);
+
+                // Replace this with an application-specific state predicate.
+                if (!WaitForApplicationState(policy))
+                    throw new InvalidOperationException("Button verification failed.");
+            }
+            else
+            {
+                throw new InvalidOperationException("Action is not in the allowlist.");
+            }
+
+            AuditLog.Append(policy.AuditPath, new AuditEvent(
+                started,
+                "action_completed",
+                request.Name,
+                window.ProcessName,
+                window.ProcessId,
+                window.Title,
+                "success",
+                "passed",
+                null));
+        }
+        catch (Exception ex)
+        {
+            AuditLog.Append("audit.jsonl", new AuditEvent(
+                started,
+                "action_failed",
+                request.Name,
+                "unknown",
+                0,
+                "redacted",
+                "failure",
+                "not_verified",
+                ex.GetType().Name));
+
+            throw;
+        }
+    }
+
+    private static dynamic LoadPolicyFor(string actionName) =>
+        throw new NotImplementedException();
+
+    private static bool WaitForApplicationState(dynamic policy) =>
+        throw new NotImplementedException();
+}</code></pre>
+
+      <p>The example leaves policy loading and the application-specific predicate explicit because those are not generic implementation details. A useful verifier depends on the target application’s contract. Do not fill the gap with “sleep for one second and assume success.”</p>
+
+      <h2>Reproducible verification plan</h2>
+
+      <p>The following checks are a test plan, not reported results. Run them on a Windows test machine after completing the adapter and policy wiring.</p>
+
+      <ol>
+        <li>Open the approved test application and a separate text editor.</li>
+        <li>Place the human cursor in the text editor and begin typing.</li>
+        <li>Run a disarmed <code>setText</code> action against the test application.</li>
+        <li>Confirm that the text editor remains focused and the physical cursor does not move.</li>
+        <li>Inspect the target control and verify the expected text through readback.</li>
+        <li>Attempt an unapproved action name and confirm that it is rejected before a Windows message is sent.</li>
+        <li>Open a second window with the same title pattern and confirm that resolution fails as ambiguous.</li>
+        <li>Close the target between resolution and execution and confirm that the action fails closed.</li>
+        <li>Request <code>invokeButton</code> while disarmed and confirm that Arm mode is required.</li>
+        <li>Arm only the named action for a short duration, execute it, and confirm that the arm state expires.</li>
+        <li>Make the application ignore or delay the expected state change and confirm that verification fails without an automatic consequential retry.</li>
+        <li>Review the JSONL records and confirm that they contain action metadata but no passwords, tokens, or full document contents.</li>
+      </ol>
+
+      <p>For stronger evidence, add automated tests around policy evaluation, duplicate-window rejection, arm expiry, action-schema validation, redaction, and verifier timeouts. Add an integration test against a purpose-built sample application whose controls and state transitions are known.</p>
+
+      <h2>Failure cases to design explicitly</h2>
+
+      <h3>Window title changes</h3>
+
+      <p>Many applications put document names, connection states, or unsaved-change markers in the title. A title substring can remain useful as a first filter, but it should not be the only identity. Prefer a stable application identifier and inspect the process path when possible.</p>
+
+      <h3>Elevated and unelevated processes</h3>
+
+      <p>Windows integrity levels can prevent one process from interacting with another in expected ways. Do not “solve” a failed interaction by silently running the agent as administrator. Treat elevation as a separate deployment decision with a narrower policy and an explicit operator review.</p>
+
+      <h3>Custom-rendered controls</h3>
+
+      <p>Games, canvas-based interfaces, remote desktop clients, and many modern toolkits may not implement the standard Win32 message contract. A control that looks like a button may not respond to <code>BM_CLICK</code>. Use the application’s supported automation interface where available; otherwise record that the target is unsupported.</p>
+
+      <h3>Modal dialogs</h3>
+
+      <p>A save prompt or permission dialog can appear between resolution and action. The prototype should not search every visible window and guess what to click. Re-resolve only against an explicit dialog policy, and require a distinct action schema for that dialog.</p>
+
+      <h3>Stale handles</h3>
+
+      <p>An <code>HWND</code> can become invalid after a window closes. Check it immediately before use, but still assume a race can occur. The target application may destroy the control after the check and before the message is processed.</p>
+
+      <h3>Messages that have side effects</h3>
+
+      <p>Some messages trigger validation, navigation, network requests, or irreversible actions. Classify operations by consequence. “Background” describes how input is delivered; it does not make the resulting action harmless.</p>
+
+      <h2>Security and privacy checklist</h2>
+
+      <ul>
+        <li>Keep the agent process unprivileged unless a documented requirement says otherwise.</li>
+        <li>Store allowlists in a file that the model cannot modify at runtime.</li>
+        <li>Reject arbitrary P/Invoke names, message IDs, handles, coordinates, and shell commands from model output.</li>
+        <li>Use a maximum text length and reject control characters when the target does not need them.</li>
+        <li>Expire Arm mode automatically and disarm after a failed verification.</li>
+        <li>Make verification predicates specific to the intended state transition.</li>
+        <li>Do not capture or log the entire desktop by default.</li>
+        <li>Redact credentials, tokens, personal data, and document contents from logs.</li>
+        <li>Make all external side effects visible in the user interface or operator console.</li>
+        <li>Keep physical input injection disabled in the background-control process.</li>
+      </ul>
+
+      <h2>Where this approach fits</h2>
+
+      <p>Background window control is a good fit for bounded, repetitive tasks in applications with stable control contracts: filling a test form, updating a local draft, triggering a non-destructive refresh, or exercising a legacy Win32 program in a lab.</p>
+
+      <p>It is a poor fit when the application offers a reliable API, when the interface is custom-rendered, when the task is highly consequential, or when the only available signal is a screenshot. In those cases, use the supported API or a human-confirmed foreground workflow with an explicit safety envelope.</p>
+
+      <p>The most important architectural decision is to keep the language model away from low-level authority. The model may choose among approved actions and provide bounded data. A deterministic local executor resolves the window, validates policy, sends one message, verifies the result, and records what happened.</p>
+
+      <h2>Conclusion</h2>
+
+      <p>An AI agent does not need to own the system cursor to operate a Windows application. A narrow background-control layer can preserve the person’s focus while still supporting useful automation, provided that window selection, control selection, permissions, verification, and logging are treated as first-class boundaries.</p>
+
+      <p>The prototype in this article is deliberately incomplete at the application-specific edges. That is where a safe implementation should remain explicit: the target application must define which controls are stable, which messages are supported, which state change proves success, and which actions require a human’s Arm-mode approval.</p>
+
+      <p>For related implementation patterns, see <a href="guides.html">the guides</a> and <a href="../glossary.html">the glossary</a>.</p>
+    <section class="service-note">
+  <b>We publish what works for us—and implement the same solutions for your business.</b>
+  We design AI automation, Telegram bots, chats, and AI agents for real-world processes.
+  <a href="../contacts-en.html">Discuss your project →</a>
+</section>
+</article>
+  </main>
+
+  <footer class="site-footer">
+    <div class="container">
+      <p>&copy; 2026 Agent Lab Journal</p>
+      <nav aria-label="Footer navigation">
+        <a href="guides.html">Guides</a>
+        <a href="../glossary.html">Glossary</a>
+      </nav>
+    </div>
+  </footer>
+</body>
+</html>
