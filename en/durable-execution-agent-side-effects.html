@@ -1,0 +1,276 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Reliable AI Agent Execution: Checkpoints and Idempotency in 42 Lines of Python</title>
+  <meta name="description" content="Reliable AI Agent Execution: Checkpoints and Idempotency in 42 Lines of Python shows how to journal agent steps in SQLite, recover after crashes, and prevent repeated payment side effects.">
+  <link rel="canonical" href="https://agentlabjournal.online/en/durable-execution-agent-side-effects.html">
+  <link rel="stylesheet" href="../style.css">
+  <link rel="stylesheet" href="../reading.css">
+
+  <meta property="og:type" content="article">
+  <meta property="og:title" content="Reliable AI Agent Execution: Checkpoints and Idempotency in 42 Lines of Python">
+  <meta property="og:description" content="A small, reproducible SQLite step journal for crash recovery and idempotent side-effecting operations in AI agents.">
+  <meta property="og:url" content="https://agentlabjournal.online/en/durable-execution-agent-side-effects.html">
+  <meta property="og:image" content="https://agentlabjournal.online/assets/covers/llm-context-window-budget-social.png">
+
+  <meta name="twitter:card" content="summary_large_image">
+  <meta name="twitter:title" content="Reliable AI Agent Execution: Checkpoints and Idempotency in 42 Lines of Python">
+  <meta name="twitter:description" content="Implement a SQLite step journal, crash recovery, and an idempotency key for side-effecting agent operations.">
+  <meta name="twitter:image" content="https://agentlabjournal.online/assets/covers/llm-context-window-budget-social.png">
+
+  <meta name="reading-time" content="14 minutes">
+  <meta name="article:section" content="Engineering">
+  <meta name="article:level" content="Intermediate">
+  <meta name="article:published_time" content="2026-11-19">
+  <meta name="article:modified_time" content="2026-11-19">
+
+  <script type="application/ld+json">
+  {
+    "@context": "https://schema.org",
+    "@type": "Article",
+    "headline": "Reliable AI Agent Execution: Checkpoints and Idempotency in 42 Lines of Python",
+    "description": "A small, reproducible SQLite step journal for crash recovery and idempotent side-effecting operations in AI agents.",
+    "image": ["https://agentlabjournal.online/assets/covers/llm-context-window-budget-social.png"],
+    "dateModified": "2026-11-19",
+    "author": {
+      "@type": "Organization",
+      "name": "Agent Lab Journal"
+    },
+    "publisher": {
+      "@type": "Organization",
+      "name": "Agent Lab Journal"
+    },
+    "mainEntityOfPage": {
+      "@type": "WebPage",
+      "@id": "https://agentlabjournal.online/en/durable-execution-agent-side-effects.html"
+    }
+  }
+  </script>
+<link rel="stylesheet" href="../homepage.css"><link rel="stylesheet" href="../max-promo.css">  <meta property="og:image:alt" content="Надёжное выполнение AI-агента: чекпоинты и идемпотентность за 42 строки Python">
+</head>
+<body>
+  <header class="site-header">
+    <a href="../index.html">Agent Lab Journal</a>
+    <nav aria-label="Primary navigation">
+      <a href="../guides.html">Guides</a>
+      <a href="../glossary.html">Glossary</a>
+    </nav>
+  </header>
+
+  <main>
+    <article class="reading">
+      <header class="reading-header">
+        <p class="reading-meta">Engineering · Intermediate · 14 min read · Updated 19 November 2026</p>
+        <h1>Reliable AI Agent Execution: Checkpoints and Idempotency in 42 Lines of Python</h1>
+        <figure class="article-cover" data-editorial-cover="durable-execution-agent-side-effects"><img src="../assets/covers/llm-context-window-budget.png" alt="Надёжное выполнение AI-агента: чекпоинты и идемпотентность за 42 строки Python" width="1280" height="720" fetchpriority="high"><figcaption>Temporary fallback cover; replace in editorial pass.</figcaption></figure>
+        <p class="dek">An agent can crash in the most expensive place: after a payment succeeds, but before the workflow records that success or sends confirmation. A tiny SQLite journal plus a stable idempotency key turns that ambiguous restart into a controlled recovery path.</p>
+      </header>
+
+      <p><strong>The core rule:</strong> record durable progress before moving on, and make every external operation safe to repeat. This article builds that rule around a concrete payment-and-confirmation workflow using only Python’s standard library.</p>
+
+      <h2>The failure we need to survive</h2>
+
+      <p>Imagine an agent handling an order:</p>
+
+      <ol>
+        <li>Validate the order.</li>
+        <li>Charge the customer.</li>
+        <li>Send a confirmation.</li>
+      </ol>
+
+      <p>The process completes step 2 at the payment provider. Then the worker loses power before step 3. On restart, a naïve loop sees no local record of the payment and charges again.</p>
+
+      <p>This is the boundary between an ordinary function call and a <a href="../glossary.html#side-effect">side effect</a>: the payment changes a system outside the worker. A retry can therefore create a duplicate charge even when the agent’s reasoning is correct.</p>
+
+      <p>We will use a <a href="../glossary.html#checkpoint">checkpoint</a> to record completed work and an <a href="../glossary.html#idempotency-key">idempotency key</a> to give the payment provider a stable identity for the operation.</p>
+
+      <h2>What the small design guarantees</h2>
+
+      <p>The example has three deliberately narrow guarantees:</p>
+
+      <ul>
+        <li>Completed local steps are skipped after a restart.</li>
+        <li>Retries reuse the same payment key for the same order.</li>
+        <li>A crash between the external call and the local checkpoint is recovered by repeating the external call with that same key.</li>
+      </ul>
+
+      <p>It does not magically make two unrelated systems commit atomically. The payment provider must support idempotent requests, and confirmation delivery must have its own retry or deduplication policy.</p>
+
+      <h2>The 42-line Python journal</h2>
+
+      <p>Save the following as <code>journal_demo.py</code>. The <a href="../glossary.html#sqlite">SQLite</a> database is the durable local record. The payment function is intentionally a fake provider: it returns a deterministic result and stores it in the same database so the example can run without credentials or network access.</p>
+
+      <pre><code>import hashlib
+import sqlite3
+
+DB = "agent_steps.db"
+
+def connect():
+    db = sqlite3.connect(DB)
+    db.execute("PRAGMA journal_mode=WAL")
+    db.execute("""CREATE TABLE IF NOT EXISTS steps (
+        run_id TEXT, name TEXT, result TEXT,
+        PRIMARY KEY (run_id, name)
+    )""")
+    db.execute("""CREATE TABLE IF NOT EXISTS payments (
+        key TEXT PRIMARY KEY, order_id TEXT, status TEXT
+    )""")
+    return db
+
+def done(db, run_id, name):
+    row = db.execute(
+        "SELECT result FROM steps WHERE run_id=? AND name=?",
+        (run_id, name)).fetchone()
+    return row[0] if row else None
+
+def save(db, run_id, name, result):
+    db.execute("INSERT OR REPLACE INTO steps VALUES (?, ?, ?)",
+               (run_id, name, result))
+    db.commit()
+
+def payment(db, order_id, key):
+    row = db.execute("SELECT status FROM payments WHERE key=?",
+                     (key,)).fetchone()
+    if row:
+        return row[0]
+    db.execute("INSERT INTO payments VALUES (?, ?, ?)",
+               (key, order_id, "paid"))
+    db.commit()
+    return "paid"
+
+def run(order_id):
+    run_id = order_id
+    db = connect()
+    if not done(db, run_id, "validated"):
+        save(db, run_id, "validated", "ok")
+    key = hashlib.sha256(run_id.encode()).hexdigest()
+    if not done(db, run_id, "paid"):
+        status = payment(db, order_id, key)
+        save(db, run_id, "paid", status)
+    if not done(db, run_id, "confirmed"):
+        print(f"confirmation for {order_id}")
+        save(db, run_id, "confirmed", "sent")
+    db.close()
+
+if __name__ == "__main__":
+    run("order-example-001")</code></pre>
+
+      <p>The line count is intentionally small, but the ordering matters:</p>
+
+      <ol>
+        <li>The payment key is derived from the stable order identity, not from the current process.</li>
+        <li>The external operation happens before its local completion checkpoint.</li>
+        <li>If the process crashes after payment but before <code>save(..., "paid", ...)</code>, the next run calls <code>payment</code> again with the same key.</li>
+        <li>The provider-side record returns the existing result instead of creating a second payment.</li>
+      </ol>
+
+      <h2>Run it reproducibly</h2>
+
+      <p>Use a fresh directory and a Python 3 interpreter:</p>
+
+      <pre><code>mkdir agent-journal-demo
+cd agent-journal-demo
+python3 --version
+python3 journal_demo.py
+python3 journal_demo.py
+sqlite3 agent_steps.db \
+  'select run_id, name, result from steps order by name;'
+sqlite3 agent_steps.db \
+  'select key, order_id, status from payments;'</code></pre>
+
+      <p>On the first run, the program prints a confirmation. On the second run, the journal marks all three steps complete, so the confirmation code is skipped. These are expected outcomes from reading the code; they are not a claim that this article’s environment executed the commands.</p>
+
+      <h2>Simulating the dangerous crash window</h2>
+
+      <p>To model the real problem, temporarily insert this line immediately after the call to <code>payment</code>:</p>
+
+      <pre><code>raise RuntimeError("crash after external payment")</code></pre>
+
+      <p>Run the program once, remove the line, and run it again. The first run creates the payment record but never writes the <code>paid</code> checkpoint. The second run reaches <code>payment</code> again, finds the same key, and receives the existing <code>paid</code> result before writing the missing checkpoint and sending confirmation.</p>
+
+      <p>This local simulation demonstrates the recovery shape, not the behavior of a real payment API. A production integration must confirm the provider’s exact idempotency semantics, key retention period, request timeout behavior, and response handling from its own documentation and tests.</p>
+
+      <h2>Why a checkpoint is not enough</h2>
+
+      <p>Suppose the journal contains only step names:</p>
+
+      <pre><code>validated
+paid
+confirmed</code></pre>
+
+      <p>That prevents some duplicate work, but it cannot resolve uncertainty when the worker crashes before writing <code>paid</code>. The journal says “not paid,” while the provider may say “paid.” The idempotency key bridges that gap by making the retry refer to the same logical operation.</p>
+
+      <p>For real integrations, derive the key from an immutable business identity such as <code>order_id + operation</code>. Do not use a random value generated on every retry. Also avoid putting personal data or payment details into the key; the example uses a one-way hash of a synthetic order identifier.</p>
+
+      <h2>Failure cases to handle explicitly</h2>
+
+      <h3>Payment request times out</h3>
+
+      <p>A timeout is not proof that the payment failed. Retry with the same key, then interpret the provider’s response. If the provider has a status lookup endpoint, use it with the same operation identity.</p>
+
+      <h3>Confirmation fails</h3>
+
+      <p>Do not charge again. Keep the <code>paid</code> checkpoint and retry only confirmation. In a larger system, store a confirmation delivery identifier and let the mail or messaging provider deduplicate it too.</p>
+
+      <h3>Two workers process one order</h3>
+
+      <p>The sample journal is intentionally minimal and does not implement leases or ownership. Concurrent workers can race between reading a missing step and executing it. Add a unique run claim, a lease with expiry, or a queue-level single-consumer guarantee before using this pattern concurrently.</p>
+
+      <h3>The business input changes</h3>
+
+      <p>Do not reuse an old key for a materially different payment amount or currency. Bind the operation identity to the versioned request, and reject a key if the provider reports a parameter mismatch.</p>
+
+      <h3>The local database is lost</h3>
+
+      <p>A SQLite file is durable only as long as its storage is durable. Back it up or place it on reliable persistent storage. If the journal disappears, recover by querying the external provider using the business operation identity rather than blindly retrying.</p>
+
+      <h2>Production checklist</h2>
+
+      <ul>
+        <li>Use a stable key per business operation, not per attempt.</li>
+        <li>Persist the checkpoint after the external operation returns a usable result.</li>
+        <li>Make downstream notifications idempotent separately.</li>
+        <li>Store status, provider identifiers, timestamps, and a safe error summary.</li>
+        <li>Use transactions for journal updates and inspect unique-constraint failures.</li>
+        <li>Add a lease or queue ownership if multiple workers can run the same workflow.</li>
+        <li>Keep secrets, card data, tokens, and personal data out of logs and keys.</li>
+        <li>Test crashes at every boundary: before the call, during the call, after the call, and after the checkpoint.</li>
+      </ul>
+
+      <h2>Verification without overclaiming</h2>
+
+      <p>You can verify the design locally by inspecting the two tables before and after a simulated crash:</p>
+
+      <pre><code>sqlite3 agent_steps.db \
+  'select * from steps order by run_id, name;'
+sqlite3 agent_steps.db \
+  'select * from payments;'</code></pre>
+
+      <p>The expected invariant is simple: one payment row per idempotency key, and at most one completion row for each <code>(run_id, step)</code> pair. Whether a real provider honors the same retry behavior must be verified against that provider’s contract; this article does not test or certify any provider.</p>
+
+      <h2>Limitations</h2>
+
+      <p>This pattern provides at-least-once execution of unfinished steps with deduplication at the side-effect boundary. It does not provide universal exactly-once execution. Networks can fail after a provider commits, databases can become unavailable, and a notification service may have different deduplication rules.</p>
+
+      <p>For a single-process workflow or a small worker, SQLite can be a practical journal. For high concurrency, multi-region execution, long-running workflows, or strict audit requirements, use a datastore and workflow system designed for those conditions. Keep the same mental model: durable progress plus an operation identity that survives retries.</p>
+
+      <h2>Takeaway</h2>
+
+      <p>When an agent can cause an external change, a restart must be expected—not exceptional. Checkpoint the work you have completed, retry incomplete work, and make the retry carry the same idempotency key. That combination turns “did the payment happen?” from a guess into a queryable recovery decision.</p>
+
+      <p>Continue with the <a href="../guides.html">Agent Lab Journal guides</a> or look up related terms in the <a href="../glossary.html">glossary</a>.</p>
+    <section class="service-note">
+  <b>We publish what works for us—and implement the same solutions for your business.</b>
+  We design AI automation, Telegram bots, chats, and AI agents for real-world processes.
+  <a href="../contacts-en.html">Discuss your project →</a>
+</section>
+</article>
+  </main>
+
+  <footer class="site-footer">
+    <p><a href="../guides.html">Guides</a> · <a href="../glossary.html">Glossary</a></p>
+  </footer>
+</body>
+</html>
