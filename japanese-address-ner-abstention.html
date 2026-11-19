@@ -1,0 +1,425 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Извлечение японских адресов: сравниваем NER и осторожное связывание кодов</title>
+  <meta name="description" content="Извлечение японских адресов: сравниваем NER и осторожное связывание кодов — воспроизводимый тест пайплайна, метрики извлечения и доля ошибочных утверждений.">
+  <link rel="canonical" href="https://agentlabjournal.online/japanese-address-ner-abstention.html">
+  <link rel="stylesheet" href="style.css">
+  <link rel="stylesheet" href="reading.css">
+
+  <meta property="og:type" content="article">
+  <meta property="og:title" content="Извлечение японских адресов: сравниваем NER и осторожное связывание кодов">
+  <meta property="og:description" content="Практический разбор NER и dictionary linking для японских адресов с abstention при неоднозначном муниципальном коде.">
+  <meta property="og:url" content="https://agentlabjournal.online/japanese-address-ner-abstention.html">
+  <meta property="og:site_name" content="Agent Lab Journal">
+
+  <meta name="twitter:card" content="summary">
+  <meta name="twitter:title" content="Извлечение японских адресов: сравниваем NER и осторожное связывание кодов">
+  <meta name="twitter:description" content="Воспроизводимый тест извлечения японских адресов и осторожного связывания муниципальных кодов.">
+
+  <script type="application/ld+json">
+  {
+    "@context": "https://schema.org",
+    "@type": "Article",
+    "headline": "Извлечение японских адресов: сравниваем NER и осторожное связывание кодов",
+    "description": "Практический разбор NER и dictionary linking для японских адресов с abstention при неоднозначном муниципальном коде.",
+    "url": "https://agentlabjournal.online/japanese-address-ner-abstention.html",
+    "inLanguage": "ru",
+    "publisher": {
+      "@type": "Organization",
+      "name": "Agent Lab Journal"
+    },
+    "author": {
+      "@type": "Organization",
+      "name": "Agent Lab Journal"
+    },
+    "mainEntityOfPage": {
+      "@type": "WebPage",
+      "@id": "https://agentlabjournal.online/japanese-address-ner-abstention.html"
+    }
+  }
+  </script>
+<link rel="stylesheet" href="homepage.css"><link rel="stylesheet" href="max-promo.css">  <meta property="og:image" content="https://agentlabjournal.online/assets/covers/llm-context-window-budget-social.png">
+  <meta property="og:image:alt" content="Извлечение японских адресов: сравниваем NER и осторожное связывание кодов">
+  <meta name="twitter:image" content="https://agentlabjournal.online/assets/covers/llm-context-window-budget-social.png">
+</head>
+<body>
+  <header class="site-header">
+    <div class="container">
+      <a class="site-brand" href="index.html">Agent Lab Journal</a>
+      <nav aria-label="Основная навигация">
+        <a href="guides.html">Guides</a>
+        <a href="glossary.html">Glossary</a>
+      </nav>
+    </div>
+  </header>
+
+  <main>
+    <article class="reading">
+      <div class="reading-meta">
+        <span>Практическая статья</span>
+        <span>Продвинутый уровень</span>
+        <span>До 12 минут</span>
+      </div>
+
+      <header class="article-header">
+        <h1>Извлечение японских адресов: сравниваем NER и осторожное связывание кодов</h1>
+        <figure class="article-cover" data-editorial-cover="japanese-address-ner-abstention"><img src="assets/covers/llm-context-window-budget.png" alt="Извлечение японских адресов: сравниваем NER и осторожное связывание кодов" width="1280" height="720" fetchpriority="high"><figcaption>Temporary fallback cover; replace in editorial pass.</figcaption></figure>
+        <p class="lead">
+          Японский адрес можно извлечь как последовательность сущностей, но нельзя автоматически превращать
+          каждую найденную строку в муниципальный код. В этой статье построим воспроизводимый тестовый пайплайн:
+          сначала извлечём компоненты адреса, затем проверим словарное связывание и отдельно измерим, как часто
+          система воздерживается от ошибочного утверждения.
+        </p>
+      </header>
+<a href="https://max.ru/channel_AgentLab?utm_source=agentlabjournal&utm_medium=article&utm_campaign=max_channel&utm_content=article_footer" class="max-promo-block" target="_blank" rel="noopener noreferrer" aria-label="Самое важное из мира AI в канале MAX AgentLab">
+  <span class="max-promo-block__icon" aria-hidden="true"></span>
+  <span class="max-promo-block__content"><span class="max-promo-block__title">Самое важное из мира AI — в канале MAX AgentLab</span><span class="max-promo-block__desc">Отдельные разборы, инструменты и практические схемы</span></span>
+  <span class="max-promo-block__arrow" aria-hidden="true">→</span>
+</a>
+<a href="https://t.me/pelmenews?utm_source=agentlabjournal&utm_medium=article&utm_campaign=telegram_channel&utm_content=article_intro" class="telegram-promo-block" target="_blank" rel="noopener noreferrer" aria-label="Читайте Agent Lab в Telegram">
+  <span class="telegram-promo-block__icon" aria-hidden="true"></span>
+  <span class="telegram-promo-block__content">
+    <span class="telegram-promo-block__title">Читайте Agent Lab в Telegram</span>
+    <span class="telegram-promo-block__desc">Разборы, кейсы и новости о практических AI-агентах без лишней воды.</span>
+  </span>
+  <span class="telegram-promo-block__arrow" aria-hidden="true">→</span>
+</a>
+
+      <section>
+        <h2>Задача: извлечь адрес, не выдумав его идентификатор</h2>
+        <p>
+          Для японских адресов типичен порядок от крупной административной единицы к мелкой:
+          都道府県, 市区町村, район,町名,番地 и номер здания. При этом одинаковые или похожие названия
+          могут встречаться в разных префектурах и муниципалитетах. Нормализация строки сама по себе
+          не доказывает, что найден правильный муниципальный код.
+        </p>
+        <p>
+          Поэтому полезно разделить две операции:
+        </p>
+        <ol>
+          <li><strong>NER</strong> — извлечение фрагментов текста и их ролей: префектура, муниципалитет, район, блок и так далее.</li>
+          <li><strong>Dictionary linking</strong> — поиск кандидатов в справочнике кодов с проверкой контекста и порогом уверенности.</li>
+        </ol>
+        <p>
+          Если словарь возвращает несколько правдоподобных кандидатов, корректный результат —
+          <code>municipality_code = null</code> и статус <code>ambiguous</code>, а не выбор первого совпадения.
+        </p>
+      </section>
+
+      <section>
+        <h2>Минимальный контракт данных</h2>
+        <p>
+          До сравнения моделей зафиксируйте формат результата. Он должен позволять различать
+          «сущность найдена» и «код подтверждён».
+        </p>
+
+        <pre><code>{
+  "text": "東京都新宿区西新宿2丁目8-1",
+  "entities": [
+    {"type": "prefecture", "text": "東京都", "start": 0, "end": 3},
+    {"type": "municipality", "text": "新宿区", "start": 3, "end": 6},
+    {"type": "area", "text": "西新宿", "start": 6, "end": 9},
+    {"type": "block", "text": "2丁目8-1", "start": 9, "end": 15}
+  ],
+  "linking": {
+    "municipality_code": "candidate-or-null",
+    "status": "linked|ambiguous|not_found",
+    "candidate_count": 1,
+    "evidence": ["prefecture", "municipality"]
+  }
+}</code></pre>
+
+        <p>
+          Значения кода и метки в этом примере являются форматом данных, а не утверждением
+          о конкретном содержимом справочника. В реальном тесте справочник и его версию нужно
+          хранить рядом с результатами эксперимента.
+        </p>
+      </section>
+
+      <section>
+        <h2>Два сравниваемых пайплайна</h2>
+
+        <h3>Вариант A: только NER</h3>
+        <p>
+          Модель получает исходную строку и возвращает спаны сущностей. Для оценки не требуется
+          назначать административный код. Такой вариант хорошо показывает, где модель нашла
+          адресные компоненты, но не отвечает на вопрос о принадлежности к справочнику.
+        </p>
+
+        <h3>Вариант B: NER плюс осторожное linking</h3>
+        <p>
+          После NER система нормализует написание, формирует запрос к локальному словарю и
+          отбрасывает кандидатов, не согласующихся с контекстом. Связывание разрешается только
+          при единственном кандидате или при заранее заданном минимальном разрыве между первым
+          и вторым результатом. Иначе возвращается отказ от связывания.
+        </p>
+
+        <pre><code>def link_municipality(entity, prefecture, dictionary):
+    candidates = dictionary.lookup(
+        name=normalize(entity),
+        prefecture=normalize(prefecture)
+    )
+
+    if len(candidates) == 0:
+        return {"code": None, "status": "not_found"}
+
+    if len(candidates) > 1:
+        return {
+            "code": None,
+            "status": "ambiguous",
+            "candidate_count": len(candidates)
+        }
+
+    return {
+        "code": candidates[0].code,
+        "status": "linked",
+        "candidate_count": 1
+    }</code></pre>
+
+        <p>
+          Это намеренно консервативная логика. Если требуется использовать ранжирование,
+          сохраните не только лучший результат, но и список кандидатов, значения оценок и правило,
+          по которому система приняла решение.
+        </p>
+      </section>
+
+      <section>
+        <h2>Воспроизводимый тест без внешних утверждений</h2>
+        <p>
+          Создайте небольшой фиксированный набор с разными случаями: однозначные адреса,
+          варианты написания, отсутствующие записи и намеренно неоднозначные названия.
+          Набор должен содержать ожидаемые спаны и ожидаемый статус linking. Это тестовый
+          корпус, а не статистика по всем японским адресам.
+        </p>
+
+        <pre><code>tests/
+  addresses.jsonl
+  dictionary.jsonl
+  expected.jsonl
+
+python -m venv .venv
+. .venv/bin/activate
+python -m pip install -r requirements.txt
+python evaluate.py \
+  --input tests/addresses.jsonl \
+  --dictionary tests/dictionary.jsonl \
+  --expected tests/expected.jsonl \
+  --output results.json</code></pre>
+
+        <p>
+          Команды безопасны в том смысле, что создают только локальное виртуальное окружение
+          и файл результатов в текущем проекте. Не передавайте в тестовый скрипт реальные
+          персональные адреса, если это не предусмотрено политикой обработки данных.
+        </p>
+
+        <p>
+          Для каждого примера сохраните:
+        </p>
+        <ul>
+          <li>исходный текст;</li>
+          <li>предсказанные и эталонные спаны;</li>
+          <li>список кандидатов словаря;</li>
+          <li>решение: <code>linked</code>, <code>ambiguous</code> или <code>not_found</code>;</li>
+          <li>причину отказа, если код не назначен.</li>
+        </ul>
+      </section>
+
+      <section>
+        <h2>Метрики: извлечение и ошибочные утверждения</h2>
+        <p>
+          Для NER используйте стандартные precision, recall и F1. Заранее выберите режим
+          сопоставления: точное совпадение границ или overlap с минимальным порогом. Не смешивайте
+          эти режимы в одном отчёте.
+        </p>
+
+        <pre><code>precision = true_positive / (true_positive + false_positive)
+recall = true_positive / (true_positive + false_negative)
+f1 = 2 * precision * recall / (precision + recall)</code></pre>
+
+        <p>
+          Для linking важна отдельная метрика — доля ошибочных утверждений. Считайте ошибочным
+          утверждением случай, когда система вернула конкретный муниципальный код, а эталон
+          показывает другой код или неоднозначность:
+        </p>
+
+        <pre><code>claim_error_rate =
+  wrong_linked_claims / all_non_null_linking_claims</code></pre>
+
+        <p>
+          Отдельно публикуйте coverage связывания:
+        </p>
+
+        <pre><code>linking_coverage =
+  linked_records / all_records</code></pre>
+
+        <p>
+          Такая пара метрик показывает компромисс. Более строгий порог может уменьшить coverage,
+          но одновременно снизить долю ошибочных утверждений. Нельзя объявлять пайплайн лучше
+          только потому, что у него выше доля назначенных кодов.
+        </p>
+
+        <table>
+          <caption>Минимальная таблица отчёта</caption>
+          <thead>
+            <tr>
+              <th>Компонент</th>
+              <th>Метрика</th>
+              <th>Что проверяет</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td>NER</td>
+              <td>Precision / Recall / F1</td>
+              <td>Правильность границ и типов сущностей</td>
+            </tr>
+            <tr>
+              <td>Linking</td>
+              <td>Coverage</td>
+              <td>Как часто код вообще назначен</td>
+            </tr>
+            <tr>
+              <td>Linking</td>
+              <td>Claim error rate</td>
+              <td>Как часто назначенный код оказался неверным или неразрешимым</td>
+            </tr>
+            <tr>
+              <td>Abstention</td>
+              <td>Abstention rate</td>
+              <td>Как часто система предпочла не утверждать</td>
+            </tr>
+          </tbody>
+        </table>
+      </section>
+
+      <section>
+        <h2>Как проверять неоднозначность</h2>
+        <p>
+          Наличие одинакового названия муниципалитета в словаре — достаточное основание для
+          отказа, если в тексте нет более сильного контекста. Поддерживайте явную иерархию
+          доказательств:
+        </p>
+        <ol>
+          <li>совпадает префектура;</li>
+          <li>совпадает муниципалитет;</li>
+          <li>совпадает район или町名, если поле есть в словаре;</li>
+          <li>совпадают нормализованные варианты написания;</li>
+          <li>остается ровно один кандидат.</li>
+        </ol>
+        <p>
+          Если два кандидата проходят одинаковое количество проверок, результат должен быть
+          <code>ambiguous</code>. Логика «выбрать самый популярный» допустима только как отдельная
+          эвристика с отдельной метрикой и явной маркировкой риска.
+        </p>
+      </section>
+
+      <section>
+        <h2>Проверка результата</h2>
+        <p>
+          После запуска сравните не только итоговые числа, но и конкретные ошибки. Удобный
+          минимальный контрольный набор:
+        </p>
+        <ul>
+          <li>адрес с полным контекстом префектуры и муниципалитета;</li>
+          <li>адрес с вариацией пробелов, цифр и символов;</li>
+          <li>название, которого нет в словаре;</li>
+          <li>название с несколькими кандидатами;</li>
+          <li>строка, где NER ошибочно объединяет район и номер дома.</li>
+        </ul>
+        <p>
+          Для каждого случая проверьте, что отказ действительно сохраняет
+          <code>municipality_code = null</code>, а причина не теряется при сериализации.
+          Отдельно убедитесь, что пустые поля не превращаются в строку вроде
+          <code>"null"</code>.
+        </p>
+      </section>
+
+      <section>
+        <h2>Типовые ошибки</h2>
+
+        <h3>Смешивание извлечения и идентификации</h3>
+        <p>
+          Хорошо извлечённый текст не означает правильный код. Храните сущности и результат
+          linking раздельно, чтобы ошибка словаря не выглядела как ошибка NER.
+        </p>
+
+        <h3>Молчаливый выбор первого кандидата</h3>
+        <p>
+          Порядок строк в словаре не является доказательством. При нескольких кандидатах
+          возвращайте abstention и сохраняйте кандидатов для аудита.
+        </p>
+
+        <h3>Нормализация без журналирования</h3>
+        <p>
+          Если система меняет символы, пробелы или числовые обозначения, сохраняйте исходное
+          и нормализованное значения. Иначе будет трудно понять, где возникло расхождение.
+        </p>
+
+        <h3>Одна итоговая цифра</h3>
+        <p>
+          F1 по NER не показывает надёжность муниципального кода. Минимальный отчёт должен
+          разделять качество извлечения, coverage и claim error rate.
+        </p>
+      </section>
+
+      <section>
+        <h2>Ограничения подхода</h2>
+        <p>
+          Небольшой локальный тест не оценивает работу на всех вариантах японских адресов,
+          исторических названиях, сокращениях, OCR-ошибках и смешанном латинско-японском тексте.
+          Также результат зависит от версии словаря и правил нормализации.
+        </p>
+        <p>
+          Поэтому в отчёте фиксируйте версию корпуса, словаря, модели, конфигурацию порогов
+          и дату запуска. Если эталон неоднозначен, не превращайте его в искусственно
+          однозначную метку: лучше хранить допустимое множество кандидатов.
+        </p>
+      </section>
+
+      <section>
+        <h2>Итог</h2>
+        <p>
+          Надёжный пайплайн для японских адресов состоит из двух независимых проверок:
+          NER отвечает за извлечение компонентов, а dictionary linking — за подтверждение
+          административной принадлежности. Ключевая защита от ложных утверждений — явный
+          отказ от связывания при неоднозначности. Воспроизводимый тест должен показывать
+          не только F1, но и coverage, abstention rate и долю ошибочно назначенных кодов.
+        </p>
+        <p>
+          Для следующего шага см. <a href="guides.html">практические guides</a> и
+          <a href="glossary.html">глоссарий терминов</a>.
+        </p>
+      </section>
+<aside class="service-note" aria-label="Связаться по проекту">
+  <div class="service-note__copy">
+    <p class="service-note__label">Связь с Agent Lab</p>
+    <p class="service-note__title">Внедрим такой контур в ваш процесс</p>
+    <p class="service-note__text">Напишите инженеру Agent Lab в Telegram: опишите задачу, бота или интеграцию — предложим пилот с проверками и понятными границами.</p>
+  </div>
+  <a class="service-note__link" href="https://t.me/msrzn007?utm_source=journal&amp;utm_medium=article&amp;utm_campaign=service_note" target="_blank" rel="noopener">Написать в Telegram
+    <svg viewBox="0 0 16 16" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"><path d="M3 13 13 3M6 3h7v7"/></svg>
+  </a>
+</aside>
+<aside class="service-note service-note--sitevisor" aria-label="Экспресс-аудит сайта">
+  <div class="service-note__copy">
+    <p class="service-note__label">SiteVisor</p>
+    <p class="service-note__title">Проверьте техническое состояние и готовность вашего сайта к рекламе</p>
+    <p class="service-note__text">Экспресс-аудит на SiteVisor.pro: индексация, скорость, разметка, аналитика и точки конверсии.</p>
+  </div>
+  <a class="service-note__link" href="https://sitevisor.pro/?utm_source=journal&amp;utm_medium=article&amp;utm_campaign=leadmagnet" target="_blank" rel="noopener">Экспресс-аудит на SiteVisor.pro
+    <svg viewBox="0 0 16 16" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"><path d="M3 13 13 3M6 3h7v7"/></svg>
+  </a>
+</aside>
+</article>
+  </main>
+
+  <footer class="site-footer">
+    <div class="container">
+      <p>Agent Lab Journal · Практические материалы для воспроизводимых пайплайнов</p>
+    </div>
+  </footer>
+</body>
+</html>

@@ -1,0 +1,648 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Japanese Address Extraction: Comparing NER with Conservative Code Linking</title>
+  <meta name="description" content="Japanese Address Extraction: Comparing NER with Conservative Code Linking. A reproducible guide to evaluating Japanese address NER, dictionary linking, abstention, extraction metrics, and false-assignment rate.">
+  <link rel="canonical" href="https://agentlabjournal.online/en/japanese-address-ner-abstention.html">
+  <link rel="stylesheet" href="../style.css">
+  <link rel="stylesheet" href="../reading.css">
+
+  <meta property="og:type" content="article">
+  <meta property="og:title" content="Japanese Address Extraction: Comparing NER with Conservative Code Linking">
+  <meta property="og:description" content="A reproducible evaluation design for Japanese address extraction with conservative municipality-code linking.">
+  <meta property="og:url" content="https://agentlabjournal.online/en/japanese-address-ner-abstention.html">
+  <meta property="og:image" content="https://agentlabjournal.online/assets/covers/llm-context-window-budget-social.png">
+  <meta property="og:site_name" content="Agent Lab Journal">
+
+  <meta name="twitter:card" content="summary_large_image">
+  <meta name="twitter:title" content="Japanese Address Extraction: Comparing NER with Conservative Code Linking">
+  <meta name="twitter:description" content="A reproducible evaluation design for Japanese address extraction with conservative municipality-code linking.">
+  <meta name="twitter:image" content="https://agentlabjournal.online/assets/covers/llm-context-window-budget-social.png">
+
+  <script type="application/ld+json">
+  {
+    "@context": "https://schema.org",
+    "@type": "Article",
+    "headline": "Japanese Address Extraction: Comparing NER with Conservative Code Linking",
+    "description": "A reproducible evaluation design for Japanese address extraction with conservative municipality-code linking.",
+    "image": ["https://agentlabjournal.online/assets/covers/llm-context-window-budget-social.png"],
+    "dateModified": "2026-11-19",
+    "author": {
+      "@type": "Organization",
+      "name": "Agent Lab Journal"
+    },
+    "publisher": {
+      "@type": "Organization",
+      "name": "Agent Lab Journal",
+      "url": "https://agentlabjournal.online/"
+    },
+    "mainEntityOfPage": {
+      "@type": "WebPage",
+      "@id": "https://agentlabjournal.online/en/japanese-address-ner-abstention.html"
+    }
+  }
+  </script>
+<link rel="stylesheet" href="../homepage.css"><link rel="stylesheet" href="../max-promo.css">  <meta property="og:image:alt" content="Извлечение японских адресов: сравниваем NER и осторожное связывание кодов">
+</head>
+<body>
+  <header class="site-header">
+    <div class="site-header__inner">
+      <a class="site-brand" href="../index.html">Agent Lab Journal</a>
+      <nav aria-label="Primary navigation">
+        <a href="../guides.html">Guides</a>
+        <a href="../glossary.html">Glossary</a>
+      </nav>
+    </div>
+  </header>
+
+  <main>
+    <article class="reading">
+      <header class="reading-header">
+        <p class="reading-kicker">Data extraction · Advanced</p>
+        <h1>Japanese Address Extraction: Comparing NER with Conservative Code Linking</h1>
+        <figure class="article-cover" data-editorial-cover="japanese-address-ner-abstention"><img src="../assets/covers/llm-context-window-budget.png" alt="Извлечение японских адресов: сравниваем NER и осторожное связывание кодов" width="1280" height="720" fetchpriority="high"><figcaption>Temporary fallback cover; replace in editorial pass.</figcaption></figure>
+        <p class="reading-dek">
+          How to extract Japanese addresses while refusing to assign a municipality code when the evidence is ambiguous.
+        </p>
+        <div class="reading-meta">
+          <span>40 min read</span>
+          <span>Updated 19 November 2026</span>
+          <span>Reproducible evaluation design</span>
+        </div>
+      </header>
+
+      <p class="lead">
+        An address extractor can be useful even when it declines to produce a code. That is the central engineering distinction in this article: identify the address span and its components first, then link it to a municipality only when the candidate is sufficiently supported by the text and reference data. The result is a pipeline that may return more “unknown” values, but makes fewer silent geographic assignments.
+      </p>
+
+      <p>
+        This article presents a reproducible way to compare <a href="../glossary.html#ner">named entity recognition (NER)</a> with dictionary-based linking for Japanese addresses. It defines the data contract, gives an implementation outline, specifies metrics for both extraction and linkage, and shows how to calculate the <a href="../glossary.html#false-assignment-rate">false-assignment rate</a>. No benchmark result is claimed here: a corpus, model version, reference snapshot, and run output were not supplied. The commands and tables below are an evaluation recipe, not reported measurements.
+      </p>
+
+      <h2>The problem: extraction and coding are different decisions</h2>
+
+      <p>
+        Consider this synthetic input:
+      </p>
+
+      <pre><code>発送先：東京都町田市原町田 6-12-20
+備考：旧住所は神奈川県相模原市南区相模大野。</code></pre>
+
+      <p>
+        A system may correctly detect two address-like spans. It still has to decide which span is the shipping destination, which municipality each span refers to, and whether the available evidence justifies emitting a municipality code. A single input can therefore contain several independent decisions:
+      </p>
+
+      <ul>
+        <li>Find the address span.</li>
+        <li>Segment administrative components such as prefecture, city, ward, town, and block.</li>
+        <li>Resolve a normalized address against a reference dictionary.</li>
+        <li>Assign a code, or abstain when several candidates remain plausible.</li>
+      </ul>
+
+      <p>
+        Conflating these decisions creates an unsafe failure mode: a parser that is uncertain about the text nevertheless emits a precise-looking code. The safer contract is explicit:
+      </p>
+
+      <pre><code>{
+  "raw_text": "東京都町田市原町田 6-12-20",
+  "span": [5, 22],
+  "components": {
+    "prefecture": "東京都",
+    "city": "町田市",
+    "town": "原町田",
+    "block": "6-12-20"
+  },
+  "municipality_code": "13209",
+  "link_status": "linked",
+  "confidence": 0.98,
+  "candidate_count": 1
+}</code></pre>
+
+      <p>
+        When the evidence is insufficient, the same schema should remain valid:
+      </p>
+
+      <pre><code>{
+  "raw_text": "相模野市中央区",
+  "span": [0, 7],
+  "components": {
+    "prefecture": null,
+    "city": "相模野市",
+    "town": null,
+    "block": null
+  },
+  "municipality_code": null,
+  "link_status": "abstained",
+  "confidence": 0.41,
+  "candidate_count": 2
+}</code></pre>
+
+      <p>
+        The second record is not a failed extraction if the address span and available components are correct. It is a deliberate <a href="../glossary.html#abstention">abstention</a> from code assignment.
+      </p>
+
+      <h2>Why Japanese addresses need conservative linking</h2>
+
+      <p>
+        Japanese addresses are commonly written without spaces, and the same surface form can appear in different administrative contexts. Historical names, omitted prefectures, abbreviated wards, chōme notation, variant kanji, and address text embedded in company names all complicate matching.
+      </p>
+
+      <p>
+        A dictionary lookup can be fast and precise when the normalized key is unique. It becomes risky when normalization removes distinctions that matter. For example, aggressive normalization may collapse punctuation, spacing, and character variants before the system has recorded which transformations were applied. If two reference records then share the same normalized key, choosing the first result is not a resolution strategy; it is an undocumented tie-break.
+      </p>
+
+      <p>
+        A conservative linker should preserve three facts:
+
+      </p>
+
+      <ul>
+        <li>the original text and offsets;</li>
+        <li>the normalized lookup key and normalization steps;</li>
+        <li>all viable candidates, not only the selected candidate.</li>
+      </ul>
+
+      <p>
+        The candidate set is important for evaluation. A record with two equally valid candidates must not be counted as a correct assignment merely because one candidate was selected.
+      </p>
+
+      <h2>Two pipeline designs</h2>
+
+      <h3>Pipeline A: NER-first extraction</h3>
+
+      <p>
+        The NER-first design uses a trained or rule-assisted sequence model to identify address spans and component labels. A typical label set is:
+      </p>
+
+      <pre><code>B-PREF   I-PREF
+B-CITY   I-CITY
+B-WARD   I-WARD
+B-TOWN   I-TOWN
+B-BLOCK  I-BLOCK
+B-BUILD  I-BUILD</code></pre>
+
+      <p>
+        The model output is converted into spans, then normalized and sent to the linker. NER is useful when addresses occur in varied prose, tables, notes, or mixed fields. It can also distinguish an address from nearby organization names when the training data represents those contexts.
+      </p>
+
+      <p>
+        The main risk is that a plausible span is mistaken for a verified administrative identity. Extraction confidence is not the same as linking confidence. Keep them as separate fields:
+      </p>
+
+      <pre><code>{
+  "extraction_confidence": 0.94,
+  "link_confidence": 0.62,
+  "candidate_count": 2,
+  "link_status": "abstained"
+}</code></pre>
+
+      <h3>Pipeline B: dictionary-first linking</h3>
+
+      <p>
+        The dictionary-first design searches a reference table for known administrative names and address keys. It can be highly precise for canonical forms, but it is sensitive to coverage and segmentation. A dictionary may identify a city name without proving that the surrounding text belongs to that city.
+      </p>
+
+      <p>
+        A practical implementation often combines both approaches: use NER to propose a span, then use the dictionary to verify and code it. The comparison should still report the components separately so that a good extractor is not hidden by a conservative linker.
+      </p>
+
+      <h2>Define the reference data before testing</h2>
+
+      <p>
+        Reproducibility starts with a fixed reference snapshot. Record the source identifier, retrieval date, file checksum, encoding, and schema. Do not silently mix reference snapshots during one evaluation.
+      </p>
+
+      <p>
+        A minimal reference table might contain:
+      </p>
+
+      <pre><code>municipality_code,prefecture,city,ward,town,normalized_key
+13201,東京都,八王子市,,,東京都八王子市
+13209,東京都,町田市,,,東京都町田市
+14153,神奈川県,相模原市,南区,,神奈川県相模原市南区</code></pre>
+
+      <p>
+        The exact fields depend on the reference source. The important property is that one row represents one codable administrative target and that the code is treated as an opaque identifier. Do not infer a code from a name, numeric prefix, or row order.
+      </p>
+
+      <h2>Normalization: make every transformation observable</h2>
+
+      <p>
+        Normalization should reduce harmless variation without deleting evidence. Store the raw string alongside the normalized string. A useful configuration begins conservatively:
+      </p>
+
+      <pre><code>normalization:
+  unicode_form: "NFKC"
+  trim_outer_whitespace: true
+  collapse_internal_spaces: true
+  normalize_dash_variants: true
+  normalize_fullwidth_digits: true
+  remove_space_before_block_number: false
+  remove_punctuation: false
+  historical_aliases: []
+  kanji_substitutions: []</code></pre>
+
+      <p>
+        The last two settings should be populated only from documented reference data. An alias table is not automatically correct because a historical name may map to several current areas or may be valid only for a particular date.
+      </p>
+
+      <p>
+        A normalization function should return both the result and an audit trail:
+      </p>
+
+      <pre><code>{
+  "raw": "東京都 町田市　原町田６−１２−２０",
+  "normalized": "東京都町田市原町田6-12-20",
+  "operations": [
+    "NFKC",
+    "trim_outer_whitespace",
+    "collapse_internal_spaces",
+    "normalize_dash_variants"
+  ]
+}</code></pre>
+
+      <h2>Candidate generation and conservative code linking</h2>
+
+      <p>
+        Candidate generation should be broad enough to avoid missing valid matches, while final linking should be strict. One reproducible policy is:
+      </p>
+
+      <ol>
+        <li>Generate candidates from exact normalized keys.</li>
+        <li>Generate additional candidates from component keys when the full key is incomplete.</li>
+        <li>Apply structural constraints, such as prefecture-city compatibility.</li>
+        <li>Score the remaining candidates using documented features.</li>
+        <li>Emit a code only if the top candidate clears an absolute threshold and beats the runner-up by a margin.</li>
+        <li>Otherwise return <code>municipality_code: null</code> with <code>link_status: "abstained"</code>.</li>
+      </ol>
+
+      <p>
+        A simple score can be expressed as:
+      </p>
+
+      <pre><code>score(candidate) =
+    0.45 * exact_component_match
+  + 0.25 * prefecture_agreement
+  + 0.20 * city_agreement
+  + 0.10 * address_depth_agreement</code></pre>
+
+      <p>
+        These weights are an example configuration, not a validated result. They must be fixed before running the test set, or selected on a separate development set. The production decision rule could be:
+      </p>
+
+      <pre><code>accept if:
+  top_score >= 0.90
+  and top_score - second_score >= 0.10
+  and candidate_count == 1 after structural filtering
+
+otherwise:
+  abstain</code></pre>
+
+      <p>
+        Requiring <code>candidate_count == 1</code> is intentionally strict. A less strict policy may be appropriate for an application that can route ambiguous cases to a human reviewer, but the policy must be stated and measured rather than hidden in implementation details.
+      </p>
+
+      <h2>Dataset design</h2>
+
+      <p>
+        Build the evaluation set from representative text, not only clean address fields. Keep the source text de-identified and exclude unnecessary personal information. Each item should have an immutable identifier and gold annotations stored separately from system output.
+      </p>
+
+      <p>
+        A useful annotation record contains:
+      </p>
+
+      <pre><code>{
+  "id": "eval-00017",
+  "text": "配送先は東京都町田市原町田6-12-20です。",
+  "gold_spans": [
+    {
+      "start": 5,
+      "end": 22,
+      "text": "東京都町田市原町田6-12-20",
+      "components": {
+        "prefecture": "東京都",
+        "city": "町田市",
+        "town": "原町田",
+        "block": "6-12-20"
+      },
+      "municipality_code": "13209"
+    }
+  ]
+}</code></pre>
+
+      <p>
+        Include cases that expose different failure modes:
+      </p>
+
+      <ul>
+        <li>canonical addresses with and without spaces;</li>
+        <li>addresses embedded in Japanese prose;</li>
+        <li>multiple addresses in one document;</li>
+        <li>prefecture-omitted inputs;</li>
+        <li>old or alternate names;</li>
+        <li>city and ward combinations;</li>
+        <li>partial addresses that should not receive a code;</li>
+        <li>near-duplicate dictionary candidates;</li>
+        <li>non-address strings containing administrative names;</li>
+        <li>malformed or truncated input.</li>
+      </ul>
+
+      <p>
+        Split the data by document, not by extracted span, so that nearly identical templates do not appear in both training and test partitions. Keep the test set fixed after the evaluation protocol is approved.
+      </p>
+
+      <h2>Metrics: report extraction and assignment separately</h2>
+
+      <h3>Span extraction</h3>
+
+      <p>
+        For exact span evaluation, a predicted span is correct only when its start and end offsets match a gold span. Calculate:
+      </p>
+
+      <pre><code>precision = true_positive_spans / predicted_spans
+recall    = true_positive_spans / gold_spans
+f1        = 2 * precision * recall / (precision + recall)</code></pre>
+
+      <p>
+        Also report relaxed overlap metrics if they are useful for the application, but do not replace exact metrics with overlap metrics. A span that includes a neighboring organization name may overlap the gold address while still being unsafe to pass to a linker.
+      </p>
+
+      <h3>Component extraction</h3>
+
+      <p>
+        Evaluate prefecture, city, ward, town, and block independently. State whether missing optional components are scored as correct when the gold annotation also omits them. For an advanced evaluation, report exact component accuracy and boundary errors separately.
+      </p>
+
+      <h3>Code assignment</h3>
+
+      <p>
+        For records where the gold municipality is known, classify the linker decision as:
+      </p>
+
+      <table>
+        <thead>
+          <tr>
+            <th>Gold target</th>
+            <th>System decision</th>
+            <th>Classification</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>Known municipality</td>
+            <td>Correct code</td>
+            <td>Correct assignment</td>
+          </tr>
+          <tr>
+            <td>Known municipality</td>
+            <td>Different code</td>
+            <td>False assignment</td>
+          </tr>
+          <tr>
+            <td>Known municipality</td>
+            <td>No code</td>
+            <td>Abstention / missed assignment</td>
+          </tr>
+          <tr>
+            <td>No uniquely supported municipality</td>
+            <td>Any code</td>
+            <td>False assignment if the emitted code is unsupported</td>
+          </tr>
+          <tr>
+            <td>No uniquely supported municipality</td>
+            <td>No code</td>
+            <td>Correct abstention</td>
+          </tr>
+        </tbody>
+      </table>
+
+      <p>
+        The <a href="../glossary.html#false-assignment-rate">false-assignment rate</a> should be defined before looking at results. A strict denominator is:
+      </p>
+
+      <pre><code>false_assignment_rate =
+  unsupported_or_wrong_codes / all_code_emissions</code></pre>
+
+      <p>
+        This answers: “When the system emits a code, how often is that emission wrong or unsupported?” Also report coverage:
+      </p>
+
+      <pre><code>code_coverage =
+  all_code_emissions / all_evaluable_address_records</code></pre>
+
+      <p>
+        Coverage and false-assignment rate should be shown together. A system can reduce false assignments by abstaining on everything; that does not make it useful. Conversely, a high-coverage system may be unsafe if it guesses on ambiguous cases.
+      </p>
+
+      <h3>Selective metrics</h3>
+
+      <p>
+        Plot or tabulate performance as the acceptance threshold changes. Useful columns include threshold, emitted-code coverage, correct-assignment precision, false-assignment rate, and abstention rate. This exposes the operating point instead of hiding it behind one threshold.
+      </p>
+
+      <h2>Reproducible evaluation commands</h2>
+
+      <p>
+        The following command layout is illustrative. Replace the module names with the implementation under test, and record the exact commit or package version. The commands themselves do not produce results in this article.
+      </p>
+
+      <pre><code># 1. Validate annotation and reference schemas
+python -m address_eval.validate_data \
+  --gold data/gold.jsonl \
+  --reference data/municipalities.csv
+
+# 2. Run the NER extractor
+python -m address_pipeline.extract \
+  --input data/test.jsonl \
+  --output runs/ner.jsonl \
+  --config configs/ner.yaml
+
+# 3. Run dictionary linking with abstention enabled
+python -m address_pipeline.link \
+  --input runs/ner.jsonl \
+  --reference data/municipalities.csv \
+  --output runs/ner-linked.jsonl \
+  --config configs/conservative-linking.yaml
+
+# 4. Score spans, components, codes, coverage, and false assignments
+python -m address_eval.score \
+  --gold data/gold.jsonl \
+  --predictions runs/ner-linked.jsonl \
+  --output runs/ner-report.json
+
+# 5. Repeat with the dictionary-first baseline
+python -m address_pipeline.dictionary_baseline \
+  --input data/test.jsonl \
+  --reference data/municipalities.csv \
+  --output runs/dictionary-linked.jsonl \
+  --config configs/conservative-linking.yaml
+
+python -m address_eval.score \
+  --gold data/gold.jsonl \
+  --predictions runs/dictionary-linked.jsonl \
+  --output runs/dictionary-report.json</code></pre>
+
+      <p>
+        Preserve the configuration files, reference checksum, model checksum, command line, environment lockfile, and generated report. A result is reproducible only when another operator can reconstruct the same inputs and decision policy.
+      </p>
+
+      <h2>Verification checks before trusting a report</h2>
+
+      <p>
+        Add assertions that catch silent evaluation errors:
+      </p>
+
+      <pre><code># Example validation rules
+assert every_gold_record_has_unique_id()
+assert all_offsets_are_valid()
+assert no_prediction_uses_a_code_missing_from_reference()
+assert every_emitted_code_has_candidate_evidence()
+assert abstained_records_have_null_municipality_code()
+assert report_denominators_are_nonzero_or_explicitly_zero()</code></pre>
+
+      <p>
+        Manually inspect a stratified sample from each decision class: correct links, correct abstentions, wrong links, missed links, and records with multiple candidates. The sample is a diagnostic, not a replacement for the full metrics.
+      </p>
+
+      <p>
+        Check for data leakage as well. If the same address template or reference-derived string appears in training and test data, a high score may reflect memorization rather than robust extraction.
+      </p>
+
+      <h2>Failure cases and how to handle them</h2>
+
+      <h3>Ambiguous municipality names</h3>
+
+      <p>
+        If a city or town name appears in multiple prefectures and the text omits the disambiguating component, return the candidate set and abstain. Do not choose the most frequent municipality unless that policy is explicitly part of the application and is reported as a prior-based decision.
+      </p>
+
+      <h3>Multiple addresses in one message</h3>
+
+      <p>
+        Extraction should return multiple spans with stable offsets. If the application needs one “destination,” add a separate role-classification step using field labels such as “発送先” or “請求先.” Do not let the linker decide document roles implicitly.
+      </p>
+
+      <h3>Partial addresses</h3>
+
+      <p>
+        “東京都町田市” may support a municipality-level code, while “原町田” alone may not. Define the minimum evidence required for each code type. A city code and a more granular postal or district code should not share an undocumented acceptance rule.
+      </p>
+
+      <h3>Historical or changed boundaries</h3>
+
+      <p>
+        A current reference table may not be appropriate for a historical address. Add an effective date to the reference data or mark the item as out of scope. A present-day code assigned to a historical name can be technically valid for current geography and still wrong for the question being asked.
+      </p>
+
+      <h3>OCR and character confusion</h3>
+
+      <p>
+        OCR may confuse similar kanji, digits, or punctuation. Keep OCR confidence separate from NER and linking confidence. Fuzzy matching can generate candidates, but it should normally lower confidence and require stronger corroboration before emitting a code.
+      </p>
+
+      <h3>Over-normalization</h3>
+
+      <p>
+        Removing every symbol and space can make two distinct strings identical. Compare the raw text, normalized key, and candidate keys in debugging output. If normalization causes collisions, either preserve the distinguishing feature or force abstention for that collision class.
+      </p>
+
+      <h2>How to compare the two approaches fairly</h2>
+
+      <p>
+        Use the same gold data, reference snapshot, normalization policy, and code-acceptance rule for both systems. The NER model may have its own extraction threshold, but linking thresholds should be comparable and selected without using the final test labels.
+      </p>
+
+      <p>
+        Report at least one table with these columns:
+      </p>
+
+      <table>
+        <thead>
+          <tr>
+            <th>System</th>
+            <th>Span precision</th>
+            <th>Span recall</th>
+            <th>Component F1</th>
+            <th>Code coverage</th>
+            <th>Correct-code precision</th>
+            <th>False-assignment rate</th>
+            <th>Abstention rate</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>NER + conservative linker</td>
+            <td>—</td>
+            <td>—</td>
+            <td>—</td>
+            <td>—</td>
+            <td>—</td>
+            <td>—</td>
+            <td>—</td>
+          </tr>
+          <tr>
+            <td>Dictionary baseline + conservative linker</td>
+            <td>—</td>
+            <td>—</td>
+            <td>—</td>
+            <td>—</td>
+            <td>—</td>
+            <td>—</td>
+            <td>—</td>
+          </tr>
+        </tbody>
+      </table>
+
+      <p>
+        The em dashes are intentional placeholders. They must be replaced only after the evaluation commands have been run against a named corpus and frozen reference snapshot.
+      </p>
+
+      <p>
+        A useful interpretation is not “which system has the highest F1?” but “which system gives the safest code coverage at the false-assignment rate the application can tolerate?” NER may recover more address spans in prose, while dictionary-first matching may be stronger on canonical fields. The conservative linker is the shared safety boundary.
+      </p>
+
+      <h2>Limitations</h2>
+
+      <p>
+        This article does not provide a measured benchmark, model comparison, reference-data citation, or production recommendation. Those require an actual corpus, annotation protocol, implementation, reference snapshot, and run artifacts. The scoring formulas also assume that gold labels distinguish unsupported ambiguity from an ordinary missing prediction.
+      </p>
+
+      <p>
+        The suggested score weights and thresholds are examples. They are not universal values and should not be copied into a production decision without calibration. If the cost of a false municipality assignment is high, select thresholds using an explicit risk target and review the ambiguous cases manually.
+      </p>
+
+      <h2>Practical conclusion</h2>
+
+      <p>
+        The safest Japanese address pipeline treats municipality coding as a gated decision. NER can locate and structure address text; dictionary linking can propose administrative candidates; a conservative policy decides whether the evidence is strong enough to emit a code. When it is not, the correct output is a valid address record with a null code, an abstention status, and enough diagnostics for review.
+      </p>
+
+      <p>
+        To reproduce the evaluation, freeze the corpus and reference data, record normalization operations, run both pipelines, score spans and components independently, and report code coverage beside the false-assignment rate. That makes uncertainty visible and keeps a precise-looking identifier from being mistaken for verified geography.
+      </p>
+
+      <p class="reading-next">
+        Continue with the <a href="../guides.html">guides</a> or check the <a href="../glossary.html">glossary</a>.
+      </p>
+    <section class="service-note">
+  <b>We publish what works for us—and implement the same solutions for your business.</b>
+  We design AI automation, Telegram bots, chats, and AI agents for real-world processes.
+  <a href="../contacts-en.html">Discuss your project →</a>
+</section>
+</article>
+  </main>
+
+  <footer class="site-footer">
+    <div class="site-footer__inner">
+      <span>© Agent Lab Journal</span>
+      <nav aria-label="Footer navigation">
+        <a href="../guides.html">Guides</a>
+        <a href="../glossary.html">Glossary</a>
+      </nav>
+    </div>
+  </footer>
+</body>
+</html>
