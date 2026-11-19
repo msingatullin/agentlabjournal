@@ -1,0 +1,602 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>How to Estimate LLM Training Cost and Set a Spending Cap</title>
+  <meta name="description" content="How to Estimate LLM Training Cost and Set a Spending Cap with a reproducible Python calculator, MFU sensitivity analysis, runtime estimates, and job-level budget controls.">
+  <link rel="canonical" href="https://agentlabjournal.online/en/llm-training-cost-calculator.html">
+  <link rel="stylesheet" href="../style.css">
+  <link rel="stylesheet" href="../reading.css">
+
+  <meta property="og:type" content="article">
+  <meta property="og:title" content="How to Estimate LLM Training Cost and Set a Spending Cap">
+  <meta property="og:description" content="A reproducible method for estimating GPU-hours, runtime, training cost, MFU sensitivity, and a safe spending cap before launching an LLM training job.">
+  <meta property="og:url" content="https://agentlabjournal.online/en/llm-training-cost-calculator.html">
+  <meta property="og:image" content="https://agentlabjournal.online/assets/covers/llm-context-window-budget-social.png">
+  <meta property="og:site_name" content="Agent Lab Journal">
+  <meta property="og:locale" content="en_US">
+
+  <meta name="twitter:card" content="summary_large_image">
+  <meta name="twitter:title" content="How to Estimate LLM Training Cost and Set a Spending Cap">
+  <meta name="twitter:description" content="Estimate LLM training cost from tokens, hardware, MFU, price, and overhead—and turn the estimate into a job-level spending cap.">
+  <meta name="twitter:image" content="https://agentlabjournal.online/assets/covers/llm-context-window-budget-social.png">
+
+  <meta name="reading-time" content="35 minutes">
+  <meta name="article:reading_time" content="35 minutes">
+  <meta name="article:level" content="Advanced">
+  <meta name="article:section" content="Machine Learning Infrastructure">
+  <meta name="article:published_time" content="2026-11-19">
+  <meta name="article:modified_time" content="2026-11-19">
+
+  <script type="application/ld+json">
+  {
+    "@context": "https://schema.org",
+    "@type": "Article",
+    "headline": "How to Estimate LLM Training Cost and Set a Spending Cap",
+    "description": "A reproducible method for estimating GPU-hours, runtime, training cost, MFU sensitivity, and a safe spending cap before launching an LLM training job.",
+    "image": ["https://agentlabjournal.online/assets/covers/llm-context-window-budget-social.png"],
+    "dateModified": "2026-11-19",
+    "author": {
+      "@type": "Organization",
+      "name": "Agent Lab Journal"
+    },
+    "publisher": {
+      "@type": "Organization",
+      "name": "Agent Lab Journal",
+      "url": "https://agentlabjournal.online/"
+    },
+    "mainEntityOfPage": {
+      "@type": "WebPage",
+      "@id": "https://agentlabjournal.online/en/llm-training-cost-calculator.html"
+    }
+  }
+  </script>
+<link rel="stylesheet" href="../homepage.css"><link rel="stylesheet" href="../max-promo.css">  <meta property="og:image:alt" content="Как рассчитать стоимость обучения LLM и установить лимит расходов">
+</head>
+<body>
+  <header class="site-header">
+    <div class="container">
+      <a class="site-logo" href="../index.html">Agent Lab Journal</a>
+      <nav aria-label="Primary navigation">
+        <a href="guides.html">Guides</a>
+        <a href="../glossary.html">Glossary</a>
+      </nav>
+    </div>
+  </header>
+
+  <main>
+    <article class="reading">
+      <header class="reading-header">
+        <p class="reading-kicker">Machine learning infrastructure · Advanced · 35 min read</p>
+        <h1>How to Estimate LLM Training Cost and Set a Spending Cap</h1>
+        <figure class="article-cover" data-editorial-cover="llm-training-cost-calculator"><img src="../assets/covers/llm-context-window-budget.png" alt="Как рассчитать стоимость обучения LLM и установить лимит расходов" width="1280" height="720" fetchpriority="high"><figcaption>Temporary fallback cover; replace in editorial pass.</figcaption></figure>
+        <p class="reading-dek">A practical, reproducible way to turn a token target into GPU-hours, runtime, cost, and a budget guardrail that survives uncertain hardware utilization.</p>
+        <div class="reading-meta">
+          <span>By Agent Lab Journal</span>
+          <span>Updated November 19, 2026</span>
+          <span>35 min read</span>
+        </div>
+      </header>
+
+      <div class="reading-body">
+        <p>Training cost is rarely determined by the advertised hourly price alone. The difficult part is estimating how much useful work a cluster will complete per second when communication, evaluation, checkpointing, data loading, and interruptions are included. A calculation that assumes peak hardware performance can be precise to several decimal places and still be operationally unsafe.</p>
+
+        <p>This guide builds a calculator from first principles. It estimates compute from the number of training tokens and model parameters, converts compute into time using <a href="../glossary.html#model-flops-utilization">model FLOPs utilization (MFU)</a>, adds explicit non-training overhead, and applies a price model. It then turns the result into a spending cap for a single job.</p>
+
+        <aside class="callout callout-warning">
+          <strong>Evidence boundary.</strong>
+          The prices and hardware values in the worked example are placeholders chosen to demonstrate the method. They are not provider quotes, benchmark results, or claims about any customer workload. Replace them with values measured or documented for your environment.
+        </aside>
+
+        <h2>What the estimate must answer</h2>
+
+        <p>Before launching a run, you should be able to answer five separate questions:</p>
+
+        <ol>
+          <li>How many <a href="../glossary.html#training-tokens">training tokens</a> will the job process?</li>
+          <li>How much training compute does the model and objective require?</li>
+          <li>What effective throughput can the selected cluster sustain?</li>
+          <li>How many <a href="../glossary.html#gpu-hour">GPU-hours</a> and wall-clock hours does that imply?</li>
+          <li>What hard limit should stop the job if reality becomes more expensive than planned?</li>
+        </ol>
+
+        <p>The last question is the one most estimates omit. A forecast is an expectation. A spending cap is an operational control. You need both.</p>
+
+        <h2>The cost model</h2>
+
+        <p>For a dense decoder-only language model, a useful first-order estimate is:</p>
+
+        <pre><code>training_flops = 6 × parameters × training_tokens</code></pre>
+
+        <p>The factor 6 is a conventional approximation for forward and backward computation in a dense transformer training step. It is a model, not a measurement. The true value depends on architecture, sequence length, attention implementation, vocabulary operations, activation recomputation, sparsity, auxiliary losses, and other details.</p>
+
+        <p>Let:</p>
+
+        <ul>
+          <li><code>P</code> be the number of model parameters;</li>
+          <li><code>T</code> be the number of training tokens;</li>
+          <li><code>G</code> be the number of GPUs;</li>
+          <li><code>F</code> be the advertised or documented peak FLOPs per GPU for the selected precision;</li>
+          <li><code>m</code> be MFU as a fraction, such as <code>0.35</code> for 35%;</li>
+          <li><code>r</code> be the fraction of wall-clock time spent doing useful training compute;</li>
+          <li><code>p</code> be the price per GPU-hour.</li>
+        </ul>
+
+        <p>Then the effective cluster throughput is:</p>
+
+        <pre><code>effective_flops_per_second = G × F × m × r</code></pre>
+
+        <p>Estimated training time is:</p>
+
+        <pre><code>training_seconds = training_flops / effective_flops_per_second</code></pre>
+
+        <p>And the direct GPU cost is:</p>
+
+        <pre><code>gpu_hours = training_seconds × G / 3600
+gpu_cost = gpu_hours × p</code></pre>
+
+        <p>There are two equivalent ways to represent non-training overhead. You can reduce useful-time utilization with <code>r</code>, or calculate ideal compute time and multiply it by an overhead multiplier. This article uses <code>r</code> because it makes the operational assumption visible:</p>
+
+        <pre><code>wall_clock_seconds = training_flops / (G × F × m × r)</code></pre>
+
+        <p>If you also pay for attached CPU instances, storage, networking, licenses, or reserved capacity, add those as separate line items. Do not hide them inside the GPU price unless your billing model genuinely bundles them.</p>
+
+        <h2>A concrete planning case</h2>
+
+        <p>Consider a hypothetical pre-launch plan:</p>
+
+        <table>
+          <thead>
+            <tr>
+              <th>Input</th>
+              <th>Illustrative value</th>
+              <th>Why it matters</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td>Model size</td>
+              <td>13 billion parameters</td>
+              <td>Sets the dominant compute term</td>
+            </tr>
+            <tr>
+              <td>Training data</td>
+              <td>250 billion tokens</td>
+              <td>Sets the number of optimization tokens</td>
+            </tr>
+            <tr>
+              <td>GPU count</td>
+              <td>64</td>
+              <td>Determines parallel throughput and GPU-hours</td>
+            </tr>
+            <tr>
+              <td>Peak per-GPU throughput</td>
+              <td>312 teraFLOPs/s</td>
+              <td>Must match the selected precision and hardware</td>
+            </tr>
+            <tr>
+              <td>MFU scenarios</td>
+              <td>25%, 35%, 45%</td>
+              <td>Captures uncertainty in sustained training efficiency</td>
+            </tr>
+            <tr>
+              <td>Useful-time ratio</td>
+              <td>90%</td>
+              <td>Allows for evaluation, checkpointing, and stalls</td>
+            </tr>
+            <tr>
+              <td>GPU price</td>
+              <td>$2.00 per GPU-hour</td>
+              <td>Placeholder input, not a verified price</td>
+            </tr>
+          </tbody>
+        </table>
+
+        <p>The purpose of this case is not to predict a real bill. It is to show how the same job can produce materially different runtimes and costs when MFU changes. The calculator below lets you replace every input.</p>
+
+        <h2>A reproducible Python calculator</h2>
+
+        <p>Save the following as <code>training_cost.py</code>. It uses only the Python standard library and prints a sensitivity table. The script intentionally does not fetch provider prices or infer hardware specifications. You supply those inputs from your own quote, contract, benchmark, or measured run.</p>
+
+        <pre><code>from dataclasses import dataclass
+from typing import Iterable
+
+
+@dataclass
+class Scenario:
+    mfu: float
+    useful_time_ratio: float
+
+
+@dataclass
+class Estimate:
+    mfu_percent: float
+    compute_flops: float
+    wall_clock_hours: float
+    gpu_hours: float
+    gpu_cost: float
+    cost_with_reserve: float
+
+
+def estimate_training_cost(
+    parameters: float,
+    training_tokens: float,
+    gpu_count: int,
+    peak_flops_per_gpu: float,
+    gpu_price_per_hour: float,
+    scenario: Scenario,
+    reserve_fraction: float = 0.0,
+) -&gt; Estimate:
+    if parameters &lt;= 0:
+        raise ValueError("parameters must be positive")
+    if training_tokens &lt;= 0:
+        raise ValueError("training_tokens must be positive")
+    if gpu_count &lt;= 0:
+        raise ValueError("gpu_count must be positive")
+    if peak_flops_per_gpu &lt;= 0:
+        raise ValueError("peak_flops_per_gpu must be positive")
+    if gpu_price_per_hour &lt; 0:
+        raise ValueError("gpu_price_per_hour cannot be negative")
+    if not 0 &lt; scenario.mfu &lt;= 1:
+        raise ValueError("mfu must be in the interval (0, 1]")
+    if not 0 &lt; scenario.useful_time_ratio &lt;= 1:
+        raise ValueError("useful_time_ratio must be in the interval (0, 1]")
+    if reserve_fraction &lt; 0:
+        raise ValueError("reserve_fraction cannot be negative")
+
+    # Conventional dense-transformer approximation.
+    compute_flops = 6.0 * parameters * training_tokens
+
+    effective_flops_per_second = (
+        gpu_count
+        * peak_flops_per_gpu
+        * scenario.mfu
+        * scenario.useful_time_ratio
+    )
+
+    wall_clock_seconds = compute_flops / effective_flops_per_second
+    wall_clock_hours = wall_clock_seconds / 3600.0
+    gpu_hours = wall_clock_hours * gpu_count
+    gpu_cost = gpu_hours * gpu_price_per_hour
+    cost_with_reserve = gpu_cost * (1.0 + reserve_fraction)
+
+    return Estimate(
+        mfu_percent=scenario.mfu * 100.0,
+        compute_flops=compute_flops,
+        wall_clock_hours=wall_clock_hours,
+        gpu_hours=gpu_hours,
+        gpu_cost=gpu_cost,
+        cost_with_reserve=cost_with_reserve,
+    )
+
+
+def print_sensitivity(
+    parameters: float,
+    training_tokens: float,
+    gpu_count: int,
+    peak_flops_per_gpu: float,
+    gpu_price_per_hour: float,
+    scenarios: Iterable[Scenario],
+    reserve_fraction: float,
+) -&gt; None:
+    print("MFU   wall_hours   GPU_hours   GPU_cost   cost_with_reserve")
+    print("-" * 62)
+
+    for scenario in scenarios:
+        result = estimate_training_cost(
+            parameters=parameters,
+            training_tokens=training_tokens,
+            gpu_count=gpu_count,
+            peak_flops_per_gpu=peak_flops_per_gpu,
+            gpu_price_per_hour=gpu_price_per_hour,
+            scenario=scenario,
+            reserve_fraction=reserve_fraction,
+        )
+        print(
+            f"{result.mfu_percent:4.0f}% "
+            f"{result.wall_clock_hours:11.2f} "
+            f"{result.gpu_hours:10.2f} "
+            f"${result.gpu_cost:9.2f} "
+            f"${result.cost_with_reserve:17.2f}"
+        )
+
+
+if __name__ == "__main__":
+    # Illustrative inputs only. Replace with documented or measured values.
+    parameters = 13e9
+    training_tokens = 250e9
+    gpu_count = 64
+    peak_flops_per_gpu = 312e12
+    gpu_price_per_hour = 2.00
+
+    scenarios = [
+        Scenario(mfu=0.25, useful_time_ratio=0.90),
+        Scenario(mfu=0.35, useful_time_ratio=0.90),
+        Scenario(mfu=0.45, useful_time_ratio=0.90),
+    ]
+
+    print_sensitivity(
+        parameters=parameters,
+        training_tokens=training_tokens,
+        gpu_count=gpu_count,
+        peak_flops_per_gpu=peak_flops_per_gpu,
+        gpu_price_per_hour=gpu_price_per_hour,
+        scenarios=scenarios,
+        reserve_fraction=0.20,
+    )</code></pre>
+
+        <p>Run it with:</p>
+
+        <pre><code>python training_cost.py</code></pre>
+
+        <p>Do not copy the example output into a budget document without recording the exact inputs. The output is only as reproducible as the parameter count, token count, hardware throughput, price, and utilization assumptions supplied to it.</p>
+
+        <h2>Reading the MFU sensitivity analysis</h2>
+
+        <p><a href="../glossary.html#model-flops-utilization">MFU</a> is the ratio between achieved model FLOPs per second and the hardware’s theoretical peak FLOPs per second. It is a useful planning variable because it compresses many implementation details into one measurable efficiency number. It is not the same as device utilization reported by a monitoring tool. A GPU can show high activity while the training step still achieves relatively low model FLOPs.</p>
+
+        <p>With all other inputs fixed, runtime and direct GPU cost are approximately inversely proportional to MFU:</p>
+
+        <pre><code>cost ∝ 1 / MFU
+runtime ∝ 1 / MFU</code></pre>
+
+        <p>That means moving from 25% to 35% MFU does not make the run 10% cheaper. The relative cost is:</p>
+
+        <pre><code>cost_at_35 / cost_at_25 = 0.25 / 0.35</code></pre>
+
+        <p>Likewise, a fall from 35% to 25% increases the compute portion of the bill by the reciprocal ratio. The practical lesson is simple: choose a conservative MFU for the cap, and treat better MFU as upside rather than money already saved.</p>
+
+        <p>A useful sensitivity table has at least three rows:</p>
+
+        <ul>
+          <li><strong>Floor:</strong> a strong, measured result from a comparable workload;</li>
+          <li><strong>Expected:</strong> the value you use for the planning forecast;</li>
+          <li><strong>Guardrail:</strong> a lower value used to size the maximum exposure.</li>
+        </ul>
+
+        <p>If you have no measurement, do not describe an assumed MFU as a benchmark. Label it as an assumption and widen the range. A short pilot on the target model, sequence length, parallelism, and precision is usually more informative than a generic number from another stack.</p>
+
+        <h2>From an estimate to a spending cap</h2>
+
+        <p>A spending cap should be derived from the worst acceptable scenario, not the average scenario. One practical formulation is:</p>
+
+        <pre><code>cap =
+  worst_case_gpu_cost
+  + non_gpu_cost
+  + restart_allowance
+  + operational_reserve</code></pre>
+
+        <p>For the GPU portion, use:</p>
+
+        <pre><code>worst_case_gpu_cost =
+  6 × parameters × tokens
+  --------------------------------------------- × GPU_price
+  GPU_count × peak_FLOPs × guardrail_MFU × useful_time_ratio
+  × GPU_count / 3600</code></pre>
+
+        <p>The GPU count cancels algebraically in the idealized formula. That does not mean cluster size is irrelevant. Larger jobs may have lower MFU, more communication overhead, more failure exposure, and higher minimum billing increments. Keep <code>GPU_count</code> in the calculator so that the wall-clock estimate remains visible and so that you can add cluster-level costs later.</p>
+
+        <p>Use an explicit reserve instead of a vague “round number.” For example:</p>
+
+        <table>
+          <thead>
+            <tr>
+              <th>Component</th>
+              <th>Purpose</th>
+              <th>How to set it</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td>Guardrail MFU</td>
+              <td>Protects against inefficient training</td>
+              <td>Use a conservative measured or declared assumption</td>
+            </tr>
+            <tr>
+              <td>Useful-time ratio</td>
+              <td>Accounts for non-training time</td>
+              <td>Include evaluation, saves, input stalls, and synchronization</td>
+            </tr>
+            <tr>
+              <td>Restart allowance</td>
+              <td>Accounts for failed or preempted attempts</td>
+              <td>Estimate from the failure policy and checkpoint interval</td>
+            </tr>
+            <tr>
+              <td>Operational reserve</td>
+              <td>Absorbs estimation error</td>
+              <td>Choose a documented percentage or fixed amount</td>
+            </tr>
+          </tbody>
+        </table>
+
+        <p>Example policy, stated as an example rather than a universal rule:</p>
+
+        <blockquote>
+          Stop the job when projected final cost exceeds the approved cap. The cap is calculated using the lower MFU scenario, the measured useful-time ratio, one planned restart, and a separately documented reserve. Any cap increase requires a new estimate and approval.
+        </blockquote>
+
+        <h2>Turning the cap into a runtime control</h2>
+
+        <p>A number in a spreadsheet does not stop a cluster. The cap needs to be connected to the job’s control plane.</p>
+
+        <p>At minimum, the launcher should know:</p>
+
+        <ul>
+          <li>the maximum wall-clock duration;</li>
+          <li>the maximum number of training steps or tokens;</li>
+          <li>the target price per GPU-hour;</li>
+          <li>the number of GPUs actually allocated;</li>
+          <li>the current accumulated GPU-hours;</li>
+          <li>the approved cost ceiling.</li>
+        </ul>
+
+        <p>The safest stop condition is based on projected final cost, not only elapsed time. Let <code>C_now</code> be the cost accumulated so far, <code>t_now</code> the elapsed training time, and <code>t_total</code> the planned total time. A simple projection is:</p>
+
+        <pre><code>projected_cost = C_now × (t_total / t_now)</code></pre>
+
+        <p>This assumes the recent rate is representative. Recalculate after warm-up and after major changes such as a new data phase, evaluation schedule, or cluster shape. If the projection exceeds the cap, finish the current safe checkpoint and stop.</p>
+
+        <p>Pseudocode for a training loop:</p>
+
+        <pre><code>while tokens_seen &lt; target_tokens:
+    train_one_step()
+    tokens_seen += tokens_in_step
+
+    if should_checkpoint():
+        save_checkpoint()
+
+    if elapsed_seconds() &gt;= max_wall_clock_seconds:
+        save_checkpoint()
+        stop("wall-clock cap reached")
+
+    current_cost = gpu_count * elapsed_seconds() / 3600 * gpu_price
+    projected_cost = current_cost * target_tokens / max(tokens_seen, 1)
+
+    if projected_cost &gt; spending_cap:
+        save_checkpoint()
+        stop("projected spending cap exceeded")</code></pre>
+
+        <p>This is deliberately incomplete infrastructure pseudocode. Your launcher must account for billing granularity, queued time, startup charges, retries, and whether the provider bills allocated or actively used resources. Verify those rules against the provider’s current contract or billing records before relying on the control.</p>
+
+        <h2>What to measure during a pilot</h2>
+
+        <p>A pilot is not merely a smaller training run. It is an opportunity to replace assumptions with measurements that match the final configuration.</p>
+
+        <p>Record, at minimum:</p>
+
+        <ol>
+          <li>Model configuration and parameter count.</li>
+          <li>Sequence length, batch size, and gradient accumulation.</li>
+          <li>Precision and activation checkpointing settings.</li>
+          <li>Parallelism dimensions and number of GPUs.</li>
+          <li>Tokens processed per optimizer step.</li>
+          <li>Steady-state step time after warm-up.</li>
+          <li>Time spent in evaluation, checkpointing, and validation.</li>
+          <li>Data-loader wait time and failed steps.</li>
+          <li>Peak memory and any out-of-memory recovery.</li>
+          <li>Measured billing rate and billed duration, if available.</li>
+        </ol>
+
+        <p>Estimate steady-state throughput from a stable interval rather than from the first few steps:</p>
+
+        <pre><code>tokens_per_second =
+  tokens_processed_in_interval / interval_seconds</code></pre>
+
+        <p>Then compare observed throughput with the theoretical compute model. If the model has <code>P</code> parameters and processes <code>q</code> tokens per second, an approximate achieved model FLOPs rate is:</p>
+
+        <pre><code>achieved_flops_per_second ≈ 6 × P × q</code></pre>
+
+        <p>Divide that by the cluster’s theoretical peak FLOPs to obtain an approximate MFU. Treat the result as a diagnostic estimate. It inherits the assumptions in the six-FLOP approximation and should be compared only across runs using the same definition.</p>
+
+        <h2>Common failure cases</h2>
+
+        <h3>Using peak FLOPs as delivered throughput</h3>
+
+        <p>Peak FLOPs are a hardware ceiling under a particular precision and operation mix. They do not include communication, memory movement, kernel launch gaps, synchronization, or input stalls. Use peak FLOPs as an input to the model, then discount it with measured or conservative MFU.</p>
+
+        <h3>Confusing GPU utilization with MFU</h3>
+
+        <p>A monitoring dashboard may show a high utilization percentage while the workload performs less useful model computation than expected. Validate the metric definition and calculate MFU from the same model, precision, and token accounting used by the training job.</p>
+
+        <h3>Counting tokens incorrectly</h3>
+
+        <p>“Dataset size” can mean raw characters, documents, tokenized examples, or tokens presented to the optimizer. The calculator needs optimizer-visible training tokens. Confirm whether padding, packing, repeated samples, validation tokens, and discarded batches are included.</p>
+
+        <h3>Ignoring evaluation and checkpoint time</h3>
+
+        <p>Periodic evaluation and checkpoint saves can be substantial, particularly when evaluation runs on the same allocation or checkpoints are written over a constrained network. Include them in the useful-time ratio or model them as separate wall-clock intervals.</p>
+
+        <h3>Assuming linear scaling across GPU counts</h3>
+
+        <p>Doubling GPUs may reduce wall-clock time, but it does not guarantee doubled throughput. Communication and synchronization can reduce MFU. Measure the intended cluster shape or use a lower guardrail for larger allocations.</p>
+
+        <h3>Budgeting only the successful run</h3>
+
+        <p>Failed launches, preemptions, corrupted checkpoints, and debugging runs consume resources. Make restart allowance explicit. If failure probability is unknown, do not bury it in an unexplained percentage; record the policy and the reason for the allowance.</p>
+
+        <h3>Using stale prices</h3>
+
+        <p>Provider pricing, discounts, regions, commitment terms, minimum billing units, and taxes can change. The calculator deliberately accepts a price as an input. Attach the source and retrieval date to your internal estimate, but do not treat the example price in this article as a current quote.</p>
+
+        <h2>Verification checklist before launch</h2>
+
+        <p>Use this checklist as a release gate for the training job:</p>
+
+        <ul>
+          <li>Token count comes from the actual tokenization and packing pipeline.</li>
+          <li>Parameter count matches the model configuration that will launch.</li>
+          <li>Peak FLOPs match the GPU model, precision, and documented definition.</li>
+          <li>MFU scenarios are labeled as measured, estimated, or hypothetical.</li>
+          <li>Useful-time ratio includes evaluation, checkpointing, loading, and synchronization.</li>
+          <li>GPU price and billing unit are recorded from the relevant account or contract.</li>
+          <li>Non-GPU charges are itemized separately.</li>
+          <li>Restart and preemption assumptions are documented.</li>
+          <li>Maximum wall-clock time is configured in the scheduler or launcher.</li>
+          <li>Checkpointing can resume the job without restarting from zero.</li>
+          <li>Projected cost is recalculated from observed throughput during the run.</li>
+          <li>Exceeding the cap triggers a safe stop and preserves the latest checkpoint.</li>
+        </ul>
+
+        <h2>Limitations of the calculator</h2>
+
+        <p>This method is intentionally transparent rather than exhaustive. It is appropriate for a first-order budget and for comparing scenarios, but it does not replace a benchmark on the target stack.</p>
+
+        <p>Important limitations include:</p>
+
+        <ul>
+          <li>The six-FLOP rule is an approximation for dense transformer training.</li>
+          <li>Mixture-of-experts and other sparse architectures need a more specific compute model.</li>
+          <li>Sequence-length effects can change attention and memory costs.</li>
+          <li>MFU can vary across warm-up, curriculum phases, sequence lengths, and batch shapes.</li>
+          <li>GPU-hour cost may not equal total cloud cost.</li>
+          <li>Provider billing may include idle, queued, startup, storage, or network charges.</li>
+          <li>Failure risk cannot be inferred from hardware specifications alone.</li>
+          <li>Spot, reserved, and on-demand capacity have different interruption and pricing behavior.</li>
+        </ul>
+
+        <p>When the decision is financially material, run a pilot that uses the production model, precision, sequence length, parallelism, data path, and checkpoint policy. Use the pilot to calibrate MFU and the useful-time ratio, then rerun the calculator with those measured values.</p>
+
+        <h2>A compact operating procedure</h2>
+
+        <ol>
+          <li>Tokenize or otherwise determine the exact optimizer-visible token target.</li>
+          <li>Enter parameter count, GPU count, peak FLOPs, and the verified price into the calculator.</li>
+          <li>Run at least three MFU scenarios and one useful-time scenario that includes operational overhead.</li>
+          <li>Run a target-stack pilot and replace assumptions with measured throughput where possible.</li>
+          <li>Choose a guardrail scenario for the spending cap.</li>
+          <li>Add itemized restart, non-GPU, and operational reserves.</li>
+          <li>Configure wall-clock and projected-cost stop conditions.</li>
+          <li>Log inputs, assumptions, code version, and approval before launch.</li>
+          <li>Recalculate during training using observed tokens per second and accumulated cost.</li>
+          <li>Stop safely when the cap is projected to be exceeded.</li>
+        </ol>
+
+        <h2>Final takeaway</h2>
+
+        <p>The most dependable answer to “how much will this LLM training run cost?” is not a single number. It is a reproducible model with explicit inputs, a sensitivity range, a measured pilot, and a stop condition.</p>
+
+        <p>Start with the compute approximation, make MFU uncertainty visible, account for non-training time, and use the conservative scenario to set the cap. Then connect that cap to the scheduler and checkpoint system. This turns a fragile estimate into a controlled experiment: the job can improve on the forecast, but it cannot silently spend beyond the approved exposure.</p>
+
+        <p>Continue with the <a href="guides.html">training and infrastructure guides</a> or look up related terms in the <a href="../glossary.html">Agent Lab Journal glossary</a>.</p>
+      </div>
+    <section class="service-note">
+  <b>We publish what works for us—and implement the same solutions for your business.</b>
+  We design AI automation, Telegram bots, chats, and AI agents for real-world processes.
+  <a href="../contacts-en.html">Discuss your project →</a>
+</section>
+</article>
+  </main>
+
+  <footer class="site-footer">
+    <div class="container">
+      <p>&copy; 2026 Agent Lab Journal</p>
+      <nav aria-label="Footer navigation">
+        <a href="guides.html">Guides</a>
+        <a href="../glossary.html">Glossary</a>
+      </nav>
+    </div>
+  </footer>
+</body>
+</html>
