@@ -1,0 +1,654 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Local RAG for PDFs: Document Search and Answers with a Local LLM</title>
+  <meta name="description" content="Local RAG for PDFs: Document Search and Answers with a Local LLM. Build a reproducible Python pipeline with PDF extraction, embeddings, FAISS, page references, and a local model.">
+  <link rel="canonical" href="https://agentlabjournal.online/en/local-pdf-rag-with-llm.html">
+  <link rel="stylesheet" href="../style.css">
+  <link rel="stylesheet" href="../reading.css">
+
+  <meta property="og:type" content="article">
+  <meta property="og:title" content="Local RAG for PDFs: Document Search and Answers with a Local LLM">
+  <meta property="og:description" content="A practical, reproducible Python pipeline for searching PDF documents and answering questions with page references using a local LLM.">
+  <meta property="og:url" content="https://agentlabjournal.online/en/local-pdf-rag-with-llm.html">
+  <meta property="og:image" content="https://agentlabjournal.online/assets/covers/llm-context-window-budget-social.png">
+
+  <meta name="twitter:card" content="summary_large_image">
+  <meta name="twitter:title" content="Local RAG for PDFs: Document Search and Answers with a Local LLM">
+  <meta name="twitter:description" content="Build local PDF search and question answering with Python, embeddings, FAISS, page metadata, and a local LLM.">
+  <meta name="twitter:image" content="https://agentlabjournal.online/assets/covers/llm-context-window-budget-social.png">
+
+  <meta name="reading-time" content="30 minutes">
+  <meta name="article:section" content="Machine Learning">
+  <meta name="article:level" content="Intermediate">
+
+  <script type="application/ld+json">
+  {
+    "@context": "https://schema.org",
+    "@type": "Article",
+    "headline": "Local RAG for PDFs: Document Search and Answers with a Local LLM",
+    "description": "A practical, reproducible Python pipeline for searching PDF documents and answering questions with page references using a local LLM.",
+    "image": ["https://agentlabjournal.online/assets/covers/llm-context-window-budget-social.png"],
+    "dateModified": "2026-11-20",
+    "author": {
+      "@type": "Organization",
+      "name": "Agent Lab Journal"
+    },
+    "publisher": {
+      "@type": "Organization",
+      "name": "Agent Lab Journal",
+      "url": "https://agentlabjournal.online/"
+    },
+    "mainEntityOfPage": {
+      "@type": "WebPage",
+      "@id": "https://agentlabjournal.online/en/local-pdf-rag-with-llm.html"
+    }
+  }
+  </script>
+<link rel="stylesheet" href="../homepage.css"><link rel="stylesheet" href="../max-promo.css">  <meta property="og:image:alt" content="Локальный RAG для PDF: поиск по документам и ответы через локальную LLM">
+</head>
+<body>
+  <header class="site-header">
+    <div class="container">
+      <a class="site-brand" href="../index.html">Agent Lab Journal</a>
+      <nav aria-label="Primary navigation">
+        <a href="../guides.html">Guides</a>
+        <a href="../glossary.html">Glossary</a>
+      </nav>
+    </div>
+  </header>
+
+  <main>
+    <article class="reading">
+      <header class="reading-header">
+        <p class="reading-kicker">Local AI · PDF processing · Intermediate</p>
+        <h1>Local RAG for PDFs: Document Search and Answers with a Local LLM</h1>
+        <figure class="article-cover" data-editorial-cover="local-pdf-rag-with-llm"><img src="../assets/covers/llm-context-window-budget.png" alt="Локальный RAG для PDF: поиск по документам и ответы через локальную LLM" width="1280" height="720" fetchpriority="high"><figcaption>Temporary fallback cover; replace in editorial pass.</figcaption></figure>
+        <p class="reading-dek">
+          Build a small question-answering system that reads PDF files locally, retrieves relevant passages, answers with a local model, and preserves the page numbers needed to verify each answer.
+        </p>
+        <div class="reading-meta">
+          <span>30-minute read</span>
+          <span>Updated 20 November 2026</span>
+          <span>Python</span>
+        </div>
+      </header>
+
+      <div class="reading-body">
+        <p>
+          A useful document assistant should do more than produce a fluent paragraph. It should show which document and page support the answer, avoid sending private files to a third-party service, and fail clearly when the evidence is missing. This article builds that narrow system from first principles.
+        </p>
+
+        <p>
+          The design uses <a href="../glossary.html#rag">retrieval-augmented generation (RAG)</a>: extract text from PDFs, split it into searchable chunks, convert the chunks into <a href="../glossary.html#embeddings">embeddings</a>, retrieve the nearest chunks with <a href="../glossary.html#faiss">FAISS</a>, and pass those chunks to a <a href="../glossary.html#local-llm">local large language model (LLM)</a>. Each chunk keeps its source filename and page number throughout the pipeline.
+        </p>
+
+        <aside class="reading-callout">
+          <strong>What is verified here?</strong>
+          <p>
+            The code is a reference implementation and has not been executed in this workspace. Commands and package names are intended to be reproducible, but your operating system, Python version, model files, PDF quality, and hardware can change the result. Treat the example output as illustrative, not as a test result.
+          </p>
+        </aside>
+
+        <h2>What we are building</h2>
+
+        <p>
+          The finished program has two commands:
+        </p>
+
+        <ol>
+          <li><code>index</code> reads PDFs from a directory and creates a local vector index.</li>
+          <li><code>ask</code> retrieves relevant passages and asks the local model to answer only from those passages.</li>
+        </ol>
+
+        <p>
+          The data flow is deliberately simple:
+        </p>
+
+        <pre><code>PDF files
+   │
+   ├─ text extraction
+   │
+   ├─ chunks with {source, page, text}
+   │
+   ├─ embedding model
+   │
+   ├─ FAISS index + metadata.json
+   │
+question
+   │
+   ├─ question embedding
+   │
+   ├─ nearest-neighbor search
+   │
+   ├─ evidence prompt
+   │
+local LLM answer + [source, page] references</code></pre>
+
+        <p>
+          This is a minimal baseline, not a complete production document platform. It does not perform OCR, table reconstruction, access control, incremental indexing, or automatic fact checking.
+        </p>
+
+        <h2>Prerequisites and project layout</h2>
+
+        <p>
+          Use Python 3.10 or newer if possible. The example relies on PyMuPDF for text extraction, Sentence Transformers for embeddings, FAISS for vector search, and an OpenAI-compatible local HTTP endpoint for generation. The endpoint can be provided by a local model runner such as Ollama, llama.cpp server, or another compatible service; the exact runner is outside this article.
+        </p>
+
+        <p>Create a project with this layout:</p>
+
+        <pre><code>local-pdf-rag/
+├── documents/
+├── data/
+├── rag.py
+└── requirements.txt</code></pre>
+
+        <p>Put only documents you are allowed to process in <code>documents/</code>. The example does not upload files anywhere.</p>
+
+        <h3>Install the Python dependencies</h3>
+
+        <pre><code>python -m venv .venv
+source .venv/bin/activate        # Windows PowerShell: .venv\Scripts\Activate.ps1
+
+python -m pip install --upgrade pip
+python -m pip install -r requirements.txt</code></pre>
+
+        <p>Use this <code>requirements.txt</code>:</p>
+
+        <pre><code>pymupdf
+sentence-transformers
+faiss-cpu
+numpy
+requests</code></pre>
+
+        <p>
+          The embedding model may download its model files the first time it is loaded. That download is separate from document processing. For a fully offline setup, obtain the model files in advance and point <code>EMBEDDING_MODEL</code> to a local directory.
+        </p>
+
+        <h2>Step 1: Extract PDF text without losing pages</h2>
+
+        <p>
+          A PDF is a page-oriented format, so page identity should be captured at extraction time. Do not concatenate the whole document into one string and try to recover page boundaries later. The following function creates one record per page and stores a one-based page number for readers.
+        </p>
+
+        <pre><code>from pathlib import Path
+import fitz
+
+
+def extract_pages(pdf_dir: str) -&gt; list[dict]:
+    records = []
+
+    for pdf_path in sorted(Path(pdf_dir).glob("*.pdf")):
+        with fitz.open(pdf_path) as document:
+            for page_number, page in enumerate(document, start=1):
+                text = page.get_text("text").strip()
+
+                if text:
+                    records.append({
+                        "source": pdf_path.name,
+                        "page": page_number,
+                        "text": text,
+                    })
+
+    return records</code></pre>
+
+        <p>
+          Empty pages are skipped. That is useful for ordinary text PDFs, but it also reveals the first important limitation: a scanned PDF may contain only images. PyMuPDF will not magically recognize text inside an image. Such files need an OCR step before indexing.
+        </p>
+
+        <h2>Step 2: Split pages into searchable chunks</h2>
+
+        <p>
+          Retrieval works better with focused passages than with entire long pages. We will use character-based <a href="../glossary.html#chunking">chunking</a> with overlap. The overlap keeps context that falls near a boundary.
+        </p>
+
+        <pre><code>def chunk_records(
+    page_records: list[dict],
+    chunk_size: int = 1200,
+    overlap: int = 200,
+) -&gt; list[dict]:
+    if overlap &gt;= chunk_size:
+        raise ValueError("overlap must be smaller than chunk_size")
+
+    chunks = []
+
+    for record in page_records:
+        text = " ".join(record["text"].split())
+        start = 0
+
+        while start &lt; len(text):
+            end = min(start + chunk_size, len(text))
+            chunk_text = text[start:end].strip()
+
+            if chunk_text:
+                chunks.append({
+                    "source": record["source"],
+                    "page": record["page"],
+                    "text": chunk_text,
+                })
+
+            if end == len(text):
+                break
+
+            start = end - overlap
+
+    return chunks</code></pre>
+
+        <p>
+          The values here are starting points, not universal settings. A document with dense legal clauses may need smaller chunks. A technical manual with long procedures may benefit from larger chunks. The page number remains the same for every chunk created from that page.
+        </p>
+
+        <h2>Step 3: Build a FAISS index</h2>
+
+        <p>
+          An <a href="../glossary.html#embedding-model">embedding model</a> maps text to vectors. Similar meanings should be near each other in vector space, allowing a question to retrieve passages even when it does not use the same words as the document.
+        </p>
+
+        <p>
+          The index below uses cosine similarity by normalizing vectors and then using an inner-product FAISS index. The metadata is stored separately because the vector index contains numbers, not human-readable source information.
+        </p>
+
+        <pre><code>import json
+from pathlib import Path
+
+import faiss
+import numpy as np
+from sentence_transformers import SentenceTransformer
+
+
+EMBEDDING_MODEL = "sentence-transformers/all-MiniLM-L6-v2"
+
+
+def build_index(
+    chunks: list[dict],
+    output_dir: str = "data",
+) -&gt; None:
+    if not chunks:
+        raise ValueError("No text chunks were created")
+
+    output_path = Path(output_dir)
+    output_path.mkdir(parents=True, exist_ok=True)
+
+    model = SentenceTransformer(EMBEDDING_MODEL)
+    texts = [chunk["text"] for chunk in chunks]
+
+    vectors = model.encode(
+        texts,
+        convert_to_numpy=True,
+        normalize_embeddings=True,
+        show_progress_bar=True,
+    ).astype("float32")
+
+    dimension = vectors.shape[1]
+    index = faiss.IndexFlatIP(dimension)
+    index.add(vectors)
+
+    faiss.write_index(index, str(output_path / "documents.faiss"))
+
+    with (output_path / "metadata.json").open("w", encoding="utf-8") as file:
+        json.dump(chunks, file, ensure_ascii=False, indent=2)</code></pre>
+
+        <p>
+          <code>IndexFlatIP</code> performs an exact search over the stored vectors. It is easy to understand and suitable for a small collection. Larger collections may need a different FAISS index, but changing the index type introduces tuning and recall trade-offs that are outside this minimal example.
+        </p>
+
+        <h2>Step 4: Retrieve evidence for a question</h2>
+
+        <p>
+          At question time, embed the question with the same model, search for the nearest chunks, and keep their metadata. The same embedding model must be used for documents and questions; otherwise, the vectors are not comparable in the intended way.
+        </p>
+
+        <pre><code>def load_index(
+    index_dir: str = "data",
+) -&gt; tuple[faiss.Index, list[dict]]:
+    path = Path(index_dir)
+    index = faiss.read_index(str(path / "documents.faiss"))
+
+    with (path / "metadata.json").open(encoding="utf-8") as file:
+        metadata = json.load(file)
+
+    if index.ntotal != len(metadata):
+        raise ValueError("Index and metadata contain different numbers of records")
+
+    return index, metadata
+
+
+def retrieve(
+    question: str,
+    index,
+    metadata: list[dict],
+    model: SentenceTransformer,
+    top_k: int = 5,
+) -&gt; list[dict]:
+    query_vector = model.encode(
+        [question],
+        convert_to_numpy=True,
+        normalize_embeddings=True,
+    ).astype("float32")
+
+    scores, positions = index.search(query_vector, top_k)
+
+    results = []
+    for score, position in zip(scores[0], positions[0]):
+        if position &lt; 0:
+            continue
+
+        item = dict(metadata[position])
+        item["score"] = float(score)
+        results.append(item)
+
+    return results</code></pre>
+
+        <p>
+          Similarity scores are useful for sorting, but they are not proof that a passage answers the question. A high-scoring chunk can still be irrelevant. The generator must receive the actual text and the source metadata, not only the score.
+        </p>
+
+        <h2>Step 5: Ask a local LLM to answer from the evidence</h2>
+
+        <p>
+          The generation layer below expects an OpenAI-compatible local endpoint. The default URL is an example configuration. Set it to the server you actually run and keep the model name aligned with that server.
+        </p>
+
+        <pre><code>import os
+import requests
+
+
+LLM_BASE_URL = os.getenv(
+    "LLM_BASE_URL",
+    "http://127.0.0.1:11434/v1",
+)
+LLM_MODEL = os.getenv("LLM_MODEL", "local-model")
+
+
+def format_context(results: list[dict]) -&gt; str:
+    blocks = []
+
+    for number, item in enumerate(results, start=1):
+        blocks.append(
+            f"[{number}] {item['source']}, page {item['page']}\\n"
+            f"{item['text']}"
+        )
+
+    return "\\n\\n".join(blocks)
+
+
+def answer_with_local_llm(
+    question: str,
+    results: list[dict],
+) -&gt; str:
+    if not results:
+        return "I could not find supporting passages in the indexed documents."
+
+    context = format_context(results)
+
+    system_prompt = (
+        "You answer questions using only the supplied document excerpts. "
+        "If the excerpts do not support an answer, say that the answer is "
+        "not established by the indexed documents. Do not invent facts. "
+        "Cite supporting excerpts using [source, page N]."
+    )
+
+    payload = {
+        "model": LLM_MODEL,
+        "temperature": 0,
+        "messages": [
+            {"role": "system", "content": system_prompt},
+            {
+                "role": "user",
+                "content": (
+                    f"Question: {question}\\n\\n"
+                    f"Document excerpts:\\n{context}"
+                ),
+            },
+        ],
+    }
+
+    response = requests.post(
+        f"{LLM_BASE_URL.rstrip('/')}/chat/completions",
+        json=payload,
+        timeout=120,
+    )
+    response.raise_for_status()
+
+    body = response.json()
+    return body["choices"][0]["message"]["content"]</code></pre>
+
+        <p>
+          The prompt is a guardrail, not a guarantee. A local model can still misunderstand a passage, cite the wrong excerpt, or answer confidently when the evidence is weak. The application should display the retrieved passages beside the answer so a person can inspect them.
+        </p>
+
+        <h2>Step 6: Connect the pipeline with a small command-line interface</h2>
+
+        <p>
+          Put the following code after the functions above in <code>rag.py</code>. It provides the two commands described earlier.
+        </p>
+
+        <pre><code>import argparse
+
+
+def run_index(args) -&gt; None:
+    pages = extract_pages(args.documents)
+    chunks = chunk_records(
+        pages,
+        chunk_size=args.chunk_size,
+        overlap=args.overlap,
+    )
+    build_index(chunks, args.index_dir)
+
+    print(f"Extracted pages: {len(pages)}")
+    print(f"Created chunks: {len(chunks)}")
+    print(f"Index directory: {args.index_dir}")
+
+
+def run_question(args) -&gt; None:
+    index, metadata = load_index(args.index_dir)
+    model = SentenceTransformer(EMBEDDING_MODEL)
+    results = retrieve(args.question, index, metadata, model, args.top_k)
+
+    answer = answer_with_local_llm(args.question, results)
+
+    print("\\nAnswer:\\n")
+    print(answer)
+    print("\\nRetrieved evidence:\\n")
+
+    for item in results:
+        print(
+            f"- {item['source']}, page {item['page']} "
+            f"(score={item['score']:.4f})"
+        )
+        print(f"  {item['text'][:300]}...")
+
+
+def main() -&gt; None:
+    parser = argparse.ArgumentParser(
+        description="Search local PDFs and answer with a local LLM"
+    )
+    subparsers = parser.add_subparsers(required=True)
+
+    index_parser = subparsers.add_parser("index")
+    index_parser.add_argument("--documents", default="documents")
+    index_parser.add_argument("--index-dir", default="data")
+    index_parser.add_argument("--chunk-size", type=int, default=1200)
+    index_parser.add_argument("--overlap", type=int, default=200)
+    index_parser.set_defaults(function=run_index)
+
+    ask_parser = subparsers.add_parser("ask")
+    ask_parser.add_argument("question")
+    ask_parser.add_argument("--index-dir", default="data")
+    ask_parser.add_argument("--top-k", type=int, default=5)
+    ask_parser.set_defaults(function=run_question)
+
+    args = parser.parse_args()
+    args.function(args)
+
+
+if __name__ == "__main__":
+    main()</code></pre>
+
+        <h2>Run the pipeline</h2>
+
+        <p>
+          First create the index:
+        </p>
+
+        <pre><code>python rag.py index</code></pre>
+
+        <p>
+          A successful run should create <code>data/documents.faiss</code> and <code>data/metadata.json</code>. The printed page and chunk counts are generated by your local run; they depend on the PDFs you supplied.
+        </p>
+
+        <p>
+          Then configure the local endpoint and ask a question:
+        </p>
+
+        <pre><code>export LLM_BASE_URL="http://127.0.0.1:11434/v1"
+export LLM_MODEL="your-local-chat-model"
+
+python rag.py ask "What is the document's stated retention period?"</code></pre>
+
+        <p>
+          On Windows PowerShell, use:
+        </p>
+
+        <pre><code>$env:LLM_BASE_URL = "http://127.0.0.1:11434/v1"
+$env:LLM_MODEL = "your-local-chat-model"
+
+python rag.py ask "What is the document's stated retention period?"</code></pre>
+
+        <p>
+          The expected shape of the response is illustrative:
+        </p>
+
+        <pre><code>Answer:
+
+The indexed excerpts state that the retention period is ...
+[policy.pdf, page 4]
+
+Retrieved evidence:
+
+- policy.pdf, page 4 (score=0.XXXX)
+  The relevant passage begins ...</code></pre>
+
+        <p>
+          The exact wording, score, and answer depend on the documents, embedding model, local LLM, and endpoint implementation. They are not fixed test results.
+        </p>
+
+        <h2>Verification checklist</h2>
+
+        <p>
+          Before trusting the assistant with a real document set, verify the pipeline with questions whose answers you already know.
+        </p>
+
+        <ul>
+          <li>Index a PDF with a distinctive sentence on a known page.</li>
+          <li>Ask a question using different wording from the sentence.</li>
+          <li>Confirm that retrieval lists the expected filename and one-based page number.</li>
+          <li>Open the cited page and check that it actually supports the answer.</li>
+          <li>Ask about a fact that does not appear in the documents.</li>
+          <li>Confirm that the model says the evidence is insufficient instead of filling the gap.</li>
+          <li>Index an empty directory and confirm that the program fails with a clear “No text chunks were created” error.</li>
+          <li>Change or remove one metadata record and confirm that the index/metadata consistency check catches the mismatch.</li>
+        </ul>
+
+        <p>
+          These are verification actions for you to perform. This article does not claim that they were run in the current workspace.
+        </p>
+
+        <h2>Failure cases and practical fixes</h2>
+
+        <h3>The PDF produces no text</h3>
+
+        <p>
+          The document may be scanned, encrypted, or structured in a way that the extractor does not expose as ordinary text. Add OCR before the extraction stage, or use a PDF with a real text layer. OCR output should be reviewed because recognition errors can change names, numbers, and page content.
+        </p>
+
+        <h3>Answers cite the wrong page</h3>
+
+        <p>
+          Check whether your extraction library uses zero-based page numbers. This example converts the page counter to one-based numbering with <code>enumerate(..., start=1)</code>. Also check that the metadata list has not been reordered independently of the FAISS vectors.
+        </p>
+
+        <h3>Retrieval misses an obvious passage</h3>
+
+        <p>
+          Try a different embedding model, increase <code>top_k</code>, adjust chunk size, and inspect the extracted text. Headers, footers, broken columns, and unusual terminology can make semantic retrieval less effective. A lexical search fallback can be useful for exact identifiers, policy codes, and numbers.
+        </p>
+
+        <h3>The model answers from general knowledge</h3>
+
+        <p>
+          Strengthen the system prompt, lower temperature, show the retrieved context in the user interface, and require citations. Most importantly, treat the answer as a summary of retrieved evidence rather than as an independent source of truth. If the model repeatedly ignores the evidence, change the model or add an answer validation step.
+        </p>
+
+        <h3>Memory or speed is poor</h3>
+
+        <p>
+          The embedding model and the LLM have different resource requirements. Reduce batch sizes, use a smaller local model, index fewer chunks at a time, or choose a quantized model supported by your local runner. Exact FAISS search is straightforward but scales linearly with the number of stored vectors.
+        </p>
+
+        <h2>Privacy and operational boundaries</h2>
+
+        <p>
+          Keeping the PDF and generation endpoint on the same machine can reduce external exposure, but “local” does not automatically mean secure. Check where model downloads, logs, temporary files, telemetry, backups, and crash reports are written. Restrict access to the HTTP endpoint and protect the indexed directory like the original documents.
+        </p>
+
+        <p>
+          Do not place passwords, API keys, personal identifiers, or confidential examples in source code or shell history. If a model runner requires authentication, use its documented secret-management mechanism rather than hard-coding a credential in <code>rag.py</code>.
+        </p>
+
+        <h2>Limitations and next steps</h2>
+
+        <p>
+          This baseline is intentionally small. It preserves page references for text extraction, but it does not guarantee perfect citations. It may struggle with scanned documents, multi-column layouts, tables, figures, footnotes, very long answers, and questions requiring information spread across many pages.
+        </p>
+
+        <p>
+          Reasonable next improvements are:
+
+        </p>
+
+        <ul>
+          <li>Add OCR for image-only PDFs.</li>
+          <li>Store page coordinates and text blocks for more precise citations.</li>
+          <li>Add a lexical or hybrid retriever for exact terms and identifiers.</li>
+          <li>Use reranking before sending context to the LLM.</li>
+          <li>Persist document hashes so unchanged PDFs are not reindexed.</li>
+          <li>Expose retrieved excerpts in the interface alongside the generated answer.</li>
+          <li>Add automated evaluation questions with known source pages.</li>
+        </ul>
+
+        <p>
+          The central design choice should remain unchanged: document text and its source metadata travel together from extraction through retrieval to the final answer. That is what makes a local PDF assistant inspectable rather than merely fluent.
+        </p>
+
+        <h2>Summary</h2>
+
+        <p>
+          A minimal local PDF RAG system needs four durable pieces: page-aware extraction, chunks with metadata, vector retrieval, and a local generation endpoint. FAISS finds candidate passages; the LLM turns those passages into an answer; the source and page fields let a reader verify the result. The system is useful when it clearly separates retrieved evidence from generated language and openly reports when the indexed documents do not contain an answer.
+        </p>
+
+        <p>
+          Continue with the <a href="../guides.html">guides</a> or look up related terms in the <a href="../glossary.html">glossary</a>.
+        </p>
+      </div>
+    <section class="service-note">
+  <b>We publish what works for us—and implement the same solutions for your business.</b>
+  We design AI automation, Telegram bots, chats, and AI agents for real-world processes.
+  <a href="../contacts-en.html">Discuss your project →</a>
+</section>
+</article>
+  </main>
+
+  <footer class="site-footer">
+    <div class="container">
+      <p>&copy; Agent Lab Journal</p>
+      <nav aria-label="Footer navigation">
+        <a href="../guides.html">Guides</a>
+        <a href="../glossary.html">Glossary</a>
+      </nav>
+    </div>
+  </footer>
+</body>
+</html>

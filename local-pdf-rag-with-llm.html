@@ -1,0 +1,459 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Локальный RAG для PDF: поиск по документам и ответы через локальную LLM</title>
+  <meta name="description" content="Локальный RAG для PDF: поиск по документам и ответы через локальную LLM. Практический Python-пайплайн с извлечением текста, эмбеддингами, FAISS и ссылками на страницы.">
+  <link rel="canonical" href="https://agentlabjournal.online/local-pdf-rag-with-llm.html">
+  <link rel="stylesheet" href="style.css">
+  <link rel="stylesheet" href="reading.css">
+
+  <meta property="og:type" content="article">
+  <meta property="og:locale" content="ru_RU">
+  <meta property="og:title" content="Локальный RAG для PDF: поиск по документам и ответы через локальную LLM">
+  <meta property="og:description" content="Минимальный локальный RAG-пайплайн для PDF на Python: текст, эмбеддинги, FAISS, локальная LLM и метаданные страниц.">
+  <meta property="og:url" content="https://agentlabjournal.online/local-pdf-rag-with-llm.html">
+  <meta property="og:site_name" content="Agent Lab Journal">
+
+  <meta name="twitter:card" content="summary">
+  <meta name="twitter:title" content="Локальный RAG для PDF: поиск по документам и ответы через локальную LLM">
+  <meta name="twitter:description" content="Как искать по PDF локально и получать ответы через локальную LLM с указанием страниц.">
+
+  <script type="application/ld+json">
+  {
+    "@context": "https://schema.org",
+    "@type": "Article",
+    "headline": "Локальный RAG для PDF: поиск по документам и ответы через локальную LLM",
+    "description": "Практический материал о локальном RAG-пайплайне для PDF на Python.",
+    "inLanguage": "ru",
+    "mainEntityOfPage": {
+      "@type": "WebPage",
+      "@id": "https://agentlabjournal.online/local-pdf-rag-with-llm.html"
+    },
+    "publisher": {
+      "@type": "Organization",
+      "name": "Agent Lab Journal",
+      "url": "https://agentlabjournal.online/"
+    }
+  }
+  </script>
+<link rel="stylesheet" href="homepage.css"><link rel="stylesheet" href="max-promo.css">  <meta property="og:image" content="https://agentlabjournal.online/assets/covers/llm-context-window-budget-social.png">
+  <meta property="og:image:alt" content="Локальный RAG для PDF: поиск по документам и ответы через локальную LLM">
+  <meta name="twitter:image" content="https://agentlabjournal.online/assets/covers/llm-context-window-budget-social.png">
+</head>
+<body>
+  <header class="site-header">
+    <div class="container">
+      <a class="site-brand" href="index.html">Agent Lab Journal</a>
+      <nav aria-label="Основная навигация">
+        <a href="guides.html">Гайды</a>
+        <a href="glossary.html">Глоссарий</a>
+      </nav>
+    </div>
+  </header>
+
+  <main>
+    <article class="reading">
+<a href="https://max.ru/channel_AgentLab?utm_source=agentlabjournal&utm_medium=article&utm_campaign=max_channel&utm_content=article_footer" class="max-promo-block" target="_blank" rel="noopener noreferrer" aria-label="Самое важное из мира AI в канале MAX AgentLab">
+  <span class="max-promo-block__icon" aria-hidden="true"></span>
+  <span class="max-promo-block__content"><span class="max-promo-block__title">Самое важное из мира AI — в канале MAX AgentLab</span><span class="max-promo-block__desc">Отдельные разборы, инструменты и практические схемы</span></span>
+  <span class="max-promo-block__arrow" aria-hidden="true">→</span>
+</a>
+<a href="https://t.me/pelmenews?utm_source=agentlabjournal&utm_medium=article&utm_campaign=telegram_channel&utm_content=article_intro" class="telegram-promo-block" target="_blank" rel="noopener noreferrer" aria-label="Читайте Agent Lab в Telegram">
+  <span class="telegram-promo-block__icon" aria-hidden="true"></span>
+  <span class="telegram-promo-block__content">
+    <span class="telegram-promo-block__title">Читайте Agent Lab в Telegram</span>
+    <span class="telegram-promo-block__desc">Разборы, кейсы и новости о практических AI-агентах без лишней воды.</span>
+  </span>
+  <span class="telegram-promo-block__arrow" aria-hidden="true">→</span>
+</a>
+      <div class="reading-meta">
+        <span>Практика</span>
+        <span>Python</span>
+        <span>До 12 минут</span>
+      </div>
+
+      <h1>Локальный RAG для PDF: поиск по документам и ответы через локальную LLM</h1>
+        <figure class="article-cover" data-editorial-cover="local-pdf-rag-with-llm"><img src="assets/covers/llm-context-window-budget.png" alt="Локальный RAG для PDF: поиск по документам и ответы через локальную LLM" width="1280" height="720" fetchpriority="high"><figcaption>Temporary fallback cover; replace in editorial pass.</figcaption></figure>
+
+      <p class="lead">
+        <a href="glossary.html#rag">RAG</a> — это подход, при котором модель сначала находит релевантные фрагменты в вашей базе знаний, а затем формирует ответ на их основе. В этой статье соберём минимальный локальный RAG для PDF: документы останутся на компьютере, поиск выполнит FAISS, а ответ сгенерирует локальная LLM.
+      </p>
+
+      <p>
+        Результат будет практичным, но намеренно небольшим: PDF разбиваются на фрагменты, каждому фрагменту сохраняется номер страницы, для текста строятся эмбеддинги, а найденный контекст передаётся локальному серверу Ollama. Ссылки вида «страница 4» модель получит из метаданных, а приложение выведет самостоятельно.
+      </p>
+
+      <h2>Что построим</h2>
+
+      <p>Пайплайн состоит из пяти этапов:</p>
+
+      <ol>
+        <li>прочитать страницы PDF через PyMuPDF;</li>
+        <li>разбить текст на перекрывающиеся фрагменты;</li>
+        <li>получить векторы фрагментов с помощью sentence-transformers;</li>
+        <li>найти ближайшие фрагменты в FAISS;</li>
+        <li>передать контекст локальной LLM и вернуть ответ со страницами.</li>
+      </ol>
+
+      <p>
+        Это не промышленная поисковая система и не гарантия фактической корректности ответа. Зато такой вариант легко запустить, проверить и расширить без отправки исходных PDF во внешний сервис.
+      </p>
+
+      <h2>Подготовка окружения</h2>
+
+      <p>Нужны Python 3.10 или новее и установленный Ollama. Создайте отдельное окружение:</p>
+
+      <pre><code>python -m venv .venv
+source .venv/bin/activate
+python -m pip install --upgrade pip
+pip install pymupdf sentence-transformers faiss-cpu requests numpy</code></pre>
+
+      <p>В Windows PowerShell команда активации выглядит так:</p>
+
+      <pre><code>.venv\Scripts\Activate.ps1</code></pre>
+
+      <p>
+        Загрузите локальную модель в Ollama. Название модели в примере — параметр, поэтому его можно заменить на установленную совместимую модель:
+      </p>
+
+      <pre><code>ollama pull llama3.2:3b
+ollama serve</code></pre>
+
+      <p>
+        Команда <code>ollama serve</code> обычно запускается в отдельном терминале. Проверьте доступность локального API:
+      </p>
+
+      <pre><code>curl http://127.0.0.1:11434/api/tags</code></pre>
+
+      <p>
+        Если команда вернула JSON со списком моделей, сервер доступен. Ниже используется только адрес loopback — запросы не должны уходить в сеть через Ollama API.
+      </p>
+
+      <h2>Структура проекта</h2>
+
+      <pre><code>local-pdf-rag/
+├── data/
+│   └── document.pdf
+└── rag_pdf.py</code></pre>
+
+      <p>
+        Положите документы только в каталог, который вы контролируете. Не добавляйте в репозиторий PDF с персональными, коммерческими или иными чувствительными данными.
+      </p>
+
+      <h2>Извлечение текста и страниц</h2>
+
+      <p>
+        PyMuPDF возвращает текст отдельно для каждой страницы. Это важно: если сначала склеить весь документ, связь найденного фрагмента со страницей будет потеряна.
+      </p>
+
+      <h2>Минимальный RAG-пайплайн</h2>
+
+      <p>
+        Сохраните следующий код в <code>rag_pdf.py</code>. Он индексирует один PDF, принимает вопрос из командной строки и печатает ответ с перечнем использованных страниц.
+      </p>
+
+      <pre><code>from __future__ import annotations
+
+import argparse
+import json
+from pathlib import Path
+from typing import Any
+
+import faiss
+import fitz
+import numpy as np
+import requests
+from sentence_transformers import SentenceTransformer
+
+
+OLLAMA_URL = "http://127.0.0.1:11434/api/generate"
+OLLAMA_MODEL = "llama3.2:3b"
+EMBEDDING_MODEL = "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2"
+
+
+def extract_pages(pdf_path: Path) -&gt; list[dict[str, Any]]:
+    pages = []
+
+    with fitz.open(pdf_path) as document:
+        for page_number, page in enumerate(document, start=1):
+            text = page.get_text("text").strip()
+
+            if text:
+                pages.append({
+                    "page": page_number,
+                    "text": text
+                })
+
+    return pages
+
+
+def split_text(text: str, size: int = 900, overlap: int = 150) -&gt; list[str]:
+    words = text.split()
+    chunks = []
+    step = max(1, size - overlap)
+
+    for start in range(0, len(words), step):
+        chunk = " ".join(words[start:start + size]).strip()
+
+        if chunk:
+            chunks.append(chunk)
+
+        if start + size &gt;= len(words):
+            break
+
+    return chunks
+
+
+def build_chunks(pages: list[dict[str, Any]]) -&gt; list[dict[str, Any]]:
+    chunks = []
+
+    for page in pages:
+        for text in split_text(page["text"]):
+            chunks.append({
+                "page": page["page"],
+                "text": text
+            })
+
+    return chunks
+
+
+def build_index(
+    chunks: list[dict[str, Any]],
+    model: SentenceTransformer
+) -&gt; faiss.Index:
+    vectors = model.encode(
+        [chunk["text"] for chunk in chunks],
+        normalize_embeddings=True,
+        convert_to_numpy=True
+    ).astype("float32")
+
+    index = faiss.IndexFlatIP(vectors.shape[1])
+    index.add(vectors)
+    return index
+
+
+def search(
+    question: str,
+    chunks: list[dict[str, Any]],
+    index: faiss.Index,
+    model: SentenceTransformer,
+    limit: int = 4
+) -&gt; list[dict[str, Any]]:
+    query_vector = model.encode(
+        [question],
+        normalize_embeddings=True,
+        convert_to_numpy=True
+    ).astype("float32")
+
+    scores, positions = index.search(query_vector, min(limit, len(chunks)))
+    results = []
+
+    for score, position in zip(scores[0], positions[0]):
+        if position &lt; 0:
+            continue
+
+        result = dict(chunks[position])
+        result["score"] = float(score)
+        results.append(result)
+
+    return results
+
+
+def make_prompt(question: str, results: list[dict[str, Any]]) -&gt; str:
+    context = "\n\n".join(
+        f"[Фрагмент {number}, страница {item['page']}]\n{item['text']}"
+        for number, item in enumerate(results, start=1)
+    )
+
+    return f"""Ты отвечаешь на вопросы по PDF-документу.
+
+Правила:
+1. Используй только приведённый контекст.
+2. Если в контексте нет ответа, честно скажи: «В найденных фрагментах ответа нет».
+3. Не придумывай номера страниц.
+4. Отвечай на русском языке кратко и по существу.
+5. В конце добавь строку «Источники:» и перечисли страницы из контекста.
+
+Вопрос:
+{question}
+
+Контекст:
+{context}
+"""
+
+
+def ask_local_llm(prompt: str) -&gt; str:
+    response = requests.post(
+        OLLAMA_URL,
+        json={
+            "model": OLLAMA_MODEL,
+            "prompt": prompt,
+            "stream": False
+        },
+        timeout=120
+    )
+    response.raise_for_status()
+    return response.json()["response"].strip()
+
+
+def main() -&gt; None:
+    parser = argparse.ArgumentParser()
+    parser.add_argument("pdf", type=Path)
+    parser.add_argument("question")
+    args = parser.parse_args()
+
+    if not args.pdf.is_file():
+        raise SystemExit(f"PDF не найден: {args.pdf}")
+
+    pages = extract_pages(args.pdf)
+
+    if not pages:
+        raise SystemExit(
+            "В PDF не найден текст. Возможно, это скан без OCR."
+        )
+
+    chunks = build_chunks(pages)
+
+    if not chunks:
+        raise SystemExit("Не удалось создать текстовые фрагменты.")
+
+    embedding_model = SentenceTransformer(EMBEDDING_MODEL)
+    index = build_index(chunks, embedding_model)
+    results = search(
+        args.question,
+        chunks,
+        index,
+        embedding_model
+    )
+
+    prompt = make_prompt(args.question, results)
+    answer = ask_local_llm(prompt)
+
+    source_pages = sorted({item["page"] for item in results})
+
+    print(answer)
+    print()
+    print("Найденные страницы:", ", ".join(map(str, source_pages)))
+
+
+if __name__ == "__main__":
+    main()
+</code></pre>
+
+      <p>
+        Здесь используется косинусная близость в форме внутреннего произведения: векторы нормализуются перед добавлением в <code>IndexFlatIP</code>. Переменные <code>size</code> и <code>overlap</code> задают размер фрагмента и перекрытие в словах.
+      </p>
+
+      <h2>Запуск и проверка результата</h2>
+
+      <p>Из корня проекта выполните:</p>
+
+      <pre><code>python rag_pdf.py data/document.pdf "Какие требования к резервному копированию указаны в документе?"</code></pre>
+
+      <p>Проверяйте не только связность ответа, но и три свойства:</p>
+
+      <ul>
+        <li>ответ опирается на формулировки из PDF;</li>
+        <li>перечисленные страницы действительно содержат найденные фрагменты;</li>
+        <li>при вопросе вне темы модель сообщает об отсутствии ответа.</li>
+      </ul>
+
+      <p>
+        Номера страниц выводятся приложением из метаданных результатов поиска. Поэтому они не зависят только от того, насколько точно модель воспроизвела номер страницы в тексте ответа.
+      </p>
+
+      <h2>Типовые ошибки</h2>
+
+      <h3>«PDF не содержит текста»</h3>
+
+      <p>
+        Сканированные документы часто состоят из изображений. <code>page.get_text()</code> в таком случае вернёт пустую строку. Нужен отдельный этап OCR, после которого следует повторно проверить качество распознанного текста. OCR может ошибаться в таблицах, формулах и колонтитулах.
+      </p>
+
+      <h3>Слабые или нерелевантные результаты</h3>
+
+      <p>
+        Попробуйте уменьшить размер фрагмента, изменить перекрытие или использовать эмбеддинговую модель, которая лучше работает с языком ваших документов. Слишком большие фрагменты добавляют шум, а слишком маленькие теряют контекст.
+      </p>
+
+      <h3>Ollama недоступна</h3>
+
+      <p>
+        Убедитесь, что локальный сервер запущен, модель скачана, а имя в <code>OLLAMA_MODEL</code> совпадает с именем из <code>/api/tags</code>. Тайм-аут в примере рассчитан на локальный запуск, но первая генерация может занять больше времени из-за загрузки модели в память.
+      </p>
+
+      <h3>FAISS не устанавливается</h3>
+
+      <p>
+        Пакет <code>faiss-cpu</code> зависит от платформы и версии Python. Создайте новое виртуальное окружение с поддерживаемой версией Python и повторите установку. Не смешивайте пакеты из системного Python и виртуального окружения.
+      </p>
+
+      <h2>Безопасность и приватность</h2>
+
+      <p>
+        Локальный запуск снижает риск передачи документов внешнему API, но сам по себе не делает систему безопасной. Контролируйте доступ к каталогу с PDF, логам и кэшу эмбеддингов. Не выводите в логи полный текст документов без необходимости.
+      </p>
+
+      <p>
+        Ограничьте HTTP-сервис Ollama адресом <code>127.0.0.1</code>, если удалённый доступ не нужен. Перед обработкой документов с персональными данными также проверьте, не создаёт ли используемая инфраструктура резервные копии или телеметрию за пределами ожидаемой локальной среды.
+      </p>
+
+      <h2>Ограничения минимального варианта</h2>
+
+      <p>
+        Пример каждый раз строит индекс заново и работает с одним PDF. Для нескольких документов стоит сохранять индекс на диск вместе с JSON-метаданными, где у каждого вектора будут путь к файлу, номер страницы и идентификатор фрагмента.
+      </p>
+
+      <p>
+        FAISS ищет по векторной близости, но не понимает структуру таблиц, изображения и сложные ссылки. Для рабочих сценариев могут понадобиться OCR, извлечение таблиц, гибридный поиск по словам и векторам, reranking, фильтрация по документу и оценка качества на заранее подготовленных вопросах.
+      </p>
+
+      <p>
+        Отдельно учитывайте границы контекста LLM: если передать слишком много найденных фрагментов, ответ может стать менее точным. Увеличивать число результатов стоит только после проверки, что дополнительные фрагменты действительно помогают.
+      </p>
+
+      <h2>Итог</h2>
+
+      <p>
+        Минимальный локальный RAG для PDF можно собрать из PyMuPDF, sentence-transformers, FAISS и локальной модели Ollama. Ключевая практическая деталь — хранить номер страницы рядом с каждым фрагментом, а не пытаться восстановить его после генерации ответа.
+      </p>
+
+      <p>
+        Дальше можно добавить кэширование индекса, поддержку нескольких файлов, OCR и автоматическую проверку цитат. Общие приёмы для подобных локальных пайплайнов собраны в <a href="guides.html">разделе гайдов</a>, а термины — в <a href="glossary.html">глоссарии</a>.
+      </p>
+<aside class="service-note" aria-label="Связаться по проекту">
+  <div class="service-note__copy">
+    <p class="service-note__label">Связь с Agent Lab</p>
+    <p class="service-note__title">Внедрим такой контур в ваш процесс</p>
+    <p class="service-note__text">Напишите инженеру Agent Lab в Telegram: опишите задачу, бота или интеграцию — предложим пилот с проверками и понятными границами.</p>
+  </div>
+  <a class="service-note__link" href="https://t.me/msrzn007?utm_source=journal&amp;utm_medium=article&amp;utm_campaign=service_note" target="_blank" rel="noopener">Написать в Telegram
+    <svg viewBox="0 0 16 16" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"><path d="M3 13 13 3M6 3h7v7"/></svg>
+  </a>
+</aside>
+<aside class="service-note service-note--sitevisor" aria-label="Экспресс-аудит сайта">
+  <div class="service-note__copy">
+    <p class="service-note__label">SiteVisor</p>
+    <p class="service-note__title">Проверьте техническое состояние и готовность вашего сайта к рекламе</p>
+    <p class="service-note__text">Экспресс-аудит на SiteVisor.pro: индексация, скорость, разметка, аналитика и точки конверсии.</p>
+  </div>
+  <a class="service-note__link" href="https://sitevisor.pro/?utm_source=journal&amp;utm_medium=article&amp;utm_campaign=leadmagnet" target="_blank" rel="noopener">Экспресс-аудит на SiteVisor.pro
+    <svg viewBox="0 0 16 16" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"><path d="M3 13 13 3M6 3h7v7"/></svg>
+  </a>
+</aside>
+</article>
+  </main>
+
+  <footer class="site-footer">
+    <div class="container">
+      <span>© Agent Lab Journal</span>
+      <nav aria-label="Дополнительная навигация">
+        <a href="guides.html">Гайды</a>
+        <a href="glossary.html">Глоссарий</a>
+      </nav>
+    </div>
+  </footer>
+</body>
+</html>
