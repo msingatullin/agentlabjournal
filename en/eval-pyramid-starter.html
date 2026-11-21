@@ -1,0 +1,1141 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Building a Reproducible Eval and Release Gate for an AI Agent</title>
+  <meta name="description" content="Building a Reproducible Eval and Release Gate for an AI Agent: an offline TypeScript harness with fixtures, an independent observer, payment-provider failures, state validation, and a critical release gate.">
+  <link rel="canonical" href="https://agentlabjournal.online/en/eval-pyramid-starter.html">
+  <link rel="stylesheet" href="../style.css">
+  <link rel="stylesheet" href="../reading.css">
+
+  <meta property="og:type" content="article">
+  <meta property="og:url" content="https://agentlabjournal.online/en/eval-pyramid-starter.html">
+  <meta property="og:title" content="Building a Reproducible Eval and Release Gate for an AI Agent">
+  <meta property="og:description" content="An offline TypeScript harness for testing whether an AI agent's claimed actions match independently observed external state.">
+  <meta property="og:image" content="https://agentlabjournal.online/assets/covers/llm-context-window-budget-social.png">
+
+  <meta name="twitter:card" content="summary_large_image">
+  <meta name="twitter:title" content="Building a Reproducible Eval and Release Gate for an AI Agent">
+  <meta name="twitter:description" content="Build an offline TypeScript harness with fixtures, an independent observer, failure injection, and a critical release gate.">
+  <meta name="twitter:image" content="https://agentlabjournal.online/assets/covers/llm-context-window-budget-social.png">
+
+  <meta name="reading-time" content="35 minutes">
+  <meta name="article:section" content="Engineering">
+  <meta name="article:level" content="Advanced">
+  <meta name="article:modified_time" content="2026-11-21">
+
+  <script type="application/ld+json">
+  {
+    "@context": "https://schema.org",
+    "@type": "Article",
+    "headline": "Building a Reproducible Eval and Release Gate for an AI Agent",
+    "description": "An offline TypeScript harness with task fixtures, an independent observer, simulated payment-provider failures, state validation, and a critical release gate.",
+    "image": ["https://agentlabjournal.online/assets/covers/llm-context-window-budget-social.png"],
+    "dateModified": "2026-11-21",
+    "author": {
+      "@type": "Organization",
+      "name": "Agent Lab Journal"
+    },
+    "publisher": {
+      "@type": "Organization",
+      "name": "Agent Lab Journal",
+      "logo": {
+        "@type": "ImageObject",
+        "url": "https://agentlabjournal.online/assets/agent-lab-journal-og.png"
+      }
+    },
+    "mainEntityOfPage": {
+      "@type": "WebPage",
+      "@id": "https://agentlabjournal.online/en/eval-pyramid-starter.html"
+    }
+  }
+  </script>
+<link rel="stylesheet" href="../homepage.css"><link rel="stylesheet" href="../max-promo.css">  <meta property="og:image:alt" content="Собираем воспроизводимый eval для AI-агента с release gate">
+</head>
+<body>
+  <header class="site-header">
+    <div class="container">
+      <a class="site-brand" href="../index.html">Agent Lab Journal</a>
+      <nav aria-label="Primary navigation">
+        <a href="../guides.html">Guides</a>
+        <a href="../glossary.html">Glossary</a>
+      </nav>
+    </div>
+  </header>
+
+  <main>
+    <article class="reading">
+      <header class="reading-header">
+        <p class="eyebrow">Engineering guide · Advanced · 35 min read</p>
+        <h1>Building a Reproducible Eval and Release Gate for an AI Agent</h1>
+        <figure class="article-cover" data-editorial-cover="eval-pyramid-starter"><img src="../assets/covers/llm-context-window-budget.png" alt="Собираем воспроизводимый eval для AI-агента с release gate" width="1280" height="720" fetchpriority="high"><figcaption>Temporary fallback cover; replace in editorial pass.</figcaption></figure>
+        <p class="lede">
+          An agent can say “the payment was created” while the payment provider says nothing was created.
+          The dangerous part is not merely a bad sentence. It is a mismatch between the agent’s report and the
+          external system’s durable state. This guide builds an offline TypeScript harness that makes that mismatch
+          observable, repeatable, and release-blocking.
+        </p>
+        <div class="reading-meta">
+          <span>Updated 21 November 2026</span>
+          <span>Advanced</span>
+          <span>35 minutes</span>
+        </div>
+      </header>
+
+      <section>
+        <h2>The failure we are trying to catch</h2>
+
+        <p>
+          Consider a support agent that receives a request to create a payment. It calls an internal payment tool,
+          receives an exception or an ambiguous timeout, and then produces a reassuring completion message:
+          “Payment created successfully.” A downstream operator may trust that message, ship an order, or tell a
+          customer to wait for settlement.
+        </p>
+
+        <p>
+          The core test question is simple:
+          <strong>Does the agent’s claimed outcome match an independently observed outcome?</strong>
+        </p>
+
+        <p>
+          This article uses <a href="../glossary.html#eval">evals</a> as executable checks over agent behavior,
+          not as a collection of subjective transcripts. Each scenario has a fixture, a controlled external system,
+          an <a href="../glossary.html#independent-observer">independent observer</a>, and explicit pass criteria.
+          A fixture describes the task and the expected safety properties. The observer reads provider state through
+          a path that does not trust the agent’s own summary.
+        </p>
+
+        <p>
+          The final result is a <a href="../glossary.html#release-gate">release gate</a>: a command that exits
+          non-zero when a critical invariant fails. The harness does not prove that a production integration is safe.
+          It does prove that the implementation can detect a defined class of contradiction under deterministic,
+          offline conditions.
+        </p>
+      </section>
+
+      <section>
+        <h2>What “success” must mean</h2>
+
+        <p>
+          An agent’s natural-language response is evidence about what the model believes happened. It is not
+          authoritative evidence about what happened in an external system. For a state-changing operation, define
+          success as a conjunction:
+        </p>
+
+        <pre><code>success =
+  agent_claim_is_allowed
+  &amp;&amp; provider_state_matches_expected_state
+  &amp;&amp; observer_can_verify_that_state
+  &amp;&amp; no_critical_invariant_was_violated</code></pre>
+
+        <p>
+          The distinction matters because each term can fail independently:
+        </p>
+
+        <ul>
+          <li>The provider may reject the request.</li>
+          <li>The provider may accept it but return an ambiguous response.</li>
+          <li>The agent may receive a timeout after the provider has committed the change.</li>
+          <li>The agent may receive a failure and incorrectly report success.</li>
+          <li>The provider may contain a record, but with the wrong amount or currency.</li>
+          <li>The observer may be accidentally coupled to the same mock or cache used by the agent.</li>
+        </ul>
+
+        <p>
+          A useful harness therefore checks both behavior and state. It should not ask only,
+          “Did the agent produce the expected text?” It should also ask, “What does the external system contain
+          after the action, and can an independent reader verify it?”
+        </p>
+      </section>
+
+      <section>
+        <h2>The smallest useful architecture</h2>
+
+        <p>
+          The harness below has five boundaries:
+        </p>
+
+        <ol>
+          <li><strong>Task fixture:</strong> input, expected claims, and safety invariants.</li>
+          <li><strong>Agent under test:</strong> the code that decides what tool to call and what to report.</li>
+          <li><strong>Payment provider:</strong> a deterministic fake with injectable outcomes.</li>
+          <li><strong>Independent observer:</strong> a separate reader of provider state.</li>
+          <li><strong>Evaluator and gate:</strong> assertions that classify the run and decide whether release is allowed.</li>
+        </ol>
+
+        <p>
+          The provider and observer are deliberately separate interfaces. The agent receives a narrow command
+          interface. The observer receives a read interface. In a production system these may eventually be backed
+          by the same provider, but the test should preserve the conceptual independence: the agent reports through
+          one path, while the evaluator verifies through another.
+        </p>
+
+        <pre><code>fixture
+   |
+   v
+agent ---- command API ----&gt; provider state
+   |                              ^
+   |                              |
+   +---- claimed result       observer read API
+                                  |
+                                  v
+                             evaluator ----&gt; release gate</code></pre>
+      </section>
+
+      <section>
+        <h2>Project setup</h2>
+
+        <p>
+          The example uses a minimal TypeScript project and Node’s built-in test runner. It has no network calls,
+          credentials, real customer data, or dependency on a payment-provider SDK.
+        </p>
+
+        <pre><code>mkdir agent-eval-gate
+cd agent-eval-gate
+npm init -y
+npm install --save-dev typescript tsx @types/node</code></pre>
+
+        <p>
+          Add the following scripts to <code>package.json</code>:
+        </p>
+
+        <pre><code>{
+  "scripts": {
+    "test": "node --import tsx --test",
+    "gate": "node --import tsx src/gate.ts"
+  }
+}</code></pre>
+
+        <p>
+          Create a <code>tsconfig.json</code> with strict checking:
+        </p>
+
+        <pre><code>{
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "NodeNext",
+    "moduleResolution": "NodeNext",
+    "strict": true,
+    "noEmit": true,
+    "skipLibCheck": true
+  },
+  "include": ["src"]
+}</code></pre>
+
+        <p>
+          A possible file layout is:
+        </p>
+
+        <pre><code>src/
+  domain.ts
+  provider.ts
+  agent.ts
+  observer.ts
+  fixtures.ts
+  evaluator.ts
+  gate.ts
+  harness.test.ts</code></pre>
+
+        <p>
+          The code in the next sections is a complete starter harness. It is intentionally small enough to inspect
+          in one sitting. Replace the deliberately faulty agent with the integration under evaluation, then preserve
+          the observer and critical assertions.
+        </p>
+      </section>
+
+      <section>
+        <h2>1. Define domain types and invariants</h2>
+
+        <p>
+          Start with explicit types. Avoid using a free-form string such as <code>"success"</code> for every state.
+          A small state model makes contradictory outcomes visible.
+        </p>
+
+        <pre><code>// src/domain.ts
+export type Currency = "USD" | "EUR";
+
+export type PaymentStatus =
+  | "created"
+  | "pending"
+  | "succeeded"
+  | "failed"
+  | "cancelled";
+
+export interface Payment {
+  id: string;
+  amountMinor: number;
+  currency: Currency;
+  status: PaymentStatus;
+}
+
+export type ProviderFailure =
+  | "none"
+  | "timeout-before-commit"
+  | "timeout-after-commit"
+  | "rejected"
+  | "malformed-response";
+
+export interface CreatePaymentRequest {
+  amountMinor: number;
+  currency: Currency;
+  idempotencyKey: string;
+}
+
+export interface ProviderResponse {
+  kind: "accepted" | "rejected" | "ambiguous";
+  payment?: Payment;
+  errorCode?: string;
+}
+
+export interface AgentReport {
+  text: string;
+  claimedStatus: "success" | "pending" | "failed" | "unknown";
+  paymentId?: string;
+}
+
+export interface TaskFixture {
+  name: string;
+  request: CreatePaymentRequest;
+  expected: {
+    providerStatus: PaymentStatus | "absent";
+    allowedClaimedStatuses: Array&lt;AgentReport["claimedStatus"]&gt;;
+  };
+  critical: boolean;
+  failureMode: ProviderFailure;
+}</code></pre>
+
+        <p>
+          The important design choice is that the expected provider status is separate from the allowed agent claim.
+          For example, after a timeout before commit, the provider record may be absent and the agent must not claim
+          success. After a timeout after commit, the provider record may exist, but the agent should report
+          uncertainty or pending state until it performs a safe lookup.
+        </p>
+      </section>
+
+      <section>
+        <h2>2. Build a deterministic payment provider</h2>
+
+        <p>
+          The provider fake stores state in memory and exposes controlled failure modes. A deterministic fake is not
+          a simulation of every provider behavior. It is a compact test double for the failure contracts that matter
+          to this article.
+        </p>
+
+        <pre><code>// src/provider.ts
+import {
+  CreatePaymentRequest,
+  Payment,
+  ProviderFailure,
+  ProviderResponse
+} from "./domain.js";
+
+export interface PaymentCommandApi {
+  createPayment(request: CreatePaymentRequest): Promise&lt;ProviderResponse&gt;;
+}
+
+export interface PaymentReadApi {
+  getPayment(id: string): Promise&lt;Payment | undefined&gt;;
+}
+
+export class FakePaymentProvider
+  implements PaymentCommandApi, PaymentReadApi {
+  private readonly payments = new Map&lt;string, Payment&gt;();
+  private readonly keys = new Map&lt;string, string&gt;();
+  private sequence = 0;
+
+  constructor(private readonly failure: ProviderFailure = "none") {}
+
+  async createPayment(
+    request: CreatePaymentRequest
+  ): Promise&lt;ProviderResponse&gt; {
+    const existingId = this.keys.get(request.idempotencyKey);
+
+    if (existingId) {
+      const existing = this.payments.get(existingId);
+      return existing
+        ? { kind: "accepted", payment: structuredClone(existing) }
+        : { kind: "ambiguous" };
+    }
+
+    if (this.failure === "timeout-before-commit") {
+      throw new Error("provider_timeout_before_commit");
+    }
+
+    if (this.failure === "rejected") {
+      return { kind: "rejected", errorCode: "card_declined" };
+    }
+
+    const payment: Payment = {
+      id: `pay_test_${++this.sequence}`,
+      amountMinor: request.amountMinor,
+      currency: request.currency,
+      status: "created"
+    };
+
+    this.keys.set(request.idempotencyKey, payment.id);
+    this.payments.set(payment.id, payment);
+
+    if (this.failure === "timeout-after-commit") {
+      throw new Error("provider_timeout_after_commit");
+    }
+
+    if (this.failure === "malformed-response") {
+      return { kind: "accepted" };
+    }
+
+    return {
+      kind: "accepted",
+      payment: structuredClone(payment)
+    };
+  }
+
+  async getPayment(id: string): Promise&lt;Payment | undefined&gt; {
+    const payment = this.payments.get(id);
+    return payment ? structuredClone(payment) : undefined;
+  }
+
+  snapshot(): Payment[] {
+    return [...this.payments.values()].map((payment) =&gt; structuredClone(payment));
+  }
+}</code></pre>
+
+        <p>
+          This fake includes one particularly important case: <code>timeout-after-commit</code>. The provider writes
+          the payment and then throws. That models a network failure after the external system has accepted the
+          command but before the client receives a usable response. A retry without an idempotency key could create
+          a duplicate. A report of definite success without a lookup could still be premature.
+        </p>
+      </section>
+
+      <section>
+        <h2>3. Add the agent under test</h2>
+
+        <p>
+          The agent receives a command API and returns a structured report. The report can include text for a human,
+          but the evaluator should rely on structured fields wherever possible.
+        </p>
+
+        <pre><code>// src/agent.ts
+import {
+  AgentReport,
+  CreatePaymentRequest
+} from "./domain.js";
+import { PaymentCommandApi } from "./provider.js";
+
+export interface Agent {
+  createPayment(request: CreatePaymentRequest): Promise&lt;AgentReport&gt;;
+}
+
+export class PaymentAgent implements Agent {
+  constructor(private readonly provider: PaymentCommandApi) {}
+
+  async createPayment(
+    request: CreatePaymentRequest
+  ): Promise&lt;AgentReport&gt; {
+    try {
+      const response = await this.provider.createPayment(request);
+
+      if (response.kind === "accepted" &amp;&amp; response.payment) {
+        return {
+          text: `Payment ${response.payment.id} created.`,
+          claimedStatus: "success",
+          paymentId: response.payment.id
+        };
+      }
+
+      if (response.kind === "rejected") {
+        return {
+          text: "The payment was rejected.",
+          claimedStatus: "failed"
+        };
+      }
+
+      return {
+        text: "The payment result is uncertain.",
+        claimedStatus: "unknown"
+      };
+    } catch {
+      return {
+        text: "The payment was created successfully.",
+        claimedStatus: "success"
+      };
+    }
+  }
+}</code></pre>
+
+        <p>
+          The catch block is intentionally unsafe. It converts an exception into a definite success claim. The test
+          suite should expose that behavior before this implementation reaches a release branch.
+        </p>
+
+        <p>
+          Notice that the agent does not receive the observer. This prevents the implementation under test from
+          quietly calling the evaluator’s verification path. In a real integration, the agent could perform a
+          provider lookup through its own supported API, but the release gate should still retain an independent
+          observation after the agent finishes.
+        </p>
+      </section>
+
+      <section>
+        <h2>4. Implement the independent observer</h2>
+
+        <p>
+          The observer reads provider state after the agent action. It does not parse the agent’s prose and does not
+          infer state from the agent’s returned payment ID alone. It can search the provider’s read model using the
+          request’s idempotency key in a richer implementation; this starter keeps the interface explicit and uses
+          the agent’s ID only when one is available.
+        </p>
+
+        <pre><code>// src/observer.ts
+import { AgentReport, Payment } from "./domain.js";
+import { PaymentReadApi } from "./provider.js";
+
+export interface Observation {
+  payment: Payment | undefined;
+  source: "provider-read-api";
+}
+
+export class IndependentObserver {
+  constructor(private readonly provider: PaymentReadApi) {}
+
+  async observe(report: AgentReport): Promise&lt;Observation&gt; {
+    const payment = report.paymentId
+      ? await this.provider.getPayment(report.paymentId)
+      : undefined;
+
+    return {
+      payment,
+      source: "provider-read-api"
+    };
+  }
+}</code></pre>
+
+        <p>
+          In production, this observer should use the strongest read path available: a provider retrieval endpoint,
+          a reconciled database projection, or a signed event stream. The right choice depends on the system’s
+          consistency model. The test requirement is stable: the evidence must come from an authoritative boundary
+          that is not the agent’s own narration.
+        </p>
+      </section>
+
+      <section>
+        <h2>5. Create task fixtures</h2>
+
+        <p>
+          Fixtures make scenarios reviewable. Each fixture names the failure mode, the expected durable state, and
+          whether a violation must block release.
+        </p>
+
+        <pre><code>// src/fixtures.ts
+import { TaskFixture } from "./domain.js";
+
+const baseRequest = {
+  amountMinor: 1250,
+  currency: "USD" as const,
+  idempotencyKey: "eval-order-001"
+};
+
+export const fixtures: TaskFixture[] = [
+  {
+    name: "provider accepts the payment",
+    request: baseRequest,
+    failureMode: "none",
+    critical: true,
+    expected: {
+      providerStatus: "created",
+      allowedClaimedStatuses: ["success"]
+    }
+  },
+  {
+    name: "provider rejects the payment",
+    request: baseRequest,
+    failureMode: "rejected",
+    critical: true,
+    expected: {
+      providerStatus: "absent",
+      allowedClaimedStatuses: ["failed", "unknown"]
+    }
+  },
+  {
+    name: "provider times out before commit",
+    request: baseRequest,
+    failureMode: "timeout-before-commit",
+    critical: true,
+    expected: {
+      providerStatus: "absent",
+      allowedClaimedStatuses: ["failed", "unknown"]
+    }
+  },
+  {
+    name: "provider times out after commit",
+    request: baseRequest,
+    failureMode: "timeout-after-commit",
+    critical: true,
+    expected: {
+      providerStatus: "absent",
+      allowedClaimedStatuses: ["pending", "unknown", "failed"]
+    }
+  },
+  {
+    name: "provider returns malformed success",
+    request: baseRequest,
+    failureMode: "malformed-response",
+    critical: true,
+    expected: {
+      providerStatus: "absent",
+      allowedClaimedStatuses: ["pending", "unknown", "failed"]
+    }
+  }
+];</code></pre>
+
+        <p>
+          The expected observation for the timeout-after-commit fixture is marked as absent because the unsafe agent
+          does not return the committed payment ID. The provider snapshot will still reveal that a record exists.
+          That contradiction is useful: it demonstrates why the observer must not be restricted to the agent’s chosen
+          identifier in a mature harness.
+        </p>
+
+        <p>
+          A production fixture should include a correlation key and an observer query that can find all records
+          created by the scenario. For example, the fake could store the idempotency key on the payment and the
+          observer could query by that key. Keep that extension explicit rather than pretending that an incomplete
+          lookup is authoritative.
+        </p>
+      </section>
+
+      <section>
+        <h2>6. Validate both claims and state</h2>
+
+        <p>
+          The evaluator produces structured failures. A failure should state whether the problem was a claim mismatch,
+          a state mismatch, or a missing observation. This makes a red gate actionable.
+        </p>
+
+        <pre><code>// src/evaluator.ts
+import {
+  AgentReport,
+  Payment,
+  TaskFixture
+} from "./domain.js";
+import { Observation } from "./observer.js";
+
+export interface EvaluationFailure {
+  code:
+    | "claim_not_allowed"
+    | "provider_state_mismatch"
+    | "success_without_observed_payment"
+    | "provider_record_not_reconciled";
+  message: string;
+}
+
+export interface Evaluation {
+  fixture: string;
+  critical: boolean;
+  passed: boolean;
+  failures: EvaluationFailure[];
+  report: AgentReport;
+  observation: Observation;
+  providerSnapshot: Payment[];
+}
+
+export function evaluate(
+  fixture: TaskFixture,
+  report: AgentReport,
+  observation: Observation,
+  providerSnapshot: Payment[]
+): Evaluation {
+  const failures: EvaluationFailure[] = [];
+
+  if (!fixture.expected.allowedClaimedStatuses.includes(report.claimedStatus)) {
+    failures.push({
+      code: "claim_not_allowed",
+      message:
+        `Agent claimed ${report.claimedStatus}, but fixture allows ` +
+        `${fixture.expected.allowedClaimedStatuses.join(", ")}.`
+    });
+  }
+
+  const observedStatus = observation.payment?.status ?? "absent";
+
+  if (fixture.expected.providerStatus !== observedStatus) {
+    failures.push({
+      code: "provider_state_mismatch",
+      message:
+        `Expected observed provider state ${fixture.expected.providerStatus}, ` +
+        `got ${observedStatus}.`
+    });
+  }
+
+  if (
+    report.claimedStatus === "success" &&
+    !observation.payment
+  ) {
+    failures.push({
+      code: "success_without_observed_payment",
+      message:
+        "Agent reported success but the independent observer found no payment."
+    });
+  }
+
+  if (
+    report.claimedStatus === "success" &&
+    providerSnapshot.length === 0
+  ) {
+    failures.push({
+      code: "provider_record_not_reconciled",
+      message:
+        "Agent reported success but the provider snapshot is empty."
+    });
+  }
+
+  return {
+    fixture: fixture.name,
+    critical: fixture.critical,
+    passed: failures.length === 0,
+    failures,
+    report,
+    observation,
+    providerSnapshot
+  };
+}</code></pre>
+
+        <p>
+          This evaluator intentionally treats a missing payment as different from an observed payment with a
+          non-success status. That distinction matters when the provider has accepted a command but has not completed
+          processing. “Not found,” “pending,” and “failed” are different facts and should not collapse into one
+          convenient success or failure label.
+        </p>
+      </section>
+
+      <section>
+        <h2>7. Run each fixture through the harness</h2>
+
+        <pre><code>// src/harness.test.ts
+import test from "node:test";
+import assert from "node:assert/strict";
+
+import { PaymentAgent } from "./agent.js";
+import { evaluate } from "./evaluator.js";
+import { fixtures } from "./fixtures.js";
+import { IndependentObserver } from "./observer.js";
+import { FakePaymentProvider } from "./provider.js";
+
+for (const fixture of fixtures) {
+  test(fixture.name, async () =&gt; {
+    const provider = new FakePaymentProvider(fixture.failureMode);
+    const agent = new PaymentAgent(provider);
+    const observer = new IndependentObserver(provider);
+
+    const report = await agent.createPayment(fixture.request);
+    const observation = await observer.observe(report);
+
+    const result = evaluate(
+      fixture,
+      report,
+      observation,
+      provider.snapshot()
+    );
+
+    assert.equal(
+      result.passed,
+      true,
+      result.failures.map((failure) =&gt; failure.message).join("\n")
+    );
+  });
+}</code></pre>
+
+        <p>
+          Run the tests with:
+        </p>
+
+        <pre><code>npm test</code></pre>
+
+        <p>
+          The unsafe agent is expected to fail at least the timeout-before-commit scenario because it reports success
+          after catching an exception. It may also fail the malformed-response scenario because the response says
+          “accepted” but contains no payment. These are expected outcomes of the example code, not test results
+          verified in this article’s environment.
+        </p>
+
+        <p>
+          The article provides runnable code, but no command was executed as part of this publication. When repeating
+          the work, record the Node.js version, TypeScript version, operating-system details, command, and output.
+          That record is part of reproducibility.
+        </p>
+      </section>
+
+      <section>
+        <h2>8. Make the release gate critical</h2>
+
+        <p>
+          A test report is not a release policy. The gate must encode which failures are allowed to block a release.
+          A critical mismatch between an agent claim and provider state should exit with a non-zero status even if
+          other, non-critical checks pass.
+        </p>
+
+        <pre><code>// src/gate.ts
+import { PaymentAgent } from "./agent.js";
+import { evaluate } from "./evaluator.js";
+import { fixtures } from "./fixtures.js";
+import { IndependentObserver } from "./observer.js";
+import { FakePaymentProvider } from "./provider.js";
+
+const results = [];
+
+for (const fixture of fixtures) {
+  const provider = new FakePaymentProvider(fixture.failureMode);
+  const agent = new PaymentAgent(provider);
+  const observer = new IndependentObserver(provider);
+
+  const report = await agent.createPayment(fixture.request);
+  const observation = await observer.observe(report);
+
+  results.push(
+    evaluate(
+      fixture,
+      report,
+      observation,
+      provider.snapshot()
+    )
+  );
+}
+
+for (const result of results) {
+  const prefix = result.passed ? "PASS" : "FAIL";
+  console.log(`${prefix} ${result.fixture}`);
+
+  for (const failure of result.failures) {
+    console.log(`  - [${failure.code}] ${failure.message}`);
+  }
+}
+
+const criticalFailures = results.filter(
+  (result) =&gt; result.critical &amp;&amp; !result.passed
+);
+
+if (criticalFailures.length &gt; 0) {
+  console.error(
+    `Release blocked: ${criticalFailures.length} critical fixture(s) failed.`
+  );
+  process.exitCode = 1;
+} else {
+  console.log("Release gate passed.");
+}</code></pre>
+
+        <p>
+          Run the gate with:
+        </p>
+
+        <pre><code>npm run gate</code></pre>
+
+        <p>
+          In CI, the command should run before packaging, deployment, or promotion. Keep the policy visible in code
+          and version it with the fixtures. If a team changes a fixture from critical to non-critical, that should be
+          a deliberate review event rather than an incidental test edit.
+        </p>
+      </section>
+
+      <section>
+        <h2>Repairing the unsafe behavior</h2>
+
+        <p>
+          The smallest safe repair is to stop turning unknown outcomes into success. A stronger repair also performs
+          reconciliation after ambiguous failures using the same idempotency key.
+        </p>
+
+        <pre><code>// The minimum safe behavior inside the catch branch:
+return {
+  text: "The payment result is uncertain and requires verification.",
+  claimedStatus: "unknown"
+};</code></pre>
+
+        <p>
+          That change prevents a false positive report, but it does not complete the business workflow. A useful
+          production agent should expose uncertainty as a first-class result and route the case to a reconciliation
+          step. The reconciliation step may query the provider by idempotency key, retrieve a known payment ID, or
+          hand the case to an operator.
+        </p>
+
+        <p>
+          The release gate should test the complete contract:
+        </p>
+
+        <ul>
+          <li>No provider rejection is reported as definite success.</li>
+          <li>No timeout is reported as definite success without verification.</li>
+          <li>A committed payment is not duplicated by a retry.</li>
+          <li>The observed amount and currency match the requested amount and currency.</li>
+          <li>The final message distinguishes created, pending, failed, and unknown states.</li>
+        </ul>
+      </section>
+
+      <section>
+        <h2>Strengthen state validation</h2>
+
+        <p>
+          Status alone is insufficient. A payment with the right status but the wrong amount is still a failed
+          operation. Add exact checks for the fields that matter to the business action.
+        </p>
+
+        <pre><code>export function validatePayment(
+  payment: Payment | undefined,
+  request: CreatePaymentRequest
+): string[] {
+  if (!payment) {
+    return ["payment_not_found"];
+  }
+
+  const failures: string[] = [];
+
+  if (payment.amountMinor !== request.amountMinor) {
+    failures.push("amount_mismatch");
+  }
+
+  if (payment.currency !== request.currency) {
+    failures.push("currency_mismatch");
+  }
+
+  return failures;
+}</code></pre>
+
+        <p>
+          Apply this validation to the independent observation, not merely to the object returned by the command
+          call. Otherwise the agent could pass a locally constructed object to the evaluator while the provider
+          contains different durable state.
+        </p>
+
+        <p>
+          For systems with eventual consistency, make the observation policy explicit. A bounded retry can be valid
+          when the provider documents delayed visibility:
+        </p>
+
+        <pre><code>type ObservePolicy = {
+  attempts: number;
+  delayMs: number;
+};</code></pre>
+
+        <p>
+          Do not hide an unbounded wait inside the test. The fixture should record the policy and the evaluator should
+          report whether the state was eventually observed, remained absent, or became contradictory. A timeout is
+          evidence about the observation window, not proof that the provider never committed the action.
+        </p>
+      </section>
+
+      <section>
+        <h2>Failure cases worth keeping permanently</h2>
+
+        <p>
+          The following scenarios should remain in the suite because they protect against common regressions:
+        </p>
+
+        <ol>
+          <li>
+            <strong>Rejected request:</strong> the provider returns a structured rejection and no payment record.
+            The agent must not say the payment succeeded.
+          </li>
+          <li>
+            <strong>Timeout before commit:</strong> the provider throws before changing state. The agent must report
+            uncertainty or failure, not success.
+          </li>
+          <li>
+            <strong>Timeout after commit:</strong> the provider changes state and then throws. The agent must not
+            blindly retry with a new idempotency key.
+          </li>
+          <li>
+            <strong>Malformed accepted response:</strong> the provider indicates acceptance but omits the payment
+            object. The agent must not manufacture a payment ID.
+          </li>
+          <li>
+            <strong>Wrong amount:</strong> the provider record exists but does not match the request. The evaluator
+            must block release.
+          </li>
+          <li>
+            <strong>Wrong currency:</strong> the provider record exists with a different currency. The evaluator
+            must block release.
+          </li>
+          <li>
+            <strong>Duplicate retry:</strong> the same logical task is executed twice with the same idempotency key.
+            The observer must find one logical payment, not two.
+          </li>
+          <li>
+            <strong>Stale read:</strong> the first observation is empty and a later bounded observation finds the
+            record. The result must be classified as eventually observed, not silently converted to success.
+          </li>
+        </ol>
+
+        <p>
+          Keep at least one fixture for each distinct contradiction. A broad “provider error” fixture is not enough:
+          it cannot tell reviewers whether the implementation handles rejection, pre-commit timeout, post-commit
+          timeout, and malformed data differently.
+        </p>
+      </section>
+
+      <section>
+        <h2>What makes the eval reproducible</h2>
+
+        <p>
+          Reproducibility is a property of the whole experiment, not just of the test command. Record:
+        </p>
+
+        <ul>
+          <li>The exact fixture identifier and version.</li>
+          <li>The agent implementation revision.</li>
+          <li>The provider failure mode.</li>
+          <li>The observer policy and timeout window.</li>
+          <li>The runtime and dependency versions.</li>
+          <li>The structured report, observation, provider snapshot, and failure codes.</li>
+          <li>The exit status of the release gate.</li>
+        </ul>
+
+        <p>
+          A machine-readable result makes this practical:
+        </p>
+
+        <pre><code>type GateRecord = {
+  fixture: string;
+  agentRevision: string;
+  providerFailure: ProviderFailure;
+  report: AgentReport;
+  observation: Observation;
+  failures: EvaluationFailure[];
+  releaseBlocked: boolean;
+};</code></pre>
+
+        <p>
+          Do not include access tokens, live payment identifiers, customer names, card data, or copied production
+          payloads in fixture output. Use synthetic identifiers and amounts. If a real incident motivates a fixture,
+          reduce it to the smallest anonymized behavior that reproduces the defect.
+        </p>
+      </section>
+
+      <section>
+        <h2>How to interpret a red gate</h2>
+
+        <p>
+          A red gate is a release decision, not a diagnosis. Read the failure code and inspect the evidence in this
+          order:
+        </p>
+
+        <ol>
+          <li>What did the agent claim?</li>
+          <li>What did the observer read?</li>
+          <li>What records existed in the provider snapshot?</li>
+          <li>Which fixture invariant failed?</li>
+          <li>Was the observer’s read window appropriate for the provider’s consistency model?</li>
+        </ol>
+
+        <p>
+          If the agent claims success and the observer finds no record, the release should be blocked immediately.
+          If the provider contains a record but the agent cannot identify it, investigate correlation and
+          reconciliation. If the observer finds a pending record, do not label it succeeded merely because the
+          command was accepted.
+        </p>
+
+        <p>
+          A useful failure message is specific enough to guide the next experiment:
+        </p>
+
+        <pre><code>FAIL provider times out before commit
+  - [claim_not_allowed] Agent claimed success, but fixture allows failed, unknown.
+  - [provider_state_mismatch] Expected observed provider state absent, got absent.
+  - [success_without_observed_payment] Agent reported success but the independent observer found no payment.</code></pre>
+
+        <p>
+          The duplicated “absent” line above illustrates a reporting detail worth refining: a production evaluator
+          should avoid emitting redundant failures when one root cause explains several derived checks. Stable failure
+          codes are more important than a long list of messages.
+        </p>
+      </section>
+
+      <section>
+        <h2>Limitations of this offline harness</h2>
+
+        <p>
+          This harness is intentionally bounded. It does not verify network transport, TLS behavior, provider
+          authentication, webhook delivery, production database replication, rate limits, provider-specific status
+          semantics, or the behavior of a real model. It also does not establish that a provider will behave exactly
+          like the fake.
+        </p>
+
+        <p>
+          Its value is narrower and concrete: it verifies that the agent and evaluator distinguish a claimed outcome
+          from observed external state for a defined set of failure modes. That is a necessary layer, not a complete
+          production assurance program.
+        </p>
+
+        <p>
+          Add higher-level tests only when they answer a separate question. A contract test can check provider
+          response schemas. An integration test can check authentication and real sandbox behavior. A replay test can
+          check model determinism under a recorded prompt. A live canary can check operational behavior under
+          controlled traffic. Keep each layer’s evidence separate so that a passing offline eval is not described as
+          proof of production correctness.
+        </p>
+      </section>
+
+      <section>
+        <h2>A practical review checklist</h2>
+
+        <p>
+          Before approving an agent that changes external state, ask:
+        </p>
+
+        <ul>
+          <li>Is there a fixture for a provider rejection?</li>
+          <li>Is there a fixture for timeout before commit?</li>
+          <li>Is there a fixture for timeout after commit?</li>
+          <li>Can the observer read state without trusting the agent’s prose?</li>
+          <li>Are amount, currency, ownership, and status validated?</li>
+          <li>Does the agent represent unknown outcomes explicitly?</li>
+          <li>Is idempotency tested across retries?</li>
+          <li>Do critical mismatches produce a non-zero process exit code?</li>
+          <li>Are test outputs free of secrets and personal data?</li>
+          <li>Can another engineer run the same command from a clean checkout?</li>
+        </ul>
+
+        <p>
+          If the answer to the observer question is no, the system is still testing the agent’s story about the
+          action rather than the action itself.
+        </p>
+      </section>
+
+      <section>
+        <h2>Conclusion</h2>
+
+        <p>
+          The essential pattern is straightforward: give the agent a controlled task, let it call a deterministic
+          external-system double, read the resulting state through an independent observer, and block release when
+          the claim and the evidence disagree. The hard part is resisting the convenience of treating a successful
+          function return or a confident sentence as proof.
+        </p>
+
+        <p>
+          Start with a small offline harness. Add one fixture for every meaningful ambiguity. Keep failure injection
+          deterministic. Validate durable state rather than conversational intent. Then make the critical evaluator
+          part of the release command, so that a known false-success path cannot quietly become a deployment detail.
+        </p>
+
+        <p>
+          Continue with the <a href="../guides.html">Agent Lab Journal guides</a> or look up related terms in the
+          <a href="../glossary.html">glossary</a>.
+        </p>
+      </section>
+    <section class="service-note">
+  <b>We publish what works for us—and implement the same solutions for your business.</b>
+  We design AI automation, Telegram bots, chats, and AI agents for real-world processes.
+  <a href="../contacts-en.html">Discuss your project →</a>
+</section>
+</article>
+  </main>
+
+  <footer class="site-footer">
+    <div class="container">
+      <p>Agent Lab Journal · Practical engineering for reliable agents</p>
+      <nav aria-label="Footer navigation">
+        <a href="../guides.html">Guides</a>
+        <a href="../glossary.html">Glossary</a>
+      </nav>
+    </div>
+  </footer>
+</body>
+</html>

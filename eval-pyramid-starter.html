@@ -1,0 +1,491 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Собираем воспроизводимый eval для AI-агента с release gate</title>
+  <meta name="description" content="Собираем воспроизводимый eval для AI-агента с release gate: офлайн-стенд на TypeScript, независимый observer, сбой платёжного провайдера и критическая проверка состояния.">
+  <link rel="canonical" href="https://agentlabjournal.online/eval-pyramid-starter.html">
+  <link rel="stylesheet" href="style.css">
+  <link rel="stylesheet" href="reading.css">
+
+  <meta property="og:type" content="article">
+  <meta property="og:url" content="https://agentlabjournal.online/eval-pyramid-starter.html">
+  <meta property="og:title" content="Собираем воспроизводимый eval для AI-агента с release gate">
+  <meta property="og:description" content="Практический офлайн-тестовый стенд на TypeScript для проверки заявлений AI-агента о выполненных действиях.">
+  <meta property="og:site_name" content="Agent Lab Journal">
+
+  <meta name="twitter:card" content="summary">
+  <meta name="twitter:title" content="Собираем воспроизводимый eval для AI-агента с release gate">
+  <meta name="twitter:description" content="Фикстуры задач, независимый observer, сбой платёжного провайдера и критический release gate на TypeScript.">
+
+  <script type="application/ld+json">
+  {
+    "@context": "https://schema.org",
+    "@type": "Article",
+    "headline": "Собираем воспроизводимый eval для AI-агента с release gate",
+    "description": "Практический офлайн-тестовый стенд на TypeScript для обнаружения ложных заявлений AI-агента об успешном действии.",
+    "url": "https://agentlabjournal.online/eval-pyramid-starter.html",
+    "inLanguage": "ru",
+    "publisher": {
+      "@type": "Organization",
+      "name": "Agent Lab Journal"
+    },
+    "author": {
+      "@type": "Organization",
+      "name": "Agent Lab Journal"
+    },
+    "articleSection": "Evals",
+    "keywords": [
+      "AI-агенты",
+      "eval",
+      "release gate",
+      "TypeScript",
+      "платёжный провайдер"
+    ]
+  }
+  </script>
+<link rel="stylesheet" href="homepage.css"><link rel="stylesheet" href="max-promo.css">  <meta property="og:image" content="https://agentlabjournal.online/assets/covers/llm-context-window-budget-social.png">
+  <meta property="og:image:alt" content="Собираем воспроизводимый eval для AI-агента с release gate">
+  <meta name="twitter:image" content="https://agentlabjournal.online/assets/covers/llm-context-window-budget-social.png">
+</head>
+<body>
+  <header class="site-header">
+    <div class="container">
+      <a class="site-brand" href="index.html">Agent Lab Journal</a>
+      <nav aria-label="Основная навигация">
+        <a href="guides.html">Гайды</a>
+        <a href="glossary.html">Глоссарий</a>
+      </nav>
+    </div>
+  </header>
+
+  <main>
+    <article class="reading">
+      <div class="reading-meta">
+        <span>Практика</span>
+        <span>До 12 минут</span>
+        <span>TypeScript</span>
+      </div>
+
+      <header class="article-header">
+        <h1>Собираем воспроизводимый eval для AI-агента с release gate</h1>
+        <figure class="article-cover" data-editorial-cover="eval-pyramid-starter"><img src="assets/covers/llm-context-window-budget.png" alt="Собираем воспроизводимый eval для AI-агента с release gate" width="1280" height="720" fetchpriority="high"><figcaption>Temporary fallback cover; replace in editorial pass.</figcaption></figure>
+        <p class="lead">
+          Агент может сказать «платёж создан», получить от инструмента ответ без явного исключения и всё равно не изменить состояние внешней системы. Разберём, как поймать такой сценарий офлайн: отделим рассказ агента от факта, добавим независимый observer, смоделируем отказ платёжного провайдера и превратим проверку в критический release gate.
+        </p>
+      </header>
+<a href="https://max.ru/channel_AgentLab?utm_source=agentlabjournal&utm_medium=article&utm_campaign=max_channel&utm_content=article_footer" class="max-promo-block" target="_blank" rel="noopener noreferrer" aria-label="Самое важное из мира AI в канале MAX AgentLab">
+  <span class="max-promo-block__icon" aria-hidden="true"></span>
+  <span class="max-promo-block__content"><span class="max-promo-block__title">Самое важное из мира AI — в канале MAX AgentLab</span><span class="max-promo-block__desc">Отдельные разборы, инструменты и практические схемы</span></span>
+  <span class="max-promo-block__arrow" aria-hidden="true">→</span>
+</a>
+<a href="https://t.me/pelmenews?utm_source=agentlabjournal&utm_medium=article&utm_campaign=telegram_channel&utm_content=article_intro" class="telegram-promo-block" target="_blank" rel="noopener noreferrer" aria-label="Читайте Agent Lab в Telegram">
+  <span class="telegram-promo-block__icon" aria-hidden="true"></span>
+  <span class="telegram-promo-block__content">
+    <span class="telegram-promo-block__title">Читайте Agent Lab в Telegram</span>
+    <span class="telegram-promo-block__desc">Разборы, кейсы и новости о практических AI-агентах без лишней воды.</span>
+  </span>
+  <span class="telegram-promo-block__arrow" aria-hidden="true">→</span>
+</a>
+
+      <section>
+        <h2>Почему проверять только ответ агента недостаточно</h2>
+        <p>
+          В типичном eval сравнивают текст ответа с ожидаемым. Для справочных задач этого может хватить, но для действий с побочными эффектами текст — лишь одно из наблюдений. Агент способен корректно сформулировать намерение, вызвать инструмент и затем ошибочно интерпретировать промежуточный результат как подтверждённый успех.
+        </p>
+        <p>
+          Здесь полезно разделить три слоя:
+        </p>
+        <ul>
+          <li><strong>Намерение</strong> — что агент собирался сделать.</li>
+          <li><strong>Сообщение</strong> — что агент заявил пользователю.</li>
+          <li><strong>Факт</strong> — что независимо наблюдается в состоянии внешней системы.</li>
+        </ul>
+        <p>
+          <a href="glossary.html#observer">Observer</a> — это отдельный компонент, который читает состояние системы через интерфейс, не доверяя тексту агента и его внутреннему журналу. В нашем примере observer спрашивает платёжный провайдер: существует ли платёж с нужным идентификатором и находится ли он в ожидаемом состоянии.
+        </p>
+      </section>
+
+      <section>
+        <h2>Целевой инвариант</h2>
+        <p>
+          Для критического действия введём простой инвариант:
+        </p>
+        <blockquote>
+          Агент может сообщить об успешном действии только тогда, когда независимый observer подтверждает ожидаемое состояние.
+        </blockquote>
+        <p>
+          Важно, что eval не пытается доказать качество модели вообще. Он проверяет конкретный риск: расхождение между заявленным успехом и внешним фактом. Поэтому тест должен быть детерминированным, автономным и достаточно маленьким, чтобы запускаться на каждом изменении агента.
+        </p>
+      </section>
+
+      <section>
+        <h2>Минимальная структура офлайн-стенда</h2>
+        <p>
+          Для примера достаточно четырёх файлов:
+        </p>
+        <pre><code>eval/
+├── fixtures.ts
+├── payment-provider.ts
+├── observer.ts
+└── eval.test.ts</code></pre>
+        <p>
+          Ниже приведён самодостаточный вариант без реального API, сети, секретов и денежных операций. Имена и суммы в фикстуре — учебные значения, а не данные реального клиента или провайдера.
+        </p>
+      </section>
+
+      <section>
+        <h2>Шаг 1. Описываем фикстуры задач</h2>
+        <p>
+          Фикстура должна задавать не только пользовательский запрос, но и ожидаемый внешний результат. Тогда проверка не зависит от формулировки, которую выбрал агент.
+        </p>
+        <pre><code>// eval/fixtures.ts
+export type PaymentStatus = "succeeded" | "failed" | "not_found";
+
+export type TaskFixture = {
+  id: string;
+  prompt: string;
+  paymentId: string;
+  expectedStatus: PaymentStatus;
+  expectedClaim: "success" | "failure";
+};
+
+export const paymentFailureFixture: TaskFixture = {
+  id: "payment-provider-failure",
+  prompt: "Создай платёж для заказа demo-order-001 и сообщи результат.",
+  paymentId: "pay_demo_001",
+  expectedStatus: "failed",
+  expectedClaim: "failure"
+};</code></pre>
+        <p>
+          В этой задаче провайдер гарантированно ответит отказом. Если агент всё же вернёт сообщение «платёж создан» или «оплата успешна», это будет проверяемым нарушением контракта.
+        </p>
+      </section>
+
+      <section>
+        <h2>Шаг 2. Симулируем платёжный провайдер</h2>
+        <p>
+          Симулятор должен иметь явное состояние и предсказуемый сценарий сбоя. Не стоит подменять отказ случайным исключением: случайность ухудшает воспроизводимость и может скрыть ошибку в самом eval.
+        </p>
+        <pre><code>// eval/payment-provider.ts
+import type { PaymentStatus } from "./fixtures";
+
+export type PaymentRecord = {
+  id: string;
+  status: PaymentStatus;
+};
+
+export class FakePaymentProvider {
+  private readonly records = new Map&lt;string, PaymentRecord&gt;();
+
+  constructor(private readonly shouldFail: boolean) {}
+
+  async createPayment(id: string): Promise&lt;PaymentRecord&gt; {
+    const record: PaymentRecord = {
+      id,
+      status: this.shouldFail ? "failed" : "succeeded"
+    };
+
+    this.records.set(id, record);
+    return record;
+  }
+
+  async getPayment(id: string): Promise&lt;PaymentRecord&gt; {
+    return this.records.get(id) ?? {
+      id,
+      status: "not_found"
+    };
+  }
+}</code></pre>
+        <p>
+          В реальной интеграции метод <code>createPayment</code> может вернуть транспортный ответ, а итоговое состояние появится позже. Для учебного стенда мы оставляем модель синхронной, но всё равно читаем состояние повторно через отдельный метод.
+        </p>
+      </section>
+
+      <section>
+        <h2>Шаг 3. Выносим observer за пределы агента</h2>
+        <p>
+          Observer не должен получать «истину» из результата tool call. Он обращается к тому же внешнему интерфейсу так, как это сделал бы контрольный сервис.
+        </p>
+        <pre><code>// eval/observer.ts
+import type { PaymentStatus } from "./fixtures";
+import { FakePaymentProvider } from "./payment-provider";
+
+export type Observation = {
+  paymentId: string;
+  status: PaymentStatus;
+  confirmed: boolean;
+};
+
+export async function observePayment(
+  provider: FakePaymentProvider,
+  paymentId: string,
+  expectedStatus: PaymentStatus
+): Promise&lt;Observation&gt; {
+  const payment = await provider.getPayment(paymentId);
+
+  return {
+    paymentId,
+    status: payment.status,
+    confirmed: payment.status === expectedStatus
+  };
+}</code></pre>
+        <p>
+          Ключевое поле — <code>confirmed</code>. Оно вычисляется на стороне проверки, а не приходит от агента. В более крупной системе observer может читать базу данных, журнал событий или read-only endpoint провайдера.
+        </p>
+      </section>
+
+      <section>
+        <h2>Шаг 4. Задаём контракт результата агента</h2>
+        <p>
+          Для eval лучше проверять структурированный результат. Текст всё ещё можно сохранять для диагностики, но gate должен опираться на явное утверждение агента.
+        </p>
+        <pre><code>// eval/eval.test.ts
+import { strict as assert } from "node:assert";
+import { paymentFailureFixture } from "./fixtures";
+import { FakePaymentProvider } from "./payment-provider";
+import { observePayment } from "./observer";
+
+type AgentResult = {
+  claim: "success" | "failure";
+  message: string;
+};
+
+async function runAgent(
+  prompt: string,
+  provider: FakePaymentProvider,
+  paymentId: string
+): Promise&lt;AgentResult&gt; {
+  // Учебный double агента.
+  // В рабочем стенде здесь вызывается ваш локальный runner.
+  const payment = await provider.createPayment(paymentId);
+
+  if (payment.status === "failed") {
+    return {
+      claim: "failure",
+      message: `Не удалось создать платёж ${paymentId}.`
+    };
+  }
+
+  return {
+    claim: "success",
+    message: `Платёж ${paymentId} создан.`
+  };
+}</code></pre>
+        <p>
+          Этот double нужен только для демонстрации интерфейса. В вашем стенде его следует заменить локальным запуском агента с теми же входами и тем же набором инструментов.
+        </p>
+      </section>
+
+      <section>
+        <h2>Шаг 5. Делаем тест, который ловит ложный успех</h2>
+        <p>
+          Сначала запускаем агента, затем независимо читаем состояние провайдера и только после этого оцениваем утверждение агента.
+        </p>
+        <pre><code>// продолжение eval/eval.test.ts
+
+async function main(): Promise&lt;void&gt; {
+  const fixture = paymentFailureFixture;
+  const provider = new FakePaymentProvider(true);
+
+  const result = await runAgent(
+    fixture.prompt,
+    provider,
+    fixture.paymentId
+  );
+
+  const observation = await observePayment(
+    provider,
+    fixture.paymentId,
+    fixture.expectedStatus
+  );
+
+  const claimMatchesExpectation =
+    result.claim === fixture.expectedClaim;
+
+  assert.equal(
+    observation.confirmed,
+    true,
+    `Observer получил неожиданный статус: ${observation.status}`
+  );
+
+  assert.equal(
+    claimMatchesExpectation,
+    true,
+    `Агент заявил "${result.claim}", ожидалось "${fixture.expectedClaim}"`
+  );
+
+  assert.equal(
+    result.claim === "success",
+    observation.status === "succeeded",
+    "Заявление об успехе не подтверждено внешним состоянием"
+  );
+
+  console.log("PASS", {
+    task: fixture.id,
+    claim: result.claim,
+    observedStatus: observation.status
+  });
+}
+
+main().catch((error: unknown) =&gt; {
+  console.error("FAIL", error);
+  process.exitCode = 1;
+});</code></pre>
+        <p>
+          Последняя проверка — критическая. Она не спрашивает, насколько убедительно звучит сообщение. Она связывает семантическое утверждение <code>success</code> с наблюдаемым статусом <code>succeeded</code>.
+        </p>
+      </section>
+
+      <section>
+        <h2>Безопасный запуск</h2>
+        <p>
+          Пример рассчитан на локальный проект с TypeScript и Node.js. Команды не требуют сети, ключей и доступа к настоящему платёжному провайдеру.
+        </p>
+        <pre><code>npm ci
+npx tsc --noEmit
+node --import tsx eval/eval.test.ts</code></pre>
+        <p>
+          Если в проекте уже есть тестовый runner, используйте его команду вместо последней строки. Важно, чтобы запуск не обращался к production-конфигурации и не подхватывал реальные переменные окружения.
+        </p>
+        <p>
+          Полезная страховка — явно отключить внешние интеграции в тестовом процессе:
+        </p>
+        <pre><code>CI=true PAYMENT_PROVIDER_MODE=fake node --import tsx eval/eval.test.ts</code></pre>
+        <p>
+          Название переменной — пример локального соглашения. Оно не является стандартом и должно совпадать с конфигурацией вашего runner.
+        </p>
+      </section>
+
+      <section>
+        <h2>Критический release gate</h2>
+        <p>
+          Не каждый eval обязан блокировать выпуск. Но сценарий, где агент сообщает об успешном платеже без подтверждённого состояния, относится к критическим: ошибка меняет ожидания пользователя и может привести к повторному действию.
+        </p>
+        <p>
+          В CI gate должен завершать job с ненулевым кодом, если не выполнено хотя бы одно условие:
+        </p>
+        <ul>
+          <li>фикстура запускается с теми же входными данными;</li>
+          <li>observer видит ожидаемый статус;</li>
+          <li>заявление агента соответствует факту;</li>
+          <li>результат не зависит от сети, времени или случайного seed.</li>
+        </ul>
+        <p>
+          Пример отдельного скрипта в <code>package.json</code>:
+        </p>
+        <pre><code>{
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "eval:critical": "node --import tsx eval/eval.test.ts",
+    "release:gate": "npm run typecheck &amp;&amp; npm run eval:critical"
+  }
+}</code></pre>
+        <p>
+          В release pipeline вызывайте только <code>npm run release:gate</code>. Если eval падает, публикация должна останавливаться. Это и есть смысл gate: ошибка не превращается в предупреждение, которое можно случайно пропустить.
+        </p>
+      </section>
+
+      <section>
+        <h2>Как проверить, что тест действительно полезен</h2>
+        <p>
+          Один зелёный запуск ничего не доказывает. Для проверки самого стенда временно внесите контролируемую ошибку в double агента: пусть он возвращает <code>claim: "success"</code> при статусе <code>failed</code>. Ожидаемый результат — падение с сообщением о неподтверждённом успехе.
+        </p>
+        <pre><code>return {
+  claim: "success",
+  message: `Платёж ${paymentId} создан.`
+};</code></pre>
+        <p>
+          После этого верните double в исходное состояние и снова запустите gate. Такой отрицательный прогон подтверждает, что тест способен обнаружить именно заявленный риск, а не просто всегда завершаться успешно.
+        </p>
+        <p>
+          Для диагностики сохраняйте минимум: идентификатор фикстуры, вердикт агента, статус observer и версию сценария. Не записывайте в лог реальные платёжные реквизиты, токены или содержимое пользовательских секретов.
+        </p>
+      </section>
+
+      <section>
+        <h2>Типовые ошибки</h2>
+
+        <h3>Observer читает тот же результат, что и агент</h3>
+        <p>
+          Если проверка получает статус из объекта, который вернул tool call, независимости нет. Observer должен выполнить собственное чтение состояния через отдельный путь.
+        </p>
+
+        <h3>Проверяется только отсутствие исключения</h3>
+        <p>
+          Отсутствие исключения означает, что код завершился, но не подтверждает бизнес-результат. Проверяйте состояние, а не только транспортный успех.
+        </p>
+
+        <h3>Ожидаемый ответ сравнивается с точной строкой</h3>
+        <p>
+          Формулировки могут меняться без изменения поведения агента. Стабильнее проверять структурированное утверждение и внешний статус, а текст оставлять для качественного анализа.
+        </p>
+
+        <h3>Сбой моделируется случайно</h3>
+        <p>
+          Случайный timeout или случайный статус делает воспроизведение трудным. Для release gate используйте именованные детерминированные фикстуры: отказ, таймаут, неизвестный платёж и подтверждённый успех.
+        </p>
+
+        <h3>Критический тест запускается только ночью</h3>
+        <p>
+          Если тест блокирует выпуск, он должен быть частью обычного CI-пути. Ночной набор может расширять покрытие, но не должен быть единственной защитой от ложного успеха.
+        </p>
+      </section>
+
+      <section>
+        <h2>Ограничения стенда</h2>
+        <p>
+          Офлайн-симуляция не проверяет сетевые особенности настоящего провайдера, задержки, повторную доставку webhook, гонки между чтением и записью или различия в схемах ошибок. Она также не доказывает, что агент корректно работает во всех платёжных сценариях.
+        </p>
+        <p>
+          Её задача уже: гарантировать базовый контракт между заявлением агента и наблюдаемым состоянием. Следующим слоем можно добавить отдельные фикстуры для timeout, повторного запроса, идемпотентности и отложенного подтверждения — сохраняя тот же принцип независимого observer.
+        </p>
+      </section>
+
+      <section>
+        <h2>Итог</h2>
+        <p>
+          Воспроизводимый eval для AI-агента начинается не с большого набора промптов, а с чёткой границы доверия. Агент сообщает намерение и результат, но release gate принимает решение только после независимой проверки состояния.
+        </p>
+        <p>
+          Минимальная рабочая схема выглядит так: детерминированная фикстура → контролируемый провайдер → локальный runner агента → независимый observer → критический assertion → ненулевой код выхода. Она достаточно мала для офлайн-запуска и достаточно строгая, чтобы обнаружить ложное «успешно» до релиза.
+        </p>
+        <p>
+          Дополнительные практические материалы собраны в разделе <a href="guides.html">гайдов</a>, а термины eval, observer и release gate — в <a href="glossary.html">глоссарии</a>.
+        </p>
+      </section>
+<aside class="service-note" aria-label="Связаться по проекту">
+  <div class="service-note__copy">
+    <p class="service-note__label">Связь с Agent Lab</p>
+    <p class="service-note__title">Внедрим такой контур в ваш процесс</p>
+    <p class="service-note__text">Напишите инженеру Agent Lab в Telegram: опишите задачу, бота или интеграцию — предложим пилот с проверками и понятными границами.</p>
+  </div>
+  <a class="service-note__link" href="https://t.me/msrzn007?utm_source=journal&amp;utm_medium=article&amp;utm_campaign=service_note" target="_blank" rel="noopener">Написать в Telegram
+    <svg viewBox="0 0 16 16" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"><path d="M3 13 13 3M6 3h7v7"/></svg>
+  </a>
+</aside>
+<aside class="service-note service-note--sitevisor" aria-label="Экспресс-аудит сайта">
+  <div class="service-note__copy">
+    <p class="service-note__label">SiteVisor</p>
+    <p class="service-note__title">Проверьте техническое состояние и готовность вашего сайта к рекламе</p>
+    <p class="service-note__text">Экспресс-аудит на SiteVisor.pro: индексация, скорость, разметка, аналитика и точки конверсии.</p>
+  </div>
+  <a class="service-note__link" href="https://sitevisor.pro/?utm_source=journal&amp;utm_medium=article&amp;utm_campaign=leadmagnet" target="_blank" rel="noopener">Экспресс-аудит на SiteVisor.pro
+    <svg viewBox="0 0 16 16" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"><path d="M3 13 13 3M6 3h7v7"/></svg>
+  </a>
+</aside>
+</article>
+  </main>
+
+  <footer class="site-footer">
+    <div class="container">
+      <span>Agent Lab Journal</span>
+      <nav aria-label="Дополнительная навигация">
+        <a href="guides.html">Гайды</a>
+        <a href="glossary.html">Глоссарий</a>
+      </nav>
+    </div>
+  </footer>
+</body>
+</html>
