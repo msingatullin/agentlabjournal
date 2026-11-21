@@ -1,0 +1,647 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Длинные ответы Gemini в React-чате: продолжение генерации и контроль токенов</title>
+  <meta name="description" content="Длинные ответы Gemini в React-чате: продолжение генерации и контроль токенов. Практический маршрут Next.js с потоковой генерацией, continuation token и кнопкой продолжения.">
+  <link rel="canonical" href="https://agentlabjournal.online/gemini-long-decode-react-chat.html">
+  <link rel="stylesheet" href="style.css">
+  <link rel="stylesheet" href="reading.css">
+
+  <meta property="og:type" content="article">
+  <meta property="og:title" content="Длинные ответы Gemini в React-чате: продолжение генерации и контроль токенов">
+  <meta property="og:description" content="Практический пример React/Next.js-маршрута с потоковой генерацией Gemini, continuation token и корректным учётом токенов.">
+  <meta property="og:url" content="https://agentlabjournal.online/gemini-long-decode-react-chat.html">
+  <meta property="og:site_name" content="Agent Lab Journal">
+
+  <meta name="twitter:card" content="summary">
+  <meta name="twitter:title" content="Длинные ответы Gemini в React-чате: продолжение генерации и контроль токенов">
+  <meta name="twitter:description" content="Как продолжать длинную генерацию Gemini в React-чате и не завышать оценку контекста.">
+
+  <script type="application/ld+json">
+  {
+    "@context": "https://schema.org",
+    "@type": "Article",
+    "headline": "Длинные ответы Gemini в React-чате: продолжение генерации и контроль токенов",
+    "description": "Практический маршрут Next.js с потоковой генерацией Gemini, continuation token, кнопкой продолжения и корректным учётом токенов.",
+    "mainEntityOfPage": "https://agentlabjournal.online/gemini-long-decode-react-chat.html",
+    "author": {
+      "@type": "Organization",
+      "name": "Agent Lab Journal"
+    },
+    "publisher": {
+      "@type": "Organization",
+      "name": "Agent Lab Journal"
+    },
+    "inLanguage": "ru"
+  }
+  </script>
+<link rel="stylesheet" href="homepage.css"><link rel="stylesheet" href="max-promo.css">  <meta property="og:image" content="https://agentlabjournal.online/assets/covers/llm-context-window-budget-social.png">
+  <meta property="og:image:alt" content="Длинные ответы Gemini в React-чате: продолжение генерации и контроль токенов">
+  <meta name="twitter:image" content="https://agentlabjournal.online/assets/covers/llm-context-window-budget-social.png">
+</head>
+
+<body>
+  <header class="site-header">
+    <div class="container">
+      <a href="index.html" class="site-brand">Agent Lab Journal</a>
+      <nav aria-label="Основная навигация">
+        <a href="guides.html">Гайды</a>
+        <a href="glossary.html">Глоссарий</a>
+      </nav>
+    </div>
+  </header>
+
+  <main>
+    <article class="reading">
+<a href="https://max.ru/channel_AgentLab?utm_source=agentlabjournal&utm_medium=article&utm_campaign=max_channel&utm_content=article_footer" class="max-promo-block" target="_blank" rel="noopener noreferrer" aria-label="Самое важное из мира AI в канале MAX AgentLab">
+  <span class="max-promo-block__icon" aria-hidden="true"></span>
+  <span class="max-promo-block__content"><span class="max-promo-block__title">Самое важное из мира AI — в канале MAX AgentLab</span><span class="max-promo-block__desc">Отдельные разборы, инструменты и практические схемы</span></span>
+  <span class="max-promo-block__arrow" aria-hidden="true">→</span>
+</a>
+<a href="https://t.me/pelmenews?utm_source=agentlabjournal&utm_medium=article&utm_campaign=telegram_channel&utm_content=article_intro" class="telegram-promo-block" target="_blank" rel="noopener noreferrer" aria-label="Читайте Agent Lab в Telegram">
+  <span class="telegram-promo-block__icon" aria-hidden="true"></span>
+  <span class="telegram-promo-block__content">
+    <span class="telegram-promo-block__title">Читайте Agent Lab в Telegram</span>
+    <span class="telegram-promo-block__desc">Разборы, кейсы и новости о практических AI-агентах без лишней воды.</span>
+  </span>
+  <span class="telegram-promo-block__arrow" aria-hidden="true">→</span>
+</a>
+      <div class="reading-meta">
+        <span>Практический гайд</span>
+        <span>Продвинутый уровень</span>
+        <span>До 12 минут</span>
+      </div>
+
+      <h1>Длинные ответы Gemini в React-чате: продолжение генерации и контроль токенов</h1>
+        <figure class="article-cover" data-editorial-cover="gemini-long-decode-react-chat"><img src="assets/covers/llm-context-window-budget.png" alt="Длинные ответы Gemini в React-чате: продолжение генерации и контроль токенов" width="1280" height="720" fetchpriority="high"><figcaption>Temporary fallback cover; replace in editorial pass.</figcaption></figure>
+
+      <p class="lead">
+        Потоковая генерация — это передача ответа по частям до завершения всей операции. Для коротких сообщений её достаточно подключить к интерфейсу. Для длинных ответов этого мало: модель может упереться в лимит вывода, соединение может закрыться, а приложение — ошибочно посчитать весь диалог новым контекстом.
+      </p>
+
+      <p>
+        В этой статье соберём воспроизводимую схему для React-чата на Next.js. Она решает три задачи:
+      </p>
+
+      <ul>
+        <li>показывает текст Gemini по мере генерации;</li>
+        <li>сохраняет уже полученный фрагмент и состояние незавершённого ответа;</li>
+        <li>позволяет продолжить генерацию кнопкой и считает токены по фактическим запросам.</li>
+      </ul>
+
+      <aside class="note">
+        <strong>Важное различие.</strong> Под continuation token ниже понимается непрозрачный токен состояния, созданный вашим сервером. Это идентификатор сохранённого контекста продолжения, а не универсальный токен, который Gemini обязан возвращать для возобновления любого запроса.
+      </aside>
+
+      <h2>1. Почему один длинный запрос ненадёжен</h2>
+
+      <p>
+        У запроса есть как минимум два независимых ограничения: размер входного контекста и максимальный объём генерируемого вывода. Если указать большой <code>maxOutputTokens</code>, это не гарантирует, что модель выдаст текст такого размера. Ответ может завершиться раньше по смыслу, по лимиту модели или из-за остановки соединения.
+      </p>
+
+      <p>
+        Ошибка архитектуры возникает, когда клиент считает полученную строку «черновиком», а сервер при повторе отправляет весь чат, включая уже сгенерированный текст. В результате контекст растёт, оценка стоимости становится завышенной, а модель может повторить уже выданный фрагмент.
+      </p>
+
+      <p>Безопасная модель состояния выглядит так:</p>
+
+      <pre><code>{
+  "conversationId": "conv_123",
+  "answerId": "answer_456",
+  "text": "Уже полученный текст...",
+  "continuationToken": "opaque-server-token",
+  "status": "truncated",
+  "usage": {
+    "promptTokens": 1840,
+    "candidatesTokens": 4096,
+    "totalTokens": 5936
+  }
+}</code></pre>
+
+      <p>
+        Сервер хранит не только текст. Ему нужно знать, какой пользовательский запрос породил ответ, какую модель использовали, на каком фрагменте остановились и какие значения usage уже подтверждены провайдером.
+      </p>
+
+      <h2>2. Контракт маршрута</h2>
+
+      <p>
+        Для примера используем маршрут <code>app/api/chat/route.ts</code>. Клиент отправляет либо новый запрос, либо <code>continuationToken</code> для продолжения. Сервер возвращает поток событий в формате NDJSON: каждая строка — отдельный JSON-объект.
+      </p>
+
+      <pre><code>POST /api/chat
+Content-Type: application/json
+
+{
+  "message": "Объясни архитектуру очереди задач",
+  "conversationId": "conv_123"
+}</code></pre>
+
+      <p>Запрос продолжения:</p>
+
+      <pre><code>POST /api/chat
+Content-Type: application/json
+
+{
+  "conversationId": "conv_123",
+  "continuationToken": "opaque-server-token"
+}</code></pre>
+
+      <p>Примеры событий потока:</p>
+
+      <pre><code>{"type":"delta","text":"Начнём с..."}
+{"type":"usage","promptTokens":1840,"candidatesTokens":512,"totalTokens":2352}
+{"type":"done","status":"truncated","continuationToken":"opaque-server-token"}</code></pre>
+
+      <p>
+        Событие <code>done</code> не означает, что ответ обязательно завершён по смыслу. Поле <code>status</code> должно различать нормальное завершение, остановку по лимиту и ошибку транспорта.
+      </p>
+
+      <h2>3. Безопасная конфигурация Next.js</h2>
+
+      <p>
+        Ключ Gemini должен находиться только на сервере. Не добавляйте его в переменные с префиксом <code>NEXT_PUBLIC_</code> и не передавайте в браузер.
+      </p>
+
+      <pre><code># .env.local
+GEMINI_API_KEY=replace-with-your-server-side-secret
+GEMINI_MODEL=gemini-2.5-flash</code></pre>
+
+      <p>
+        Файл <code>.env.local</code> не следует коммитить. Если проект уже содержит секрет в истории Git, простого удаления файла недостаточно: ключ нужно отозвать и выпустить новый в панели провайдера.
+      </p>
+
+      <p>Минимальные команды для нового проекта:</p>
+
+      <pre><code>npx create-next-app@latest gemini-chat
+cd gemini-chat
+npm install @google/genai
+npm run dev</code></pre>
+
+      <p>
+        Команды выше — пример воспроизводимого окружения. Версии пакетов могут меняться, поэтому в рабочем проекте фиксируйте зависимости lock-файлом и проверяйте совместимость выбранной модели с используемым SDK.
+      </p>
+
+      <h2>4. Серверный маршрут с потоковой генерацией</h2>
+
+      <p>
+        Ниже показан каркас маршрута. Хранилище намеренно оставлено абстрактным: в продакшене это может быть база данных, Redis или другой серверный storage. Главное правило — continuation token не должен содержать секреты и не должен позволять клиенту произвольно подменить контекст.
+      </p>
+
+      <pre><code>import { GoogleGenAI } from "@google/genai";
+
+const ai = new GoogleGenAI({
+  apiKey: process.env.GEMINI_API_KEY,
+});
+
+type ChatRequest = {
+  message?: string;
+  conversationId: string;
+  continuationToken?: string;
+};
+
+export async function POST(request: Request) {
+  const body = (await request.json()) as ChatRequest;
+
+  if (!body.conversationId) {
+    return Response.json(
+      { error: "conversationId is required" },
+      { status: 400 }
+    );
+  }
+
+  const state = body.continuationToken
+    ? await loadContinuation(body.continuationToken)
+    : await createConversationState({
+        conversationId: body.conversationId,
+        message: body.message ?? "",
+      });
+
+  if (!state) {
+    return Response.json(
+      { error: "Continuation state was not found" },
+      { status: 404 }
+    );
+  }
+
+  const encoder = new TextEncoder();
+
+  const stream = new ReadableStream({
+    async start(controller) {
+      let text = "";
+
+      try {
+        const result = await ai.models.generateContentStream({
+          model: process.env.GEMINI_MODEL ?? "gemini-2.5-flash",
+          contents: state.contents,
+          config: {
+            maxOutputTokens: state.outputBudget,
+          },
+        });
+
+        for await (const chunk of result) {
+          const delta = chunk.text ?? "";
+
+          if (delta) {
+            text += delta;
+            controller.enqueue(
+              encoder.encode(JSON.stringify({
+                type: "delta",
+                text: delta
+              }) + "\n")
+            );
+          }
+        }
+
+        const usage = await readUsageIfAvailable(result);
+
+        await appendAnswer(state.answerId, text);
+        await saveUsage(state.answerId, usage);
+
+        const truncated = isContinuationRequired({
+          text,
+          usage,
+          outputBudget: state.outputBudget,
+        });
+
+        const nextToken = truncated
+          ? await issueContinuation({
+              ...state,
+              generatedText: text,
+            })
+          : null;
+
+        controller.enqueue(
+          encoder.encode(JSON.stringify({
+            type: "usage",
+            ...usage
+          }) + "\n")
+        );
+
+        controller.enqueue(
+          encoder.encode(JSON.stringify({
+            type: "done",
+            status: truncated ? "truncated" : "complete",
+            continuationToken: nextToken
+          }) + "\n")
+        );
+
+        controller.close();
+      } catch (error) {
+        controller.enqueue(
+          encoder.encode(JSON.stringify({
+            type: "error",
+            message: "Generation failed"
+          }) + "\n")
+        );
+
+        controller.error(error);
+      }
+    }
+  });
+
+  return new Response(stream, {
+    headers: {
+      "Content-Type": "application/x-ndjson; charset=utf-8",
+      "Cache-Control": "no-cache",
+      "X-Content-Type-Options": "nosniff"
+    }
+  });
+}</code></pre>
+
+      <p>
+        Функции <code>loadContinuation</code>, <code>createConversationState</code> и <code>issueContinuation</code> здесь являются границами приложения, а не готовыми функциями SDK. Их реализация зависит от выбранного хранилища.
+      </p>
+
+      <h2>5. Как формировать продолжение без повторения</h2>
+
+      <p>
+        При продолжении нельзя бездумно отправлять в модель весь уже полученный ответ и просить «продолжить». Лучше хранить структурированное состояние и явно обозначать границу уже выданного текста.
+      </p>
+
+      <pre><code>function buildContinuationContents(state: {
+  userMessage: string;
+  generatedText: string;
+}) {
+  return [
+    {
+      role: "user",
+      parts: [{ text: state.userMessage }]
+    },
+    {
+      role: "model",
+      parts: [{ text: state.generatedText }]
+    },
+    {
+      role: "user",
+      parts: [{
+        text:
+          "Продолжи ответ с места остановки. " +
+          "Не повторяй уже выданный текст. " +
+          "Сохраняй тот же язык, структуру и формат."
+      }]
+    }
+  ];
+}</code></pre>
+
+      <p>
+        Важна идемпотентность. Если пользователь дважды нажал «Продолжить», сервер должен распознать повторное использование одного continuation token и вернуть уже созданный результат либо безопасную ошибку. Иначе два параллельных запроса могут породить две разные ветки ответа.
+      </p>
+
+      <h2>6. React-клиент: чтение NDJSON и кнопка продолжения</h2>
+
+      <p>
+        Браузер читает поток через <code>ReadableStream</code>. Поскольку граница сетевого чанка не обязана совпадать с границей строки, накопительный буфер нужно разбирать построчно.
+      </p>
+
+      <pre><code>"use client";
+
+import { useState } from "react";
+
+type Usage = {
+  promptTokens: number;
+  candidatesTokens: number;
+  totalTokens: number;
+};
+
+export function Chat() {
+  const [answer, setAnswer] = useState("");
+  const [continuationToken, setContinuationToken] = useState&lt;string | null&gt;(null);
+  const [usage, setUsage] = useState&lt;Usage | null&gt;(null);
+  const [loading, setLoading] = useState(false);
+
+  async function run(payload: Record&lt;string, unknown&gt;) {
+    setLoading(true);
+
+    const response = await fetch("/api/chat", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload)
+    });
+
+    if (!response.ok || !response.body) {
+      setLoading(false);
+      throw new Error("Chat request failed");
+    }
+
+    const reader = response.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = "";
+
+    while (true) {
+      const { value, done } = await reader.read();
+      buffer += decoder.decode(value ?? new Uint8Array(), {
+        stream: !done
+      });
+
+      const lines = buffer.split("\n");
+      buffer = lines.pop() ?? "";
+
+      for (const line of lines) {
+        if (!line.trim()) continue;
+
+        const event = JSON.parse(line);
+
+        if (event.type === "delta") {
+          setAnswer((current) => current + event.text);
+        }
+
+        if (event.type === "usage") {
+          setUsage(event);
+        }
+
+        if (event.type === "done") {
+          setContinuationToken(event.continuationToken ?? null);
+        }
+
+        if (event.type === "error") {
+          throw new Error(event.message);
+        }
+      }
+
+      if (done) break;
+    }
+
+    setLoading(false);
+  }
+
+  async function send(message: string) {
+    setAnswer("");
+    setContinuationToken(null);
+    setUsage(null);
+
+    await run({
+      conversationId: crypto.randomUUID(),
+      message
+    });
+  }
+
+  async function continueAnswer() {
+    if (!continuationToken) return;
+
+    await run({
+      conversationId: "current-conversation",
+      continuationToken
+    });
+  }
+
+  return (
+    &lt;section&gt;
+      &lt;div aria-live="polite"&gt;{answer}&lt;/div&gt;
+
+      {continuationToken &amp;&amp; (
+        &lt;button onClick={continueAnswer} disabled={loading}&gt;
+          {loading ? "Генерация..." : "Продолжить"}
+        &lt;/button&gt;
+      )}
+
+      {usage &amp;&amp; (
+        &lt;small&gt;
+          Контекст: {usage.promptTokens}; вывод: {usage.candidatesTokens};
+          всего: {usage.totalTokens}
+        &lt;/small&gt;
+      )}
+    &lt;/section&gt;
+  );
+}</code></pre>
+
+      <p>
+        В реальном компоненте <code>conversationId</code> должен оставаться стабильным на протяжении диалога. В демонстрационном фрагменте он сокращён, чтобы показать механику потока. Нельзя генерировать новый идентификатор при каждом продолжении: сервер не найдёт сохранённое состояние.
+      </p>
+
+      <h2>7. Корректный учёт токенов</h2>
+
+      <p>
+        Главная ошибка в метриках — складывать оценку контекста с каждым клиентским отображением текста. UI может несколько раз перерисовать одну и ту же строку, но это не означает новый запрос к модели.
+      </p>
+
+      <p>Разделяйте минимум четыре величины:</p>
+
+      <ul>
+        <li><strong>prompt tokens</strong> — входные токены конкретного запроса;</li>
+        <li><strong>candidates tokens</strong> — токены вывода конкретного ответа;</li>
+        <li><strong>total tokens</strong> — сумма, сообщённая провайдером для конкретного запроса;</li>
+        <li><strong>displayed characters</strong> — объём текста, показанный пользователю, но не токенная метрика.</li>
+      </ul>
+
+      <p>
+        Для цепочки из двух запросов правильная агрегированная статистика выглядит как сумма фактических usage-событий:
+      </p>
+
+      <pre><code>const aggregate = requests.reduce(
+  (total, request) =&gt; ({
+    promptTokens: total.promptTokens + request.promptTokens,
+    candidatesTokens: total.candidatesTokens + request.candidatesTokens,
+    totalTokens: total.totalTokens + request.totalTokens,
+  }),
+  {
+    promptTokens: 0,
+    candidatesTokens: 0,
+    totalTokens: 0,
+  }
+);</code></pre>
+
+      <p>
+        Если SDK не возвращает usage в потоковом ответе, не подменяйте его числом символов или приблизительным коэффициентом без явной маркировки. Можно показывать статус «оценка недоступна» либо получать подтверждённые данные отдельным способом, если это поддерживает выбранная интеграция.
+      </p>
+
+      <aside class="note">
+        <strong>Почему контекст продолжения может быть дорогим.</strong> Во втором запросе модель может снова получить исходный вопрос и уже сгенерированный фрагмент. Поэтому prompt tokens второго запроса — это не только новый пользовательский текст. Нельзя считать продолжение бесплатным только потому, что оно отображается как часть одного сообщения.
+      </aside>
+
+      <h2>8. Ограничение размера сохранённого состояния</h2>
+
+      <p>
+        Continuation token должен ссылаться на состояние с ограниченным временем жизни. Храните в нём только необходимое: идентификатор ответа, пользователя, хэш параметров генерации, текущий текст и срок действия. Большой текст лучше держать отдельно, а токен делать коротким случайным идентификатором.
+      </p>
+
+      <pre><code>type ContinuationState = {
+  tokenHash: string;
+  userId: string;
+  conversationId: string;
+  answerId: string;
+  generatedText: string;
+  model: string;
+  expiresAt: string;
+  consumedAt: string | null;
+};</code></pre>
+
+      <p>
+        При создании продолжения проверьте владельца состояния, срок действия, соответствие conversation ID и отсутствие уже использованного токена. Эти проверки должны выполняться на сервере, даже если интерфейс скрывает кнопку.
+      </p>
+
+      <h2>9. Проверка результата</h2>
+
+      <p>Проверьте сценарий вручную в таком порядке:</p>
+
+      <ol>
+        <li>Отправьте запрос, достаточно длинный для выбранного лимита вывода.</li>
+        <li>Убедитесь, что текст появляется постепенно, а не одной строкой после завершения.</li>
+        <li>Проверьте, что после остановки показывается кнопка «Продолжить».</li>
+        <li>Нажмите кнопку один раз и убедитесь, что новый фрагмент добавляется к старому.</li>
+        <li>Повторно отправьте тот же continuation token и проверьте защиту от дублирования.</li>
+        <li>Сравните usage первого и второго запросов с агрегированной статистикой интерфейса.</li>
+        <li>Откройте инструменты разработчика и убедитесь, что API-ключ не попал в JavaScript-бандл или сетевые запросы браузера.</li>
+      </ol>
+
+      <p>Для локальной проверки маршрута можно использовать безопасный запрос без передачи секрета в командной строке:</p>
+
+      <pre><code>curl -N \
+  -H "Content-Type: application/json" \
+  -d '{"conversationId":"local-test","message":"Короткий проверочный ответ"}' \
+  http://localhost:3000/api/chat</code></pre>
+
+      <p>
+        Флаг <code>-N</code> отключает буферизацию вывода curl, чтобы потоковые строки было видно по мере поступления. Не вставляйте секреты в команду, историю shell или публичные issue.
+      </p>
+
+      <h2>10. Типовые ошибки</h2>
+
+      <h3>Клиент ждёт обычный JSON</h3>
+
+      <p>
+        Поток нельзя обрабатывать единственным вызовом <code>response.json()</code>, пока сервер не завершит ответ. Для NDJSON нужен reader и накопительный буфер.
+      </p>
+
+      <h3>Продолжение начинается с повторения</h3>
+
+      <p>
+        Обычно сервер не сохранил точную границу ответа или новый запрос не получил предыдущий model-фрагмент. Сохраняйте завершённый текст отдельно и передавайте явную инструкцию не повторять его.
+      </p>
+
+      <h3>Usage растёт после каждой перерисовки</h3>
+
+      <p>
+        Метрики должны обновляться только из серверных usage-событий. React state не является источником данных о токенах.
+      </p>
+
+      <h3>Кнопка создаёт несколько веток</h3>
+
+      <p>
+        Заблокируйте кнопку на время запроса, добавьте идемпотентность на сервере и помечайте continuation token использованным после успешной фиксации результата.
+      </p>
+
+      <h3>Слишком большой контекст продолжения</h3>
+
+      <p>
+        Длинный ответ сам становится частью входа следующего запроса. Введите лимит истории, храните сводку отдельно и не отправляйте в модель служебные поля, которые ей не нужны.
+      </p>
+
+      <h2>11. Ограничения схемы</h2>
+
+      <p>
+        Потоковая передача не отменяет лимиты модели, ограничения прокси и тайм-ауты serverless-платформы. Если среда завершает функцию раньше, сохранение частичного текста должно происходить по мере получения чанков или через периодические контрольные точки, а не только в блоке успешного завершения.
+      </p>
+
+      <p>
+        Схема также не гарантирует идеальное продолжение по смыслу. Модель может изменить формулировку, добавить повтор или завершить мысль раньше. Поэтому continuation token — механизм управления состоянием, а не гарантия детерминированного декодирования.
+      </p>
+
+      <p>
+        Для потоков с важными данными добавьте отмену через <code>AbortController</code>, журналирование идентификаторов запросов и отдельную политику удаления незавершённых состояний. Не записывайте в логи полный пользовательский текст без необходимости.
+      </p>
+
+      <h2>Итог</h2>
+
+      <p>
+        Надёжный длинный ответ в React-чате строится вокруг серверного состояния, а не вокруг одной большой строки в браузере. Поток отдаёт пользователю уже готовые фрагменты, continuation token указывает на сохранённую точку продолжения, а usage считается по фактическим запросам Gemini.
+      </p>
+
+      <p>
+        Такая граница позволяет продолжать генерацию кнопкой, переживать остановку соединения и не выдавать повторный контекст за новый пользовательский ввод. Дополнительные практические материалы собраны в <a href="guides.html">разделе гайдов</a>, а термины можно сверить в <a href="glossary.html">глоссарии</a>.
+      </p>
+<aside class="service-note" aria-label="Связаться по проекту">
+  <div class="service-note__copy">
+    <p class="service-note__label">Связь с Agent Lab</p>
+    <p class="service-note__title">Внедрим такой контур в ваш процесс</p>
+    <p class="service-note__text">Напишите инженеру Agent Lab в Telegram: опишите задачу, бота или интеграцию — предложим пилот с проверками и понятными границами.</p>
+  </div>
+  <a class="service-note__link" href="https://t.me/msrzn007?utm_source=journal&amp;utm_medium=article&amp;utm_campaign=service_note" target="_blank" rel="noopener">Написать в Telegram
+    <svg viewBox="0 0 16 16" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"><path d="M3 13 13 3M6 3h7v7"/></svg>
+  </a>
+</aside>
+<aside class="service-note service-note--sitevisor" aria-label="Экспресс-аудит сайта">
+  <div class="service-note__copy">
+    <p class="service-note__label">SiteVisor</p>
+    <p class="service-note__title">Проверьте техническое состояние и готовность вашего сайта к рекламе</p>
+    <p class="service-note__text">Экспресс-аудит на SiteVisor.pro: индексация, скорость, разметка, аналитика и точки конверсии.</p>
+  </div>
+  <a class="service-note__link" href="https://sitevisor.pro/?utm_source=journal&amp;utm_medium=article&amp;utm_campaign=leadmagnet" target="_blank" rel="noopener">Экспресс-аудит на SiteVisor.pro
+    <svg viewBox="0 0 16 16" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"><path d="M3 13 13 3M6 3h7v7"/></svg>
+  </a>
+</aside>
+</article>
+  </main>
+
+  <footer class="site-footer">
+    <div class="container">
+      <span>© Agent Lab Journal</span>
+      <nav aria-label="Ссылки в подвале">
+        <a href="guides.html">Гайды</a>
+        <a href="glossary.html">Глоссарий</a>
+      </nav>
+    </div>
+  </footer>
+</body>
+</html>
