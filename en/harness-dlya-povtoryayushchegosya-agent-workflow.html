@@ -1,0 +1,530 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>How to Build a Harness for a Repeating Agent Workflow</title>
+  <meta name="description" content="How to Build a Harness for a Repeating Agent Workflow: define inputs, steps, completion criteria, limits, and a retrieval ledger you can test and compare by cost.">
+  <link rel="canonical" href="https://agentlabjournal.online/en/harness-dlya-povtoryayushchegosya-agent-workflow.html">
+  <link rel="stylesheet" href="../style.css">
+  <link rel="stylesheet" href="../reading.css">
+  <meta property="og:type" content="article">
+  <meta property="og:site_name" content="Agent Lab Journal">
+  <meta property="og:title" content="How to Build a Harness for a Repeating Agent Workflow">
+  <meta property="og:description" content="A practical method for turning a one-off agent task into a bounded, testable, cost-controlled process.">
+  <meta property="og:url" content="https://agentlabjournal.online/en/harness-dlya-povtoryayushchegosya-agent-workflow.html">
+  <meta property="og:image" content="https://agentlabjournal.online/assets/covers/llm-context-window-budget-social.png">
+  <meta name="twitter:card" content="summary_large_image">
+  <meta name="twitter:title" content="How to Build a Harness for a Repeating Agent Workflow">
+  <meta name="twitter:description" content="Define inputs, steps, limits, completion criteria, and a retrieval ledger for repeatable agent work.">
+  <meta name="twitter:image" content="https://agentlabjournal.online/assets/covers/llm-context-window-budget-social.png">
+  <meta name="reading-time" content="15 minutes">
+  <meta name="article:section" content="Agent workflows">
+  <meta name="article:level" content="Intermediate">
+  <script type="application/ld+json">
+  {
+    "@context": "https://schema.org",
+    "@type": "Article",
+    "headline": "How to Build a Harness for a Repeating Agent Workflow",
+    "description": "A practical method for turning a one-off agent task into a bounded, testable, cost-controlled process.",
+    "image": ["https://agentlabjournal.online/assets/covers/llm-context-window-budget-social.png"],
+    "dateModified": "2026-11-21",
+    "author": {
+      "@type": "Organization",
+      "name": "Agent Lab Journal"
+    },
+    "publisher": {
+      "@type": "Organization",
+      "name": "Agent Lab Journal",
+      "logo": {
+        "@type": "ImageObject",
+        "url": "https://agentlabjournal.online/assets/agent-lab-journal-logo.png"
+      }
+    },
+    "mainEntityOfPage": {
+      "@type": "WebPage",
+      "@id": "https://agentlabjournal.online/en/harness-dlya-povtoryayushchegosya-agent-workflow.html"
+    }
+  }
+  </script>
+<link rel="stylesheet" href="../homepage.css"><link rel="stylesheet" href="../max-promo.css">  <meta property="og:image:alt" content="Как построить harness для повторяющегося workflow агента">
+</head>
+<body>
+  <header class="site-header">
+    <div class="site-header__inner">
+      <a class="site-header__brand" href="../index.html">Agent Lab Journal</a>
+      <nav class="site-header__nav" aria-label="Primary navigation">
+        <a href="../guides.html">Guides</a>
+        <a href="../glossary.html">Glossary</a>
+      </nav>
+    </div>
+  </header>
+
+  <main>
+    <article class="reading">
+      <header class="reading-header">
+        <p class="reading-kicker">Agent workflows · Intermediate</p>
+        <h1>How to Build a Harness for a Repeating Agent Workflow</h1>
+        <figure class="article-cover" data-editorial-cover="harness-dlya-povtoryayushchegosya-agent-workflow"><img src="../assets/covers/llm-context-window-budget.png" alt="Как построить harness для повторяющегося workflow агента" width="1280" height="720" fetchpriority="high"><figcaption>Temporary fallback cover; replace in editorial pass.</figcaption></figure>
+        <p class="reading-lead">
+          A one-off agent task becomes dependable only when its boundaries are explicit:
+          the input is known, each step leaves evidence, completion is testable, and
+          the run can stop before time or budget disappears.
+        </p>
+        <div class="reading-meta" aria-label="Article metadata">
+          <span>15 min read</span>
+          <span>Updated 21 November 2026</span>
+          <span>By Agent Lab Journal</span>
+        </div>
+      </header>
+
+      <section>
+        <p>
+          An agent can often produce a useful answer from a short instruction. That is
+          not the same as having a repeatable workflow. Repetition introduces questions
+          that a one-off prompt can hide: Which sources were consulted? What counts as
+          complete? What happens when a page is unavailable? How many retries are
+          allowed? How do you compare two runs when their outputs differ?
+        </p>
+        <p>
+          This article builds a small <a href="../glossary.html#harness">harness</a>:
+          a wrapper that supplies controlled inputs, records intermediate evidence,
+          applies limits, and evaluates the result. The example is intentionally
+          ordinary: collect a short list of public documentation pages, extract
+          specified fields, and produce a structured report. The method also applies
+          to recurring research, support triage, data extraction, and content audits.
+        </p>
+
+        <aside class="reading-callout">
+          <strong>Core idea:</strong> treat the agent as one step inside a measured
+          process, not as the process itself.
+        </aside>
+      </section>
+
+      <section>
+        <h2>The concrete case</h2>
+        <p>
+          Suppose a team needs a weekly report about five product pages. For each page,
+          the workflow should record the page title, the last visible update date if
+          present, three relevant claims, and the URL. It must not invent missing
+          values. It should return a report even if one page fails, and it should stop
+          after a fixed number of pages, requests, and model calls.
+        </p>
+        <p>
+          The first version might be a single instruction: “Review these pages and
+          summarize changes.” That version is difficult to test because it mixes
+          discovery, browsing, interpretation, formatting, and error handling.
+          The harness separates those concerns.
+        </p>
+
+        <table>
+          <caption>Workflow contract for the example</caption>
+          <thead>
+            <tr>
+              <th scope="col">Part</th>
+              <th scope="col">Contract</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td>Input</td>
+              <td>A versioned list of HTTPS URLs and a reporting date.</td>
+            </tr>
+            <tr>
+              <td>Output</td>
+              <td>One record per input URL, plus run metadata and failures.</td>
+            </tr>
+            <tr>
+              <td>Completion</td>
+              <td>Every input has a result, an explicit failure, or a skipped status.</td>
+            </tr>
+            <tr>
+              <td>Limits</td>
+              <td>Five pages, ten retrieval attempts, and six model calls.</td>
+            </tr>
+            <tr>
+              <td>Evidence</td>
+              <td>A retrieval <a href="../glossary.html#ledger">ledger</a> with URL, status, timestamp, and content hash.</td>
+            </tr>
+          </tbody>
+        </table>
+      </section>
+
+      <section>
+        <h2>1. Make the input explicit</h2>
+        <p>
+          Start with a small input object rather than an informal prompt. Keep secrets,
+          personal data, and credentials out of fixtures. Use placeholder domains or
+          public pages that you are permitted to retrieve.
+        </p>
+
+        <pre><code>{
+  "run_id": "docs-audit-2026-11-21-001",
+  "report_date": "2026-11-21",
+  "targets": [
+    {"id": "page-001", "url": "https://example.com/docs/one"},
+    {"id": "page-002", "url": "https://example.com/docs/two"}
+  ],
+  "fields": ["title", "updated_date", "claims"],
+  "limits": {
+    "max_targets": 5,
+    "max_retrieval_attempts": 10,
+    "max_model_calls": 6,
+    "max_output_tokens": 2500
+  }
+}</code></pre>
+
+        <p>
+          The <code>run_id</code> makes a result addressable. Stable target IDs let
+          you compare runs even when the order of URLs changes. The field list prevents
+          the agent from silently expanding the task. A <a href="../glossary.html#fixture">fixture</a>
+          is a saved input used for repeatable testing; keep at least one small,
+          deterministic fixture alongside any live input.
+        </p>
+      </section>
+
+      <section>
+        <h2>2. Split the work into bounded steps</h2>
+        <p>
+          Each step should have one purpose and a checkable result. A useful minimum
+          sequence is:
+        </p>
+
+        <ol>
+          <li>Validate the input schema and enforce the target limit.</li>
+          <li>Retrieve each target and record the response metadata.</li>
+          <li>Normalize the retrieved content into the format the model needs.</li>
+          <li>Extract only the requested fields.</li>
+          <li>Validate the structured output.</li>
+          <li>Write the report and the run ledger.</li>
+        </ol>
+
+        <p>
+          Do not ask the model to decide whether the run is complete. The harness
+          should know that all target IDs have a terminal status. The model can help
+          interpret content, but deterministic code should own counting, schemas,
+          limits, and persistence.
+        </p>
+
+        <pre><code>validate_input
+  - reject missing URL or target id
+  - reject more than max_targets
+
+for target in targets:
+  retrieve(target)
+  record_ledger_entry(target)
+
+  if retrieval_succeeded:
+    extract_requested_fields(target)
+    validate_record(target)
+  else:
+    record_failure(target)
+
+assert every target has a terminal status
+write report
+write ledger</code></pre>
+      </section>
+
+      <section>
+        <h2>3. Define completion before writing prompts</h2>
+        <p>
+          A completion criterion is a rule that can be evaluated from the run state.
+          “The summary looks good” is useful human feedback, but it is not sufficient
+          as the only stopping condition.
+        </p>
+
+        <p>For the example, a run is complete when:</p>
+
+        <ul>
+          <li>the input passed validation;</li>
+          <li>each target has <code>success</code>, <code>failed</code>, or <code>skipped</code>;</li>
+          <li>successful records contain exactly the requested top-level fields;</li>
+          <li>missing source values are represented as <code>null</code> or an explicit “not found” value;</li>
+          <li>the report and ledger are written together; and</li>
+          <li>no configured limit was exceeded.</li>
+        </ul>
+
+        <p>
+          This distinction matters when a target fails. A partial run can still be
+          complete if the failure is recorded and the stopping rule has been met.
+          “Complete” describes the process state; it does not mean every target
+          succeeded.
+        </p>
+      </section>
+
+      <section>
+        <h2>4. Add a retrieval ledger</h2>
+        <p>
+          A retrieval ledger turns “the agent saw some pages” into inspectable evidence.
+          Record enough to reproduce the decision without storing more content than
+          you need. Avoid putting cookies, authorization headers, personal data, or
+          full sensitive page bodies into logs.
+        </p>
+
+        <pre><code>{
+  "run_id": "docs-audit-2026-11-21-001",
+  "target_id": "page-001",
+  "url": "https://example.com/docs/one",
+  "attempt": 1,
+  "started_at": "2026-11-21T09:00:00Z",
+  "finished_at": "2026-11-21T09:00:01Z",
+  "status": "ok",
+  "http_status": 200,
+  "content_type": "text/html",
+  "content_sha256": "example-hash",
+  "bytes_read": 18420,
+  "error": null
+}</code></pre>
+
+        <p>
+          The hash in this example is a placeholder, not a measured value. In a real
+          run, calculate it from the exact normalized content used by the extraction
+          step. That makes it possible to tell whether two reports used the same
+          material without treating a URL as proof that its content was unchanged.
+        </p>
+
+        <p>
+          Keep the ledger append-only during a run. If a retry occurs, add another
+          attempt instead of overwriting the first result. This makes timeout patterns,
+          rate limits, and transient failures visible.
+        </p>
+      </section>
+
+      <section>
+        <h2>5. Control retries and costs</h2>
+        <p>
+          A retry is a new attempt, not free persistence. Define a maximum per target
+          and a maximum for the complete run. Use <a href="../glossary.html#idempotency">idempotency</a>
+          where a repeated operation could create a duplicate report or external side
+          effect. For a read-only audit, the simplest safe policy is usually to retry
+          retrieval but not to repeat the final write blindly.
+        </p>
+
+        <pre><code>RETRYABLE_STATUS = {408, 425, 429, 500, 502, 503, 504}
+MAX_RETRIEVAL_ATTEMPTS = 2
+MAX_MODEL_CALLS = 6
+
+def can_retry(response, attempt, run_state):
+    return (
+        response.status in RETRYABLE_STATUS
+        and attempt &lt; MAX_RETRIEVAL_ATTEMPTS
+        and run_state.retrieval_attempts &lt; 10
+    )</code></pre>
+
+        <p>
+          Cost control is easier when the harness counts observable units:
+          retrieval attempts, model calls, input bytes, output tokens, elapsed time,
+          and completed targets. If your provider exposes usage data, store it with
+          the run. If it does not, record the counters you can measure and label any
+          cost estimate as an estimate.
+        </p>
+
+        <p>
+          A useful budget policy is fail-closed: once a hard limit is reached, stop
+          starting new work, mark remaining targets as skipped, and write the partial
+          report. This is safer than allowing an agent to “try one more thing” without
+          a bound.
+        </p>
+      </section>
+
+      <section>
+        <h2>6. Constrain the model output</h2>
+        <p>
+          Give the model the smallest context that can answer the requested fields.
+          Ask for a schema, not prose that another component must guess how to parse.
+          The extraction prompt can be simple:
+        </p>
+
+        <pre><code>Extract the requested fields from the supplied page text.
+
+Rules:
+- Use only the supplied text.
+- Do not infer a date that is not present.
+- Return null when a field is absent.
+- Include at most three claims.
+- Each claim must include a short supporting quote or null.
+- Return valid JSON matching this schema:
+
+{
+  "title": "string|null",
+  "updated_date": "string|null",
+  "claims": [
+    {"text": "string", "evidence": "string|null"}
+  ]
+}</code></pre>
+
+        <p>
+          The harness must still validate the response. A valid JSON document can
+          contain the wrong fields, too many claims, or invented evidence. Reject,
+          repair, or quarantine invalid records according to a policy you can observe.
+          Do not silently convert an invalid response into a successful one.
+        </p>
+      </section>
+
+      <section>
+        <h2>7. Compare runs by cost and quality</h2>
+        <p>
+          A repeating workflow needs a comparison record. Store the configuration
+          version, fixture ID, model identifier if applicable, counters, statuses,
+          and evaluation results. Do not compare raw output alone: a shorter answer
+          may be cheaper but omit required fields.
+        </p>
+
+        <table>
+          <caption>Minimal run summary</caption>
+          <thead>
+            <tr>
+              <th scope="col">Metric</th>
+              <th scope="col">Why it matters</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td>Targets attempted</td>
+              <td>Shows the actual workload.</td>
+            </tr>
+            <tr>
+              <td>Successful records</td>
+              <td>Measures usable coverage.</td>
+            </tr>
+            <tr>
+              <td>Retries and failures</td>
+              <td>Shows operational stability.</td>
+            </tr>
+            <tr>
+              <td>Model calls and tokens</td>
+              <td>Supports cost comparison when usage is available.</td>
+            </tr>
+            <tr>
+              <td>Schema-valid records</td>
+              <td>Separates parseability from apparent fluency.</td>
+            </tr>
+            <tr>
+              <td>Human review flags</td>
+              <td>Captures issues automated checks cannot establish.</td>
+            </tr>
+          </tbody>
+        </table>
+
+        <p>
+          For a controlled experiment, hold the fixture and task contract constant,
+          change one configuration at a time, and record the result. This does not
+          prove that one configuration is universally better. It gives you a bounded
+          comparison under the conditions you recorded.
+        </p>
+      </section>
+
+      <section>
+        <h2>Verification checklist</h2>
+        <p>
+          Before relying on a harness, test the workflow with deterministic fixtures
+          and failure injection. The following checks are practical because each has
+          an observable expected result:
+        </p>
+
+        <ul>
+          <li>An empty target list is rejected or produces a documented empty run.</li>
+          <li>A sixth target is not retrieved when the limit is five.</li>
+          <li>A timeout creates a ledger entry and a terminal failure status.</li>
+          <li>A retry adds a new attempt instead of overwriting the old one.</li>
+          <li>Malformed model JSON cannot become a successful record silently.</li>
+          <li>A missing source date remains null or “not found,” not a guessed date.</li>
+          <li>Re-running the same fixture produces comparable counters and the same validation outcome.</li>
+          <li>When the budget is exhausted, remaining work is skipped and the report is written.</li>
+        </ul>
+
+        <p>
+          These are test cases to run, not results claimed by this article. The article
+          does not execute your retriever, model provider, or storage layer.
+        </p>
+      </section>
+
+      <section>
+        <h2>Common failure cases</h2>
+
+        <h3>The agent keeps exploring</h3>
+        <p>
+          Add an explicit target set and a maximum number of retrieval attempts.
+          Discovery can be a separate workflow with its own contract. Do not let an
+          extraction run become open-ended research by accident.
+        </p>
+
+        <h3>The report is complete but not trustworthy</h3>
+        <p>
+          Require evidence fields and preserve the normalized-content hash. Then
+          inspect a sample of records against the ledger. A schema check proves shape,
+          not truth.
+        </p>
+
+        <h3>Retries multiply the bill</h3>
+        <p>
+          Count retries globally, add a deadline, and stop on the hard budget. Record
+          why a retry happened. If a failure is deterministic, retrying it is usually
+          wasted work.
+        </p>
+
+        <h3>A provider change breaks comparisons</h3>
+        <p>
+          Include the workflow version, prompt version, model identifier, and fixture
+          identifier in the run summary. If any of these change, treat the comparison
+          as a new experiment.
+        </p>
+
+        <h3>Logs expose more than intended</h3>
+        <p>
+          Redact secrets before logging, minimize stored page text, restrict access to
+          ledgers, and define a retention period. A reproducible process does not
+          require permanent storage of every raw input.
+        </p>
+      </section>
+
+      <section>
+        <h2>Limitations</h2>
+        <p>
+          A harness cannot make an unreliable source reliable, remove ambiguity from
+          a vague task, or guarantee factual correctness from an extraction model.
+          Retrieval status and content hashes also do not prove that a page was
+          authoritative. Human review may still be necessary for high-impact decisions.
+        </p>
+        <p>
+          Cost comparisons are conditional on the measured configuration and usage
+          accounting available in your environment. If token usage, provider pricing,
+          or infrastructure time is not recorded, report counters instead of
+          fabricating a currency total.
+        </p>
+      </section>
+
+      <section>
+        <h2>Final pattern</h2>
+        <p>
+          The smallest useful harness has five properties: explicit inputs, bounded
+          steps, machine-checkable completion, hard limits, and an evidence ledger.
+          Add structured output validation and run summaries, then test the failure
+          paths deliberately. Once those pieces exist, a one-off agent task becomes a
+          process you can repeat, inspect, and compare without pretending that
+          uncertainty has disappeared.
+        </p>
+        <p>
+          Continue with the practical <a href="../guides.html">guides</a> or look up
+          related terms in the <a href="../glossary.html">glossary</a>.
+        </p>
+      </section>
+    <section class="service-note">
+  <b>We publish what works for us—and implement the same solutions for your business.</b>
+  We design AI automation, Telegram bots, chats, and AI agents for real-world processes.
+  <a href="../contacts-en.html">Discuss your project →</a>
+</section>
+</article>
+  </main>
+
+  <footer class="site-footer">
+    <div class="site-footer__inner">
+      <span>Agent Lab Journal</span>
+      <nav aria-label="Footer navigation">
+        <a href="../guides.html">Guides</a>
+        <a href="../glossary.html">Glossary</a>
+      </nav>
+    </div>
+  </footer>
+</body>
+</html>

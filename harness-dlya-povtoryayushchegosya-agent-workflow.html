@@ -1,0 +1,415 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Как построить harness для повторяющегося workflow агента</title>
+  <meta name="description" content="Как построить harness для повторяющегося workflow агента: практическая схема входов, шагов, критериев завершения, лимитов и журнала извлечённых страниц.">
+  <link rel="canonical" href="https://agentlabjournal.online/harness-dlya-povtoryayushchegosya-agent-workflow.html">
+  <link rel="stylesheet" href="style.css">
+  <link rel="stylesheet" href="reading.css">
+
+  <meta property="og:type" content="article">
+  <meta property="og:locale" content="ru_RU">
+  <meta property="og:title" content="Как построить harness для повторяющегося workflow агента">
+  <meta property="og:description" content="Практическая схема для ограниченного, проверяемого и экономичного workflow AI-агента.">
+  <meta property="og:url" content="https://agentlabjournal.online/harness-dlya-povtoryayushchegosya-agent-workflow.html">
+  <meta property="og:site_name" content="Agent Lab Journal">
+
+  <meta name="twitter:card" content="summary">
+  <meta name="twitter:title" content="Как построить harness для повторяющегося workflow агента">
+  <meta name="twitter:description" content="Практическая схема для ограниченного, проверяемого и экономичного workflow AI-агента.">
+
+  <script type="application/ld+json">
+  {
+    "@context": "https://schema.org",
+    "@type": "Article",
+    "headline": "Как построить harness для повторяющегося workflow агента",
+    "description": "Практическая схема для ограниченного, проверяемого и экономичного workflow AI-агента.",
+    "inLanguage": "ru-RU",
+    "mainEntityOfPage": {
+      "@type": "WebPage",
+      "@id": "https://agentlabjournal.online/harness-dlya-povtoryayushchegosya-agent-workflow.html"
+    },
+    "publisher": {
+      "@type": "Organization",
+      "name": "Agent Lab Journal"
+    }
+  }
+  </script>
+<link rel="stylesheet" href="homepage.css"><link rel="stylesheet" href="max-promo.css">  <meta property="og:image" content="https://agentlabjournal.online/assets/covers/llm-context-window-budget-social.png">
+  <meta property="og:image:alt" content="Как построить harness для повторяющегося workflow агента">
+  <meta name="twitter:image" content="https://agentlabjournal.online/assets/covers/llm-context-window-budget-social.png">
+</head>
+<body>
+  <header class="site-header">
+    <div class="site-header__inner">
+      <a class="site-header__brand" href="index.html">Agent Lab Journal</a>
+      <nav aria-label="Основная навигация">
+        <a href="guides.html">Guides</a>
+        <a href="glossary.html">Глоссарий</a>
+      </nav>
+    </div>
+  </header>
+
+  <main>
+    <article class="reading">
+      <header class="reading-header">
+        <p class="reading-kicker">Практический guide</p>
+        <h1>Как построить harness для повторяющегося workflow агента</h1>
+        <figure class="article-cover" data-editorial-cover="harness-dlya-povtoryayushchegosya-agent-workflow"><img src="assets/covers/llm-context-window-budget.png" alt="Как построить harness для повторяющегося workflow агента" width="1280" height="720" fetchpriority="high"><figcaption>Temporary fallback cover; replace in editorial pass.</figcaption></figure>
+        <div class="reading-meta">
+          <span>Уровень: средний</span>
+          <span>Время чтения: до 12 минут</span>
+          <span>Тема: надёжность и стоимость агентных workflow</span>
+        </div>
+      </header>
+<a href="https://max.ru/channel_AgentLab?utm_source=agentlabjournal&utm_medium=article&utm_campaign=max_channel&utm_content=article_footer" class="max-promo-block" target="_blank" rel="noopener noreferrer" aria-label="Самое важное из мира AI в канале MAX AgentLab">
+  <span class="max-promo-block__icon" aria-hidden="true"></span>
+  <span class="max-promo-block__content"><span class="max-promo-block__title">Самое важное из мира AI — в канале MAX AgentLab</span><span class="max-promo-block__desc">Отдельные разборы, инструменты и практические схемы</span></span>
+  <span class="max-promo-block__arrow" aria-hidden="true">→</span>
+</a>
+<a href="https://t.me/pelmenews?utm_source=agentlabjournal&utm_medium=article&utm_campaign=telegram_channel&utm_content=article_intro" class="telegram-promo-block" target="_blank" rel="noopener noreferrer" aria-label="Читайте Agent Lab в Telegram">
+  <span class="telegram-promo-block__icon" aria-hidden="true"></span>
+  <span class="telegram-promo-block__content">
+    <span class="telegram-promo-block__title">Читайте Agent Lab в Telegram</span>
+    <span class="telegram-promo-block__desc">Разборы, кейсы и новости о практических AI-агентах без лишней воды.</span>
+  </span>
+  <span class="telegram-promo-block__arrow" aria-hidden="true">→</span>
+</a>
+
+      <div class="reading-content">
+        <p class="lead">
+          Разовая задача агента часто выглядит убедительно: он нашёл страницы, извлёк данные и подготовил ответ. Но при повторном запуске меняются входы, порядок действий, число обращений к инструментам и итоговая стоимость. Чтобы превратить такую работу в управляемый процесс, нужен <a href="glossary.html#harness">harness</a> — управляющий слой, который задаёт входы, ограничивает шаги, проверяет результат и сохраняет журнал выполнения.
+        </p>
+
+        <p>
+          В этой статье соберём минимальную конструкцию harness для workflow, который извлекает сведения с веб-страниц. Цель не в том, чтобы сделать агента полностью автономным. Цель — сделать его поведение наблюдаемым, воспроизводимым и сопоставимым между запусками.
+        </p>
+
+        <h2>Что именно должен контролировать harness</h2>
+
+        <p>
+          У повторяющегося workflow есть пять разных объектов контроля:
+        </p>
+
+        <ul>
+          <li><strong>Входы:</strong> что именно подаётся агенту и в каком формате.</li>
+          <li><strong>Шаги:</strong> какие действия разрешены и в каком порядке.</li>
+          <li><strong>Завершение:</strong> по какому проверяемому условию работа считается оконченной.</li>
+          <li><strong>Лимиты:</strong> сколько времени, шагов, страниц и вызовов инструментов разрешено.</li>
+          <li><strong>Журнал:</strong> какие страницы действительно были открыты и что из них извлечено.</li>
+        </ul>
+
+        <p>
+          Если хотя бы один из этих элементов не определён, сравнивать запуски трудно. Например, увеличение стоимости может быть связано не с моделью, а с тем, что агент стал открывать вдвое больше страниц из-за неясного критерия остановки.
+        </p>
+
+        <h2>Шаг 1. Опишите вход как данные, а не как просьбу</h2>
+
+        <p>
+          Начните с контракта входа. Не передавайте агенту длинное неструктурированное описание, если задачу можно представить набором полей. Пример входного объекта:
+        </p>
+
+        <pre><code>{
+  "task_id": "example-001",
+  "start_url": "https://example.org/catalog",
+  "target": "найти карточки товаров",
+  "fields": ["name", "url", "availability"],
+  "max_pages": 10,
+  "max_steps": 30,
+  "timeout_seconds": 180
+}</code></pre>
+
+        <p>
+          Это пример схемы, а не утверждение о конкретном сайте или реальном результате. Важны явные поля: стартовая страница, требуемые поля и ограничения. Для каждого поля заранее определите тип и допустимое отсутствие значения. Например, если цена не найдена, журнал должен содержать <code>null</code> и причину, а не молча пропускать запись.
+        </p>
+
+        <p>
+          Полезное правило: вход должен быть достаточным для запуска без дополнительных вопросов. Если агенту нужно догадаться, какие страницы считать релевантными или когда остановиться, часть спецификации уже потеряна.
+        </p>
+
+        <h2>Шаг 2. Разделите workflow на проверяемые шаги</h2>
+
+        <p>
+          Не описывайте весь процесс одной инструкцией. Разбейте его на операции с понятными результатами:
+        </p>
+
+        <ol>
+          <li>Проверить и нормализовать стартовый URL.</li>
+          <li>Открыть стартовую страницу.</li>
+          <li>Извлечь ссылки, подходящие под правило отбора.</li>
+          <li>Посетить разрешённые страницы до достижения лимита.</li>
+          <li>Извлечь целевые поля.</li>
+          <li>Проверить полноту и формат результата.</li>
+          <li>Записать итог и журнал.</li>
+        </ol>
+
+        <p>
+          Каждый шаг должен возвращать не только полезные данные, но и статус. Минимальная форма ответа шага:
+        </p>
+
+        <pre><code>{
+  "step": "extract_fields",
+  "status": "ok",
+  "items_found": 4,
+  "pages_visited": 3,
+  "next": "validate"
+}</code></pre>
+
+        <p>
+          Возможные статусы стоит ограничить небольшим набором: <code>ok</code>, <code>skipped</code>, <code>retryable_error</code>, <code>fatal_error</code>, <code>limit_reached</code>. Это упрощает автоматическую проверку и не даёт агенту маскировать сбой свободным текстом.
+        </p>
+
+        <h2>Шаг 3. Задайте критерии завершения</h2>
+
+        <p>
+          Фраза «собери всё необходимое» не является критерием завершения. Она не говорит, сколько страниц достаточно и что делать при неполных данных. Используйте условия, которые можно вычислить:
+        </p>
+
+        <ul>
+          <li>найдены все обязательные поля хотя бы для одной записи;</li>
+          <li>обработано не больше <code>max_pages</code> страниц;</li>
+          <li>новых подходящих ссылок больше нет;</li>
+          <li>достигнут лимит шагов или времени;</li>
+          <li>ошибка признана неисправимой.</li>
+        </ul>
+
+        <p>
+          Критерии могут срабатывать одновременно. В таком случае сохраняйте причину остановки, например <code>completed_no_new_links</code> или <code>stopped_max_pages</code>. Причина важнее общего сообщения «готово»: она позволяет отличить успешное завершение от остановки по лимиту.
+        </p>
+
+        <h2>Шаг 4. Введите лимиты до первого запуска</h2>
+
+        <p>
+          Лимиты — это часть корректности, а не только способ сэкономить. Без них агент может зациклиться, повторно открывать одну страницу или продолжать поиск после того, как полезный результат уже найден.
+        </p>
+
+        <p>Минимальный набор ограничений:</p>
+
+        <table>
+          <thead>
+            <tr>
+              <th>Лимит</th>
+              <th>Что ограничивает</th>
+              <th>Что записать в журнал</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td>Время</td>
+              <td>Общую продолжительность запуска</td>
+              <td>время начала, окончания и причина остановки</td>
+            </tr>
+            <tr>
+              <td>Шаги</td>
+              <td>Количество действий агента</td>
+              <td>номер последнего шага</td>
+            </tr>
+            <tr>
+              <td>Страницы</td>
+              <td>Объём обхода</td>
+              <td>URL посещённых страниц</td>
+            </tr>
+            <tr>
+              <td>Повторы</td>
+              <td>Попытки после временной ошибки</td>
+              <td>номер попытки и тип ошибки</td>
+            </tr>
+          </tbody>
+        </table>
+
+        <p>
+          Не подбирайте лимиты по одному удачному запуску. Сначала задайте безопасный верхний предел, затем смотрите журнал и уменьшайте его, если полезный результат стабильно появляется раньше. Указанные числа в примере выше не являются универсальными.
+        </p>
+
+        <h2>Шаг 5. Ведите журнал реально извлечённых страниц</h2>
+
+        <p>
+          Итогового списка ссылок недостаточно. Чтобы проверить работу агента, нужно различать страницу, которую он планировал открыть, и страницу, которую действительно открыл. Записывайте событие после успешного получения содержимого:
+        </p>
+
+        <pre><code>{
+  "run_id": "2026-11-21T10:00:00Z-example-001",
+  "event": "page_fetched",
+  "url": "https://example.org/catalog/item-1",
+  "source_url": "https://example.org/catalog",
+  "step": 7,
+  "status": 200,
+  "content_hash": "example-hash",
+  "fields_extracted": ["name", "availability"],
+  "timestamp": "2026-11-21T10:00:12Z"
+}</code></pre>
+
+        <p>
+          Значение <code>content_hash</code> здесь показано как пример поля. В реальной системе оно должно вычисляться вашим кодом, а не выдумываться агентом. Не сохраняйте в журнал секреты, токены, cookies и лишние персональные данные. Если URL содержит чувствительные параметры, нормализуйте или редактируйте его перед записью.
+        </p>
+
+        <p>
+          Журнал должен позволять ответить на четыре вопроса: какие страницы открыты, в каком порядке, какой шаг их открыл и какие поля были извлечены. Именно эти данные дают основу для повторной проверки и сравнения стоимости.
+        </p>
+
+        <h2>Шаг 6. Сделайте проверку результата отдельным этапом</h2>
+
+        <p>
+          Нельзя считать ответ корректным только потому, что модель вернула JSON. Проверка должна быть независимой от текста объяснения агента. Например:
+        </p>
+
+        <pre><code>Проверки:
+- run_id существует;
+- причина завершения входит в разрешённый список;
+- число посещённых страниц не превышает max_pages;
+- каждый URL присутствует в журнале page_fetched;
+- обязательные поля имеют допустимый тип;
+- дубликаты записей устранены или явно отмечены;
+- итоговое число записей согласуется с журналом.</code></pre>
+
+        <p>
+          При ошибке валидации harness должен вернуть не «почти готовый» ответ, а понятный статус: <code>validation_failed</code>. Это позволяет отделить проблему извлечения от проблемы формата.
+        </p>
+
+        <h2>Шаг 7. Сравнивайте запуски по одинаковым метрикам</h2>
+
+        <p>
+          Для экономичности не обязательно сразу строить сложную систему аналитики. Достаточно сохранять одинаковые поля на каждый запуск:
+        </p>
+
+        <ul>
+          <li>идентификатор задачи и версии workflow;</li>
+          <li>число шагов и посещённых страниц;</li>
+          <li>число повторов и ошибок;</li>
+          <li>число извлечённых записей и заполненных полей;</li>
+          <li>причину завершения;</li>
+          <li>доступные показатели использования модели и инструментов.</li>
+        </ul>
+
+        <p>
+          Стоимость сравнивайте только между запусками с сопоставимыми входами и критериями качества. Если один запуск обрабатывал пять страниц, а другой — пятьдесят, разница сама по себе ничего не говорит об эффективности. Сначала сравните качество при одинаковом лимите, затем — расход ресурсов на одинаковый объём результата.
+        </p>
+
+        <h2>Безопасный локальный контур</h2>
+
+        <p>
+          Для первого прототипа достаточно хранить вход, журнал и итог в отдельной директории. Команды ниже только создают каталоги и проверяют файлы; они не удаляют данные и не отправляют запросы во внешние сервисы:
+        </p>
+
+        <pre><code>mkdir -p runs/example-001
+touch runs/example-001/input.json
+touch runs/example-001/events.jsonl
+touch runs/example-001/result.json
+ls -la runs/example-001</code></pre>
+
+        <p>
+          Перед запуском проверьте, что в <code>input.json</code> нет ключей доступа и приватных данных. После запуска убедитесь, что файл событий содержит только разрешённые поля. Если workflow работает с внешними страницами, отдельно определите допустимые домены, таймауты и правила повторных запросов.
+        </p>
+
+        <h2>Проверка результата перед использованием</h2>
+
+        <p>
+          Используйте короткий чек-лист:
+        </p>
+
+        <ol>
+          <li>Вход можно прочитать и проверить по схеме.</li>
+          <li>Каждый шаг имеет статус и понятный следующий переход.</li>
+          <li>Есть одна из заранее определённых причин завершения.</li>
+          <li>Лимиты соблюдены, а превышение явно зафиксировано.</li>
+          <li>Каждая реально извлечённая страница есть в журнале.</li>
+          <li>Итог проходит независимую валидацию.</li>
+          <li>Запуск можно сопоставить с предыдущим по версии workflow и метрикам.</li>
+        </ol>
+
+        <p>
+          Если пункт не выполняется, не увеличивайте лимиты автоматически. Сначала выясните, отсутствует ли нужное правило, неверно ли определяется ошибка или журнал записывается слишком поздно.
+        </p>
+
+        <h2>Типовые ошибки</h2>
+
+        <h3>Один большой промпт вместо контракта</h3>
+        <p>
+          Свободная инструкция может работать в демонстрации, но плохо подходит для сравнения. Исправление — вынести входы, лимиты и формат результата в отдельную схему.
+        </p>
+
+        <h3>«Готово» без причины</h3>
+        <p>
+          Одно слово не показывает, завершился ли поиск естественно или агент упёрся в лимит. Сохраняйте код причины завершения.
+        </p>
+
+        <h3>Журнал после финального ответа</h3>
+        <p>
+          Если журнал формируется только в конце, сбой может уничтожить сведения о промежуточных действиях. Записывайте события по мере выполнения и делайте запись устойчивой к частичной остановке.
+        </p>
+
+        <h3>Неограниченные повторы</h3>
+        <p>
+          Повторная попытка полезна для временной ошибки, но опасна без верхнего предела. Разделяйте повторяемые и неисправимые ошибки и фиксируйте каждую попытку.
+        </p>
+
+        <h2>Ограничения подхода</h2>
+
+        <p>
+          Harness не делает внешний источник достоверным и не гарантирует, что модель правильно интерпретирует страницу. Он также не заменяет проверку юридических ограничений, правил сайта, авторизации и обработки персональных данных. Его задача уже: ограничить процесс, сделать действия наблюдаемыми и дать проверяемую основу для сравнения.
+        </p>
+
+        <p>
+          На динамических сайтах журнал URL и HTTP-статуса может быть недостаточен: содержимое страницы меняется, а одинаковый адрес ведёт к разным состояниям. В таких случаях дополнительно храните время получения, версию парсера и безопасный отпечаток извлечённого содержимого. Если данные критичны, добавьте ручную проверку спорных записей.
+        </p>
+
+        <h2>Итоговая схема</h2>
+
+        <p>
+          Минимальный harness для повторяющегося workflow можно описать так:
+        </p>
+
+        <pre><code>input
+  → validate_input
+  → plan
+  → execute_step
+  → log_page_fetched
+  → validate_partial_result
+  → stop_if_complete_or_limited
+  → validate_final_result
+  → write_result_and_metrics</code></pre>
+
+        <p>
+          Начните с одного повторяемого сценария и небольшого набора полей. Когда журнал станет полным, а причина завершения — однозначной, добавляйте новые источники, параллельность или более сложные стратегии. Такой порядок сохраняет связь между изменением workflow, качеством результата и расходом ресурсов.
+        </p>
+
+        <p>
+          Для следующего шага откройте <a href="guides.html">раздел guides</a>, а определения терминов проверьте в <a href="glossary.html">глоссарии</a>.
+        </p>
+      </div>
+<aside class="service-note" aria-label="Связаться по проекту">
+  <div class="service-note__copy">
+    <p class="service-note__label">Связь с Agent Lab</p>
+    <p class="service-note__title">Внедрим такой контур в ваш процесс</p>
+    <p class="service-note__text">Напишите инженеру Agent Lab в Telegram: опишите задачу, бота или интеграцию — предложим пилот с проверками и понятными границами.</p>
+  </div>
+  <a class="service-note__link" href="https://t.me/msrzn007?utm_source=journal&amp;utm_medium=article&amp;utm_campaign=service_note" target="_blank" rel="noopener">Написать в Telegram
+    <svg viewBox="0 0 16 16" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"><path d="M3 13 13 3M6 3h7v7"/></svg>
+  </a>
+</aside>
+<aside class="service-note service-note--sitevisor" aria-label="Экспресс-аудит сайта">
+  <div class="service-note__copy">
+    <p class="service-note__label">SiteVisor</p>
+    <p class="service-note__title">Проверьте техническое состояние и готовность вашего сайта к рекламе</p>
+    <p class="service-note__text">Экспресс-аудит на SiteVisor.pro: индексация, скорость, разметка, аналитика и точки конверсии.</p>
+  </div>
+  <a class="service-note__link" href="https://sitevisor.pro/?utm_source=journal&amp;utm_medium=article&amp;utm_campaign=leadmagnet" target="_blank" rel="noopener">Экспресс-аудит на SiteVisor.pro
+    <svg viewBox="0 0 16 16" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"><path d="M3 13 13 3M6 3h7v7"/></svg>
+  </a>
+</aside>
+</article>
+  </main>
+
+  <footer class="site-footer">
+    <div class="site-footer__inner">
+      <span>Agent Lab Journal</span>
+      <nav aria-label="Навигация в подвале">
+        <a href="guides.html">Guides</a>
+        <a href="glossary.html">Глоссарий</a>
+      </nav>
+    </div>
+  </footer>
+</body>
+</html>
