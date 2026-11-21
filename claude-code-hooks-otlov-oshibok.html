@@ -1,0 +1,412 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Claude Code: как ловить повторяющиеся ошибки с помощью hooks</title>
+  <meta name="description" content="Claude Code: как ловить повторяющиеся ошибки с помощью hooks: настройте PreToolUse и Stop, блокируйте запрещённые действия и проверяйте заявления о завершённом исправлении.">
+  <link rel="canonical" href="https://agentlabjournal.online/claude-code-hooks-otlov-oshibok.html">
+  <link rel="stylesheet" href="style.css">
+  <link rel="stylesheet" href="reading.css">
+
+  <meta property="og:type" content="article">
+  <meta property="og:title" content="Claude Code: как ловить повторяющиеся ошибки с помощью hooks">
+  <meta property="og:description" content="Практическая настройка hooks PreToolUse и Stop для Claude Code: блокировка запрещённых действий и проверка завершённых исправлений.">
+  <meta property="og:url" content="https://agentlabjournal.online/claude-code-hooks-otlov-oshibok.html">
+  <meta property="og:site_name" content="Agent Lab Journal">
+
+  <meta name="twitter:card" content="summary">
+  <meta name="twitter:title" content="Claude Code: как ловить повторяющиеся ошибки с помощью hooks">
+  <meta name="twitter:description" content="Настройте PreToolUse и Stop, чтобы Claude Code не повторял запрещённые действия и подтверждал завершённые исправления.">
+
+  <script type="application/ld+json">
+  {
+    "@context": "https://schema.org",
+    "@type": "Article",
+    "headline": "Claude Code: как ловить повторяющиеся ошибки с помощью hooks",
+    "description": "Практическая настройка hooks PreToolUse и Stop для Claude Code: блокировка запрещённых действий и проверка завершённых исправлений.",
+    "mainEntityOfPage": {
+      "@type": "WebPage",
+      "@id": "https://agentlabjournal.online/claude-code-hooks-otlov-oshibok.html"
+    },
+    "publisher": {
+      "@type": "Organization",
+      "name": "Agent Lab Journal"
+    },
+    "inLanguage": "ru"
+  }
+  </script>
+<link rel="stylesheet" href="homepage.css"><link rel="stylesheet" href="max-promo.css">  <meta property="og:image" content="https://agentlabjournal.online/assets/covers/llm-context-window-budget-social.png">
+  <meta property="og:image:alt" content="Claude Code: как ловить повторяющиеся ошибки с помощью hooks">
+  <meta name="twitter:image" content="https://agentlabjournal.online/assets/covers/llm-context-window-budget-social.png">
+</head>
+<body>
+  <header class="site-header">
+    <div class="container">
+      <a class="site-title" href="index.html">Agent Lab Journal</a>
+      <nav aria-label="Основная навигация">
+        <a href="guides.html">Гайды</a>
+        <a href="glossary.html">Глоссарий</a>
+      </nav>
+    </div>
+  </header>
+
+  <main>
+    <article class="reading">
+      <div class="reading-meta">
+        <span>Практика</span>
+        <span>До 12 минут</span>
+        <span>Уровень: продвинутый</span>
+      </div>
+
+      <header>
+        <h1>Claude Code: как ловить повторяющиеся ошибки с помощью hooks</h1>
+        <figure class="article-cover" data-editorial-cover="claude-code-hooks-otlov-oshibok"><img src="assets/covers/llm-context-window-budget.png" alt="Claude Code: как ловить повторяющиеся ошибки с помощью hooks" width="1280" height="720" fetchpriority="high"><figcaption>Temporary fallback cover; replace in editorial pass.</figcaption></figure>
+        <p class="lead">
+          <a href="glossary.html#hook">Hook</a> — это автоматическая проверка, которая запускается вокруг действия Claude Code. В отличие от одной только инструкции в <code>CLAUDE.md</code>, hook может остановить запрещённый вызов инструмента или потребовать проверку перед завершением сессии.
+        </p>
+      </header>
+<a href="https://max.ru/channel_AgentLab?utm_source=agentlabjournal&utm_medium=article&utm_campaign=max_channel&utm_content=article_footer" class="max-promo-block" target="_blank" rel="noopener noreferrer" aria-label="Самое важное из мира AI в канале MAX AgentLab">
+  <span class="max-promo-block__icon" aria-hidden="true"></span>
+  <span class="max-promo-block__content"><span class="max-promo-block__title">Самое важное из мира AI — в канале MAX AgentLab</span><span class="max-promo-block__desc">Отдельные разборы, инструменты и практические схемы</span></span>
+  <span class="max-promo-block__arrow" aria-hidden="true">→</span>
+</a>
+<a href="https://t.me/pelmenews?utm_source=agentlabjournal&utm_medium=article&utm_campaign=telegram_channel&utm_content=article_intro" class="telegram-promo-block" target="_blank" rel="noopener noreferrer" aria-label="Читайте Agent Lab в Telegram">
+  <span class="telegram-promo-block__icon" aria-hidden="true"></span>
+  <span class="telegram-promo-block__content">
+    <span class="telegram-promo-block__title">Читайте Agent Lab в Telegram</span>
+    <span class="telegram-promo-block__desc">Разборы, кейсы и новости о практических AI-агентах без лишней воды.</span>
+  </span>
+  <span class="telegram-promo-block__arrow" aria-hidden="true">→</span>
+</a>
+
+      <section>
+        <h2>Почему CLAUDE.md иногда недостаточно</h2>
+
+        <p>
+          <code>CLAUDE.md</code> задаёт контекст: правила проекта, предпочтения по стилю и ограничения для агента. Но это всё ещё текстовая инструкция. Если задача длинная, контекст меняется или правило сформулировано неоднозначно, Claude Code может снова выбрать уже запрещённый путь.
+        </p>
+
+        <p>
+          Хуки решают другую задачу. Они работают как внешний контрольный слой: получают сведения о событии и могут разрешить действие, отклонить его или передать дополнительную проверку. В этой статье мы соберём два защитных рубежа:
+        </p>
+
+        <ul>
+          <li><code>PreToolUse</code> — блокирует опасный или явно запрещённый вызов до его выполнения;</li>
+          <li><code>Stop</code> — не позволяет без проверки объявить исправление завершённым.</li>
+        </ul>
+
+        <p>
+          Примеры ниже предназначены для адаптации. Пути, названия команд и правила нужно заменить на те, что действительно используются в вашем репозитории.
+        </p>
+      </section>
+
+      <section>
+        <h2>Что будем защищать</h2>
+
+        <p>
+          Возьмём типичный сценарий. В проекте запрещено напрямую менять файлы миграций, а любое заявление «исправление готово» должно подтверждаться проверкой рабочего дерева и запуском существующей команды проверки.
+        </p>
+
+        <p>
+          Это не означает, что hook должен самостоятельно доказывать корректность всей программы. Его задача уже и безопаснее: поймать конкретный риск. Например, он может отклонить вызов инструмента, если тот пытается выполнить команду с запрещённым шаблоном, а при остановке — запустить короткую локальную проверку.
+        </p>
+
+        <aside class="note">
+          <strong>Важно.</strong> Не копируйте правила из примера вслепую. Сначала определите, какие действия действительно запрещены, какая команда проверки безопасна и что считать успешным завершением.
+        </aside>
+      </section>
+
+      <section>
+        <h2>Шаг 1. Зафиксируйте правила в CLAUDE.md</h2>
+
+        <p>
+          Начните с понятных правил проекта. Формулировка должна описывать действие, а не намерение. Сравните:
+        </p>
+
+        <pre><code># Неудачная формулировка
+Пожалуйста, будьте осторожны с миграциями.
+
+# Более проверяемая формулировка
+Не изменяй файлы в db/migrations/ напрямую.
+Перед заявлением об исправлении запусти:
+./scripts/verify-fix.sh</code></pre>
+
+        <p>
+          Файл с инструкциями не заменяет hook, но помогает модели понять причину ограничения и выбрать допустимый путь. Например, вместо прямого редактирования миграции агент может предложить изменить исходную схему или остановиться и запросить решение.
+        </p>
+      </section>
+
+      <section>
+        <h2>Шаг 2. Добавьте PreToolUse для запрещённых команд</h2>
+
+        <p>
+          Для проверки до вызова инструмента удобно использовать небольшой скрипт. Ниже пример на POSIX shell. Он читает JSON из стандартного ввода, ищет команду и отклоняет вызов, если в ней встречается явно запрещённый путь.
+        </p>
+
+        <pre><code>#!/bin/sh
+set -eu
+
+payload=$(cat)
+
+command=$(printf '%s' "$payload" |
+  jq -r '.tool_input.command // empty')
+
+case "$command" in
+  *db/migrations/*)
+    echo "Запрещено: прямое изменение db/migrations/" >&2
+    exit 2
+    ;;
+esac
+
+exit 0</code></pre>
+
+        <p>
+          Сохраните скрипт, например, как <code>.claude/hooks/block-migrations.sh</code>, и сделайте его исполняемым:
+        </p>
+
+        <pre><code>mkdir -p .claude/hooks
+chmod 700 .claude/hooks/block-migrations.sh</code></pre>
+
+        <p>
+          Команда <code>chmod</code> изменяет только права указанного файла. Если скрипт лежит в другом месте, подставьте точный путь и проверьте его перед запуском.
+        </p>
+
+        <p>
+          Теперь подключите hook к событию <code>PreToolUse</code>. Конкретный формат конфигурации зависит от версии и способа настройки Claude Code, поэтому используйте синтаксис, поддерживаемый вашей установленной версией. Концептуально правило должно выглядеть так:
+        </p>
+
+        <pre><code>{
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": ".claude/hooks/block-migrations.sh"
+          }
+        ]
+      }
+    ]
+  }
+}</code></pre>
+
+        <p>
+          Здесь <code>matcher</code> ограничивает область действия hook вызовами инструмента командной строки. Если ваш рабочий процесс редактирует файлы через другой инструмент, добавьте отдельное правило для него или выберите иной уровень контроля.
+        </p>
+
+        <h3>Почему проверять нужно до выполнения</h3>
+
+        <p>
+          Проверка после команды уже не защищает файл от изменения. <code>PreToolUse</code> позволяет остановить рискованный вызов до того, как оболочка получит команду. Это особенно полезно для необратимых операций, массовых замен и команд, которые могут затронуть много файлов.
+        </p>
+      </section>
+
+      <section>
+        <h2>Шаг 3. Настройте Stop для подтверждения результата</h2>
+
+        <p>
+          Второй класс ошибок — преждевременное заявление об успехе. Модель может написать «исправлено», хотя тесты не запускались, рабочее дерево содержит незапланированные изменения или проблема просто не была воспроизведена.
+        </p>
+
+        <p>
+          Hook <code>Stop</code> должен запускать узкую проверку завершения. Для примера предположим, что в проекте уже есть скрипт <code>./scripts/verify-fix.sh</code>. Не создавайте такую команду только ради статьи: подставьте существующую проверку проекта или сначала определите её отдельно.
+        </p>
+
+        <pre><code>#!/bin/sh
+set -eu
+
+if [ ! -x "./scripts/verify-fix.sh" ]; then
+  echo "Проверка не настроена: нет исполняемого ./scripts/verify-fix.sh" >&2
+  exit 2
+fi
+
+./scripts/verify-fix.sh</code></pre>
+
+        <p>
+          Сохраните его как <code>.claude/hooks/verify-before-stop.sh</code> и ограничьте права:
+        </p>
+
+        <pre><code>chmod 700 .claude/hooks/verify-before-stop.sh</code></pre>
+
+        <p>
+          Затем подключите его к <code>Stop</code>:
+        </p>
+
+        <pre><code>{
+  "hooks": {
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": ".claude/hooks/verify-before-stop.sh"
+          }
+        ]
+      }
+    ]
+  }
+}</code></pre>
+
+        <p>
+          Если проверка завершается ненулевым кодом, остановка должна считаться неуспешной согласно поведению вашей версии Claude Code. В результате агент не должен безусловно сообщать о завершённом исправлении: сначала нужно разобраться с причиной сбоя или явно сообщить, что работа не закончена.
+        </p>
+
+        <aside class="note">
+          <strong>Граница ответственности.</strong> Успешный exit code подтверждает только то, что запущенная проверка завершилась успешно. Он не доказывает отсутствие всех дефектов и не заменяет ревью.
+        </aside>
+      </section>
+
+      <section>
+        <h2>Шаг 4. Объедините правила без конфликтов</h2>
+
+        <p>
+          На практике настройки hooks могут расти. Держите каждую проверку узкой и именуйте её по событию и риску:
+        </p>
+
+        <pre><code>.claude/
+  hooks/
+    block-migrations.sh
+    verify-before-stop.sh</code></pre>
+
+        <p>
+          Не помещайте в один скрипт десятки несвязанных правил. Если одна проверка блокирует миграции, а другая анализирует статус Git, их проще отлаживать отдельно. Общий конфигурационный файл должен только выбирать событие, инструмент и команду.
+        </p>
+
+        <p>
+          Сначала добейтесь предсказуемого поведения для одного запрета. Затем добавляйте следующие ограничения: опасные команды удаления, запись в секретные файлы, массовые изменения вне рабочей директории. Для каждого правила укажите допустимую альтернативу — иначе агент будет получать отказ без полезного следующего шага.
+        </p>
+      </section>
+
+      <section>
+        <h2>Безопасные команды для проверки</h2>
+
+        <p>
+          Проверяйте конфигурацию и скрипты небольшими командами с явными путями. Например:
+        </p>
+
+        <pre><code>test -x .claude/hooks/block-migrations.sh
+test -x .claude/hooks/verify-before-stop.sh
+jq empty path/to/settings.json
+git diff -- .claude/hooks
+git status --short</code></pre>
+
+        <p>
+          Эти команды не меняют рабочие файлы. Команда <code>jq empty</code> проверяет синтаксис JSON, а <code>git diff</code> и <code>git status</code> помогают увидеть, что именно изменилось.
+        </p>
+
+        <p>
+          Не используйте для диагностики широкие команды удаления или автоматические исправления, если не проверили их аргументы. Особенно осторожно относитесь к переменным, подстановкам и рекурсивным операциям.
+        </p>
+      </section>
+
+      <section>
+        <h2>Как проверить результат воспроизводимо</h2>
+
+        <ol>
+          <li>Проверьте, что конфигурация читается вашей версией Claude Code.</li>
+          <li>Запустите безопасную команду через обычный путь и убедитесь, что она не блокируется.</li>
+          <li>Подготовьте контролируемый вызов, содержащий запрещённый путь, но не выполняющий изменение.</li>
+          <li>Убедитесь, что <code>PreToolUse</code> отклоняет вызов до выполнения команды.</li>
+          <li>Измените состояние проекта так, чтобы проверка завершения была неуспешной.</li>
+          <li>Убедитесь, что <code>Stop</code> не позволяет считать исправление подтверждённым.</li>
+          <li>После этого восстановите рабочее состояние и повторите проверку с успешным результатом.</li>
+        </ol>
+
+        <p>
+          Для каждого hook записывайте ожидаемое поведение: событие, входные данные, exit code и сообщение об отказе. Если поведение отличается, сначала проверьте формат входного JSON и точное имя инструмента — это частая причина ложного ощущения, что hook «не работает».
+        </p>
+      </section>
+
+      <section>
+        <h2>Типовые ошибки</h2>
+
+        <h3>Hook не запускается</h3>
+        <p>
+          Проверьте путь, права на выполнение, синтаксис конфигурации и соответствие <code>matcher</code> реальному имени инструмента. Также убедитесь, что настройки лежат там, где их ожидает ваша версия Claude Code.
+        </p>
+
+        <h3>Скрипт всегда блокирует действие</h3>
+        <p>
+          Возможно, проверка ищет слишком общий фрагмент. Строка вроде <code>*migration*</code> может совпадать с безопасными командами. Сузьте шаблон до конкретного пути или команды и добавьте диагностическое сообщение в stderr.
+        </p>
+
+        <h3>JSON читается не так, как ожидалось</h3>
+        <p>
+          Не предполагайте, что нужное поле всегда существует. Используйте безопасные значения по умолчанию, например <code>// empty</code>, и отдельно обработайте отсутствие поля. Для отладки сохраняйте только обезличенное содержимое и не записывайте токены, переменные окружения или секреты.
+        </p>
+
+        <h3>Stop создаёт бесконечный цикл</h3>
+        <p>
+          Если проверка при каждой остановке запускает действие, которое снова вызывает остановку, возникает повторный запуск. Держите проверку конечной, не вызывайте из неё Claude Code и изучите механизм повторного входа в вашей конфигурации.
+        </p>
+
+        <h3>Проверка слишком медленная</h3>
+        <p>
+          Hook выполняется в чувствительной точке рабочего процесса. Вынесите долгие проверки в отдельный CI-процесс, а в <code>Stop</code> оставьте короткий локальный smoke-check, который действительно нужен для подтверждения результата.
+        </p>
+      </section>
+
+      <section>
+        <h2>Ограничения подхода</h2>
+
+        <p>
+          Hooks не устраняют необходимость в хороших инструкциях, тестах и ревью. Они контролируют наблюдаемые события, но не понимают намерение так глубоко, как человек. Запрет по строковому совпадению может быть обойдён другим синтаксисом, если правило сформулировано слишком узко.
+        </p>
+
+        <p>
+          Не полагайтесь на hook как на единственный барьер для секретов. Секреты не должны попадать в команды, логи и файлы конфигурации. Ограничивайте права скриптов, проверяйте их содержимое в Git и не принимайте изменения hook без ревью.
+        </p>
+
+        <p>
+          Наконец, проверка «исправление завершено» должна быть определена заранее. Если команда проверки не отражает критерии готовности, <code>Stop</code> лишь создаст видимость контроля.
+        </p>
+      </section>
+
+      <section>
+        <h2>Итог</h2>
+
+        <p>
+          Надёжная схема состоит из двух уровней. <code>CLAUDE.md</code> объясняет правила и контекст, <code>PreToolUse</code> блокирует запрещённое действие до выполнения, а <code>Stop</code> требует подтвердить состояние проекта перед заявлением о завершении.
+        </p>
+
+        <p>
+          Начните с одного повторяющегося нарушения, сделайте для него узкий hook, проверьте отказ и только затем расширяйте защиту. Так вы получите не набор хрупких запретов, а небольшой проверяемый контур безопасности.
+        </p>
+      </section>
+
+      <nav class="article-links" aria-label="Связанные материалы">
+        <a href="guides.html">Все практические гайды</a>
+        <a href="glossary.html">Глоссарий терминов</a>
+      </nav>
+<aside class="service-note" aria-label="Связаться по проекту">
+  <div class="service-note__copy">
+    <p class="service-note__label">Связь с Agent Lab</p>
+    <p class="service-note__title">Внедрим такой контур в ваш процесс</p>
+    <p class="service-note__text">Напишите инженеру Agent Lab в Telegram: опишите задачу, бота или интеграцию — предложим пилот с проверками и понятными границами.</p>
+  </div>
+  <a class="service-note__link" href="https://t.me/msrzn007?utm_source=journal&amp;utm_medium=article&amp;utm_campaign=service_note" target="_blank" rel="noopener">Написать в Telegram
+    <svg viewBox="0 0 16 16" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"><path d="M3 13 13 3M6 3h7v7"/></svg>
+  </a>
+</aside>
+<aside class="service-note service-note--sitevisor" aria-label="Экспресс-аудит сайта">
+  <div class="service-note__copy">
+    <p class="service-note__label">SiteVisor</p>
+    <p class="service-note__title">Проверьте техническое состояние и готовность вашего сайта к рекламе</p>
+    <p class="service-note__text">Экспресс-аудит на SiteVisor.pro: индексация, скорость, разметка, аналитика и точки конверсии.</p>
+  </div>
+  <a class="service-note__link" href="https://sitevisor.pro/?utm_source=journal&amp;utm_medium=article&amp;utm_campaign=leadmagnet" target="_blank" rel="noopener">Экспресс-аудит на SiteVisor.pro
+    <svg viewBox="0 0 16 16" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"><path d="M3 13 13 3M6 3h7v7"/></svg>
+  </a>
+</aside>
+</article>
+  </main>
+
+  <footer class="site-footer">
+    <div class="container">
+      <p>Agent Lab Journal</p>
+    </div>
+  </footer>
+</body>
+</html>
