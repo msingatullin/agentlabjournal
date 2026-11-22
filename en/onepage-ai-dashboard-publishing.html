@@ -1,0 +1,356 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>How to Publish and Version AI-Generated HTML Dashboards</title>
+  <meta name="description" content="How to Publish and Version AI-Generated HTML Dashboards with a self-hosted OnePage deployment, Docker, publishing, updates, rollback, and access control.">
+  <link rel="canonical" href="https://agentlabjournal.online/en/onepage-ai-dashboard-publishing.html">
+  <link rel="stylesheet" href="../style.css">
+  <link rel="stylesheet" href="../reading.css">
+
+  <meta property="og:type" content="article">
+  <meta property="og:title" content="How to Publish and Version AI-Generated HTML Dashboards">
+  <meta property="og:description" content="A reproducible guide to deploying OnePage with Docker and managing published HTML dashboards.">
+  <meta property="og:url" content="https://agentlabjournal.online/en/onepage-ai-dashboard-publishing.html">
+  <meta property="og:image" content="https://agentlabjournal.online/assets/covers/llm-context-window-budget-social.png">
+
+  <meta name="twitter:card" content="summary_large_image">
+  <meta name="twitter:title" content="How to Publish and Version AI-Generated HTML Dashboards">
+  <meta name="twitter:description" content="Publish, update, roll back, and restrict AI-generated HTML dashboards with self-hosted OnePage.">
+  <meta name="twitter:image" content="https://agentlabjournal.online/assets/covers/llm-context-window-budget-social.png">
+
+  <meta name="reading-time" content="30 minutes">
+  <meta name="article:section" content="Engineering">
+  <meta name="article:published_time" content="2026-11-22">
+  <meta name="article:modified_time" content="2026-11-22">
+
+  <script type="application/ld+json">
+  {
+    "@context": "https://schema.org",
+    "@type": "Article",
+    "headline": "How to Publish and Version AI-Generated HTML Dashboards",
+    "description": "A reproducible guide to deploying OnePage with Docker and managing published HTML dashboards.",
+    "image": ["https://agentlabjournal.online/assets/covers/llm-context-window-budget-social.png"],
+    "dateModified": "2026-11-22",
+    "author": {
+      "@type": "Organization",
+      "name": "Agent Lab Journal"
+    },
+    "publisher": {
+      "@type": "Organization",
+      "name": "Agent Lab Journal",
+      "url": "https://agentlabjournal.online/"
+    },
+    "mainEntityOfPage": {
+      "@type": "WebPage",
+      "@id": "https://agentlabjournal.online/en/onepage-ai-dashboard-publishing.html"
+    }
+  }
+  </script>
+<link rel="stylesheet" href="../homepage.css"><link rel="stylesheet" href="../max-promo.css">  <meta property="og:image:alt" content="Как публиковать и версионировать HTML-дашборды, созданные ИИ">
+</head>
+<body>
+  <header class="site-header">
+    <div class="site-header__inner">
+      <a class="site-header__brand" href="../index.html">Agent Lab Journal</a>
+      <nav class="site-header__nav" aria-label="Primary navigation">
+        <a href="guides.html">Guides</a>
+        <a href="../glossary.html">Glossary</a>
+      </nav>
+    </div>
+  </header>
+
+  <main>
+    <article class="reading">
+      <header class="reading-header">
+        <p class="reading-kicker">Engineering guide · 30 minutes</p>
+        <h1>How to Publish and Version AI-Generated HTML Dashboards</h1>
+        <figure class="article-cover" data-editorial-cover="onepage-ai-dashboard-publishing"><img src="../assets/covers/llm-context-window-budget.png" alt="Как публиковать и версионировать HTML-дашборды, созданные ИИ" width="1280" height="720" fetchpriority="high"><figcaption>Temporary fallback cover; replace in editorial pass.</figcaption></figure>
+        <p class="reading-dek">A practical, reproducible workflow for turning generated reports into controlled, reviewable web pages with self-hosted OnePage.</p>
+        <p class="reading-meta">Updated November 22, 2026 · Beginner level</p>
+      </header>
+
+      <p>AI can produce a convincing dashboard in a few minutes. The operational problem starts after that: one file is emailed to a colleague, another is copied into a shared folder, and a third is quietly edited before a meeting. Soon nobody knows which report is current, who may see it, or how to restore the previous version.</p>
+
+      <p>This guide uses <a href="../glossary.html#onepage">OnePage</a> as a small publishing layer for static HTML reports. You will deploy it with <a href="../glossary.html#docker">Docker</a>, publish a report, publish an update, roll back to an earlier version, and configure access restrictions. The commands are designed as a repeatable runbook. They are examples until you run them against the exact OnePage repository and release you selected.</p>
+
+      <aside class="reading-note">
+        <strong>Evidence boundary.</strong> No deployment was run for this article. Replace the image name, environment variable names, API paths, and authentication settings with the values documented by the OnePage version you install. Do not paste real credentials or personal data into the examples.
+      </aside>
+
+      <h2>The concrete case</h2>
+
+      <p>Imagine a weekly operations report generated as a single HTML file. It contains charts, a table of incidents, and a short narrative. The report is useful, but it has four requirements:</p>
+
+      <ul>
+        <li>Readers need one stable URL.</li>
+        <li>Only an approved group may open it.</li>
+        <li>Each update must remain identifiable.</li>
+        <li>A bad update must be reversible without rebuilding the report.</li>
+      </ul>
+
+      <p>The desired flow is:</p>
+
+      <pre><code>AI output → review → publish version 1 → publish version 2
+                                      ↓
+                                rollback to version 1</code></pre>
+
+      <p>The important design choice is to treat the published report as a release, not as a file that people overwrite. The current URL can point to the latest approved release while the system retains earlier releases for comparison and recovery.</p>
+
+      <h2>What you need before starting</h2>
+
+      <p>Prepare a Linux host or another machine that can run Docker, a domain or internal hostname if the report must be reachable by others, and a directory reserved for OnePage data. You also need an HTML report that opens correctly when served by a web server.</p>
+
+      <p>Check the local tools:</p>
+
+      <pre><code>docker --version
+docker compose version
+curl --version</code></pre>
+
+      <p>These commands only check that the commands are available. They do not prove that the selected OnePage image, database, storage backend, or authentication provider is compatible with your host.</p>
+
+      <h2>1. Create an isolated deployment directory</h2>
+
+      <p>Keep application configuration and persistent data in a clearly named directory. This makes backups, upgrades, and audits easier to reason about.</p>
+
+      <pre><code>mkdir -p onepage-dashboard/{data,config,reports}
+cd onepage-dashboard</code></pre>
+
+      <p>Put your working report in <code>reports/</code>. For this walkthrough, use the name <code>operations.html</code>:</p>
+
+      <pre><code>cp /path/to/operations.html reports/operations.html</code></pre>
+
+      <p>Do not put passwords, API keys, customer exports, or raw personal data in the repository or in a report used for testing. Use synthetic values such as <code>Example Team</code> and <code>2026-11-22</code>.</p>
+
+      <h2>2. Pin the OnePage release</h2>
+
+      <p>Do not begin with an unpinned <code>latest</code> image in a production-like environment. A moving tag can change the application without changing your Compose file. Select a documented OnePage release or an immutable image digest.</p>
+
+      <p>The following is a template. The image name and variable names are intentionally placeholders because they must come from the OnePage documentation for your chosen release:</p>
+
+      <pre><code>cat &gt; compose.yaml &lt;&lt;'YAML'
+services:
+  onepage:
+    image: REGISTRY/ONEPAGE:PINNED_VERSION
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:8080:8080"
+    env_file:
+      - .env
+    volumes:
+      - ./data:/var/lib/onepage
+      - ./config:/etc/onepage
+YAML</code></pre>
+
+      <p>Using <code>127.0.0.1</code> keeps the application off the public network when a <a href="../glossary.html#reverse-proxy">reverse proxy</a> will provide the external endpoint. If the product documentation specifies another internal port or data directory, use those values instead.</p>
+
+      <h2>3. Configure secrets without committing them</h2>
+
+      <p>Create a local environment file with a long, unique administrator secret. The names below are examples, not verified OnePage settings:</p>
+
+      <pre><code>cat &gt; .env &lt;&lt;'ENV'
+ONEPAGE_ADMIN_USER=admin
+ONEPAGE_ADMIN_PASSWORD=REPLACE_WITH_A_LONG_RANDOM_VALUE
+ONEPAGE_SESSION_SECRET=REPLACE_WITH_ANOTHER_LONG_RANDOM_VALUE
+ONEPAGE_PUBLIC_URL=http://localhost:8080
+ENV
+
+chmod 600 .env</code></pre>
+
+      <p>Generate values with a password manager or a local random generator. Never include the resulting values in this article, a screenshot, a ticket, or a shell history that will be shared.</p>
+
+      <p>Before starting the service, inspect the configuration for accidental placeholders:</p>
+
+      <pre><code>sed -n '1,120p' compose.yaml
+sed -n '1,120p' .env</code></pre>
+
+      <p>This is a manual review step. It does not validate that the application accepts the variables.</p>
+
+      <h2>4. Start OnePage</h2>
+
+      <pre><code>docker compose pull
+docker compose up -d
+docker compose ps
+docker compose logs --tail=100 onepage</code></pre>
+
+      <p>A successful start should be confirmed using the OnePage health endpoint or its documented web interface. If the project documents a health path, test that exact path:</p>
+
+      <pre><code>curl -i http://127.0.0.1:8080/HEALTH_PATH</code></pre>
+
+      <p>Do not interpret a running container alone as proof that publishing works. A container can be running while its storage, migration, authentication, or upload route is misconfigured.</p>
+
+      <h2>5. Publish the first dashboard version</h2>
+
+      <p>Open the OnePage administration interface or use its documented command-line/API client. Create a project called <code>operations-weekly</code>. If the interface supports a slug, keep it short and stable; the slug should identify the report, not the date.</p>
+
+      <p>Upload <code>reports/operations.html</code> as the first release. Add metadata that makes the release understandable later:</p>
+
+      <ul>
+        <li>Version label: <code>2026-11-22.1</code></li>
+        <li>Source: <code>AI draft reviewed by operations</code></li>
+        <li>Change note: <code>Initial publication</code></li>
+      </ul>
+
+      <p>If OnePage provides an API, the request will usually resemble this shape, but the actual route, field names, and authentication header must come from the installed release:</p>
+
+      <pre><code>curl -X POST "$ONEPAGE_URL/API_PUBLISH_PATH" \
+  -H "Authorization: Bearer $ONEPAGE_TOKEN" \
+  -F "project=operations-weekly" \
+  -F "version=2026-11-22.1" \
+  -F "file=@reports/operations.html"</code></pre>
+
+      <p>Record the returned URL and release identifier in your change log. A stable URL and an immutable release URL serve different purposes: the stable URL is convenient for readers, while the release URL is useful for audits and incident review.</p>
+
+      <h2>6. Test the published report</h2>
+
+      <p>Test from a browser and from the command line. Replace the paths with the URLs exposed by your instance:</p>
+
+      <pre><code>curl -I https://reports.example.internal/operations-weekly
+curl -I https://reports.example.internal/operations-weekly/releases/2026-11-22.1</code></pre>
+
+      <p>In the browser, verify that:</p>
+
+      <ul>
+        <li>the page loads without opening local files;</li>
+        <li>charts and images render;</li>
+        <li>links do not expose filesystem paths;</li>
+        <li>the report identifies its own reporting period and version;</li>
+        <li>an unauthenticated browser cannot read a restricted report.</li>
+      </ul>
+
+      <p>If the dashboard uses JavaScript libraries from a CDN, confirm that your network policy permits those requests. For sensitive or offline deployments, bundle approved assets with the report instead.</p>
+
+      <h2>7. Publish an update instead of overwriting version 1</h2>
+
+      <p>Edit the source report or ask the generating system to produce a new artifact. Save it as a separate local file while reviewing it:</p>
+
+      <pre><code>cp reports/operations.html reports/operations-2026-11-22.2.html</code></pre>
+
+      <p>Inspect the differences using the tool appropriate for your report format. For a readable HTML file, a simple text diff may reveal accidental changes:</p>
+
+      <pre><code>diff -u reports/operations.html \
+  reports/operations-2026-11-22.2.html</code></pre>
+
+      <p>Publish the second file with a new version label:</p>
+
+      <pre><code>curl -X POST "$ONEPAGE_URL/API_PUBLISH_PATH" \
+  -H "Authorization: Bearer $ONEPAGE_TOKEN" \
+  -F "project=operations-weekly" \
+  -F "version=2026-11-22.2" \
+  -F "file=@reports/operations-2026-11-22.2.html"</code></pre>
+
+      <p>Check both the current project URL and the old release URL. The current URL should show the approved latest version; the first release should remain unchanged if OnePage provides immutable history.</p>
+
+      <h2>8. Roll back a bad update</h2>
+
+      <p>Rollback is a controlled pointer change: it should make an earlier release current without deleting the newer release. In the interface, choose <code>2026-11-22.1</code> and confirm the rollback. If the API supports rollback, the request may look like this:</p>
+
+      <pre><code>curl -X POST "$ONEPAGE_URL/API_ROLLBACK_PATH" \
+  -H "Authorization: Bearer $ONEPAGE_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"project":"operations-weekly","version":"2026-11-22.1"}'</code></pre>
+
+      <p>After rolling back, reload the stable URL and verify the visible version label. Then open the version list and confirm that <code>2026-11-22.2</code> still exists. If rollback deletes the newer release, stop and review the product’s retention semantics before using it for important reports.</p>
+
+      <h2>9. Configure access control</h2>
+
+      <p><a href="../glossary.html#access-control">Access control</a> answers two separate questions: who may publish and who may view. Protect both operations.</p>
+
+      <p>Start with the smallest useful policy:</p>
+
+      <ul>
+        <li>Only administrators or an automation token may publish.</li>
+        <li>Only the operations group may view the report.</li>
+        <li>Anonymous access is disabled.</li>
+        <li>Viewer permissions do not include publish, delete, or rollback.</li>
+      </ul>
+
+      <p>If OnePage supports groups, create a viewer group and grant it access only to <code>operations-weekly</code>. If it supports tokens, create a token scoped to publishing that project rather than a global administrator token. Store tokens in a secret manager or protected CI variable.</p>
+
+      <p>Test access with two separate sessions:</p>
+
+      <pre><code>curl -i https://reports.example.internal/operations-weekly
+curl -i -H "Authorization: Bearer VIEWER_TOKEN" \
+  https://reports.example.internal/operations-weekly</code></pre>
+
+      <p>The first response should require authentication when anonymous viewing is disabled. The second should succeed only for a token that has viewer permission. Also test that a viewer token cannot call the publish or rollback route.</p>
+
+      <h2>10. Put HTTPS and backups around the service</h2>
+
+      <p>For a network deployment, place OnePage behind a reverse proxy that terminates <a href="../glossary.html#https">HTTPS</a>. Restrict the administration interface to an internal network or an additional identity layer where possible.</p>
+
+      <p>Back up the persistent data directory and the configuration needed to restore it:</p>
+
+      <pre><code>docker compose stop
+tar -czf onepage-backup-2026-11-22.tar.gz data config compose.yaml
+docker compose start</code></pre>
+
+      <p>This command creates a local archive; it is not a complete backup strategy. Store backups separately from the host, encrypt them when they contain sensitive reports, and periodically perform a restoration test on a disposable machine.</p>
+
+      <h2>Verification checklist</h2>
+
+      <p>Use this checklist after installation and after upgrades:</p>
+
+      <ol>
+        <li>The service starts from the pinned image or release.</li>
+        <li>The administration interface requires authentication.</li>
+        <li>A first HTML report can be published.</li>
+        <li>A second publication creates a distinct version.</li>
+        <li>The stable URL changes to the selected current version.</li>
+        <li>An earlier release remains readable and unchanged.</li>
+        <li>Rollback changes the current pointer without destroying history.</li>
+        <li>Viewer permissions cannot publish, delete, or roll back.</li>
+        <li>Unauthenticated access is denied when the report is private.</li>
+        <li>The persistent data directory is included in backups.</li>
+      </ol>
+
+      <p>These are verification actions for the operator to perform. They are not results claimed by this article.</p>
+
+      <h2>Common failure cases</h2>
+
+      <h3>The container exits immediately</h3>
+      <p>Read the service logs, confirm that the image tag exists, and compare every environment variable with the release documentation. A missing migration setting, invalid storage path, or unsupported database version can all produce the same symptom.</p>
+
+      <h3>The page loads but charts are blank</h3>
+      <p>Inspect the browser console and network panel. The report may depend on blocked CDN assets, a relative path that changed during upload, or a JavaScript error caused by a malformed AI-generated data object.</p>
+
+      <h3>The update replaced the old report</h3>
+      <p>Check whether you used an “edit in place” operation rather than a versioned publish operation. If the product does not retain immutable releases, keep the source files in a separate version-control repository and treat OnePage as the delivery layer.</p>
+
+      <h3>A viewer can publish</h3>
+      <p>Review the role mapping and token scopes. Test permissions with a fresh session, because a browser may still hold an administrator cookie.</p>
+
+      <h3>Rollback appears successful but readers see the new version</h3>
+      <p>Check whether the stable URL is cached by the reverse proxy, browser, or content delivery layer. Also verify that the rollback was applied to the same project and environment that readers use.</p>
+
+      <h2>Limitations and safe operating rules</h2>
+
+      <p>Version history is not a substitute for source control. Keep the prompt, input data description, generated source, review notes, and published release identifier together in a separate repository or controlled archive. The published HTML is only one artifact in the chain.</p>
+
+      <p>Static HTML can still contain unsafe behavior. Review scripts, external requests, embedded credentials, hidden tracking code, and links to internal systems before publication. Do not treat a random URL as authorization; require explicit authentication and permission checks.</p>
+
+      <p>Finally, pin the application release, document local configuration, and rehearse restoration. The goal is not merely to make a dashboard visible. The goal is to make its publication understandable, reversible, and accountable.</p>
+
+      <h2>Conclusion</h2>
+
+      <p>A reliable workflow for AI-generated dashboards has four visible properties: one stable address, explicit access rules, preserved releases, and a tested rollback path. OnePage can provide the publishing layer, while Docker makes the deployment repeatable. Your review process, secret handling, backups, and source archive complete the system.</p>
+
+      <p>For related terminology, see the <a href="../glossary.html">glossary</a>. Continue with the <a href="guides.html">guides</a> index for more reproducible Agent Lab Journal workflows.</p>
+    <section class="service-note">
+  <b>We publish what works for us—and implement the same solutions for your business.</b>
+  We design AI automation, Telegram bots, chats, and AI agents for real-world processes.
+  <a href="../contacts-en.html">Discuss your project →</a>
+</section>
+</article>
+  </main>
+
+  <footer class="site-footer">
+    <div class="site-footer__inner">
+      <a href="guides.html">Guides</a>
+      <a href="../glossary.html">Glossary</a>
+      <span>Agent Lab Journal</span>
+    </div>
+  </footer>
+</body>
+</html>
