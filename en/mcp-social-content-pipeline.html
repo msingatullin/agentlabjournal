@@ -1,0 +1,455 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>An MCP pipeline for generating and reviewing app social carousels | Agent Lab Journal</title>
+  <meta name="description" content="An MCP pipeline for generating and reviewing app social carousels: upload screenshots, draft grounded copy, run visual checks, approve manually, and schedule safely.">
+  <link rel="canonical" href="https://agentlabjournal.online/en/mcp-social-content-pipeline.html">
+  <link rel="stylesheet" href="../style.css">
+  <link rel="stylesheet" href="../reading.css">
+  <meta property="og:type" content="article">
+  <meta property="og:title" content="An MCP pipeline for generating and reviewing app social carousels | Agent Lab Journal">
+  <meta property="og:description" content="An MCP pipeline for generating and reviewing app social carousels: upload screenshots, draft grounded copy, run visual checks, approve manually, and schedule safely.">
+  <meta property="og:url" content="https://agentlabjournal.online/en/mcp-social-content-pipeline.html">
+  <meta property="og:image" content="https://agentlabjournal.online/assets/covers/llm-context-window-budget-social.png">
+  <meta property="og:image:alt" content="MCP-пайплайн для генерации и проверки каруселей приложения">
+  <meta name="twitter:card" content="summary_large_image">
+  <meta name="twitter:title" content="An MCP pipeline for generating and reviewing app social carousels | Agent Lab Journal">
+  <meta name="twitter:description" content="An MCP pipeline for generating and reviewing app social carousels: upload screenshots, draft grounded copy, run visual checks, approve manually, and schedule safely.">
+  <meta name="twitter:image" content="https://agentlabjournal.online/assets/covers/llm-context-window-budget-social.png">
+  <script type="application/ld+json">
+  {
+    "@context":"https://schema.org",
+    "@type":"Article",
+    "headline":"An MCP pipeline for generating and reviewing app social carousels",
+    "description":"An MCP pipeline for generating and reviewing app social carousels: upload screenshots, draft grounded copy, run visual checks, approve manually, and schedule safely.",
+    "image":["https://agentlabjournal.online/assets/covers/llm-context-window-budget-social.png"],
+    "dateModified":"2026-11-23",
+    "author":{"@type":"Organization","name":"Agent Lab Journal"},
+    "publisher":{"@type":"Organization","name":"Agent Lab Journal"},
+    "mainEntityOfPage":{"@type":"WebPage","@id":"https://agentlabjournal.online/en/mcp-social-content-pipeline.html"}
+  }
+  </script>
+<link rel="stylesheet" href="../homepage.css"><link rel="stylesheet" href="../max-promo.css"></head>
+<body>
+  <header class="site-header">
+    <a class="brand" href="./"><span class="brand-mark">AL</span><span>Agent Lab Journal</span></a>
+    <nav><a href="../">RU</a><a href="../glossary-en.html">Glossary</a><a href="../contacts-en.html">Contact</a></nav>
+  </header>
+
+  <main>
+    <article class="reading">
+      <header class="article-header">
+        <p class="eyebrow">PRACTICE / CONTENT OPERATIONS</p>
+        <h1>An MCP pipeline for generating and reviewing app social carousels</h1>
+        <figure class="article-cover" data-editorial-cover="mcp-social-content-pipeline"><img src="../assets/covers/llm-context-window-budget.png" alt="MCP-пайплайн для генерации и проверки каруселей приложения" width="1280" height="720" fetchpriority="high"><figcaption>Temporary fallback cover; replace in editorial pass.</figcaption></figure>
+        <p class="reading-meta">
+          <span>Intermediate</span>
+          <span>35 minutes</span>
+          <span>Reproducible workflow</span>
+        </p>
+        <p class="lead">Creating social posts from app screenshots is repetitive work: collect the images, describe what is visible, adapt the copy to a carousel, check every frame, request approval, and only then schedule it. This guide defines a testable pipeline that automates the mechanical parts while keeping unsupported claims and final publication behind explicit checks.</p>
+      </header>
+
+      <figure class="article-cover">
+        <img src="../assets/covers/llm-context-window-budget.png" alt="An MCP pipeline for generating and reviewing app social carousels" width="1280" height="720" fetchpriority="high">
+        <figcaption>Illustrative cover. The workflow below is a reproducible design and test procedure, not a report of completed production measurements.</figcaption>
+      </figure>
+
+      <h2>What this workflow is designed to solve</h2>
+
+      <p>The working assumption is simple: a product team already has screenshots of an app and wants to turn them into a small social carousel. The repetitive work is not only writing. It includes file handling, ordering, image inspection, caption drafting, layout generation, review, and hand-off to a publishing tool.</p>
+
+      <p>The risk is equally practical. A model can turn a visible interface element into an unsupported product claim. It can invent a result that does not appear in the screenshot, mistake placeholder content for a real metric, crop an important control, or produce a frame whose text is unreadable on a phone. Automation reduces effort only if those failure modes remain visible.</p>
+
+      <p>This article uses <a href="../glossary.html">MCP</a> as the name for the tool protocol connecting an assistant to controlled operations such as reading an upload directory, creating a draft, rendering a preview, and moving an approved post to a scheduler. The exact server implementation is intentionally left open. The important part is the contract around each tool.</p>
+
+      <h2>Pipeline boundary</h2>
+
+      <p>The proposed pipeline has six stages:</p>
+
+      <ol>
+        <li>Upload screenshots and a small amount of context.</li>
+        <li>Extract only observable facts from the files.</li>
+        <li>Generate a carousel draft with claim provenance.</li>
+        <li>Render and inspect the visual output.</li>
+        <li>Require a human approval decision.</li>
+        <li>Schedule the approved version with an idempotent operation.</li>
+      </ol>
+
+      <p>Only the first five stages are needed to test content quality. Scheduling is a separate boundary because it creates an external side effect. A test environment should be able to complete the full flow without publishing anything.</p>
+
+      <p>The pipeline should not decide whether a product is good, whether a customer achieved a business result, or whether a feature is legally safe to advertise. Those are editorial and organizational decisions. The pipeline can preserve evidence, detect obvious inconsistencies, and make review easier.</p>
+
+      <h2>A small, explicit data model</h2>
+
+      <p>Use structured records between stages. A JSON document is enough for a first test:</p>
+
+      <pre><code>{
+  "draft_id": "demo-2026-11-23-001",
+  "source_files": [
+    {
+      "path": "uploads/dashboard.png",
+      "sha256": "record-after-upload",
+      "role": "dashboard"
+    }
+  ],
+  "audience": "Example audience supplied by the editor",
+  "objective": "Explain one visible workflow",
+  "claims": [
+    {
+      "text": "The screen shows a weekly activity chart.",
+      "evidence": ["uploads/dashboard.png"],
+      "status": "observed"
+    }
+  ],
+  "frames": [],
+  "review": {
+    "status": "draft",
+    "notes": []
+  },
+  "schedule": {
+    "status": "not_requested"
+  }
+}</code></pre>
+
+      <p>The values above are examples, not verified facts about a particular app. In a real run, the file hash should be calculated by the upload service, and the claim list should point to the exact source image or an editor-provided brief.</p>
+
+      <p>Two fields are especially useful:</p>
+
+      <ul>
+        <li><code>claims</code> separates what is visible from what is merely suggested by the brief.</li>
+        <li><code>review.status</code> prevents a generated draft from being treated as approved content.</li>
+      </ul>
+
+      <p>A third field, <code>schedule.status</code>, makes it harder to confuse “ready for scheduling” with “scheduled”. Keep these states separate even if the first implementation stores them in one file.</p>
+
+      <h2>Stage 1: upload screenshots safely</h2>
+
+      <p>Start with a narrow upload tool. It should accept image files, assign them a draft identifier, record their hashes, and return metadata. It should not immediately publish, call a social platform, or allow arbitrary filesystem paths.</p>
+
+      <p>A conceptual tool contract might look like this:</p>
+
+      <pre><code>{
+  "name": "upload_screenshots",
+  "inputSchema": {
+    "type": "object",
+    "required": ["draft_id", "files"],
+    "properties": {
+      "draft_id": {"type": "string"},
+      "files": {
+        "type": "array",
+        "items": {
+          "type": "object",
+          "required": ["name", "content_base64"],
+          "properties": {
+            "name": {"type": "string"},
+            "content_base64": {"type": "string"}
+          }
+        }
+      }
+    }
+  }
+}</code></pre>
+
+      <p>For a local test, the command that prepares the input can remain ordinary shell work:</p>
+
+      <pre><code>mkdir -p work/demo-001/uploads
+cp screenshots/dashboard.png work/demo-001/uploads/
+cp screenshots/settings.png work/demo-001/uploads/
+sha256sum work/demo-001/uploads/* &gt; work/demo-001/source-hashes.txt</code></pre>
+
+      <p>Do not put credentials, personal data, access tokens, or private customer screenshots into a public test fixture. If a screenshot contains an email address, account identifier, or internal metric, replace it with a synthetic value before the pipeline sees it.</p>
+
+      <h2>Stage 2: extract observable facts</h2>
+
+      <p>The first model call should produce an evidence ledger, not polished marketing copy. Ask it to describe only what can be pointed to in the image. It should be allowed to say “unclear” and “not visible”.</p>
+
+      <pre><code>{
+  "task": "Describe only visible interface elements.",
+  "rules": [
+    "Do not infer business outcomes.",
+    "Do not convert labels into performance claims.",
+    "Quote visible text exactly when legible.",
+    "Mark unreadable or ambiguous regions as unclear.",
+    "Attach each observation to a source file."
+  ],
+  "sources": [
+    "uploads/dashboard.png",
+    "uploads/settings.png"
+  ]
+}</code></pre>
+
+      <p>An acceptable observation might be “a weekly activity chart is visible in the upper half of the dashboard screenshot”. An unsupported version would be “the app increases weekly activity”. The first describes pixels. The second claims an outcome that the screenshot cannot establish.</p>
+
+      <p>Keep the evidence ledger in the draft record. It lets a reviewer ask, “Where did this sentence come from?” without reconstructing the model’s context.</p>
+
+      <h2>Stage 3: generate the carousel draft</h2>
+
+      <p>Once the evidence ledger exists, generate a small number of frames. The exact number is a product decision; for a test, choose a fixed value such as five and keep it constant across runs. A fixed frame count makes layout and review comparisons easier.</p>
+
+      <p>Each frame should have a job:</p>
+
+      <ol>
+        <li>State the practical problem or scenario.</li>
+        <li>Show the relevant app screen.</li>
+        <li>Explain one visible interaction or element.</li>
+        <li>Clarify the next step without inventing a result.</li>
+        <li>Close with a restrained call to action.</li>
+      </ol>
+
+      <p>Use a frame schema that keeps copy, image, and claim status together:</p>
+
+      <pre><code>{
+  "index": 2,
+  "source_image": "uploads/dashboard.png",
+  "headline": "See the weekly activity view",
+  "body": "The dashboard groups recent activity into a weekly chart.",
+  "claims": [0],
+  "alt_text": "Dashboard showing a weekly activity chart",
+  "status": "draft"
+}</code></pre>
+
+      <p>Do not let the generator write numbers, customer names, rankings, testimonials, or performance guarantees unless those values are explicitly present in an approved source. If the brief says “highlight faster reporting” but the screenshot only shows a report screen, the safe draft describes the report screen and leaves the speed claim for an editor to verify separately.</p>
+
+      <p>For repeatability, store the prompt, model identifier, input record identifier, and generation timestamp with the draft. This is audit information, not proof that the result is correct.</p>
+
+      <h2>Stage 4: render before review</h2>
+
+      <p>Text review is insufficient for a visual carousel. Render every frame at the target aspect ratio and inspect the rendered files, not only the source JSON. A browser-based renderer, image library, or design export tool can perform this step; the MCP tool should return file paths and dimensions.</p>
+
+      <p>A minimal render result can be represented as:</p>
+
+      <pre><code>{
+  "draft_id": "demo-2026-11-23-001",
+  "rendered_files": [
+    {
+      "index": 1,
+      "path": "renders/demo-001/frame-01.png",
+      "width": 1080,
+      "height": 1350
+    }
+  ],
+  "status": "rendered"
+}</code></pre>
+
+      <p>The dimensions in this example are configuration values, not a claim about a particular platform’s current requirements. Set them from the destination channel’s documented specification or your own test brief, then record the choice in the run.</p>
+
+      <h2>Visual checks that can be automated</h2>
+
+      <p>Automated checks should catch mechanical problems. They should not be treated as a substitute for a person looking at the frame.</p>
+
+      <p>Useful checks include:</p>
+
+      <ul>
+        <li>Every frame has an image, headline, body copy, and alt text.</li>
+        <li>The rendered file exists and matches the configured dimensions.</li>
+        <li>Text stays inside the safe area defined by the template.</li>
+        <li>Required text does not overlap the screenshot or disappear below the crop.</li>
+        <li>Font size does not fall below the project’s declared minimum.</li>
+        <li>The source image referenced by a frame belongs to the same draft.</li>
+        <li>Every factual sentence maps to at least one evidence item or an editor note.</li>
+        <li>Placeholder tokens such as <code>{{metric}}</code> or <code>TODO</code> are absent from the render.</li>
+        <li>Duplicate or empty frames are reported.</li>
+      </ul>
+
+      <p>A validator can return a machine-readable report:</p>
+
+      <pre><code>{
+  "status": "needs_review",
+  "errors": [],
+  "warnings": [
+    {
+      "frame": 3,
+      "code": "small_text",
+      "message": "Body copy is below the configured minimum."
+    }
+  ],
+  "claim_checks": {
+    "unmapped_claims": 0,
+    "claims_needing_editor_confirmation": 1
+  }
+}</code></pre>
+
+      <p>Here, <code>needs_review</code> is a workflow state, not a test result. The example demonstrates the shape of a report; it does not describe an executed run.</p>
+
+      <h2>Human review and approval</h2>
+
+      <p>Approval should be an explicit tool call or form submission. Do not infer approval from the fact that a render succeeded, a validator returned no errors, or a user opened the preview.</p>
+
+      <p>A reviewer should be able to see, for each frame:</p>
+
+      <ul>
+        <li>the rendered image;</li>
+        <li>the source screenshot;</li>
+        <li>the text and alt text;</li>
+        <li>the evidence ledger entries;</li>
+        <li>automated warnings;</li>
+        <li>the current version identifier.</li>
+      </ul>
+
+      <p>The approval operation should include the reviewer’s decision and the exact version being approved:</p>
+
+      <pre><code>{
+  "name": "approve_carousel",
+  "input": {
+    "draft_id": "demo-2026-11-23-001",
+    "version": "v3",
+    "decision": "approved",
+    "reviewer_note": "Checked wording, crops, and claim evidence."
+  }
+}</code></pre>
+
+      <p>Possible decisions are <code>approved</code>, <code>changes_requested</code>, and <code>rejected</code>. If changes are requested, create a new version rather than mutating the approved one. This preserves the relationship between the review decision and the files that were actually reviewed.</p>
+
+      <h2>Stage 5: scheduling as a separate side effect</h2>
+
+      <p>Scheduling must be unavailable until the draft has an approval record. The scheduling tool should also require a destination, a time, and an idempotency key.</p>
+
+      <pre><code>{
+  "name": "schedule_approved_carousel",
+  "input": {
+    "draft_id": "demo-2026-11-23-001",
+    "version": "v3",
+    "destination": "example-channel",
+    "publish_at": "2026-12-01T10:00:00Z",
+    "idempotency_key": "demo-001-v3-example-channel-2026-12-01T10:00:00Z"
+  }
+}</code></pre>
+
+      <p>The destination above is illustrative. Replace it with a test destination that you control. Do not put a real access token in the article, source repository, screenshot, or sample configuration.</p>
+
+      <p>Before scheduling, the server should verify:</p>
+
+      <ol>
+        <li>The draft exists.</li>
+        <li>The requested version is the version that was approved.</li>
+        <li>The approval has not been revoked or superseded.</li>
+        <li>All rendered files are still available.</li>
+        <li>The idempotency key has not already produced a schedule.</li>
+      </ol>
+
+      <p>If the external scheduler does not support idempotency, store the request and response in your own durable record and make retries conditional on that record. A timeout must not automatically mean “try again”; the first request may have succeeded.</p>
+
+      <h2>A reproducible test procedure</h2>
+
+      <p>The following procedure tests the pipeline without claiming that it is production-ready.</p>
+
+      <ol>
+        <li>Create a clean test directory and a synthetic app screenshot set.</li>
+        <li>Record the file names, dimensions, and hashes.</li>
+        <li>Upload the files under a new draft identifier.</li>
+        <li>Generate an evidence ledger with the “visible facts only” instruction.</li>
+        <li>Generate a fixed-frame carousel draft from that ledger.</li>
+        <li>Render the draft using a fixed template and declared dimensions.</li>
+        <li>Run the structural, claim, and visual checks.</li>
+        <li>Open the rendered frames and manually inspect each one.</li>
+        <li>Approve, reject, or request changes for the exact version.</li>
+        <li>In a test scheduler, submit the approved version with a unique idempotency key.</li>
+        <li>Repeat the scheduling request with the same key and inspect whether it creates a duplicate.</li>
+        <li>Change one source screenshot, create a new version, and confirm that the old approval does not silently authorize the new files.</li>
+      </ol>
+
+      <p>Keep a run log containing inputs, tool arguments, returned identifiers, warnings, approval decisions, and scheduler responses. The log should make it possible to explain what happened without relying on the assistant’s memory.</p>
+
+      <h2>Verification checklist</h2>
+
+      <p>Mark a run as verified only after the following evidence exists:</p>
+
+      <ul>
+        <li>The input files can be identified by stable names or hashes.</li>
+        <li>The generated claims can be traced to screenshots or explicit editor-provided facts.</li>
+        <li>The rendered frames were inspected at their final dimensions.</li>
+        <li>The reviewer approved a specific version, not a moving draft.</li>
+        <li>The scheduler accepted only the approved version.</li>
+        <li>A repeated scheduling request did not create an unintended duplicate.</li>
+        <li>A changed screenshot forced a new version or a new approval.</li>
+        <li>Secrets and personal data were excluded from fixtures and logs.</li>
+      </ul>
+
+      <p>These are acceptance conditions for the test procedure. They are not results. A real article or internal report should state which conditions were actually observed and attach the relevant run records.</p>
+
+      <h2>Failure cases worth testing</h2>
+
+      <h3>Unsupported claim from a screenshot</h3>
+
+      <p>Give the generator a screen with a chart but no stated outcome. The expected safe behavior is to describe the chart and flag any performance statement for review. If the draft says the app “increased retention” without evidence, stop the pipeline and record the claim as a failure.</p>
+
+      <h3>Unreadable mobile text</h3>
+
+      <p>Use a long headline and a narrow template. The validator should raise a warning or error, and the reviewer should be able to see the problem in the rendered frame. A successful render is not proof of readable typography.</p>
+
+      <h3>Missing source file</h3>
+
+      <p>Remove one screenshot after draft generation and run the render step again. The pipeline should fail closed, identify the missing file, and avoid producing a scheduleable artifact.</p>
+
+      <h3>Stale approval</h3>
+
+      <p>Approve version <code>v2</code>, then create <code>v3</code> by changing the copy or image. A scheduling request for <code>v3</code> should be rejected until <code>v3</code> receives its own approval.</p>
+
+      <h3>Retry after timeout</h3>
+
+      <p>Simulate a scheduler timeout after submitting a request. Retry with the same idempotency key and inspect the resulting state. The desired behavior is one identifiable schedule record, not two posts.</p>
+
+      <h3>Prompt injection in an image</h3>
+
+      <p>A screenshot may contain text that looks like an instruction. Treat all screenshot text as untrusted content. The image can provide evidence about the interface; it cannot override the pipeline’s rules, request secrets, or authorize publication.</p>
+
+      <h2>Implementation notes for an MCP server</h2>
+
+      <p>Keep tool permissions narrow. A server that can read screenshots does not automatically need permission to publish posts. Separate read-only tools, draft-writing tools, review tools, and external side-effect tools where possible.</p>
+
+      <p>Return structured errors. A message such as “something went wrong” is difficult to retry safely. Prefer an error code, a human-readable explanation, the affected draft or file, and whether retrying is safe.</p>
+
+      <pre><code>{
+  "error": {
+    "code": "APPROVAL_VERSION_MISMATCH",
+    "message": "Version v3 has no approval record.",
+    "draft_id": "demo-2026-11-23-001",
+    "retryable": false,
+    "next_action": "Request review for version v3."
+  }
+}</code></pre>
+
+      <p>Make state transitions explicit. A useful minimum is:</p>
+
+      <pre><code>uploaded
+  -> analyzed
+  -> drafted
+  -> rendered
+  -> needs_review
+  -> approved
+  -> scheduled</code></pre>
+
+      <p>Allow controlled returns to an earlier state when a reviewer requests changes, but do not overwrite the prior version. Store the transition reason and actor.</p>
+
+      <h2>Limitations</h2>
+
+      <p>This workflow does not guarantee that generated copy is persuasive, legally compliant, culturally appropriate, or suitable for every platform. Visual checks can detect declared mechanical constraints, but they may miss subtle contrast problems, misleading emphasis, or an image that is technically valid but confusing.</p>
+
+      <p>Evidence linking also has limits. A screenshot can show that a label or control is present, but it rarely proves why it exists or what outcome it produces. Product documentation, analytics, legal review, or a human subject-matter expert may still be required.</p>
+
+      <p>The article does not report a completed benchmark, platform approval, publishing success rate, or measured time saving. Those values depend on the selected tools, templates, destination, and test set. Measure them in your own run log rather than borrowing numbers from an example.</p>
+
+      <h2>What a useful next iteration looks like</h2>
+
+      <p>After the basic test works, improve one boundary at a time. Add a claim-review screen, compare two templates using the same source files, or introduce a dry-run scheduler that records requests without publishing. Keep the inputs and acceptance criteria stable while changing one component.</p>
+
+      <p>The most valuable outcome is not a more elaborate prompt. It is a workflow in which every generated sentence has a visible source, every frame is checked after rendering, every approval names an exact version, and every external action can be retried without guessing what already happened.</p>
+
+      <p><a href="../guides.html">Browse the practical guides</a> · <a href="../glossary.html">Open the glossary</a></p>
+    <section class="service-note">
+  <b>We publish what works for us—and implement the same solutions for your business.</b>
+  We design AI automation, Telegram bots, chats, and AI agents for real-world processes.
+  <a href="../contacts-en.html">Discuss your project →</a>
+</section>
+</article>
+  </main>
+
+  <footer class="site-footer">
+    <span>Agent Lab Journal</span>
+    <span>Real experiments. Verifiable conclusions.</span>
+  </footer>
+</body>
+</html>
