@@ -1,0 +1,477 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Собираем финансового RAG-агента и сравниваем retrieval-подходы</title>
+  <meta name="description" content="Собираем финансового RAG-агента и сравниваем retrieval-подходы: hybrid retrieval, reranking, метрики качества, задержка и стоимость прототипа.">
+  <link rel="canonical" href="https://agentlabjournal.online/finrag-agent-benchmark.html">
+  <link rel="stylesheet" href="style.css">
+  <link rel="stylesheet" href="reading.css">
+
+  <meta property="og:type" content="article">
+  <meta property="og:site_name" content="Agent Lab Journal">
+  <meta property="og:title" content="Собираем финансового RAG-агента и сравниваем retrieval-подходы">
+  <meta property="og:description" content="Практическая сборка финансового RAG-ассистента с hybrid retrieval, reranking и измерением качества, задержки и стоимости.">
+  <meta property="og:url" content="https://agentlabjournal.online/finrag-agent-benchmark.html">
+
+  <meta name="twitter:card" content="summary">
+  <meta name="twitter:title" content="Собираем финансового RAG-агента и сравниваем retrieval-подходы">
+  <meta name="twitter:description" content="Практический прототип финансового RAG-ассистента с воспроизводимым benchmark-подходом.">
+<link rel="stylesheet" href="homepage.css"><link rel="stylesheet" href="max-promo.css">  <meta property="og:image" content="https://agentlabjournal.online/assets/covers/llm-context-window-budget-social.png">
+  <meta property="og:image:alt" content="Собираем финансового RAG-агента и сравниваем retrieval-подходы">
+  <meta name="twitter:image" content="https://agentlabjournal.online/assets/covers/llm-context-window-budget-social.png">
+</head>
+<body>
+  <header class="site-header">
+    <div class="container">
+      <a class="site-brand" href="index.html">Agent Lab Journal</a>
+      <nav aria-label="Основная навигация">
+        <a href="guides.html">Guides</a>
+        <a href="glossary.html">Glossary</a>
+      </nav>
+    </div>
+  </header>
+
+  <main>
+    <article class="reading">
+      <div class="reading-meta">
+        <span>Практика</span>
+        <span>Продвинутый уровень</span>
+        <span>До 12 минут</span>
+      </div>
+
+      <header class="article-header">
+        <h1>Собираем финансового RAG-агента и сравниваем retrieval-подходы</h1>
+        <figure class="article-cover" data-editorial-cover="finrag-agent-benchmark"><img src="assets/covers/llm-context-window-budget.png" alt="Собираем финансового RAG-агента и сравниваем retrieval-подходы" width="1280" height="720" fetchpriority="high"><figcaption>Temporary fallback cover; replace in editorial pass.</figcaption></figure>
+        <p class="lead">
+          Финансовый ассистент может уверенно ответить не на тот документ, пропустить нужный фрагмент
+          или потратить слишком много токенов на контекст. В этой статье соберём небольшой
+          <a href="glossary.html#rag">RAG</a>-прототип, сравним несколько стратегий поиска и добавим
+          измерения, без которых качество агента остаётся субъективным.
+        </p>
+      </header>
+<a href="https://max.ru/channel_AgentLab?utm_source=agentlabjournal&utm_medium=article&utm_campaign=max_channel&utm_content=article_footer" class="max-promo-block" target="_blank" rel="noopener noreferrer" aria-label="Самое важное из мира AI в канале MAX AgentLab">
+  <span class="max-promo-block__icon" aria-hidden="true"></span>
+  <span class="max-promo-block__content"><span class="max-promo-block__title">Самое важное из мира AI — в канале MAX AgentLab</span><span class="max-promo-block__desc">Отдельные разборы, инструменты и практические схемы</span></span>
+  <span class="max-promo-block__arrow" aria-hidden="true">→</span>
+</a>
+<a href="https://t.me/pelmenews?utm_source=agentlabjournal&utm_medium=article&utm_campaign=telegram_channel&utm_content=article_intro" class="telegram-promo-block" target="_blank" rel="noopener noreferrer" aria-label="Читайте Agent Lab в Telegram">
+  <span class="telegram-promo-block__icon" aria-hidden="true"></span>
+  <span class="telegram-promo-block__content">
+    <span class="telegram-promo-block__title">Читайте Agent Lab в Telegram</span>
+    <span class="telegram-promo-block__desc">Разборы, кейсы и новости о практических AI-агентах без лишней воды.</span>
+  </span>
+  <span class="telegram-promo-block__arrow" aria-hidden="true">→</span>
+</a>
+
+      <section>
+        <h2>Что будем измерять</h2>
+        <p>
+          Цель прототипа — не доказать превосходство одного алгоритма во всех финансовых задачах,
+          а получить честный способ сравнения на собственном корпусе. Для каждого запроса фиксируем:
+        </p>
+        <ul>
+          <li>релевантность найденных фрагментов;</li>
+          <li>Recall@k и MRR@k;</li>
+          <li>время поиска, reranking и генерации;</li>
+          <li>объём переданного контекста;</li>
+          <li>стоимость одного ответа по фактическим тарифам выбранных сервисов.</li>
+        </ul>
+        <p>
+          В исходных данных не приведены измеренные запросы, цены моделей или готовый корпус,
+          поэтому ниже нет выдуманных численных результатов. Команды и таблицы — воспроизводимый
+          каркас эксперимента, который нужно заполнить своими данными.
+        </p>
+      </section>
+
+      <section>
+        <h2>Архитектура прототипа</h2>
+        <p>Минимальный конвейер выглядит так:</p>
+        <ol>
+          <li>загрузить документы и сохранить их исходные метаданные;</li>
+          <li>разбить текст на фрагменты с перекрытием;</li>
+          <li>построить dense-индекс и лексический индекс;</li>
+          <li>получить кандидатов двумя способами;</li>
+          <li>объединить и rerank-кандидатов;</li>
+          <li>передать ограниченный контекст генератору;</li>
+          <li>записать метрики и трассировку ответа.</li>
+        </ol>
+
+        <pre><code>query
+  ├── dense retrieval ─┐
+  ├── lexical retrieval ├── fusion ── reranker ── context budget ── LLM
+  └── filters ─────────┘                         └── metrics</code></pre>
+
+        <p>
+          Для финансовых документов особенно важны фильтры по дате, типу документа, эмитенту,
+          валюте и версии отчёта. Фильтр должен применяться до генерации, а не объясняться модели
+          в естественном языке.
+        </p>
+      </section>
+
+      <section>
+        <h2>Шаг 1. Подготовить корпус</h2>
+        <p>
+          Начните с документов, права на использование которых у вас есть. Для каждого файла
+          сохраните стабильный идентификатор, дату публикации, источник, тип документа и язык.
+          Не смешивайте в одном наборе отчёты разных периодов без явного поля даты.
+        </p>
+
+        <pre><code>mkdir -p data/raw data/processed runs
+find data/raw -type f -maxdepth 1 -print</code></pre>
+
+        <p>
+          Безопаснее сначала работать с копией корпуса и не выполнять команды, удаляющие файлы.
+          Перед индексированием проверьте расширения, кодировку и размер документов:
+        </p>
+
+        <pre><code>find data/raw -maxdepth 1 -type f \
+  \( -iname '*.pdf' -o -iname '*.txt' -o -iname '*.md' \) \
+  -print</code></pre>
+
+        <p>
+          Для финансового текста не стоит бездумно удалять таблицы, номера страниц и заголовки:
+          они часто несут смысл. Сохраняйте исходный текст рядом с нормализованной версией,
+          чтобы можно было проверить спорный ответ по первоисточнику.
+        </p>
+      </section>
+
+      <section>
+        <h2>Шаг 2. Сделать разбиение</h2>
+        <p>
+          Начните с фиксированного размера чанка и перекрытия, затем меняйте только один параметр
+          за раз. Слишком короткие фрагменты теряют контекст показателя, а слишком длинные
+          увеличивают стоимость генерации и снижают точность reranking.
+        </p>
+
+        <pre><code>{
+  "chunk_size": 700,
+  "chunk_overlap": 100,
+  "separators": ["\n\n", "\n", ". ", " "],
+  "metadata": ["document_id", "source", "published_at", "page", "section"]
+}</code></pre>
+
+        <p>
+          Значения выше — пример конфигурации, а не универсальный стандарт. Зафиксируйте её в
+          репозитории или конфигурационном файле, иначе результаты разных запусков нельзя будет
+          сопоставить.
+        </p>
+      </section>
+
+      <section>
+        <h2>Шаг 3. Сравнить retrieval-подходы</h2>
+
+        <h3>Только dense retrieval</h3>
+        <p>
+          Векторный поиск полезен для перефразированных вопросов и смыслового сходства. Его слабое
+          место — точные названия показателей, тикеры, номера форм, даты и редкие термины.
+        </p>
+
+        <h3>Только lexical retrieval</h3>
+        <p>
+          Лексический поиск хорошо сохраняет совпадение терминов и чисел, но может пропустить
+          фрагмент, сформулированный иначе. Он также чувствителен к качеству нормализации текста.
+        </p>
+
+        <h3>Hybrid retrieval</h3>
+        <p>
+          Гибридный вариант объединяет кандидатов из обоих индексов. Простая схема — Reciprocal
+          Rank Fusion:
+        </p>
+
+        <pre><code>score(d) = Σ 1 / (k + rank_i(d))</code></pre>
+
+        <p>
+          Здесь <code>rank_i</code> — позиция документа в одном из списков, а <code>k</code> —
+          сглаживающая константа. Важно не сравнивать сырые score разных поисковых систем:
+          их шкалы обычно несопоставимы.
+        </p>
+
+        <h3>Reranking</h3>
+        <p>
+          Reranker получает запрос и небольшой список кандидатов, после чего переупорядочивает их
+          по более дорогой модели соответствия. Практический компромисс: сначала получить широкий
+          список недорогим поиском, затем rerank только верхнюю часть.
+        </p>
+
+        <pre><code>dense_top_k = 30
+lexical_top_k = 30
+fusion_top_k = 40
+rerank_top_k = 12
+context_top_k = 6</code></pre>
+
+        <p>
+          Эти числа — стартовый пример. Их нужно менять на вашем корпусе и оценивать вместе с
+          качеством и задержкой.
+        </p>
+      </section>
+
+      <section>
+        <h2>Шаг 4. Сформировать набор оценки</h2>
+        <p>
+          Создайте небольшой evaluation set: запрос, ожидаемый документ или фрагмент, допустимые
+          альтернативы и важные ограничения. Для финансовых запросов добавьте поля периода,
+          единицы измерения и типа показателя.
+        </p>
+
+        <pre><code>{
+  "query_id": "q-001",
+  "question": "пример запроса",
+  "relevant_chunk_ids": ["doc-12:p-4:c-03"],
+  "required_filters": {
+    "published_at_lte": "YYYY-MM-DD"
+  },
+  "notes": "Что считать достаточным совпадением"
+}</code></pre>
+
+        <p>
+          Разделяйте вопросы на фактические, сравнительные и многошаговые. Один общий показатель
+          может скрыть проблему: агент правильно находит документ, но не умеет собрать ответ из
+          двух периодов или отличить прогноз от факта.
+        </p>
+      </section>
+
+      <section>
+        <h2>Шаг 5. Посчитать качество поиска</h2>
+
+        <h3>Recall@k</h3>
+        <p>
+          Recall@k показывает, попал ли хотя бы один релевантный фрагмент в первые k результатов:
+        </p>
+
+        <pre><code>Recall@k =
+  число запросов с релевантным фрагментом в top-k
+  / число запросов</code></pre>
+
+        <h3>MRR@k</h3>
+        <p>
+          Mean Reciprocal Rank учитывает позицию первого релевантного результата. Если релевантный
+          фрагмент чаще находится на первой позиции, MRR будет выше, даже при одинаковом Recall.
+        </p>
+
+        <h3>Проверка контекста</h3>
+        <p>
+          Отдельно измеряйте долю ответов, где найденные фрагменты действительно поддерживают
+          утверждение. Это уже не только retrieval-метрика: она требует ручной разметки или
+          отдельного оценочного протокола. Не подменяйте её уверенностью модели.
+        </p>
+
+        <table>
+          <thead>
+            <tr>
+              <th>Конфигурация</th>
+              <th>Recall@k</th>
+              <th>MRR@k</th>
+              <th>Поиск, мс</th>
+              <th>Контекст, токены</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td>Dense</td>
+              <td>заполнить</td>
+              <td>заполнить</td>
+              <td>заполнить</td>
+              <td>заполнить</td>
+            </tr>
+            <tr>
+              <td>Lexical</td>
+              <td>заполнить</td>
+              <td>заполнить</td>
+              <td>заполнить</td>
+              <td>заполнить</td>
+            </tr>
+            <tr>
+              <td>Hybrid</td>
+              <td>заполнить</td>
+              <td>заполнить</td>
+              <td>заполнить</td>
+              <td>заполнить</td>
+            </tr>
+            <tr>
+              <td>Hybrid + reranking</td>
+              <td>заполнить</td>
+              <td>заполнить</td>
+              <td>заполнить</td>
+              <td>заполнить</td>
+            </tr>
+          </tbody>
+        </table>
+      </section>
+
+      <section>
+        <h2>Шаг 6. Измерить задержку и стоимость</h2>
+        <p>
+          Логируйте этапы отдельно: query embedding, dense search, lexical search, fusion,
+          reranking, подготовка контекста и генерация. Среднее время недостаточно: добавьте
+          медиану и высокий перцентиль, например p95.
+        </p>
+
+        <pre><code>{
+  "query_id": "q-001",
+  "timings_ms": {
+    "embedding": 0,
+    "dense": 0,
+    "lexical": 0,
+    "rerank": 0,
+    "generation": 0
+  },
+  "tokens": {
+    "input": 0,
+    "output": 0
+  },
+  "retrieved_ids": [],
+  "run_id": "local-YYYYMMDD"
+}</code></pre>
+
+        <p>
+          Стоимость ответа считайте по фактическим тарифам используемых моделей и инфраструктуры:
+          отдельно для embedding, reranking и генерации. Если тарифы не зафиксированы, не подставляйте
+          приблизительные цены. Запишите дату расчёта, валюту и единицы биллинга.
+        </p>
+
+        <pre><code>cost_per_answer =
+  embedding_cost
+  + rerank_cost
+  + generation_input_cost
+  + generation_output_cost
+  + allocated_infrastructure_cost</code></pre>
+
+        <p>
+          Чтобы сравнение было честным, запускайте все конфигурации на одном наборе запросов,
+          с одинаковым лимитом кандидатов и одинаковым форматом ответа.
+        </p>
+      </section>
+
+      <section>
+        <h2>Шаг 7. Проверить результат</h2>
+        <p>
+          Перед выводом прототипа в тестовую эксплуатацию проверьте не только итоговый текст,
+          но и трассировку:
+        </p>
+        <ul>
+          <li>у каждого утверждения есть ссылки на найденные фрагменты;</li>
+          <li>фильтр даты не пропускает более новые документы;</li>
+          <li>пустой результат не превращается в уверенный ответ;</li>
+          <li>лимит контекста соблюдается;</li>
+          <li>повторный запуск сохраняет одинаковую конфигурацию;</li>
+          <li>в логах нет исходных секретов и лишних персональных данных.</li>
+        </ul>
+
+        <p>
+          Полезный тест отказа: задайте вопрос, на который корпус не отвечает. Ожидаемое поведение —
+          явно сообщить об отсутствии подтверждения и предложить уточнить период или источник,
+          а не достраивать число по общему контексту.
+        </p>
+      </section>
+
+      <section>
+        <h2>Типовые ошибки</h2>
+        <dl>
+          <dt>Сравнение score разных индексов</dt>
+          <dd>Шкалы dense и lexical поиска различаются. Объединяйте ранги или калибруйте score на отдельном наборе.</dd>
+
+          <dt>Слишком большой top-k</dt>
+          <dd>Широкий список повышает нагрузку на reranker и увеличивает задержку. Измеряйте прирост Recall после каждого увеличения.</dd>
+
+          <dt>Отсутствие метаданных в чанке</dt>
+          <dd>Без даты, страницы и источника сложно проверить ответ и применить безопасный фильтр.</dd>
+
+          <dt>Оценка только генерации</dt>
+          <dd>Красивый ответ не доказывает, что retrieval нашёл правильный источник. Сначала оценивайте найденные фрагменты.</dd>
+
+          <dt>Смешивание документов разных версий</dt>
+          <dd>Одинаковый показатель может измениться после исправления отчёта. Версия и дата должны участвовать в идентификаторе документа.</dd>
+
+          <dt>Непрозрачная стоимость</dt>
+          <dd>Если не считать токены и вызовы по этапам, оптимизация превращается в догадку.</dd>
+        </dl>
+      </section>
+
+      <section>
+        <h2>Ограничения прототипа</h2>
+        <p>
+          Такой benchmark не заменяет финансовую экспертизу, аудит данных или проверку регуляторных
+          требований. Recall и MRR оценивают поиск, но не гарантируют корректность расчёта,
+          интерпретации или инвестиционного вывода. Ручная разметка тоже может быть неполной:
+          зафиксируйте критерии релевантности и версию набора оценки.
+        </p>
+        <p>
+          Не переносите результаты на новый корпус без повторного измерения. Изменение модели
+          embedding, размера чанка, индекса, reranker или шаблона промпта меняет эксперимент.
+        </p>
+      </section>
+
+      <section>
+        <h2>Итог</h2>
+        <p>
+          Практичный финансовый RAG-агент начинается не с выбора самой большой модели, а с
+          наблюдаемого retrieval-конвейера. Сначала зафиксируйте корпус и evaluation set, затем
+          сравните dense, lexical, hybrid и hybrid с reranking по Recall, MRR, задержке,
+          контексту и стоимости. Только после этого выбирайте конфигурацию для конкретного
+          сценария.
+        </p>
+        <p>
+          Для следующих шагов используйте <a href="guides.html">практические guides</a> и
+          <a href="glossary.html">глоссарий терминов</a>.
+        </p>
+      </section>
+<aside class="service-note" aria-label="Связаться по проекту">
+  <div class="service-note__copy">
+    <p class="service-note__label">Связь с Agent Lab</p>
+    <p class="service-note__title">Внедрим такой контур в ваш процесс</p>
+    <p class="service-note__text">Напишите инженеру Agent Lab в Telegram: опишите задачу, бота или интеграцию — предложим пилот с проверками и понятными границами.</p>
+  </div>
+  <a class="service-note__link" href="https://t.me/msrzn007?utm_source=journal&amp;utm_medium=article&amp;utm_campaign=service_note" target="_blank" rel="noopener">Написать в Telegram
+    <svg viewBox="0 0 16 16" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"><path d="M3 13 13 3M6 3h7v7"/></svg>
+  </a>
+</aside>
+<aside class="service-note service-note--sitevisor" aria-label="Экспресс-аудит сайта">
+  <div class="service-note__copy">
+    <p class="service-note__label">SiteVisor</p>
+    <p class="service-note__title">Проверьте техническое состояние и готовность вашего сайта к рекламе</p>
+    <p class="service-note__text">Экспресс-аудит на SiteVisor.pro: индексация, скорость, разметка, аналитика и точки конверсии.</p>
+  </div>
+  <a class="service-note__link" href="https://sitevisor.pro/?utm_source=journal&amp;utm_medium=article&amp;utm_campaign=leadmagnet" target="_blank" rel="noopener">Экспресс-аудит на SiteVisor.pro
+    <svg viewBox="0 0 16 16" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"><path d="M3 13 13 3M6 3h7v7"/></svg>
+  </a>
+</aside>
+</article>
+  </main>
+
+  <footer class="site-footer">
+    <div class="container">
+      <p>© Agent Lab Journal</p>
+      <nav aria-label="Навигация в подвале">
+        <a href="guides.html">Guides</a>
+        <a href="glossary.html">Glossary</a>
+      </nav>
+    </div>
+  </footer>
+
+  <script type="application/ld+json">
+  {
+    "@context": "https://schema.org",
+    "@type": "Article",
+    "headline": "Собираем финансового RAG-агента и сравниваем retrieval-подходы",
+    "description": "Практическая сборка финансового RAG-ассистента с hybrid retrieval, reranking и измерением качества, задержки и стоимости.",
+    "mainEntityOfPage": {
+      "@type": "WebPage",
+      "@id": "https://agentlabjournal.online/finrag-agent-benchmark.html"
+    },
+    "url": "https://agentlabjournal.online/finrag-agent-benchmark.html",
+    "inLanguage": "ru",
+    "publisher": {
+      "@type": "Organization",
+      "name": "Agent Lab Journal",
+      "url": "https://agentlabjournal.online/"
+    },
+    "author": {
+      "@type": "Organization",
+      "name": "Agent Lab Journal"
+    }
+  }
+  </script>
+</body>
+</html>

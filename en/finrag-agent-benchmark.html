@@ -1,0 +1,602 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Build a financial RAG agent and compare retrieval approaches</title>
+  <meta name="description" content="Build a financial RAG agent and compare retrieval approaches with a reproducible benchmark for hybrid retrieval, reranking, answer quality, latency, and cost.">
+  <link rel="canonical" href="https://agentlabjournal.online/en/finrag-agent-benchmark.html">
+  <link rel="stylesheet" href="../style.css">
+  <link rel="stylesheet" href="../reading.css">
+
+  <meta property="og:type" content="article">
+  <meta property="og:site_name" content="Agent Lab Journal">
+  <meta property="og:title" content="Build a financial RAG agent and compare retrieval approaches">
+  <meta property="og:description" content="A reproducible guide to building and evaluating a financial RAG assistant with hybrid retrieval, reranking, quality metrics, latency, and cost accounting.">
+  <meta property="og:url" content="https://agentlabjournal.online/en/finrag-agent-benchmark.html">
+  <meta property="og:image" content="https://agentlabjournal.online/assets/covers/llm-context-window-budget-social.png">
+
+  <meta name="twitter:card" content="summary_large_image">
+  <meta name="twitter:title" content="Build a financial RAG agent and compare retrieval approaches">
+  <meta name="twitter:description" content="A reproducible guide to building and evaluating a financial RAG assistant with hybrid retrieval, reranking, quality metrics, latency, and cost accounting.">
+  <meta name="twitter:image" content="https://agentlabjournal.online/assets/covers/llm-context-window-budget-social.png">
+
+  <meta name="reading-time" content="40 minutes">
+  <meta name="article:reading_time" content="40 minutes">
+  <meta name="article:level" content="advanced">
+
+  <script type="application/ld+json">
+  {
+    "@context": "https://schema.org",
+    "@type": "Article",
+    "headline": "Build a financial RAG agent and compare retrieval approaches",
+    "description": "A reproducible guide to building and evaluating a financial RAG assistant with hybrid retrieval, reranking, quality metrics, latency, and cost accounting.",
+    "image": ["https://agentlabjournal.online/assets/covers/llm-context-window-budget-social.png"],
+    "dateModified": "2026-11-23",
+    "author": {
+      "@type": "Organization",
+      "name": "Agent Lab Journal"
+    },
+    "publisher": {
+      "@type": "Organization",
+      "name": "Agent Lab Journal",
+      "url": "https://agentlabjournal.online"
+    },
+    "mainEntityOfPage": {
+      "@type": "WebPage",
+      "@id": "https://agentlabjournal.online/en/finrag-agent-benchmark.html"
+    }
+  }
+  </script>
+<link rel="stylesheet" href="../homepage.css"><link rel="stylesheet" href="../max-promo.css">  <meta property="og:image:alt" content="Собираем финансового RAG-агента и сравниваем retrieval-подходы">
+</head>
+<body>
+  <header class="site-header">
+    <div class="site-header__inner">
+      <a class="site-logo" href="../index.html">Agent Lab Journal</a>
+      <nav aria-label="Primary navigation">
+        <a href="../guides.html">Guides</a>
+        <a href="../glossary.html">Glossary</a>
+      </nav>
+    </div>
+  </header>
+
+  <main>
+    <article class="reading">
+      <header class="reading-header">
+        <p class="reading-kicker">Retrieval engineering · Advanced</p>
+        <h1>Build a financial RAG agent and compare retrieval approaches</h1>
+        <figure class="article-cover" data-editorial-cover="finrag-agent-benchmark"><img src="../assets/covers/llm-context-window-budget.png" alt="Собираем финансового RAG-агента и сравниваем retrieval-подходы" width="1280" height="720" fetchpriority="high"><figcaption>Temporary fallback cover; replace in editorial pass.</figcaption></figure>
+        <p class="reading-dek">
+          A practical, evidence-bounded workflow for building a financial assistant that retrieves the right filing passages, cites its evidence, and measures quality, latency, and cost before anyone trusts it with real questions.
+        </p>
+        <div class="reading-meta">
+          <span>40 min read</span>
+          <span>Updated 23 November 2026</span>
+          <span>By Agent Lab Journal</span>
+        </div>
+      </header>
+
+      <aside class="reading-callout">
+        <strong>The premise</strong>
+        <p>
+          A financial assistant can produce fluent answers while searching the wrong filing, confusing reporting periods, or missing a small but decisive footnote. The engineering problem is therefore not “add a vector database.” It is to make retrieval measurable, make evidence visible, and make unsupported answers expensive to generate.
+        </p>
+      </aside>
+
+      <section>
+        <h2>What you will build</h2>
+        <p>
+          This article describes a reproducible prototype for a <a href="../glossary.html#rag">retrieval-augmented generation (RAG)</a> assistant over financial documents. The prototype accepts a natural-language question, retrieves candidate passages using several strategies, optionally applies a <a href="../glossary.html#reranking">reranker</a>, asks a language model to answer only from the selected evidence, and records enough metadata to evaluate the whole pipeline.
+        </p>
+        <p>
+          The comparison is deliberately small and explicit. You will test:
+        </p>
+        <ul>
+          <li>lexical retrieval with BM25;</li>
+          <li>dense retrieval with embedding vectors;</li>
+          <li>hybrid retrieval that combines lexical and dense rankings;</li>
+          <li>hybrid retrieval followed by a cross-encoder reranker.</li>
+        </ul>
+        <p>
+          The article does not claim benchmark results for a particular model, corpus, cloud, or customer. The commands and schemas are implementation patterns. You must run them against your own documents, hardware, model versions, and labeled questions before drawing conclusions.
+        </p>
+      </section>
+
+      <section>
+        <h2>Why financial search is unusually unforgiving</h2>
+        <p>
+          Financial questions often contain several constraints at once: a company, a reporting period, a document type, a metric, a unit, and a comparison. “What was operating cash flow in 2023?” is not equivalent to “What was operating cash flow in the first quarter of 2023?” A result from an earnings presentation may also answer differently from a result in an audited annual report.
+        </p>
+        <p>
+          Exact terms matter. Ticker symbols, accounting labels, section headings, table row names, dates, and footnote references are often more useful than semantic similarity. At the same time, a user may ask with a phrase that never appears verbatim in the source. “How much cash did the company burn?” may require retrieving “net cash used in operating activities.”
+        </p>
+        <p>
+          This is why a single retrieval method is a weak default. Lexical retrieval is strong at exact identifiers and rare phrases. Dense retrieval is strong at paraphrases. A reranker can inspect the interaction between the query and each candidate passage, but it adds compute and latency. The correct choice is an empirical result for a defined workload, not a universal claim.
+        </p>
+      </section>
+
+      <section>
+        <h2>Define the evidence boundary first</h2>
+        <p>
+          Before indexing anything, write down what the assistant is allowed to answer. A safe prototype should have a narrow source boundary, such as public annual reports, quarterly reports, earnings releases, and investor presentations that you have downloaded and hashed locally.
+        </p>
+        <p>
+          Store provenance with every chunk. At minimum, keep:
+        </p>
+        <pre><code>{
+  "document_id": "acme_2023_annual_report",
+  "source_uri": "https://example.invalid/source",
+  "document_type": "annual_report",
+  "issuer": "ACME",
+  "period_end": "2023-12-31",
+  "page": 87,
+  "section": "Liquidity and capital resources",
+  "content_hash": "sha256:...",
+  "retrieved_at": "2026-11-23T00:00:00Z"
+}</code></pre>
+        <p>
+          The URI above is a placeholder, not a source citation. Replace it with the URI or internal file identifier for a document you actually possess. Do not put credentials, private customer data, account numbers, or unpublished material into a benchmark corpus.
+        </p>
+        <p>
+          A useful answer contract is: if the selected evidence does not support the requested issuer, period, metric, and unit, the assistant must say that it cannot verify the answer. “I do not have enough evidence” is a valid output and should be scored as such.
+        </p>
+      </section>
+
+      <section>
+        <h2>Prepare a small, versioned corpus</h2>
+        <p>
+          Reproducibility starts with a manifest. Keep source files outside the application image when practical, and record the exact preprocessing configuration used to create the index.
+        </p>
+        <pre><code>corpus/
+  raw/
+    acme_2023_annual_report.pdf
+    acme_2024_q1_earnings_release.html
+  normalized/
+  chunks.jsonl
+  manifest.json
+  questions.jsonl
+  runs/</code></pre>
+        <p>Example manifest:</p>
+        <pre><code>{
+  "corpus_version": "2026-11-23-demo-01",
+  "files": [
+    {
+      "document_id": "acme_2023_annual_report",
+      "path": "raw/acme_2023_annual_report.pdf",
+      "sha256": "replace-with-computed-hash"
+    }
+  ],
+  "chunking": {
+    "target_tokens": 450,
+    "overlap_tokens": 75,
+    "preserve_tables": true
+  }
+}</code></pre>
+        <p>
+          Extract text with a parser that preserves page numbers and table boundaries. Do not silently flatten every table into a paragraph: a row label without its column heading can change the meaning of a number. If your parser cannot preserve a table reliably, mark that table as unsupported or use a table-aware representation and test it separately.
+        </p>
+      </section>
+
+      <section>
+        <h2>Chunking: preserve the unit of evidence</h2>
+        <p>
+          <a href="../glossary.html#chunking">Chunking</a> is not only a token-budget decision. It defines what the model sees as one piece of evidence. A chunk that combines a management discussion with an unrelated accounting policy may retrieve well but provide ambiguous support. A chunk that splits a table from its header may be short and precise but unusable.
+        </p>
+        <p>
+          Start with section-aware chunks of roughly 300–600 tokens and a modest overlap. Treat these values as configuration, not as a fact about all financial documents. Run a small sensitivity test with at least two chunk sizes while keeping the corpus and question set fixed.
+        </p>
+        <p>
+          Each chunk should include context fields in the text sent to retrieval and generation. For example:
+        </p>
+        <pre><code>[issuer=ACME]
+[document=annual_report]
+[period_end=2023-12-31]
+[page=87]
+[section=Liquidity and capital resources]
+
+Net cash used in operating activities was ...
+</code></pre>
+        <p>
+          These labels help lexical search and make citations easier to render. They are not a substitute for metadata filters. Filter by issuer or period when the question makes those constraints explicit, and log whether the filter was applied.
+        </p>
+      </section>
+
+      <section>
+        <h2>Build four retrieval baselines</h2>
+
+        <h3>1. Lexical retrieval with BM25</h3>
+        <p>
+          <a href="../glossary.html#bm25">BM25</a> scores documents using term frequency, inverse document frequency, and document-length normalization. It is a useful baseline because it is interpretable and often strong for ticker symbols, dates, rare accounting terms, and exact table labels.
+        </p>
+        <p>
+          Normalize case and whitespace, but be conservative with stemming and stop-word removal. “Loss” and “losses,” or “current” and “non-current,” may carry important meaning in financial text. Test the analyzer on examples rather than assuming a generic web-search configuration is suitable.
+        </p>
+
+        <h3>2. Dense retrieval with embeddings</h3>
+        <p>
+          <a href="../glossary.html#embeddings">Embeddings</a> represent chunks and queries as vectors. A vector index returns passages that are close under a similarity function, usually cosine or dot-product similarity. Dense retrieval can connect paraphrases, but it may underweight exact identifiers or return passages that are semantically related but from the wrong period.
+        </p>
+        <p>
+          Record the embedding model identifier, dimension, normalization setting, batch size, and index configuration. Changing any of these can invalidate a comparison. If you use an external embedding service, record model version and request timestamps without storing sensitive query content in logs.
+        </p>
+
+        <h3>3. Hybrid retrieval</h3>
+        <p>
+          <a href="../glossary.html#hybrid-retrieval">Hybrid retrieval</a> combines lexical and dense candidates. A practical implementation retrieves <code>k_lexical</code> and <code>k_dense</code> candidates independently, then combines their ranks using <a href="../glossary.html#rrf">reciprocal rank fusion (RRF)</a>:
+        </p>
+        <pre><code>RRF(d) = Σ&#x2098; 1 / (k + rank&#x2098;(d))</code></pre>
+        <p>
+          The constant <code>k</code> is a tunable fusion parameter. It is not the same as the final number of passages shown to the language model. Keep candidate depth and final context size separate in your configuration.
+        </p>
+
+        <h3>4. Hybrid retrieval plus reranking</h3>
+        <p>
+          A <a href="../glossary.html#cross-encoder">cross-encoder</a> reranker reads the query and each candidate together and assigns a relevance score. Use it after broad candidate generation, not as a replacement for candidate generation. The reranker can improve ordering, but it cannot recover a passage that no first-stage retriever returned.
+        </p>
+        <p>
+          Log both stages. Otherwise, a higher answer score may hide a first-stage recall regression that will become visible when questions get harder.
+        </p>
+      </section>
+
+      <section>
+        <h2>Reference pipeline</h2>
+        <p>
+          Keep the system modular so retrieval approaches can be swapped without changing generation. A minimal interface looks like this:
+        </p>
+        <pre><code>class Retriever:
+    def search(self, query: str, filters: dict, limit: int) -> list[dict]:
+        """
+        Return chunks with:
+        - chunk_id
+        - text
+        - metadata
+        - score
+        - retriever_name
+        """
+        raise NotImplementedError</code></pre>
+        <p>
+          The application flow should be explicit:
+        </p>
+        <ol>
+          <li>Parse the question and extract optional constraints.</li>
+          <li>Apply only constraints that are present and validated.</li>
+          <li>Run the selected first-stage retriever or retrievers.</li>
+          <li>Fuse candidates when using hybrid retrieval.</li>
+          <li>Rerank the candidate set when configured.</li>
+          <li>Trim evidence to a context budget while preserving provenance.</li>
+          <li>Generate an answer under a strict evidence-only instruction.</li>
+          <li>Validate citations and persist the run record.</li>
+        </ol>
+        <p>Example configuration:</p>
+        <pre><code>retrieval:
+  mode: hybrid_rerank
+  lexical_top_k: 40
+  dense_top_k: 40
+  fusion: rrf
+  fusion_k: 60
+  rerank_top_k: 20
+  context_top_k: 6
+  filters:
+    allow_issuer_filter: true
+    allow_period_filter: true
+
+generation:
+  temperature: 0
+  max_output_tokens: 500
+  require_citations: true
+  abstain_if_evidence_insufficient: true</code></pre>
+        <p>
+          The values are starting points for an experiment, not measured recommendations. Tune them on a development split and report the final values with the benchmark.
+        </p>
+      </section>
+
+      <section>
+        <h2>Use an evidence-first answer prompt</h2>
+        <p>
+          Prompting cannot repair bad retrieval, but it can reduce unsupported synthesis. Pass the model numbered evidence blocks with stable identifiers:
+        </p>
+        <pre><code>SYSTEM:
+You answer questions about financial documents.
+
+Rules:
+1. Use only the evidence blocks supplied in this request.
+2. If the evidence does not establish the issuer, period, metric, and unit,
+   say that the answer cannot be verified from the supplied documents.
+3. Do not infer a number from a chart, table, or neighboring period unless
+   the evidence explicitly supports it.
+4. Cite every material claim as [chunk_id, page].
+5. Distinguish reported values from calculations.
+
+USER:
+Question: {question}
+
+Evidence:
+{numbered_evidence_blocks}</code></pre>
+        <p>
+          Add a post-generation validator. It should check that cited chunk identifiers were actually supplied, that citations contain known page metadata where available, and that numeric claims have at least one citation. This validator is a guardrail, not a fact checker: a model can cite a real but irrelevant passage.
+        </p>
+      </section>
+
+      <section>
+        <h2>Create a labeled evaluation set</h2>
+        <p>
+          Retrieval quality cannot be inferred from a few attractive demos. Build a question set that reflects the failure modes you care about. Each question should have a source-level label, not merely an expected answer string.
+        </p>
+        <pre><code>{
+  "question_id": "q-001",
+  "question": "What was operating cash flow in 2023?",
+  "constraints": {
+    "issuer": "ACME",
+    "period_end": "2023-12-31",
+    "unit": "USD"
+  },
+  "relevant_chunk_ids": [
+    "acme_2023_annual_report:p87:c03"
+  ],
+  "answerable": true,
+  "gold_answer": "Record the verified answer during annotation.",
+  "annotation_notes": "Use the consolidated cash-flow statement."
+}</code></pre>
+        <p>
+          The example gold answer is intentionally a placeholder. Do not copy it into a benchmark as if it were a verified financial fact. Annotators should record the value from the source document and retain the page and table references.
+        </p>
+        <p>Include several question families:</p>
+        <ul>
+          <li>exact lookup: a named metric in a named period;</li>
+          <li>paraphrase: a user phrase that differs from the source wording;</li>
+          <li>comparison: one metric across two periods;</li>
+          <li>table question: a row and column intersection;</li>
+          <li>footnote question: a definition or accounting policy;</li>
+          <li>ambiguous question: missing issuer, period, or unit;</li>
+          <li>unanswerable question: the corpus does not contain enough evidence.</li>
+        </ul>
+        <p>
+          Split by question, not by chunk. Keep a development set for tuning and a held-out test set for the final comparison. If the corpus is small, document the limitation and use repeated annotation or cross-validation rather than presenting a tiny test set as definitive.
+        </p>
+      </section>
+
+      <section>
+        <h2>Measure retrieval separately from answers</h2>
+        <p>
+          For each query, save the ranked list returned by every retrieval variant. At minimum, calculate:
+        </p>
+        <ul>
+          <li><a href="../glossary.html#recall-at-k">Recall@k</a>: whether a labeled relevant chunk appears in the first <code>k</code> results.</li>
+          <li><a href="../glossary.html#mrr">Mean reciprocal rank (MRR)</a>: how early the first relevant result appears.</li>
+          <li><a href="../glossary.html#ndcg">nDCG@k</a>: how well graded relevance is ordered when several passages matter.</li>
+          <li>filter accuracy: whether issuer and period constraints were respected;</li>
+          <li>candidate count: how many chunks reached the reranker and generator.</li>
+        </ul>
+        <p>
+          Use graded labels when useful: 2 for directly sufficient evidence, 1 for supporting but incomplete context, and 0 for irrelevant or contradictory content. Define the labels before evaluation and keep the rubric with the benchmark.
+        </p>
+        <p>Conceptual pseudocode:</p>
+        <pre><code>for question in test_questions:
+    for variant in variants:
+        ranked = variant.retrieve(question.text, question.constraints)
+        metrics[variant].update(
+            recall_at_k=recall_at_k(ranked, question.relevant_chunk_ids, k=5),
+            mrr=reciprocal_rank(ranked, question.relevant_chunk_ids),
+            ndcg=ndcg(ranked, question.relevance_labels, k=10)
+        )</code></pre>
+        <p>
+          Do not average away the hard cases. Report aggregate metrics and a slice by question family, document type, period, and answerability. A method that improves average recall by returning more loosely related passages may still harm table questions or increase generation cost.
+        </p>
+      </section>
+
+      <section>
+        <h2>Measure answer quality with a rubric</h2>
+        <p>
+          Retrieval metrics do not guarantee a correct answer. Evaluate generated answers against the source evidence using a rubric that separates correctness from citation behavior:
+        </p>
+        <ol>
+          <li><strong>Answer correctness:</strong> Is the value, direction, comparison, and unit correct?</li>
+          <li><strong>Evidence support:</strong> Does the cited passage support the claim?</li>
+          <li><strong>Completeness:</strong> Are all material parts of the question answered?</li>
+          <li><strong>Period and entity fidelity:</strong> Is the answer about the requested issuer and period?</li>
+          <li><strong>Abstention quality:</strong> Does the assistant decline when the corpus is insufficient?</li>
+          <li><strong>Format quality:</strong> Are citations and uncertainty statements usable?</li>
+        </ol>
+        <p>
+          Use human review for the final test set when the decision matters. An automated judge may help triage, but it should not be treated as ground truth without calibration against human labels. If you use a model judge, record its model identifier, prompt, temperature, and rubric version.
+        </p>
+        <p>
+          A useful failure label is “retrieval error” when the needed passage was absent from the context, versus “generation error” when the needed passage was present but the answer was wrong or unsupported. This distinction tells you whether to improve indexing and ranking or the answer policy.
+        </p>
+      </section>
+
+      <section>
+        <h2>Measure latency and cost as distributions</h2>
+        <p>
+          Report more than an average. Record end-to-end latency and stage timings:
+        </p>
+        <pre><code>{
+  "question_id": "q-001",
+  "variant": "hybrid_rerank",
+  "timings_ms": {
+    "query_parse": 4,
+    "lexical_search": 18,
+    "dense_search": 31,
+    "fusion": 1,
+    "rerank": 94,
+    "generation": 680,
+    "total": 828
+  },
+  "usage": {
+    "input_tokens": 3200,
+    "output_tokens": 180
+  }
+}</code></pre>
+        <p>
+          The numbers above are illustrative placeholders, not measured results. Replace them with values captured from your own run. Report median, p95, and error rate for each variant. If the system uses remote services, separate network time from service processing time when the API exposes that information.
+        </p>
+        <p>
+          Cost accounting should be formula-based and versioned. For a hosted model, use the provider’s current price table at the time of your experiment and store the exact model and pricing date. For local inference, include a declared allocation for compute, storage, and operational overhead if you need a total-cost estimate. If you cannot verify a price, report token counts and omit a monetary total rather than inventing one.
+        </p>
+        <pre><code>run_cost =
+    embedding_requests * embedding_unit_cost
+  + reranker_units * reranker_unit_cost
+  + input_tokens / 1_000_000 * input_price
+  + output_tokens / 1_000_000 * output_price</code></pre>
+        <p>
+          Cache policy matters. Run one benchmark with cold caches and one with the cache behavior you expect in production. Label both clearly; otherwise a latency comparison may conflate retrieval quality with cache state.
+        </p>
+      </section>
+
+      <section>
+        <h2>Run the comparison reproducibly</h2>
+        <p>
+          A command-line runner makes the experiment easier to repeat:
+        </p>
+        <pre><code>python -m finrag.index \
+  --corpus-version 2026-11-23-demo-01 \
+  --chunk-config configs/chunking.yaml \
+  --output artifacts/indexes/demo-01
+
+python -m finrag.evaluate \
+  --questions corpus/questions.jsonl \
+  --index artifacts/indexes/demo-01 \
+  --variants lexical,dense,hybrid,hybrid_rerank \
+  --split test \
+  --output artifacts/runs/demo-01.jsonl
+
+python -m finrag.report \
+  --runs artifacts/runs/demo-01.jsonl \
+  --output artifacts/reports/demo-01.html</code></pre>
+        <p>
+          Pin application dependencies and record the runtime, operating system, CPU or GPU type, index build time, model identifiers, and environment configuration. A container or lockfile is useful, but it does not make external model APIs deterministic. State which parts remain variable.
+        </p>
+        <p>
+          For answer generation, use deterministic settings where supported. Do not claim exact reproducibility if the provider does not guarantee deterministic output. Instead, run multiple seeds or repeated calls and report variation in answer metrics.
+        </p>
+      </section>
+
+      <section>
+        <h2>How to interpret the result</h2>
+        <p>
+          The comparison should produce a table with one row per variant and separate columns for retrieval quality, answer quality, latency, and cost. Avoid collapsing everything into one score too early. A weighted utility score can be useful for a deployment decision, but publish the weights and show the underlying metrics.
+        </p>
+        <p>
+          Typical interpretations are conditional:
+        </p>
+        <ul>
+          <li>If BM25 has strong exact-lookup recall but weak paraphrase recall, improve query normalization or add dense retrieval.</li>
+          <li>If dense retrieval returns the right topic but the wrong period, strengthen metadata filtering and test whether period fields are indexed.</li>
+          <li>If hybrid retrieval increases candidate recall but answer quality falls, the generator may be overwhelmed by contradictory or redundant context.</li>
+          <li>If reranking improves nDCG but p95 latency becomes unacceptable, reduce candidate depth, cache stable queries, or use a smaller reranker.</li>
+          <li>If answer quality improves only on answerable questions but abstention worsens, evaluate unanswerable questions separately.</li>
+        </ul>
+        <p>
+          Do not call one approach “best” without defining the objective. For a compliance-oriented assistant, citation support and abstention may matter more than a small latency improvement. For an interactive research tool, p95 latency may be a hard constraint. The benchmark should expose that trade-off.
+        </p>
+      </section>
+
+      <section>
+        <h2>Failure cases worth testing deliberately</h2>
+
+        <h3>Wrong period, right metric</h3>
+        <p>
+          Put adjacent annual and quarterly documents in the corpus. Ask for one period and verify that the answer does not silently use another. Include the period in metadata and in the evidence block shown to the model.
+        </p>
+
+        <h3>Right issuer, wrong document type</h3>
+        <p>
+          An earnings presentation may round a number while an annual report provides the audited figure. Label both and decide which source hierarchy your product requires. The assistant should explain the source it used rather than blending values.
+        </p>
+
+        <h3>Table header loss</h3>
+        <p>
+          Remove or corrupt a table header in a test fixture. A system that retrieves the row but cannot identify the period or unit should abstain instead of guessing.
+        </p>
+
+        <h3>Conflicting passages</h3>
+        <p>
+          Include a restated figure or a later correction. Test whether the metadata and document policy identify the preferred source. Do not hide contradictions by deduplicating text without a trace.
+        </p>
+
+        <h3>Unanswerable question</h3>
+        <p>
+          Ask for a metric absent from the corpus. A high-quality system should retrieve related material, recognize the gap, and say that it cannot verify the requested fact. This is a product behavior to score, not an embarrassing edge case to remove.
+        </p>
+
+        <h3>Prompt injection inside a document</h3>
+        <p>
+          Treat retrieved text as untrusted data. A filing or uploaded document may contain instructions that attempt to change the assistant’s behavior. The system prompt should explicitly separate document content from instructions, and the evaluator should include an injection fixture.
+        </p>
+      </section>
+
+      <section>
+        <h2>Operational controls before real use</h2>
+        <p>
+          A prototype becomes a service only after it has controls around data, observability, and change management. Keep immutable run records for evaluation, but minimize production logs and redact user-provided sensitive information. Restrict who can upload or re-index documents. Verify file types and scan inputs before parsing.
+        </p>
+        <p>
+          Version the corpus, parser, chunker, embedding model, lexical analyzer, reranker, prompt, and evaluation rubric. A retrieval change can alter answers even when the language model is unchanged. Expose the evidence passages and document metadata to reviewers so an answer can be audited.
+        </p>
+        <p>
+          Add regression tests for known questions. A release should fail if a critical slice loses recall, citation support, or abstention quality beyond a declared threshold. Thresholds should be agreed with the product owner; this article does not prescribe universal values.
+        </p>
+      </section>
+
+      <section>
+        <h2>Limitations of this benchmark design</h2>
+        <p>
+          A small labeled set may not represent the long tail of financial research. Human labels can disagree, especially for comparative or definition questions. Retrieval metrics depend on chunking: a passage can be judged irrelevant simply because the answer was split into neighboring chunks. Model and provider changes can alter latency, tokenization, and answer behavior.
+        </p>
+        <p>
+          Cost estimates are only as reliable as their inputs. Do not compare providers or models using prices copied from memory. Record the pricing source and date in your experiment artifacts, or report token and request counts without converting them to money.
+        </p>
+        <p>
+          Finally, better retrieval does not establish financial truth. The system can only expose evidence from its corpus. Source quality, document coverage, restatements, accounting interpretation, and human review remain separate responsibilities.
+        </p>
+      </section>
+
+      <section>
+        <h2>Completion checklist</h2>
+        <ul>
+          <li>Corpus files are hashed and assigned a version.</li>
+          <li>Chunks preserve issuer, period, page, section, and document identifiers.</li>
+          <li>Lexical, dense, hybrid, and reranked variants share the same questions.</li>
+          <li>Development and held-out test questions are separated.</li>
+          <li>Recall@k, MRR, nDCG, answer quality, citation support, and abstention are measured.</li>
+          <li>Median, p95, errors, token usage, and cache state are recorded.</li>
+          <li>Prices are sourced and dated, or monetary cost is omitted.</li>
+          <li>Failure cases include wrong periods, tables, contradictions, unanswerable questions, and prompt injection.</li>
+          <li>Every generated answer can be traced to the exact retrieved chunks and run configuration.</li>
+        </ul>
+      </section>
+
+      <section>
+        <h2>Conclusion</h2>
+        <p>
+          To build a financial RAG agent and compare retrieval approaches responsibly, treat retrieval as an experiment rather than a library choice. Start with a versioned corpus and labeled questions. Compare lexical and dense retrieval, combine them through hybrid retrieval, add reranking only when its quality gain justifies its latency and cost, and evaluate the answer against the evidence instead of trusting fluency.
+        </p>
+        <p>
+          The result is not a claim that one architecture wins everywhere. It is a repeatable decision process: identify which questions fail, determine whether the failure is retrieval or generation, measure the operational trade-off, and keep the evidence boundary visible to the person using the assistant.
+        </p>
+      </section>
+
+      <nav class="reading-next" aria-label="Related reading">
+        <a href="../guides.html">Browse all guides</a>
+        <a href="../glossary.html">Open the glossary</a>
+      </nav>
+    <section class="service-note">
+  <b>We publish what works for us—and implement the same solutions for your business.</b>
+  We design AI automation, Telegram bots, chats, and AI agents for real-world processes.
+  <a href="../contacts-en.html">Discuss your project →</a>
+</section>
+</article>
+  </main>
+
+  <footer class="site-footer">
+    <div class="site-footer__inner">
+      <span>© Agent Lab Journal</span>
+      <nav aria-label="Footer navigation">
+        <a href="../guides.html">Guides</a>
+        <a href="../glossary.html">Glossary</a>
+      </nav>
+    </div>
+  </footer>
+</body>
+</html>
