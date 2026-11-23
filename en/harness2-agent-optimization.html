@@ -1,0 +1,522 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Harness²: Improving Agents by Optimizing the Harness</title>
+  <meta name="description" content="Harness²: Improving Agents by Optimizing the Harness — a reproducible experiment for improving agent quality by automatically optimizing the harness instead of changing model weights.">
+  <link rel="canonical" href="https://agentlabjournal.online/en/harness2-agent-optimization.html">
+  <link rel="stylesheet" href="../style.css">
+  <link rel="stylesheet" href="../reading.css">
+
+  <meta property="og:type" content="article">
+  <meta property="og:title" content="Harness²: Improving Agents by Optimizing the Harness">
+  <meta property="og:description" content="A reproducible experiment for improving agent quality by automatically optimizing the harness instead of changing model weights.">
+  <meta property="og:url" content="https://agentlabjournal.online/en/harness2-agent-optimization.html">
+  <meta property="og:image" content="https://agentlabjournal.online/assets/covers/llm-context-window-budget-social.png">
+  <meta property="og:site_name" content="Agent Lab Journal">
+
+  <meta name="twitter:card" content="summary_large_image">
+  <meta name="twitter:title" content="Harness²: Improving Agents by Optimizing the Harness">
+  <meta name="twitter:description" content="A reproducible experiment for improving agent quality by automatically optimizing the harness instead of changing model weights.">
+  <meta name="twitter:image" content="https://agentlabjournal.online/assets/covers/llm-context-window-budget-social.png">
+
+  <meta name="reading-time" content="30 minutes">
+  <meta name="article:reading_time" content="30 minutes">
+  <meta name="article:level" content="Advanced">
+
+  <script type="application/ld+json">
+  {
+    "@context": "https://schema.org",
+    "@type": "Article",
+    "headline": "Harness²: Improving Agents by Optimizing the Harness",
+    "description": "A reproducible experiment for improving agent quality by automatically optimizing the harness instead of changing model weights.",
+    "image": ["https://agentlabjournal.online/assets/covers/llm-context-window-budget-social.png"],
+    "dateModified": "2026-11-23",
+    "author": {
+      "@type": "Organization",
+      "name": "Agent Lab Journal"
+    },
+    "publisher": {
+      "@type": "Organization",
+      "name": "Agent Lab Journal",
+      "logo": {
+        "@type": "ImageObject",
+        "url": "https://agentlabjournal.online/assets/logo.png"
+      }
+    },
+    "mainEntityOfPage": {
+      "@type": "WebPage",
+      "@id": "https://agentlabjournal.online/en/harness2-agent-optimization.html"
+    }
+  }
+  </script>
+<link rel="stylesheet" href="../homepage.css"><link rel="stylesheet" href="../max-promo.css">  <meta property="og:image:alt" content="Harness²: улучшение агентов через оптимизацию обвязки">
+</head>
+<body>
+  <header class="site-header">
+    <div class="site-header__inner">
+      <a class="site-brand" href="../index.html">Agent Lab Journal</a>
+      <nav class="site-nav" aria-label="Primary navigation">
+        <a href="../guides.html">Guides</a>
+        <a href="../glossary.html">Glossary</a>
+      </nav>
+    </div>
+  </header>
+
+  <main>
+    <article class="reading">
+      <header class="reading-header">
+        <p class="reading-meta">
+          <span>Advanced</span>
+          <span>30 minutes</span>
+          <span>Updated 23 November 2026</span>
+        </p>
+        <h1>Harness²: Improving Agents by Optimizing the Harness</h1>
+        <figure class="article-cover" data-editorial-cover="harness2-agent-optimization"><img src="../assets/covers/llm-context-window-budget.png" alt="Harness²: улучшение агентов через оптимизацию обвязки" width="1280" height="720" fetchpriority="high"><figcaption>Temporary fallback cover; replace in editorial pass.</figcaption></figure>
+        <p class="reading-dek">
+          A reproducible experiment for improving an agent without changing model weights and without assuming that a more expensive model is the answer.
+        </p>
+      </header>
+
+      <p class="lead">
+        When an <a href="../glossary.html#agent">agent</a> produces unreliable work, the first reaction is often to change the model. That can help, but it is not the only controllable variable. The surrounding <a href="../glossary.html#harness">harness</a>—instructions, tools, memory, stopping rules, verification, and output handling—often determines whether the model can turn its capabilities into a correct result.
+      </p>
+
+      <p>
+        This article describes an experiment named Harness²: an optimizer proposes changes to an agent harness, an evaluator scores those changes on a custom task set, and an experiment runner keeps only changes that improve held-out quality. The procedure is designed to be repeatable. It does not claim a measured improvement here, because no experiment has been run as part of this article. The commands and configuration below define a protocol that a team can run and report honestly.
+      </p>
+
+      <h2>The problem: quality is a system property</h2>
+
+      <p>
+        An agent is not just a model call. A useful abstraction is:
+      </p>
+
+      <pre><code>agent = model + harness + task context + external environment</code></pre>
+
+      <p>
+        The model may be fixed while the harness changes. A harness can decide whether the model sees a task rubric, whether it is allowed to inspect files, how tool errors are reported, when it must verify its work, and what counts as a complete answer. Each decision changes the behavior that the user experiences.
+      </p>
+
+      <p>
+        This creates a practical optimization problem:
+      </p>
+
+      <pre><code>Given:
+  a fixed model M,
+  a task distribution D,
+  an editable harness H,
+  and an evaluator E,
+
+find H* such that:
+
+  quality(E(M, H*, D)) is high
+  cost(M, H*, D) remains acceptable
+  and failures are observable and reproducible.</code></pre>
+
+      <p>
+        The important constraint is that the optimizer must not quietly change the model, the task answers, or the scoring rules. Otherwise the experiment measures a moving target.
+      </p>
+
+      <h2>What “harness optimization” includes</h2>
+
+      <p>
+        In this experiment, the harness is a versioned directory rather than one large prompt. Keeping its parts separate makes changes reviewable and makes ablation possible.
+      </p>
+
+      <ul>
+        <li><strong>Policy:</strong> stable behavioral rules, safety constraints, and scope.</li>
+        <li><strong>Task protocol:</strong> the sequence for understanding, planning, acting, and reporting.</li>
+        <li><strong>Tool policy:</strong> when tools may be used, how errors are handled, and how results are checked.</li>
+        <li><strong>Memory policy:</strong> what context may persist between steps or tasks.</li>
+        <li><strong>Verification policy:</strong> required checks before the agent declares success.</li>
+        <li><strong>Output contract:</strong> the exact structure expected from the final response.</li>
+        <li><strong>Runtime limits:</strong> maximum steps, tool calls, tokens, time, or retries.</li>
+      </ul>
+
+      <p>
+        The optimizer may edit these files, but it should not edit the task set, hidden reference answers, evaluator code, credentials, or the model identifier. A change that improves the score by weakening the test is not an improvement.
+      </p>
+
+      <h2>A concrete case: repository change requests</h2>
+
+      <p>
+        Use a custom task set that resembles real work but is small enough to run repeatedly. One practical case is repository maintenance: each task gives an agent a repository snapshot and a request such as “add a validation rule,” “find the cause of this failing test,” or “update the parser without changing the public API.”
+      </p>
+
+      <p>
+        A task should contain only the information an actual agent would receive. The reference package can contain hidden tests, expected constraints, and a human-readable rubric, but those materials must not be exposed to the agent during evaluation.
+      </p>
+
+      <pre><code>tasks/
+  train/
+    task-001.yaml
+    task-002.yaml
+    task-003.yaml
+  validation/
+    task-101.yaml
+    task-102.yaml
+  test/
+    task-201.yaml
+    task-202.yaml
+
+references/
+  task-001/
+    rubric.yaml
+    tests/
+  task-002/
+    rubric.yaml
+    tests/</code></pre>
+
+      <p>
+        An example task file might look like this:
+      </p>
+
+      <pre><code>id: task-001
+kind: repository_change
+repository: fixtures/calculator
+request: |
+  Add support for negative operands to the integer parser.
+  Preserve the existing public function signature.
+  Add or update tests for the new behavior.
+limits:
+  max_steps: 18
+  max_tool_calls: 40
+artifacts:
+  required:
+    - source_change
+    - test_change
+    - final_summary</code></pre>
+
+      <p>
+        This is an example configuration, not a verified benchmark. The task must be adapted to the language, repository layout, and test runner used by the team conducting the experiment.
+      </p>
+
+      <h2>Define the baseline before optimizing</h2>
+
+      <p>
+        The baseline is the unmodified harness. Freeze it in version control and run it before allowing any optimizer proposals. Record the model identifier, model settings, task-set revision, harness revision, evaluator revision, random seeds, tool versions, and timestamps.
+      </p>
+
+      <p>
+        A minimal manifest can be:
+      </p>
+
+      <pre><code>{
+  "model": "MODEL_ID_SET_BY_THE_OPERATOR",
+  "model_parameters": {
+    "temperature": 0,
+    "max_output_tokens": 4096
+  },
+  "harness_revision": "git:BASELINE_COMMIT",
+  "task_revision": "git:TASKSET_COMMIT",
+  "evaluator_revision": "git:EVALUATOR_COMMIT",
+  "seeds": [11, 29, 47],
+  "network": "disabled",
+  "credentials": "none"
+}</code></pre>
+
+      <p>
+        Use placeholders for model identifiers and never place API keys in the repository, task files, logs, or article output. If the model provider does not offer deterministic generation, repeated runs are still useful, but the report must describe the remaining stochasticity.
+      </p>
+
+      <h2>Scoring quality without pretending that one number is truth</h2>
+
+      <p>
+        The evaluator should combine automated checks with a structured rubric. Automated checks are appropriate for properties such as tests passing, required files being present, or an output matching a schema. A rubric can cover reasoning-independent outcomes such as correctness, preservation of constraints, and clarity of the final report.
+      </p>
+
+      <p>
+        One possible score is:
+      </p>
+
+      <pre><code>task_score =
+    0.55 * correctness
+  + 0.20 * constraint_adherence
+  + 0.15 * verification
+  + 0.10 * communication
+
+overall_score = mean(task_score across tasks and seeds)</code></pre>
+
+      <p>
+        The weights above are illustrative. They are not empirical findings and should be justified for the target workflow. Keep the rubric fixed while comparing harness revisions. If the rubric changes, treat that as a new experiment.
+      </p>
+
+      <p>
+        Report the distribution, not only the mean. At minimum, retain per-task scores, pass rates, failure categories, tool-call counts, elapsed time, and token usage when available. A harness that raises the mean by making a small number of tasks excellent while breaking several safety-critical tasks may be unacceptable.
+      </p>
+
+      <h2>The Harness² loop</h2>
+
+      <p>
+        The optimizer is itself an agent or program with a narrow responsibility: propose a harness patch from experiment evidence. It does not directly decide that the patch is good. A separate runner evaluates the candidate on frozen data.
+      </p>
+
+      <ol>
+        <li>Run the baseline on the training split and collect structured traces.</li>
+        <li>Group failures by observable cause, such as missing verification or premature stopping.</li>
+        <li>Ask the optimizer for a small, explicit patch to the harness.</li>
+        <li>Check that the patch touches only allowed files.</li>
+        <li>Run the candidate on the training split.</li>
+        <li>Reject candidates that violate hard constraints or exceed resource limits.</li>
+        <li>Run surviving candidates on the validation split.</li>
+        <li>Keep the candidate only if it passes the promotion rule.</li>
+        <li>After the search budget is exhausted, run the selected harness once on the held-out test split.</li>
+      </ol>
+
+      <p>
+        The promotion rule should be written before the search. For example:
+      </p>
+
+      <pre><code>promote(candidate) if:
+  candidate.train_score >= baseline.train_score + 0.02
+  and candidate.validation_score >= baseline.validation_score
+  and candidate.critical_failures <= baseline.critical_failures
+  and candidate.p95_tool_calls <= baseline.p95_tool_calls * 1.25</code></pre>
+
+      <p>
+        The numerical thresholds are examples. Choose them before observing candidate results and preserve the rule in the experiment record.
+      </p>
+
+      <h2>Suggested repository layout</h2>
+
+      <pre><code>harness2/
+  harness/
+    policy.md
+    task_protocol.md
+    tool_policy.yaml
+    verification.md
+    output_schema.json
+  tasks/
+    train/
+    validation/
+    test/
+  evaluator/
+    run.py
+    rubric.yaml
+    checks/
+  optimizer/
+    prompt.md
+    search.py
+  runs/
+  scripts/
+    baseline.sh
+    candidate.sh
+  README.md</code></pre>
+
+      <p>
+        The <code>runs/</code> directory should contain immutable run records. Each record should include the candidate patch, manifest, per-task results, aggregate metrics, failure summaries, and the decision to promote or reject.
+      </p>
+
+      <h2>Commands for a reproducible run</h2>
+
+      <p>
+        The following commands describe an interface, not a claim that these scripts exist in every project:
+      </p>
+
+      <pre><code># Install the project's pinned dependencies
+python -m venv .venv
+. .venv/bin/activate
+pip install -r requirements.lock
+
+# Validate task files and harness structure
+python -m evaluator.run --check-config
+
+# Run the frozen baseline
+python -m evaluator.run \
+  --harness harness \
+  --split train \
+  --seeds 11,29,47 \
+  --run-id baseline-train
+
+# Generate a candidate patch from recorded failures
+python -m optimizer.search \
+  --input runs/baseline-train \
+  --harness harness \
+  --output runs/candidate-001
+
+# Evaluate a candidate without changing the baseline
+python -m evaluator.run \
+  --harness runs/candidate-001/harness \
+  --split validation \
+  --seeds 11,29,47 \
+  --run-id candidate-001-validation
+
+# Evaluate the selected revision on the held-out test split
+python -m evaluator.run \
+  --harness runs/selected/harness \
+  --split test \
+  --seeds 11,29,47 \
+  --run-id selected-test</code></pre>
+
+      <p>
+        For a real implementation, add a clean-room check that creates a fresh working directory, copies only the declared inputs, disables network access, and runs the evaluator there. This catches accidental dependence on local files, cached answers, or undeclared environment variables.
+      </p>
+
+      <h2>How the optimizer should propose changes</h2>
+
+      <p>
+        Give the optimizer structured evidence rather than an unbounded instruction to “make the agent better.” A useful proposal contains a hypothesis, the affected file, the smallest patch, the expected mechanism, and a rollback condition.
+      </p>
+
+      <pre><code>hypothesis:
+  The agent stops after editing because it treats a successful write
+  operation as proof that the change works.
+
+evidence:
+  3 of 5 failed tasks had no test invocation after a source edit.
+
+patch:
+  Add a verification step requiring the relevant test command after
+  every source change, unless the task explicitly forbids execution.
+
+expected_effect:
+  Fewer unverified edits.
+
+risk:
+  More tool calls and possible timeouts.
+
+rollback:
+  Reject if validation p95 tool calls rises above the configured limit.</code></pre>
+
+      <p>
+        Limit each candidate to one or two coherent changes. Large rewrites make attribution difficult and encourage the optimizer to overfit to particular failures.
+      </p>
+
+      <h2>Verification and anti-overfitting checks</h2>
+
+      <p>
+        A harness optimizer can overfit even when it never sees the hidden answers. It may learn quirks of the training tasks, add excessive instructions, or exploit evaluator gaps. Use several safeguards.
+      </p>
+
+      <ul>
+        <li>Keep the test split inaccessible until the final selection.</li>
+        <li>Use task families so related examples do not appear across every split.</li>
+        <li>Track prompt and harness length; reject unexplained growth.</li>
+        <li>Run a small adversarial set containing ambiguous requests and tool failures.</li>
+        <li>Check that the candidate does not read evaluator or reference directories.</li>
+        <li>Compare critical-failure rates separately from aggregate scores.</li>
+        <li>Repeat the final candidate with more than one seed when generation is stochastic.</li>
+        <li>Inspect traces from both improved and degraded tasks.</li>
+      </ul>
+
+      <p>
+        A <a href="../glossary.html#prompt-injection">prompt injection</a> test is especially important when the agent reads untrusted repository files, tickets, or web content. The harness should distinguish task instructions from data and should not treat arbitrary file text as an authority.
+      </p>
+
+      <h2>Failure cases worth designing for</h2>
+
+      <h3>Score hacking</h3>
+
+      <p>
+        If the evaluator rewards a particular phrase in the final answer, the optimizer may add that phrase without improving the work. Prefer outcome-based checks and review traces for suspiciously easy gains.
+      </p>
+
+      <h3>Verification theater</h3>
+
+      <p>
+        Requiring the agent to write “verified” does not prove that it ran a meaningful check. Record actual tool invocations and connect them to the files or claims they are meant to validate.
+      </p>
+
+      <h3>Instruction accumulation</h3>
+
+      <p>
+        Repeated optimization can produce a long, contradictory prompt. Set a size budget and periodically consolidate rules. If two rules describe the same behavior, keep one canonical version.
+      </p>
+
+      <h3>Resource regression</h3>
+
+      <p>
+        A candidate may improve correctness by taking many more steps. This may be acceptable in some workflows and unacceptable in others. Treat latency, tool calls, and token usage as first-class metrics rather than afterthoughts.
+      </p>
+
+      <h3>Hidden environment dependence</h3>
+
+      <p>
+        A candidate can appear better because the local machine contains a cache, installed tool, or uncommitted file. Clean-room execution and a recorded environment manifest are the simplest defenses.
+      </p>
+
+      <h3>Evaluator disagreement</h3>
+
+      <p>
+        Automated checks and human judgments can disagree. Preserve the raw evidence and report disagreements instead of silently averaging them away. If human review is used, define the sampling method and reviewer instructions before analyzing results.
+      </p>
+
+      <h2>A compact experiment record</h2>
+
+      <p>
+        Every reported result should be traceable to a run directory. A compact record might contain:
+      </p>
+
+      <pre><code>run.json
+candidate.patch
+manifest.json
+metrics.json
+task-results.jsonl
+failure-summary.md
+trace-index.json
+decision.md</code></pre>
+
+      <p>
+        The record should answer five questions without relying on memory:
+      </p>
+
+      <ol>
+        <li>What changed?</li>
+        <li>Which model and settings were used?</li>
+        <li>Which tasks and seeds were evaluated?</li>
+        <li>How was quality scored?</li>
+        <li>Why was the candidate promoted or rejected?</li>
+      </ol>
+
+      <p>
+        If any answer is unavailable, label the result incomplete. Reproducibility is not a claim that every reader can obtain identical output; it is the ability to reconstruct the conditions, inputs, code, and decision rule that produced the reported result.
+      </p>
+
+      <h2>Limitations</h2>
+
+      <p>
+        Harness² cannot establish that harness optimization is universally better than model changes. It tests one model, one task distribution, one evaluator, and one search budget at a time. A candidate that helps repository maintenance may hurt conversational support or long-running research.
+      </p>
+
+      <p>
+        Scores are also proxies. A fixed rubric can miss qualities that matter in production, while a human rubric can introduce reviewer variance. The experiment should therefore be treated as decision support, not as an absolute measure of agent intelligence.
+      </p>
+
+      <p>
+        Finally, optimization has a cost. The optimizer consumes model calls, engineering time, and evaluation capacity. Compare that cost with the cost of changing the model, adding tools, or accepting the baseline. The useful question is not whether the harness score increased in isolation, but whether the resulting system is more reliable for its intended work.
+      </p>
+
+      <h2>What to report after running it</h2>
+
+      <p>
+        A credible report should include the baseline and selected-harness revisions, the exact task-set split, the promotion rule, the search budget, aggregate and per-task metrics, resource usage, critical failures, and examples of both improvement and regression. State clearly which results are measured and which are hypotheses.
+      </p>
+
+      <p>
+        The central result is not a prettier prompt. It is a controlled comparison showing whether a specific harness change improves the agent on unseen tasks while preserving the constraints that matter.
+      </p>
+
+      <p class="reading-next">
+        Continue with the <a href="../guides.html">guides</a> or look up terms in the <a href="../glossary.html">glossary</a>.
+      </p>
+    <section class="service-note">
+  <b>We publish what works for us—and implement the same solutions for your business.</b>
+  We design AI automation, Telegram bots, chats, and AI agents for real-world processes.
+  <a href="../contacts-en.html">Discuss your project →</a>
+</section>
+</article>
+  </main>
+
+  <footer class="site-footer">
+    <div class="site-footer__inner">
+      <a href="../index.html">Agent Lab Journal</a>
+      <nav aria-label="Footer navigation">
+        <a href="../guides.html">Guides</a>
+        <a href="../glossary.html">Glossary</a>
+      </nav>
+    </div>
+  </footer>
+</body>
+</html>
