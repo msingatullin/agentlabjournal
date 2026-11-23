@@ -1,0 +1,536 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>From n8n to LangGraph: When Automation Needs Software Engineering</title>
+  <meta name="description" content="From n8n to LangGraph: When Automation Needs Software Engineering. A practical guide to migration criteria, state, side effects, verification, and staged orchestration.">
+  <link rel="canonical" href="https://agentlabjournal.online/en/ot-n8n-k-langgraph.html">
+  <link rel="stylesheet" href="../style.css">
+  <link rel="stylesheet" href="../reading.css">
+
+  <meta property="og:type" content="article">
+  <meta property="og:title" content="From n8n to LangGraph: When Automation Needs Software Engineering">
+  <meta property="og:description" content="A practical guide to deciding when a low-code workflow should move to code and controlled orchestration.">
+  <meta property="og:url" content="https://agentlabjournal.online/en/ot-n8n-k-langgraph.html">
+  <meta property="og:image" content="https://agentlabjournal.online/assets/covers/llm-context-window-budget-social.png">
+
+  <meta name="twitter:card" content="summary_large_image">
+  <meta name="twitter:title" content="From n8n to LangGraph: When Automation Needs Software Engineering">
+  <meta name="twitter:description" content="Migration criteria, state and side-effect separation, staged implementation, and verification.">
+  <meta name="twitter:image" content="https://agentlabjournal.online/assets/covers/llm-context-window-budget-social.png">
+
+  <meta name="reading-time" content="12 minutes">
+  <meta name="article:section" content="Engineering">
+  <meta name="article:level" content="Intermediate">
+  <meta name="article:modified_time" content="2026-11-23">
+
+  <script type="application/ld+json">
+  {
+    "@context": "https://schema.org",
+    "@type": "Article",
+    "headline": "From n8n to LangGraph: When Automation Needs Software Engineering",
+    "description": "A practical guide to deciding when a low-code workflow should move to code and controlled orchestration.",
+    "image": ["https://agentlabjournal.online/assets/covers/llm-context-window-budget-social.png"],
+    "dateModified": "2026-11-23",
+    "author": {
+      "@type": "Organization",
+      "name": "Agent Lab Journal"
+    },
+    "publisher": {
+      "@type": "Organization",
+      "name": "Agent Lab Journal",
+      "url": "https://agentlabjournal.online/"
+    },
+    "mainEntityOfPage": {
+      "@type": "WebPage",
+      "@id": "https://agentlabjournal.online/en/ot-n8n-k-langgraph.html"
+    }
+  }
+  </script>
+<link rel="stylesheet" href="../homepage.css"><link rel="stylesheet" href="../max-promo.css">  <meta property="og:image:alt" content="От n8n к LangGraph: когда автоматизации нужна инженерная архитектура">
+</head>
+<body>
+  <header class="site-header">
+    <div class="container">
+      <a class="site-logo" href="../index.html">Agent Lab Journal</a>
+      <nav aria-label="Primary navigation">
+        <a href="guides.html">Guides</a>
+        <a href="../glossary.html">Glossary</a>
+      </nav>
+    </div>
+  </header>
+
+  <main>
+    <article class="reading">
+      <header class="reading-header">
+        <p class="reading-kicker">Engineering · Intermediate · 12 min read</p>
+        <h1>From n8n to LangGraph: When Automation Needs Software Engineering</h1>
+        <figure class="article-cover" data-editorial-cover="ot-n8n-k-langgraph"><img src="../assets/covers/llm-context-window-budget.png" alt="От n8n к LangGraph: когда автоматизации нужна инженерная архитектура" width="1280" height="720" fetchpriority="high"><figcaption>Temporary fallback cover; replace in editorial pass.</figcaption></figure>
+        <p class="reading-lead">
+          A workflow is ready to leave the canvas when its difficult part is no longer connecting services,
+          but preserving state, controlling retries, and proving what happened. This guide explains how to
+          recognize that boundary and migrate the process core without rewriting everything at once.
+        </p>
+        <div class="reading-meta">
+          <span>Updated 23 November 2026</span>
+          <span>Agent Lab Journal</span>
+        </div>
+      </header>
+
+      <div class="reading-body">
+        <p>
+          <a href="../glossary.html#n8n">n8n</a> is useful when a process can be described as a visible sequence:
+          receive an event, call an API, transform a payload, and notify someone. That model becomes less
+          comfortable when the process must pause, resume, branch on durable data, retry selectively, or
+          coordinate several independent workers.
+        </p>
+
+        <p>
+          <a href="../glossary.html#langgraph">LangGraph</a> is one possible code-oriented runtime for graph-shaped
+          agent and automation processes. The important decision is not whether one tool is better than another.
+          It is whether the process needs the engineering properties of a program: explicit state, tested
+          transitions, controlled side effects, observable failures, and repeatable deployments.
+        </p>
+
+        <aside class="reading-callout">
+          <strong>Short rule:</strong> keep the workflow in a visual automation tool while the main risk is
+          integration configuration. Move the process core into code when the main risk is behavior over time.
+        </aside>
+
+        <h2>Start with the failure mode, not the tool</h2>
+
+        <p>
+          A migration is justified by a recurring operational problem, not by the novelty of a framework.
+          Before changing implementation, record the last few incidents or manual interventions. For each one,
+          answer four questions:
+        </p>
+
+        <ol>
+          <li>What input started the run?</li>
+          <li>What state was known at each decision?</li>
+          <li>Which external operation had already happened?</li>
+          <li>Could the run be safely resumed or repeated?</li>
+        </ol>
+
+        <p>
+          If these answers are available only by opening execution logs and reconstructing a timeline, the
+          workflow is already carrying hidden state. Hidden state is often the first sign that the process core
+          needs a more explicit design.
+        </p>
+
+        <h2>A concrete case: document review with human approval</h2>
+
+        <p>
+          Consider an example workflow that receives a document, extracts fields, checks them against business
+          rules, asks a human to approve exceptions, and sends the result to two systems. The example is
+          intentionally generic: it describes a design pattern, not a claim about a particular customer or
+          production system.
+        </p>
+
+        <p>
+          A simple version fits a visual workflow:
+
+          <code>Webhook → Extract → Validate → Notify → Write result</code>.
+        </p>
+
+        <p>
+          Problems appear when validation produces three possible outcomes. A clean document can continue.
+          An uncertain document needs human review. A failed extraction should be retried, but only after
+          checking whether the downstream write already succeeded.
+        </p>
+
+        <p>
+          At that point, the important data is not just the current payload. It includes the review status,
+          attempts made, external identifiers, approval decisions, and the version of the rules used. Treating
+          all of that as a mutable blob passed between nodes makes recovery difficult.
+        </p>
+
+        <h2>Migration criteria</h2>
+
+        <p>
+          No single threshold proves that a migration is necessary. Use the following criteria as a decision
+          record. The more answers are “yes”, the stronger the case for moving the process core into code while
+          leaving simple integrations in the automation layer.
+        </p>
+
+        <table>
+          <thead>
+            <tr>
+              <th>Question</th>
+              <th>Stay visual for now</th>
+              <th>Consider code and orchestration</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td>Can a run finish in one pass?</td>
+              <td>Yes; failures can be restarted from the beginning.</td>
+              <td>No; it must pause, resume, or await an event.</td>
+            </tr>
+            <tr>
+              <td>Are branches easy to explain?</td>
+              <td>They are short and mostly data mapping.</td>
+              <td>They depend on many conditions or prior attempts.</td>
+            </tr>
+            <tr>
+              <td>Are retries safe?</td>
+              <td>Operations are read-only or naturally repeatable.</td>
+              <td>Retries can duplicate writes, messages, or approvals.</td>
+            </tr>
+            <tr>
+              <td>Can operators diagnose a run?</td>
+              <td>Inputs, outputs, and errors are visible together.</td>
+              <td>They must infer state from several systems.</td>
+            </tr>
+            <tr>
+              <td>Does behavior need tests?</td>
+              <td>Configuration checks are sufficient.</td>
+              <td>Transitions and recovery paths need automated tests.</td>
+            </tr>
+            <tr>
+              <td>How often does logic change?</td>
+              <td>Occasionally, by a small team.</td>
+              <td>Frequently, with review, releases, and rollback.</td>
+            </tr>
+          </tbody>
+        </table>
+
+        <p>
+          A practical heuristic is to count the number of distinct recovery paths rather than the number of
+          nodes. Ten straightforward nodes may be easier to operate than four nodes that can pause at different
+          points and perform irreversible actions.
+        </p>
+
+        <h2>Separate state from side effects</h2>
+
+        <p>
+          The central design move is to separate the decision process from operations that change the outside
+          world. In this article, <a href="../glossary.html#state">state</a> means the durable facts needed to
+          decide what happens next. A <a href="../glossary.html#side-effect">side effect</a> is an external
+          operation such as sending a message, creating a ticket, or writing to a database.
+        </p>
+
+        <p>
+          A useful state record might look like this:
+        </p>
+
+        <pre><code>{
+  "run_id": "example-run-001",
+  "input_ref": "document-123",
+  "status": "awaiting_review",
+  "extraction": {
+    "confidence": 0.82,
+    "fields": {}
+  },
+  "review": {
+    "required": true,
+    "decision": null
+  },
+  "effects": {
+    "result_write": "not_started",
+    "notification": "not_started"
+  },
+  "attempts": {
+    "extraction": 1,
+    "result_write": 0
+  },
+  "rules_version": "example-2026-01"
+}</code></pre>
+
+        <p>
+          The values above are illustrative. They show the shape of a record, not a required schema. The useful
+          property is that a future run can answer “what is true?” without replaying every previous action.
+        </p>
+
+        <p>
+          Keep effect status separate from business status. “Approved” is a business fact. “Notification sent”
+          is an operational fact. Confusing them creates dangerous retries: an operator may see an approved item
+          and assume every downstream effect completed.
+        </p>
+
+        <h2>Model the process as transitions</h2>
+
+        <p>
+          A code-based process becomes easier to test when each step is a transition from one state to another.
+          For the example, the transition table could be:
+        </p>
+
+        <table>
+          <thead>
+            <tr>
+              <th>Current state</th>
+              <th>Event</th>
+              <th>Next state</th>
+              <th>External effect</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td>received</td>
+              <td>extraction succeeds</td>
+              <td>validated</td>
+              <td>None</td>
+            </tr>
+            <tr>
+              <td>validated</td>
+              <td>confidence is low</td>
+              <td>awaiting_review</td>
+              <td>Create review request</td>
+            </tr>
+            <tr>
+              <td>awaiting_review</td>
+              <td>review approved</td>
+              <td>ready_to_publish</td>
+              <td>None</td>
+            </tr>
+            <tr>
+              <td>ready_to_publish</td>
+              <td>publish requested</td>
+              <td>published</td>
+              <td>Write result and notify</td>
+            </tr>
+            <tr>
+              <td>any active state</td>
+              <td>transient failure</td>
+              <td>retryable</td>
+              <td>Only the failed operation may retry</td>
+            </tr>
+          </tbody>
+        </table>
+
+        <p>
+          This is a small <a href="../glossary.html#state-machine">state machine</a>. It does not need to be
+          complicated. Its value is that allowed transitions and forbidden transitions become explicit. For
+          example, a review callback should not publish a document whose extraction never completed.
+        </p>
+
+        <h2>Use idempotency as a migration requirement</h2>
+
+        <p>
+          <a href="../glossary.html#idempotency">Idempotency</a> means that repeating the same logical operation
+          does not create an unintended additional result. It is essential whenever an orchestrator can retry a
+          step after a timeout. A timeout does not prove that the external system did nothing; it only proves
+          that the caller does not know what happened.
+        </p>
+
+        <p>
+          Give each externally visible operation a stable key derived from the run and operation, for example:
+        </p>
+
+        <pre><code>idempotency_key = run_id + ":" + operation_name</code></pre>
+
+        <p>
+          The receiving system must either support that key or you must maintain a durable operation record.
+          The exact implementation depends on the API. Do not assume that adding a header makes a non-idempotent
+          API safe.
+        </p>
+
+        <p>
+          For a migration, begin with the most dangerous effect: a payment, publication, duplicate message, or
+          irreversible update. Make that operation safe before moving more logic into code.
+        </p>
+
+        <h2>A staged migration plan</h2>
+
+        <h3>Stage 1: Freeze the behavior map</h3>
+
+        <p>
+          Export or document the current workflow. Record triggers, inputs, branches, credentials by reference
+          only, external writes, retry settings, and manual steps. Remove secrets from examples and documentation.
+          This stage should produce a behavior map, not a redesign.
+        </p>
+
+        <h3>Stage 2: Add correlation and effect records</h3>
+
+        <p>
+          Introduce a stable run identifier and record each important external operation. If the existing tool
+          can write these records, use it before introducing a second runtime. The goal is to make current
+          behavior observable and to identify duplicate-effect risks.
+        </p>
+
+        <h3>Stage 3: Extract pure decision logic</h3>
+
+        <p>
+          Move parsing, validation, and routing rules into a small library or service. Keep API calls in the
+          existing workflow at first. A pure function is easier to compare against current behavior:
+        </p>
+
+        <pre><code>def decide(document):
+    if document["extraction_confidence"] &lt; 0.85:
+        return "awaiting_review"
+    if not document["required_fields_present"]:
+        return "needs_correction"
+    return "ready_to_publish"</code></pre>
+
+        <p>
+          The threshold in this snippet is an example only. Use the rule values that your process actually
+          defines, and test boundary cases explicitly.
+        </p>
+
+        <h3>Stage 4: Introduce a controlled graph</h3>
+
+        <p>
+          Represent the process as named nodes and transitions in the code runtime. Keep nodes small:
+          load state, evaluate a rule, request approval, apply an effect, and record the result. A graph runtime
+          is most useful when it makes waiting, resuming, and branching explicit; it is not a reason to put every
+          line of business logic into a separate node.
+        </p>
+
+        <h3>Stage 5: Move one effect at a time</h3>
+
+        <p>
+          Route one operation through the new core while the surrounding workflow remains unchanged. Compare
+          decisions, effect records, latency, and failure handling. Then move the next operation. Avoid running
+          two implementations that can both perform the same write unless ownership is explicitly controlled.
+        </p>
+
+        <h3>Stage 6: Retain the visual layer as an adapter</h3>
+
+        <p>
+          The automation tool can remain responsible for webhooks, schedules, simple notifications, and
+          administrative connections. The code service owns process state and transitions. This boundary reduces
+          migration risk and keeps the visual layer useful without making it the source of truth for complex
+          behavior.
+        </p>
+
+        <h2>Reproducible verification</h2>
+
+        <p>
+          Verification should test both normal execution and recovery. The following commands are illustrative
+          and assume a Python project with a test runner; adapt them to the repository you actually use:
+        </p>
+
+        <pre><code># create an isolated environment
+python -m venv .venv
+. .venv/bin/activate
+
+# install the project's declared dependencies
+python -m pip install -r requirements.txt
+
+# run unit tests
+python -m pytest
+
+# run the process with a fixed example input
+python -m app.run examples/document-approved.json</code></pre>
+
+        <p>
+          A minimal verification matrix should include:
+        </p>
+
+        <ul>
+          <li>the same input produces the same decision;</li>
+          <li>a transient failure retries only the intended operation;</li>
+          <li>a repeated callback does not create a second effect;</li>
+          <li>a process can resume from stored state;</li>
+          <li>an invalid transition is rejected and recorded;</li>
+          <li>an operator can find the run, state, error, and effect history.</li>
+        </ul>
+
+        <p>
+          Compare the old and new implementations using recorded fixtures rather than live customer data.
+          Fixtures should contain synthetic identifiers and no credentials or personal information.
+        </p>
+
+        <h2>Common failure cases</h2>
+
+        <h3>Rebuilding the canvas node for node</h3>
+
+        <p>
+          A visual workflow often contains incidental ordering, implicit variables, and tool-specific retry
+          behavior. Copying every node into code preserves those ambiguities. Extract the behavior and invariants
+          first; then choose a code structure that makes them testable.
+        </p>
+
+        <h3>Putting side effects inside decision functions</h3>
+
+        <p>
+          A function that both decides “publish” and performs the publication is difficult to retry safely.
+          Keep the decision pure where possible, then pass an explicit command to an effect handler that records
+          its idempotency key and result.
+        </p>
+
+        <h3>Using logs as the database</h3>
+
+        <p>
+          Logs explain what the program reported, but they are not a durable state model. Store the minimum
+          recovery data explicitly. Include timestamps and correlation identifiers in logs so they can be
+          connected to that state.
+        </p>
+
+        <h3>Changing behavior and runtime at the same time</h3>
+
+        <p>
+          If business rules, integrations, and orchestration all change in one release, a failure has too many
+          possible causes. Keep the first migration behaviorally equivalent. Improve the rules after the new
+          execution model is observable.
+        </p>
+
+        <h2>Limitations and trade-offs</h2>
+
+        <p>
+          Moving to code does not automatically improve reliability. It adds deployment, dependency management,
+          monitoring, access control, and maintenance work. A small workflow with infrequent changes may be
+          cheaper and safer in a visual tool.
+        </p>
+
+        <p>
+          A graph runtime also does not remove the need to design external effects. It can persist or resume
+          process state, but it cannot make an API transactional unless the API and your design support that
+          guarantee. Long-running workflows still need retention rules, cancellation behavior, schema migration,
+          and operator procedures.
+        </p>
+
+        <p>
+          Finally, the boundary is not permanent. A process can move back toward a simpler workflow if its
+          requirements become stable and its recovery paths disappear. Treat the architecture as an operational
+          decision that can be revisited.
+        </p>
+
+        <h2>Decision checklist</h2>
+
+        <p>
+          Before approving a migration, make sure the team can answer “yes” to the following:
+        </p>
+
+        <ul>
+          <li>Is the current failure mode documented with a reproducible example?</li>
+          <li>Is durable state distinct from payload data and logs?</li>
+          <li>Are external effects identified and assigned stable operation keys?</li>
+          <li>Are transitions and forbidden states testable without live integrations?</li>
+          <li>Can the process resume without replaying completed effects?</li>
+          <li>Is ownership between the visual workflow and code runtime explicit?</li>
+          <li>Can the team deploy, observe, roll back, and support the new component?</li>
+        </ul>
+
+        <p>
+          The practical answer to “From n8n to LangGraph: When Automation Needs Software Engineering” is
+          therefore not a node count or a framework preference. Migrate when the process needs explicit,
+          durable behavior over time. Start by separating state from side effects, extract and test decisions,
+          then move orchestration and effects in small, observable stages.
+        </p>
+
+        <p class="reading-next">
+          Continue with the <a href="guides.html">guides</a> or check the
+          <a href="../glossary.html">glossary</a> for the terms used in this article.
+        </p>
+      </div>
+    <section class="service-note">
+  <b>We publish what works for us—and implement the same solutions for your business.</b>
+  We design AI automation, Telegram bots, chats, and AI agents for real-world processes.
+  <a href="../contacts-en.html">Discuss your project →</a>
+</section>
+</article>
+  </main>
+
+  <footer class="site-footer">
+    <div class="container">
+      <p>© Agent Lab Journal</p>
+      <nav aria-label="Footer navigation">
+        <a href="guides.html">Guides</a>
+        <a href="../glossary.html">Glossary</a>
+      </nav>
+    </div>
+  </footer>
+</body>
+</html>
