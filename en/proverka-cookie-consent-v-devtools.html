@@ -1,0 +1,424 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>How to Check Whether Your Cookie Banner Actually Blocks Tracking</title>
+  <meta name="description" content="How to Check Whether Your Cookie Banner Actually Blocks Tracking with DevTools: inspect requests, scripts, iframes, cookies, and SDKs before consent.">
+  <link rel="canonical" href="https://agentlabjournal.online/en/proverka-cookie-consent-v-devtools.html">
+  <link rel="stylesheet" href="../style.css">
+  <link rel="stylesheet" href="../reading.css">
+
+  <meta property="og:type" content="article">
+  <meta property="og:locale" content="en_US">
+  <meta property="og:title" content="How to Check Whether Your Cookie Banner Actually Blocks Tracking">
+  <meta property="og:description" content="A reproducible DevTools workflow for finding analytics, pixels, iframes, and SDKs that load before consent.">
+  <meta property="og:url" content="https://agentlabjournal.online/en/proverka-cookie-consent-v-devtools.html">
+  <meta property="og:image" content="https://agentlabjournal.online/assets/covers/llm-context-window-budget-social.png">
+
+  <meta name="twitter:card" content="summary_large_image">
+  <meta name="twitter:title" content="How to Check Whether Your Cookie Banner Actually Blocks Tracking">
+  <meta name="twitter:description" content="Inspect a cookie banner in DevTools and verify that tracking waits for a visitor's choice.">
+  <meta name="twitter:image" content="https://agentlabjournal.online/assets/covers/llm-context-window-budget-social.png">
+
+  <meta name="reading-time" content="15 minutes">
+  <meta name="article:level" content="Intermediate">
+
+  <script type="application/ld+json">
+  {
+    "@context": "https://schema.org",
+    "@type": "Article",
+    "headline": "How to Check Whether Your Cookie Banner Actually Blocks Tracking",
+    "description": "A reproducible DevTools workflow for finding analytics, pixels, iframes, and SDKs that load before consent.",
+    "image": ["https://agentlabjournal.online/assets/covers/llm-context-window-budget-social.png"],
+    "dateModified": "2026-11-24",
+    "author": {
+      "@type": "Organization",
+      "name": "Agent Lab Journal",
+      "url": "https://agentlabjournal.online/"
+    },
+    "publisher": {
+      "@type": "Organization",
+      "name": "Agent Lab Journal",
+      "url": "https://agentlabjournal.online/"
+    },
+    "mainEntityOfPage": {
+      "@type": "WebPage",
+      "@id": "https://agentlabjournal.online/en/proverka-cookie-consent-v-devtools.html"
+    }
+  }
+  </script>
+<link rel="stylesheet" href="../homepage.css"><link rel="stylesheet" href="../max-promo.css">  <meta property="og:image:alt" content="Как проверить, что cookie-баннер действительно блокирует трекинг">
+</head>
+<body>
+  <header class="site-header">
+    <a href="../index.html">Agent Lab Journal</a>
+    <nav aria-label="Primary navigation">
+      <a href="guides.html">Guides</a>
+      <a href="../glossary.html">Glossary</a>
+    </nav>
+  </header>
+
+  <main>
+    <article class="reading">
+      <header class="article-header">
+        <p class="reading-meta">Intermediate · 15-minute read · Updated November 24, 2026</p>
+        <h1>How to Check Whether Your Cookie Banner Actually Blocks Tracking</h1>
+        <figure class="article-cover" data-editorial-cover="proverka-cookie-consent-v-devtools"><img src="../assets/covers/llm-context-window-budget.png" alt="Как проверить, что cookie-баннер действительно блокирует трекинг" width="1280" height="720" fetchpriority="high"><figcaption>Temporary fallback cover; replace in editorial pass.</figcaption></figure>
+        <p class="lead">A banner can be visible, interactive, and compliant-looking while tracking has already started underneath it. This guide shows how to test the actual browser behavior: what loads before a choice, what loads after rejection, and how to fix scripts, iframes, and SDKs that ignore consent.</p>
+      </header>
+
+      <p>The important question is not “does the banner appear?” It is “what does the browser send before the visitor chooses?” You can answer that without access to production credentials, analytics dashboards, or a consent vendor’s account. A clean browser profile and the browser’s <a href="../glossary.html#devtools">DevTools</a> are enough for a first, repeatable audit.</p>
+
+      <p>This article describes a testing method, not a result for any particular website. The examples use common names such as <code>analytics.js</code>, Google Analytics, Meta Pixel, and embedded video players. Your site may use different vendors, domains, or custom code.</p>
+
+      <h2>What a successful test should prove</h2>
+
+      <p>Before consent, a visitor should not trigger the non-essential <a href="../glossary.html#tracking">tracking</a> you have chosen to gate. That normally includes:</p>
+
+      <ul>
+        <li>requests to analytics or advertising endpoints;</li>
+        <li>marketing <a href="../glossary.html#cookie">cookies</a> being written or sent;</li>
+        <li>tracking pixels loading;</li>
+        <li>third-party <a href="../glossary.html#iframe">iframes</a> starting activity;</li>
+        <li>non-essential <a href="../glossary.html#sdk">SDKs</a> initializing in JavaScript.</li>
+      </ul>
+
+      <p>After the visitor accepts a relevant category, those resources may load. After rejection, they should remain blocked, or the site should provide a documented alternative that does not perform the rejected processing.</p>
+
+      <p>Do not treat the absence of a visible cookie as proof that tracking is blocked. A site can send data in a request, store an identifier in another browser mechanism, or contact a vendor before any cookie appears.</p>
+
+      <h2>A concrete failure pattern</h2>
+
+      <p>Imagine a page that shows a consent banner on first visit. Its HTML contains this script:</p>
+
+      <pre><code>&lt;script src="https://example-analytics.test/analytics.js"&gt;&lt;/script&gt;
+&lt;script&gt;
+  analytics.init({ siteId: "example" });
+&lt;/script&gt;</code></pre>
+
+      <p>The banner may cover the page until the visitor clicks “Accept,” but the browser still fetches <code>analytics.js</code> while parsing the document. The initialization code can then send a page-view request before the visitor has made a choice. Hiding the prompt changes the interface; it does not change the loading order.</p>
+
+      <p>A second common pattern is an embedded video or map:</p>
+
+      <pre><code>&lt;iframe
+  src="https://third-party.example/embed/123"
+  title="Embedded content"&gt;
+&lt;/iframe&gt;</code></pre>
+
+      <p>The iframe may contact its own servers as soon as it is created. A consent banner outside the iframe cannot undo that request after the fact.</p>
+
+      <h2>Prepare a clean test</h2>
+
+      <p>Use a test page or staging environment when possible. If you test production, avoid entering personal information and do not submit forms during the audit.</p>
+
+      <ol>
+        <li>Open a private browsing window or create a fresh browser profile.</li>
+        <li>Disable extensions that block or rewrite requests. Record which extensions you disabled.</li>
+        <li>Open the browser menu and launch DevTools.</li>
+        <li>Open the <strong>Network</strong> panel.</li>
+        <li>Enable <strong>Preserve log</strong> and disable the browser cache for the current DevTools session.</li>
+        <li>Clear site data for the origin if the browser profile is not new.</li>
+        <li>Reload the page with the Network panel already open.</li>
+      </ol>
+
+      <p>“Preserve log” matters because navigation can otherwise remove the evidence you need. A clean profile matters because an earlier consent decision can make the site behave as if the visitor already opted in.</p>
+
+      <h2>Test one: before making a choice</h2>
+
+      <p>Do not click Accept, Reject, Close, or any preference button yet. Watch the request list from the first document request onward.</p>
+
+      <p>Start with the <strong>Domain</strong>, <strong>Name</strong>, <strong>Type</strong>, and <strong>Initiator</strong> columns. The initiator often shows the script or document that caused a request.</p>
+
+      <p>Use the Network filter box to search for likely vendor names:</p>
+
+      <pre><code>analytics
+pixel
+collect
+track
+gtag
+facebook
+doubleclick
+segment
+hotjar
+clarity
+youtube
+vimeo</code></pre>
+
+      <p>These are search terms, not a complete detection list. A vendor can use a first-party collection endpoint, a shortened hostname, a custom path, or a server-side proxy.</p>
+
+      <p>For every suspicious request, record:</p>
+
+      <ul>
+        <li>the full request URL, excluding personal query values when sharing notes;</li>
+        <li>the request type;</li>
+        <li>the initiator;</li>
+        <li>the time or order in which it appeared;</li>
+        <li>whether it contains an identifier or page information;</li>
+        <li>whether it happened before the consent choice.</li>
+      </ul>
+
+      <p>Click a request and inspect its <strong>Headers</strong> and <strong>Payload</strong> tabs. Look for fields such as page URL, referrer, client ID, session ID, campaign data, or advertising identifiers. Do not copy real user values into tickets, articles, or screenshots.</p>
+
+      <h3>What counts as evidence before consent</h3>
+
+      <p>A request is strong evidence of pre-consent activity when it is sent before a choice and its destination or payload indicates analytics, advertising, profiling, or another non-essential purpose. A script download alone may be enough to show that code was made available, but the stronger finding is an initialization or collection request caused by that script.</p>
+
+      <p>Classify the result carefully:</p>
+
+      <ul>
+        <li><strong>Blocked:</strong> no relevant script, request, cookie, iframe, or SDK activity was observed before the choice.</li>
+        <li><strong>Loaded but inactive:</strong> a library was downloaded, but no relevant collection request was observed. This may still be unacceptable depending on the purpose and policy.</li>
+        <li><strong>Tracking observed:</strong> a relevant request or identifier was created before consent.</li>
+        <li><strong>Unclear:</strong> the vendor’s behavior cannot be determined from this test alone.</li>
+      </ul>
+
+      <h2>Test two: inspect cookies and storage</h2>
+
+      <p>Open the <strong>Application</strong> panel and inspect storage for the tested origin. Check cookies, local storage, session storage, and other available storage areas.</p>
+
+      <p>Look for new entries created after the page load and before a choice. Names such as <code>_ga</code>, <code>_fbp</code>, <code>mp_*</code>, or <code>amplitude_*</code> can be clues, but names are not proof. A first-party cookie may support essential functionality, and an unfamiliar name may belong to the consent system itself.</p>
+
+      <p>Use the cookie’s domain, path, expiration, and value format together with the Network evidence. When sharing a screenshot, mask values and identifiers.</p>
+
+      <h2>Test three: reject non-essential categories</h2>
+
+      <p>Reload the clean page, then choose the strongest available rejection option, such as “Reject all” or a preference setting that disables analytics and marketing. If the banner only offers “Accept” and “Close,” record that limitation rather than treating Close as rejection.</p>
+
+      <p>After rejection:</p>
+
+      <ol>
+        <li>reload the page with Network logging preserved;</li>
+        <li>repeat the vendor-name searches;</li>
+        <li>check whether new tracking requests appear;</li>
+        <li>inspect storage for newly created identifiers;</li>
+        <li>open the Elements panel and check whether blocked iframes were replaced by placeholders or removed.</li>
+      </ol>
+
+      <p>Then navigate to another page on the same site. A banner can behave correctly on the landing page and fail on a template that includes a different tag manager container, video component, or marketing script.</p>
+
+      <h2>Test four: accept one category at a time</h2>
+
+      <p>If the banner supports granular preferences, test each category separately. Start with all non-essential categories rejected, then enable one category and reload.</p>
+
+      <p>This isolates which consent signal unlocks which resource. For example, analytics may be allowed while marketing remains blocked. The result should be reflected in the site’s behavior, not only in the banner’s checkboxes.</p>
+
+      <p>Record the sequence:</p>
+
+      <pre><code>Initial load → no choice → reject all → reload
+Initial load → no choice → allow analytics only → reload
+Initial load → no choice → allow marketing only → reload
+Initial load → no choice → accept all → reload</code></pre>
+
+      <p>Be aware that some systems apply a choice without a full reload, while others initialize on the next navigation. Test both the immediate behavior and a fresh navigation after the choice.</p>
+
+      <h2>Inspect scripts, iframes, and SDKs in the page</h2>
+
+      <h3>Scripts</h3>
+
+      <p>In the Elements panel, search for <code>&lt;script</code>. Pay particular attention to:</p>
+
+      <ul>
+        <li>external scripts whose host belongs to an analytics or advertising vendor;</li>
+        <li>inline code containing <code>gtag</code>, <code>fbq</code>, <code>dataLayer</code>, <code>analytics</code>, or <code>track</code>;</li>
+        <li>tag-manager containers that can load additional tags;</li>
+        <li>scripts inserted dynamically after the initial document load.</li>
+      </ul>
+
+      <p>Use the Initiator tab for a request to trace which script created it. An external library may be only the first step; the real collection call can be made by an inline bootstrapper or a tag manager.</p>
+
+      <h3>iframes</h3>
+
+      <p>Search for <code>&lt;iframe</code> and compare the DOM before and after consent. For non-essential embeds, the pre-consent DOM should contain a placeholder, a click-to-load control, or no third-party iframe at all.</p>
+
+      <p>Changing an iframe’s CSS to <code>display: none</code> is not sufficient. The browser can still load the iframe’s <code>src</code>. The safe pattern is to delay assigning <code>src</code> until the required consent exists.</p>
+
+      <h3>SDKs and tag managers</h3>
+
+      <p>An SDK can initialize without immediately setting a cookie. It may register event listeners, generate an identifier in memory, or prepare data for a later request. Search the console and Sources panel for initialization calls, but treat the Network panel as the primary evidence for data leaving the browser.</p>
+
+      <p>Tag managers deserve a separate check because one container can load tags from several vendors. A banner that blocks one script URL does not necessarily block tags injected by the container.</p>
+
+      <h2>How to fix pre-consent loading</h2>
+
+      <p>The fix is to make consent a prerequisite for initialization, not a visual layer placed over already-running code.</p>
+
+      <h3>Gate the script element</h3>
+
+      <p>Do not include a non-essential script in the initial HTML. Add it only after the relevant consent signal is available:</p>
+
+      <pre><code>&lt;script&gt;
+  function loadAnalytics() {
+    if (window.analyticsLoaded) return;
+    window.analyticsLoaded = true;
+
+    const script = document.createElement("script");
+    script.src = "https://example-analytics.test/analytics.js";
+    script.async = true;
+    script.onload = () =&gt; {
+      window.analytics.init({ siteId: "example" });
+    };
+    document.head.appendChild(script);
+  }
+
+  function onConsentChanged(consent) {
+    if (consent.analytics === true) {
+      loadAnalytics();
+    }
+  }
+&lt;/script&gt;</code></pre>
+
+      <p>The event name and consent object depend on your consent system. The important properties are that the script is absent before permission, initialization happens once, and the code responds to the actual consent state.</p>
+
+      <h3>Gate inline initialization</h3>
+
+      <p>Removing an external script is not enough if inline code still sends events or calls a previously available library. Wrap initialization and event collection in the same consent check.</p>
+
+      <pre><code>if (consent.analytics === true) {
+  analytics.init();
+  analytics.page();
+}</code></pre>
+
+      <p>Also inspect automatic page-view settings. A library may send a page view as soon as it initializes, before your application code has finished applying preferences.</p>
+
+      <h3>Gate iframes by delaying <code>src</code></h3>
+
+      <pre><code>&lt;div
+  class="video-placeholder"
+  data-embed-src="https://video.example/embed/123"
+  data-consent-category="functionality"&gt;
+  Video unavailable until you allow the required category.
+&lt;/div&gt;
+
+&lt;script&gt;
+  function activateEmbeds(category) {
+    if (category !== "functionality") return;
+
+    document.querySelectorAll("[data-embed-src]").forEach((placeholder) =&gt; {
+      const iframe = document.createElement("iframe");
+      iframe.src = placeholder.dataset.embedSrc;
+      iframe.title = "Embedded video";
+      iframe.loading = "lazy";
+      placeholder.replaceWith(iframe);
+    });
+  }
+&lt;/script&gt;</code></pre>
+
+      <p>Do not put the third-party URL in an iframe’s <code>src</code> before consent. A placeholder may display a preview image hosted by your own site, provided that the preview itself does not send the blocked data.</p>
+
+      <h3>Configure the tag manager at its source</h3>
+
+      <p>If a tag manager is responsible for the request, blocking a visible script in the page may not solve the problem. Configure each tag’s consent requirement in the tag manager and verify the container’s default state before consent.</p>
+
+      <p>Use the tag manager’s preview mode only as an aid. The browser’s Network log remains the final check for what was actually requested.</p>
+
+      <h2>Verification after the fix</h2>
+
+      <p>Repeat the full test in a fresh profile. Do not rely on the browser state from the development session, because an earlier acceptance can make a broken implementation look correct.</p>
+
+      <p>A useful verification record contains:</p>
+
+      <ul>
+        <li>browser and version;</li>
+        <li>test URL and environment;</li>
+        <li>fresh-profile or cleared-storage method;</li>
+        <li>consent choice made;</li>
+        <li>relevant request URL or host;</li>
+        <li>request initiator;</li>
+        <li>storage changes;</li>
+        <li>expected result and observed result.</li>
+      </ul>
+
+      <p>For an automated regression check, use a browser test that clears storage, opens the page, waits for the banner, and fails if a known tracking host is requested before consent. Keep the host list maintained; a test that checks only one vendor can miss a newly added integration.</p>
+
+      <pre><code>// Illustrative Playwright-style test
+const trackingHosts = [
+  "example-analytics.test",
+  "example-advertising.test"
+];
+
+page.on("request", request =&gt; {
+  const url = new URL(request.url());
+  if (trackingHosts.some(host =&gt; url.hostname.endsWith(host))) {
+    throw new Error(`Tracking request before consent: ${url.hostname}`);
+  }
+});
+
+await page.goto("https://example.test/");
+await page.waitForSelector("[data-consent-banner]");</code></pre>
+
+      <p>This is an example, not a verified test for your site. Adapt the selector, host list, consent categories, and timing to the implementation under review.</p>
+
+      <h2>Failure cases and misleading signals</h2>
+
+      <h3>“I saw no cookies, so it is blocked”</h3>
+
+      <p>Cookies are only one storage and transmission mechanism. Check requests, local storage, script initialization, and third-party connections as well.</p>
+
+      <h3>“The request is first-party, so it is harmless”</h3>
+
+      <p>A first-party endpoint can proxy data to an analytics or advertising system. Inspect the path, payload, initiator, and server-side design before classifying it.</p>
+
+      <h3>“The banner blocks the page, so scripts cannot run”</h3>
+
+      <p>A modal overlay does not pause the browser’s parser or JavaScript event loop. Scripts can load and execute behind it.</p>
+
+      <h3>“Reject worked once”</h3>
+
+      <p>The result may be cached in local storage or a consent cookie. Repeat the test from a clean state and test navigation to another page.</p>
+
+      <h3>“The vendor is listed as necessary”</h3>
+
+      <p>The label is a configuration decision, not browser evidence. Confirm what the integration actually does and document the basis for the category.</p>
+
+      <h3>“The page is clean, but the checkout is not”</h3>
+
+      <p>Different templates, subdomains, and applications can use separate containers and consent states. Test representative routes, including authenticated and embedded flows when they are in scope.</p>
+
+      <h2>Limitations of a browser-only audit</h2>
+
+      <p>DevTools shows what happened in the tested browser session. It cannot prove that every geography, device, route, feature flag, or server-side integration behaves identically.</p>
+
+      <p>A browser test also may not reveal:</p>
+
+      <ul>
+        <li>server-side tracking triggered by a form submission;</li>
+        <li>data sent by a native mobile application;</li>
+        <li>processing performed after a first-party server receives an event;</li>
+        <li>behavior behind login or a feature flag you did not receive;</li>
+        <li>vendor behavior that changes over time.</li>
+      </ul>
+
+      <p>Use the result as bounded evidence: “this request was observed in this browser, on this route, in this consent state.” That statement is more useful and defensible than a blanket claim that the entire site is compliant or non-compliant.</p>
+
+      <h2>Practical checklist</h2>
+
+      <ol>
+        <li>Start with a fresh profile or cleared site data.</li>
+        <li>Open Network logging before loading the page.</li>
+        <li>Preserve the log and disable cache for the test.</li>
+        <li>Record requests before making any choice.</li>
+        <li>Inspect initiators, payloads, cookies, and other storage.</li>
+        <li>Reject non-essential categories and repeat the test.</li>
+        <li>Accept one category at a time and compare the results.</li>
+        <li>Inspect script tags, dynamically inserted scripts, iframes, SDKs, and tag-manager containers.</li>
+        <li>Delay loading and initialization until the correct consent exists.</li>
+        <li>Repeat the test after the fix and preserve the evidence.</li>
+      </ol>
+
+      <p>A trustworthy cookie banner is the visible part of a loading policy. The policy is working only when the browser’s requests, storage, scripts, iframes, and SDK initialization match the visitor’s choice.</p>
+
+      <p>Continue with the <a href="guides.html">Agent Lab Journal guides</a> or look up implementation terms in the <a href="../glossary.html">glossary</a>.</p>
+    <section class="service-note">
+  <b>We publish what works for us—and implement the same solutions for your business.</b>
+  We design AI automation, Telegram bots, chats, and AI agents for real-world processes.
+  <a href="../contacts-en.html">Discuss your project →</a>
+</section>
+</article>
+  </main>
+
+  <footer class="site-footer">
+    <p>&copy; Agent Lab Journal</p>
+  </footer>
+</body>
+</html>
