@@ -1,0 +1,483 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Invariants Must Protect State, Not Individual Functions</title>
+  <meta name="description" content="Invariants Must Protect State, Not Individual Functions: build a reusable pre-write guard that prevents duplicate published articles across POST and PUT paths.">
+  <link rel="canonical" href="https://agentlabjournal.online/en/invariant-guards-across-code-paths.html">
+  <link rel="stylesheet" href="../style.css">
+  <link rel="stylesheet" href="../reading.css">
+
+  <meta property="og:type" content="article">
+  <meta property="og:title" content="Invariants Must Protect State, Not Individual Functions">
+  <meta property="og:description" content="A practical pattern for enforcing one state invariant across multiple write paths, including POST and PUT.">
+  <meta property="og:url" content="https://agentlabjournal.online/en/invariant-guards-across-code-paths.html">
+  <meta property="og:image" content="https://agentlabjournal.online/assets/covers/llm-context-window-budget-social.png">
+
+  <meta name="twitter:card" content="summary_large_image">
+  <meta name="twitter:title" content="Invariants Must Protect State, Not Individual Functions">
+  <meta name="twitter:description" content="A reusable pre-write guard for preventing duplicate published articles across POST and PUT paths.">
+  <meta name="twitter:image" content="https://agentlabjournal.online/assets/covers/llm-context-window-budget-social.png">
+
+  <meta name="reading-time" content="12 minutes">
+  <meta name="article:reading_time" content="12 minutes">
+
+  <script type="application/ld+json">
+  {
+    "@context": "https://schema.org",
+    "@type": "Article",
+    "headline": "Invariants Must Protect State, Not Individual Functions",
+    "description": "A practical pattern for enforcing one state invariant across multiple write paths, including POST and PUT.",
+    "image": ["https://agentlabjournal.online/assets/covers/llm-context-window-budget-social.png"],
+    "dateModified": "2026-11-24",
+    "author": {
+      "@type": "Organization",
+      "name": "Agent Lab Journal"
+    },
+    "publisher": {
+      "@type": "Organization",
+      "name": "Agent Lab Journal",
+      "url": "https://agentlabjournal.online/"
+    },
+    "mainEntityOfPage": {
+      "@type": "WebPage",
+      "@id": "https://agentlabjournal.online/en/invariant-guards-across-code-paths.html"
+    }
+  }
+  </script>
+<link rel="stylesheet" href="../homepage.css"><link rel="stylesheet" href="../max-promo.css">  <meta property="og:image:alt" content="Инварианты должны защищать состояние, а не отдельную функцию">
+</head>
+<body>
+  <header class="site-header">
+    <a href="../index.html">Agent Lab Journal</a>
+    <nav aria-label="Primary navigation">
+      <a href="../guides.html">Guides</a>
+      <a href="../glossary.html">Glossary</a>
+    </nav>
+  </header>
+
+  <main>
+    <article class="reading">
+      <header class="reading-header">
+        <p class="reading-meta">Advanced · 12-minute read · Updated 24 November 2026</p>
+        <h1>Invariants Must Protect State, Not Individual Functions</h1>
+        <figure class="article-cover" data-editorial-cover="invariant-guards-across-code-paths"><img src="../assets/covers/llm-context-window-budget.png" alt="Инварианты должны защищать состояние, а не отдельную функцию" width="1280" height="720" fetchpriority="high"><figcaption>Temporary fallback cover; replace in editorial pass.</figcaption></figure>
+        <p class="lead">
+          If a rule matters after a write, enforce it against the state that the write would produce—not only inside the function that first creates it. This article builds a reusable pre-write check that prevents duplicate published articles through both <code>POST</code> and <code>PUT</code> paths.
+        </p>
+      </header>
+
+      <section>
+        <h2>The real failure mode</h2>
+
+        <p>
+          An <a href="../glossary.html#invariant">invariant</a> is a condition that must remain true for every valid version of a system’s data. Consider this rule:
+        </p>
+
+        <blockquote>
+          A publication may have at most one published article for a given canonical slug.
+        </blockquote>
+
+        <p>
+          A common implementation puts the check in the creation handler:
+        </p>
+
+        <pre><code>POST /articles
+  if another published article has slug "release-notes":
+      reject
+  insert article</code></pre>
+
+        <p>
+          That appears correct until an update path can change a draft into a published article or change its slug:
+        </p>
+
+        <pre><code>PUT /articles/42
+  update title, slug, and status
+  save article</code></pre>
+
+        <p>
+          The creation handler protects one function. The invariant concerns the resulting database state. If <code>POST</code> checks the rule but <code>PUT</code> does not, the same invalid state remains reachable.
+        </p>
+
+        <p>
+          The durable design is to make every write path compute the proposed final state, then pass that state through the same guard before persistence.
+        </p>
+      </section>
+
+      <section>
+        <h2>Define the invariant precisely</h2>
+
+        <p>
+          Vague rules produce incomplete checks. Write the rule as a predicate over stored state:
+        </p>
+
+        <pre><code>For every publication P and normalized slug S:
+count(article where article.publication_id = P
+                   and article.slug = S
+                   and article.status = "published") &lt;= 1</code></pre>
+
+        <p>
+          This definition makes three details explicit:
+        </p>
+
+        <ul>
+          <li>The scope is one publication.</li>
+          <li>The comparison uses a normalized slug.</li>
+          <li>Only articles with <code>published</code> status participate.</li>
+        </ul>
+
+        <p>
+          A draft with the same slug is allowed. A published article with a different slug is allowed. A second published article with the same normalized slug is not.
+        </p>
+      </section>
+
+      <section>
+        <h2>Compute the final state before writing</h2>
+
+        <p>
+          The guard should receive a complete candidate object, not a partial request body. That distinction matters for updates: a <code>PUT</code> request may change only the status, while the slug and publication identifier come from the existing record.
+        </p>
+
+        <pre><code>function normalizeSlug(value) {
+  return value
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-|-$/g, "");
+}
+
+function buildCandidate(existing, input) {
+  return {
+    id: existing?.id ?? null,
+    publicationId: input.publicationId ?? existing?.publicationId,
+    slug: normalizeSlug(input.slug ?? existing?.slug ?? ""),
+    status: input.status ?? existing?.status ?? "draft",
+    title: input.title ?? existing?.title ?? ""
+  };
+}</code></pre>
+
+        <p>
+          The order is important:
+        </p>
+
+        <ol>
+          <li>Load the current record for an update.</li>
+          <li>Merge stored values with requested changes.</li>
+          <li>Normalize values used by the invariant.</li>
+          <li>Run the pre-write guard against the candidate.</li>
+          <li>Persist only after the guard accepts it.</li>
+        </ol>
+
+        <p>
+          Checking the raw input is insufficient. If an existing article has slug <code>release-notes</code> and the request changes only <code>status</code> to <code>published</code>, the guard still needs to evaluate the existing slug.
+        </p>
+      </section>
+
+      <section>
+        <h2>Put the rule at the state boundary</h2>
+
+        <p>
+          The reusable guard can be expressed as a pure decision around a repository query:
+        </p>
+
+        <pre><code>async function assertPublishableArticle(candidate, articles) {
+  if (candidate.status !== "published") {
+    return;
+  }
+
+  const conflict = await articles.findPublishedByPublicationAndSlug({
+    publicationId: candidate.publicationId,
+    slug: candidate.slug,
+    excludeId: candidate.id
+  });
+
+  if (conflict) {
+    throw new ConflictError(
+      "A published article already uses this slug in this publication"
+    );
+  }
+}</code></pre>
+
+        <p>
+          The <code>excludeId</code> parameter is required for updates. Otherwise, an article would conflict with itself whenever it is saved without changing its slug.
+        </p>
+
+        <p>
+          The guard is intentionally independent of <code>POST</code> and <code>PUT</code>. It describes what must be true before a candidate enters persistent state. Both handlers can therefore use the same pre-write operation.
+        </p>
+      </section>
+
+      <section>
+        <h2>Apply the same guard to POST and PUT</h2>
+
+        <h3>Creation path</h3>
+
+        <pre><code>async function createArticle(request) {
+  const candidate = buildCandidate(null, request.body);
+
+  await assertPublishableArticle(candidate, articleRepository);
+
+  return articleRepository.insert(candidate);
+}</code></pre>
+
+        <h3>Update path</h3>
+
+        <pre><code>async function updateArticle(request) {
+  const existing = await articleRepository.findById(request.params.id);
+
+  if (!existing) {
+    throw new NotFoundError("Article not found");
+  }
+
+  const candidate = buildCandidate(existing, request.body);
+
+  await assertPublishableArticle(candidate, articleRepository);
+
+  return articleRepository.update(candidate.id, candidate);
+}</code></pre>
+
+        <p>
+          The important property is not that the handlers look identical. It is that both produce the same kind of candidate and both invoke the same guard before writing.
+        </p>
+
+        <p>
+          If the application has more write paths—an import job, an administration command, a moderation workflow, or a background synchronization process—each path should converge on the same state boundary rather than duplicate the rule.
+        </p>
+      </section>
+
+      <section>
+        <h2>Prefer a database constraint for the final guarantee</h2>
+
+        <p>
+          An application-level check improves behavior and error messages, but two concurrent requests can both observe no conflict before either one commits. This is a <a href="../glossary.html#race-condition">race condition</a>.
+        </p>
+
+        <p>
+          Where the database supports it, add a unique constraint that matches the invariant. For a system with publication, normalized slug, and status columns, a partial unique index is one possible configuration:
+        </p>
+
+        <pre><code>CREATE UNIQUE INDEX one_published_article_per_slug
+ON articles (publication_id, slug)
+WHERE status = 'published';</code></pre>
+
+        <p>
+          The exact syntax depends on the database engine. If partial indexes are unavailable, an equivalent design may use a generated key or a separate table containing only published-slug claims.
+        </p>
+
+        <p>
+          The application guard and the database constraint have different jobs:
+        </p>
+
+        <ul>
+          <li>The pre-write guard gives callers a predictable domain error before attempting the write.</li>
+          <li>The database constraint protects the invariant under concurrency and against missed code paths.</li>
+          <li>The write boundary translates a constraint violation into the same conflict response used by the guard.</li>
+        </ul>
+
+        <p>
+          Treat the database constraint as the final safety net, not as a reason to leave one handler unchecked. A guard still makes validation explicit and keeps the failure close to the request.
+        </p>
+      </section>
+
+      <section>
+        <h2>Reproducible verification</h2>
+
+        <p>
+          The following examples describe checks to run in a project with an HTTP API and a test database. They are commands and expected assertions, not claims that this article has executed them.
+        </p>
+
+        <h3>1. Create a published article</h3>
+
+        <pre><code>curl -i -X POST http://localhost:3000/publications/demo/articles \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "title": "Release notes",
+    "slug": "release-notes",
+    "status": "published"
+  }'</code></pre>
+
+        <p>
+          Record the returned article identifier. The response should indicate a successful creation.
+        </p>
+
+        <h3>2. Try to create the duplicate through POST</h3>
+
+        <pre><code>curl -i -X POST http://localhost:3000/publications/demo/articles \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "title": "Another release notes page",
+    "slug": "release-notes",
+    "status": "published"
+  }'</code></pre>
+
+        <p>
+          Verify that the request is rejected with the project’s conflict response and that the database still contains only one published article for the normalized key.
+        </p>
+
+        <h3>3. Create a draft, then publish it through PUT</h3>
+
+        <pre><code>curl -i -X POST http://localhost:3000/publications/demo/articles \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "title": "Draft release notes",
+    "slug": "release-notes",
+    "status": "draft"
+  }'</code></pre>
+
+        <p>
+          Then update the returned draft identifier:
+        </p>
+
+        <pre><code>curl -i -X PUT http://localhost:3000/publications/demo/articles/DRAFT_ID \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "status": "published"
+  }'</code></pre>
+
+        <p>
+          The update should be rejected because the candidate’s final state has the same publication, normalized slug, and published status as the existing article. Crucially, the request body does not include the slug; the guard must evaluate the merged candidate.
+        </p>
+
+        <h3>4. Verify the allowed cases</h3>
+
+        <ul>
+          <li>Two drafts may share a slug if the product permits it.</li>
+          <li>Published articles in different publications may share a slug.</li>
+          <li>A published article may update its title without conflicting with itself.</li>
+          <li>A published article may change to a new, unused slug.</li>
+          <li>A published article may be archived or returned to draft if the state model allows it.</li>
+        </ul>
+      </section>
+
+      <section>
+        <h2>Failure cases to test deliberately</h2>
+
+        <h3>Partial updates that omit invariant fields</h3>
+
+        <p>
+          A status-only update must still carry the stored slug into the candidate. Testing only full request bodies misses this path.
+        </p>
+
+        <h3>Normalization mismatches</h3>
+
+        <p>
+          Decide whether <code>Release-Notes</code>, <code>release notes</code>, and <code>release-notes</code> are equivalent. Apply the same normalization when writing, querying, indexing, and checking conflicts.
+        </p>
+
+        <h3>Self-conflict on update</h3>
+
+        <p>
+          Exclude the current record by identifier. A guard that queries for any matching row will reject harmless saves.
+        </p>
+
+        <h3>Concurrent writes</h3>
+
+        <p>
+          Run two publication requests at the same time against an empty key. The expected durable result is one success and one conflict, supported by a database constraint or an equivalent serialized write mechanism.
+        </p>
+
+        <h3>Soft-deleted records</h3>
+
+        <p>
+          If deleted rows remain in the database, define whether they participate in the invariant. The query and constraint must use the same rule.
+        </p>
+
+        <h3>Import and administrative paths</h3>
+
+        <p>
+          Search for every operation that can set <code>status = 'published'</code> or change the slug. A correct API handler does not protect a batch import that writes directly to the repository.
+        </p>
+      </section>
+
+      <section>
+        <h2>Transactions and error handling</h2>
+
+        <p>
+          If the guard reads related records and the write changes several tables, place the read and write in one <a href="../glossary.html#transaction">transaction</a> where the database design requires it. A transaction alone does not automatically prevent every concurrent conflict; the isolation level and constraint still matter.
+        </p>
+
+        <p>
+          Handle both application-detected conflicts and database constraint violations:
+        </p>
+
+        <pre><code>try {
+  return await database.transaction(async (tx) =&gt; {
+    const candidate = await buildCandidateInTransaction(tx, request);
+    await assertPublishableArticle(candidate, tx.articles);
+    return tx.articles.save(candidate);
+  });
+} catch (error) {
+  if (isPublishedSlugConstraintViolation(error)) {
+    throw new ConflictError(
+      "A published article already uses this slug in this publication"
+    );
+  }
+
+  throw error;
+}</code></pre>
+
+        <p>
+          Do not expose raw database error text to clients. Keep the public error stable while logging enough structured context for diagnosis without including secrets or unnecessary personal data.
+        </p>
+      </section>
+
+      <section>
+        <h2>What this pattern does not solve</h2>
+
+        <p>
+          A state-level guard is not a substitute for a complete publication model. It does not decide which article should win, how redirects should work after a slug change, whether two languages may reuse a slug, or how scheduled publication interacts with time zones.
+        </p>
+
+        <p>
+          It also does not prove that all writes use the guard. You still need repository-level searches, integration tests for each write path, and a database-level guarantee where concurrent access is possible.
+        </p>
+
+        <p>
+          Finally, the phrase “one published article” must have a precise scope. The key may need to include locale, site, tenant, content type, or an effective publication window. Add those dimensions to both the candidate and the constraint when the product rule requires them.
+        </p>
+      </section>
+
+      <section>
+        <h2>The reusable rule</h2>
+
+        <p>
+          When a business rule describes valid stored state, make the rule reusable at the pre-write boundary:
+        </p>
+
+        <pre><code>current state
+    + requested change
+    ------------------
+    = candidate final state
+
+candidate final state
+    - shared invariant guard
+    - database constraint
+    --------------------
+    = accepted or rejected write</code></pre>
+
+        <p>
+          This changes the question from “Did this function remember to validate?” to “Can any write enter a state that violates the rule?” That is the right level for invariants.
+        </p>
+
+        <p>
+          For more implementation patterns, see the <a href="../guides.html">guides</a> and the <a href="../glossary.html">glossary</a>.
+        </p>
+      </section>
+    <section class="service-note">
+  <b>We publish what works for us—and implement the same solutions for your business.</b>
+  We design AI automation, Telegram bots, chats, and AI agents for real-world processes.
+  <a href="../contacts-en.html">Discuss your project →</a>
+</section>
+</article>
+  </main>
+
+  <footer class="site-footer">
+    <p>&copy; Agent Lab Journal</p>
+    <nav aria-label="Footer navigation">
+      <a href="../guides.html">Guides</a>
+      <a href="../glossary.html">Glossary</a>
+    </nav>
+  </footer>
+</body>
+</html>

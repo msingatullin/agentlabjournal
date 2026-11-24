@@ -1,0 +1,429 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Инварианты должны защищать состояние, а не отдельную функцию</title>
+  <meta name="description" content="Инварианты должны защищать состояние, а не отдельную функцию: практический разбор общей проверки перед записью и защиты опубликованных статей через POST и PUT.">
+  <link rel="canonical" href="https://agentlabjournal.online/invariant-guards-across-code-paths.html">
+  <link rel="stylesheet" href="style.css">
+  <link rel="stylesheet" href="reading.css">
+
+  <meta property="og:type" content="article">
+  <meta property="og:title" content="Инварианты должны защищать состояние, а не отдельную функцию">
+  <meta property="og:description" content="Как проверять итоговое состояние перед записью и не допускать дублирования опубликованных статей через разные точки записи.">
+  <meta property="og:url" content="https://agentlabjournal.online/invariant-guards-across-code-paths.html">
+  <meta property="og:site_name" content="Agent Lab Journal">
+
+  <meta name="twitter:card" content="summary">
+  <meta name="twitter:title" content="Инварианты должны защищать состояние, а не отдельную функцию">
+  <meta name="twitter:description" content="Практический подход к защите состояния приложения через общий guard для POST и PUT.">
+
+  <script type="application/ld+json">
+  {
+    "@context": "https://schema.org",
+    "@type": "Article",
+    "headline": "Инварианты должны защищать состояние, а не отдельную функцию",
+    "description": "Практический разбор проверки итогового состояния перед записью и защиты опубликованных статей от дублирования через POST и PUT.",
+    "url": "https://agentlabjournal.online/invariant-guards-across-code-paths.html",
+    "inLanguage": "ru",
+    "isPartOf": {
+      "@type": "WebSite",
+      "name": "Agent Lab Journal",
+      "url": "https://agentlabjournal.online/"
+    },
+    "author": {
+      "@type": "Organization",
+      "name": "Agent Lab Journal"
+    }
+  }
+  </script>
+<link rel="stylesheet" href="homepage.css"><link rel="stylesheet" href="max-promo.css">  <meta property="og:image" content="https://agentlabjournal.online/assets/covers/llm-context-window-budget-social.png">
+  <meta property="og:image:alt" content="Инварианты должны защищать состояние, а не отдельную функцию">
+  <meta name="twitter:image" content="https://agentlabjournal.online/assets/covers/llm-context-window-budget-social.png">
+</head>
+<body>
+  <header class="site-header">
+    <div class="reading-shell">
+      <a class="site-logo" href="guides.html">Agent Lab Journal</a>
+      <nav aria-label="Основная навигация">
+        <a href="guides.html">Гайды</a>
+        <a href="glossary.html">Глоссарий</a>
+      </nav>
+    </div>
+  </header>
+
+  <main>
+    <article class="reading">
+<a href="https://max.ru/channel_AgentLab?utm_source=agentlabjournal&utm_medium=article&utm_campaign=max_channel&utm_content=article_footer" class="max-promo-block" target="_blank" rel="noopener noreferrer" aria-label="Самое важное из мира AI в канале MAX AgentLab">
+  <span class="max-promo-block__icon" aria-hidden="true"></span>
+  <span class="max-promo-block__content"><span class="max-promo-block__title">Самое важное из мира AI — в канале MAX AgentLab</span><span class="max-promo-block__desc">Отдельные разборы, инструменты и практические схемы</span></span>
+  <span class="max-promo-block__arrow" aria-hidden="true">→</span>
+</a>
+<a href="https://t.me/pelmenews?utm_source=agentlabjournal&utm_medium=article&utm_campaign=telegram_channel&utm_content=article_intro" class="telegram-promo-block" target="_blank" rel="noopener noreferrer" aria-label="Читайте Agent Lab в Telegram">
+  <span class="telegram-promo-block__icon" aria-hidden="true"></span>
+  <span class="telegram-promo-block__content">
+    <span class="telegram-promo-block__title">Читайте Agent Lab в Telegram</span>
+    <span class="telegram-promo-block__desc">Разборы, кейсы и новости о практических AI-агентах без лишней воды.</span>
+  </span>
+  <span class="telegram-promo-block__arrow" aria-hidden="true">→</span>
+</a>
+      <div class="reading-meta">
+        <span>Практика</span>
+        <span>До 12 минут</span>
+        <span>Уровень: продвинутый</span>
+      </div>
+
+      <h1>Инварианты должны защищать состояние, а не отдельную функцию</h1>
+        <figure class="article-cover" data-editorial-cover="invariant-guards-across-code-paths"><img src="assets/covers/llm-context-window-budget.png" alt="Инварианты должны защищать состояние, а не отдельную функцию" width="1280" height="720" fetchpriority="high"><figcaption>Temporary fallback cover; replace in editorial pass.</figcaption></figure>
+
+      <p class="lead">
+        Если бизнес-правило важно для данных, оно не должно жить только внутри одной функции.
+        Иначе вторая точка записи — например, PUT вместо POST — постепенно станет обходом
+        ограничения. Надёжная граница находится перед сохранением: приложение сначала
+        вычисляет итоговое состояние, затем проверяет его и только после этого записывает.
+      </p>
+
+      <p>
+        В этой статье <a href="glossary.html#invariant">инвариант</a> — это условие,
+        которое должно оставаться истинным для допустимого состояния системы. Например:
+        у одной категории не может быть двух опубликованных статей с одинаковым
+        каноническим адресом.
+      </p>
+
+      <h2>Проблема: правило привязано к маршруту</h2>
+
+      <p>
+        Представим ресурс статьи. Новая статья создаётся через <code>POST /articles</code>,
+        а существующая редактируется через <code>PUT /articles/{id}</code>. Требование
+        одинаковое для обоих сценариев:
+      </p>
+
+      <blockquote>
+        В состоянии <code>published</code> комбинация <code>section + slug</code> должна
+        быть уникальной.
+      </blockquote>
+
+      <p>
+        Наивная реализация часто выглядит так: проверка добавляется в обработчик POST,
+        потому что именно там впервые появляется статья. PUT при этом обновляет поля
+        напрямую и проверку не повторяет. Ошибка проявляется позже: редактор меняет
+        черновик на опубликованный или меняет slug уже опубликованной статьи, и
+        ограничение обходится без единой строки в POST-коде.
+      </p>
+
+      <pre><code>POST /articles
+  ├─ проверить входные данные
+  ├─ проверить уникальность
+  └─ вставить запись
+
+PUT /articles/{id}
+  ├─ прочитать статью
+  ├─ применить изменения
+  └─ обновить запись</code></pre>
+
+      <p>
+        У этих маршрутов разные входы, но одна и та же ответственность: они переводят
+        хранилище из старого состояния в новое. Поэтому инвариант должен проверяться
+        на переходе состояния, а не в конкретном HTTP-методе.
+      </p>
+
+      <h2>Сначала вычислите итоговое состояние</h2>
+
+      <p>
+        Для POST итоговое состояние строится из тела запроса и значений по умолчанию.
+        Для PUT — из текущей записи и частичного набора изменений. В обоих случаях
+        проверке нужно передать один и тот же объект, уже нормализованный и готовый
+        к записи.
+      </p>
+
+      <pre><code>function buildFinalArticle(input, currentArticle = null) {
+  const finalArticle = {
+    ...currentArticle,
+    ...input
+  };
+
+  return {
+    ...finalArticle,
+    slug: normalizeSlug(finalArticle.slug),
+    section: normalizeSection(finalArticle.section),
+    status: normalizeStatus(finalArticle.status)
+  };
+}</code></pre>
+
+      <p>
+        Важно не проверять только поля из запроса. Если PUT не содержит
+        <code>status</code>, итоговое значение должно прийти из текущей записи.
+        Иначе guard увидит неполную картину и может принять запрещённый переход.
+      </p>
+
+      <h2>Один guard для всех точек записи</h2>
+
+      <p>
+        Guard получает итоговое состояние и контекст операции. Он не должен знать,
+        пришли данные через POST, PUT, импорт или административную команду.
+      </p>
+
+      <pre><code>async function assertArticleStateAllowed(finalArticle, context) {
+  if (finalArticle.status !== "published") {
+    return;
+  }
+
+  const duplicate = await articleRepository.findPublishedBySectionAndSlug({
+    section: finalArticle.section,
+    slug: finalArticle.slug,
+    excludeId: context.articleId ?? null
+  });
+
+  if (duplicate) {
+    throw new ConflictError(
+      "Опубликованная статья с таким section и slug уже существует"
+    );
+  }
+}</code></pre>
+
+      <p>
+        Параметр <code>excludeId</code> нужен для PUT. При обновлении статьи сама
+        текущая запись не должна считаться дубликатом. Для POST он равен
+        <code>null</code>, потому что исключать ещё нечего.
+      </p>
+
+      <h2>Как подключить guard к POST и PUT</h2>
+
+      <p>
+        Маршруты могут оставаться разными, но последовательность действий должна быть
+        одинаковой: получить текущие данные, собрать итоговое состояние, вызвать guard,
+        выполнить запись.
+      </p>
+
+      <pre><code>async function createArticle(request) {
+  const finalArticle = buildFinalArticle(request.body);
+
+  await assertArticleStateAllowed(finalArticle, {
+    operation: "create"
+  });
+
+  return articleRepository.insert(finalArticle);
+}
+
+async function updateArticle(request) {
+  const currentArticle =
+    await articleRepository.findById(request.params.id);
+
+  if (!currentArticle) {
+    throw new NotFoundError("Статья не найдена");
+  }
+
+  const finalArticle = buildFinalArticle(
+    request.body,
+    currentArticle
+  );
+
+  await assertArticleStateAllowed(finalArticle, {
+    operation: "update",
+    articleId: currentArticle.id
+  });
+
+  return articleRepository.update(
+    currentArticle.id,
+    finalArticle
+  );
+}</code></pre>
+
+      <p>
+        Теперь одинаковое правило применяется к двум сценариям. Если статья остаётся
+        черновиком, проверка публикационного конфликта не нужна. Если PUT переводит её
+        из черновика в опубликованное состояние, итоговый объект попадёт в тот же guard,
+        что и новый объект из POST.
+      </p>
+
+      <h2>Почему проверки приложения недостаточно</h2>
+
+      <p>
+        Проверка перед записью устраняет дублирование логики, но не заменяет ограничение
+        на уровне базы данных. Две параллельные операции могут одновременно выполнить
+        поиск, обе не найти дубликат и затем обе попытаться записать строку.
+      </p>
+
+      <p>
+        Поэтому правило лучше защищать в два слоя:
+      </p>
+
+      <ol>
+        <li>общий guard в приложении даёт понятную ошибку и учитывает бизнес-условия;</li>
+        <li>уникальное ограничение в базе данных закрывает окно гонки между проверкой и записью.</li>
+      </ol>
+
+      <p>
+        Если база данных поддерживает частичный уникальный индекс, концептуальная форма
+        ограничения может выглядеть так:
+      </p>
+
+      <pre><code>CREATE UNIQUE INDEX articles_published_section_slug_idx
+ON articles (section, slug)
+WHERE status = 'published';</code></pre>
+
+      <p>
+        Это пример SQL-схемы. Точный синтаксис и возможности зависят от используемой
+        СУБД. Если частичные индексы недоступны, аналогичное правило можно выразить
+        отдельным ключом публикации, вычисляемым полем или другой конструкцией,
+        принятой в конкретной базе.
+      </p>
+
+      <h2>Воспроизводимые шаги</h2>
+
+      <p>
+        Ниже — безопасный локальный сценарий проверки. Команды не удаляют данные и
+        используют только HTTP-запросы к локальному экземпляру приложения. Замените
+        порт и идентификаторы на значения своего проекта.
+      </p>
+
+      <pre><code># 1. Создать опубликованную статью
+curl --fail-with-body -X POST http://localhost:3000/articles \
+  -H 'Content-Type: application/json' \
+  --data '{"section":"agents","slug":"state-guards","status":"published","title":"Первая статья"}'
+
+# 2. Попробовать создать дубликат
+curl --fail-with-body -X POST http://localhost:3000/articles \
+  -H 'Content-Type: application/json' \
+  --data '{"section":"agents","slug":"state-guards","status":"published","title":"Дубликат"}'
+
+# 3. Создать черновик с тем же ключом
+curl --fail-with-body -X POST http://localhost:3000/articles \
+  -H 'Content-Type: application/json' \
+  --data '{"section":"agents","slug":"state-guards","status":"draft","title":"Черновик"}'
+
+# 4. Перевести черновик в published
+curl --fail-with-body -X PUT http://localhost:3000/articles/DRAFT_ID \
+  -H 'Content-Type: application/json' \
+  --data '{"status":"published"}'</code></pre>
+
+      <p>
+        Ожидаемый результат для примера: первый POST проходит, второй получает конфликт,
+        черновик создаётся, а PUT, переводящий его в <code>published</code>, получает
+        тот же конфликт. Если у приложения другой формат ошибок, проверяйте не текст,
+        а HTTP-статус и отсутствие запрещённой записи.
+      </p>
+
+      <h2>Проверка результата</h2>
+
+      <p>
+        Проверка должна подтверждать не только ответ API, но и состояние хранилища.
+        После сценария убедитесь, что:
+      </p>
+
+      <ul>
+        <li>в базе существует не более одной опубликованной статьи с данной парой ключей;</li>
+        <li>неудачный POST не создал запись;</li>
+        <li>неудачный PUT не изменил черновик на опубликованный;</li>
+        <li>обновление опубликованной статьи без изменения уникального ключа не конфликтует с самой собой;</li>
+        <li>ошибка от ограничения базы преобразуется в предсказуемый ответ API.</li>
+      </ul>
+
+      <p>
+        Для проверки гонки запустите два одинаковых запроса только в тестовой или
+        локальной среде, где разрешено создавать временные данные. Один запрос должен
+        завершиться успешно, а второй — получить конфликт на уровне приложения или
+        базы данных. Не используйте для такой проверки продуктивные записи.
+      </p>
+
+      <h2>Типовые ошибки</h2>
+
+      <h3>Проверяется только тело запроса</h3>
+      <p>
+        PUT часто является частичным обновлением. Если guard получает только
+        присланные поля, он не знает текущий статус, slug или раздел. Исправление —
+        сначала собрать полный итоговый объект.
+      </p>
+
+      <h3>POST и PUT вызывают разные проверки</h3>
+      <p>
+        Два почти одинаковых правила неизбежно расходятся. Оставьте в маршрутах только
+        сбор контекста и вызов общей проверки.
+      </p>
+
+      <h3>Нормализация выполняется после проверки</h3>
+      <p>
+        Значения <code>State-Guards</code> и <code>state-guards</code> могут стать
+        одинаковыми после нормализации. Проверяйте именно нормализованное итоговое
+        состояние, иначе guard защищает не тот ключ, который будет записан.
+      </p>
+
+      <h3>Учитывается только ошибка приложения</h3>
+      <p>
+        Проверка чтением не атомарна с последующей записью. Ограничение базы данных
+        обязательно, если инвариант должен выдерживать конкурентные запросы.
+      </p>
+
+      <h3>Guard изменяет данные</h3>
+      <p>
+        Проверка должна быть предсказуемой и по возможности не иметь побочных эффектов.
+        Если она сама создаёт записи или меняет статус, становится сложнее понять,
+        какой именно переход был разрешён.
+      </p>
+
+      <h2>Ограничения подхода</h2>
+
+      <p>
+        Общий guard не решает автоматически проблемы старых некорректных данных.
+        Если дубликаты уже существуют, сначала потребуется отдельная процедура
+        инвентаризации и исправления. Не следует включать жёсткое ограничение базы,
+        не понимая, как обрабатываются существующие нарушения.
+      </p>
+
+      <p>
+        Кроме того, одного guard может быть недостаточно для правил, зависящих от
+        нескольких агрегатов, временных интервалов или внешних систем. В таких случаях
+        нужны транзакции, блокировки, согласованная модель конкуренции или отдельный
+        процесс подтверждения. Сам принцип остаётся тем же: проверять состояние,
+        которое реально будет записано.
+      </p>
+
+      <h2>Итог</h2>
+
+      <p>
+        Инварианты должны защищать состояние, а не отдельную функцию. POST и PUT могут
+        отличаться форматом входа, авторизацией и способом поиска текущей записи, но
+        перед сохранением они должны проходить через одну и ту же модель: итоговое
+        состояние → общий guard → атомарная запись с ограничением хранилища.
+      </p>
+
+      <p>
+        Дополнительные практические материалы собраны в разделе
+        <a href="guides.html">guides</a>, а определения терминов — в
+        <a href="glossary.html">глоссарии</a>.
+      </p>
+<aside class="service-note" aria-label="Связаться по проекту">
+  <div class="service-note__copy">
+    <p class="service-note__label">Связь с Agent Lab</p>
+    <p class="service-note__title">Внедрим такой контур в ваш процесс</p>
+    <p class="service-note__text">Напишите инженеру Agent Lab в Telegram: опишите задачу, бота или интеграцию — предложим пилот с проверками и понятными границами.</p>
+  </div>
+  <a class="service-note__link" href="https://t.me/msrzn007?utm_source=journal&amp;utm_medium=article&amp;utm_campaign=service_note" target="_blank" rel="noopener">Написать в Telegram
+    <svg viewBox="0 0 16 16" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"><path d="M3 13 13 3M6 3h7v7"/></svg>
+  </a>
+</aside>
+<aside class="service-note service-note--sitevisor" aria-label="Экспресс-аудит сайта">
+  <div class="service-note__copy">
+    <p class="service-note__label">SiteVisor</p>
+    <p class="service-note__title">Проверьте техническое состояние и готовность вашего сайта к рекламе</p>
+    <p class="service-note__text">Экспресс-аудит на SiteVisor.pro: индексация, скорость, разметка, аналитика и точки конверсии.</p>
+  </div>
+  <a class="service-note__link" href="https://sitevisor.pro/?utm_source=journal&amp;utm_medium=article&amp;utm_campaign=leadmagnet" target="_blank" rel="noopener">Экспресс-аудит на SiteVisor.pro
+    <svg viewBox="0 0 16 16" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"><path d="M3 13 13 3M6 3h7v7"/></svg>
+  </a>
+</aside>
+</article>
+  </main>
+
+  <footer class="site-footer">
+    <div class="reading-shell">
+      <a href="guides.html">Agent Lab Journal</a>
+      <nav aria-label="Навигация в подвале">
+        <a href="guides.html">Гайды</a>
+        <a href="glossary.html">Глоссарий</a>
+      </nav>
+    </div>
+  </footer>
+</body>
+</html>
