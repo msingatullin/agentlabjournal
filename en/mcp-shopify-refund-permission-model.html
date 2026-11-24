@@ -1,0 +1,610 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>How to Safely Give an MCP Server Permission to Refund Shopify Orders</title>
+  <meta name="description" content="How to Safely Give an MCP Server Permission to Refund Shopify Orders with read-only tools, server-side limits, human approval, employee permissions, and audit logs.">
+  <link rel="canonical" href="https://agentlabjournal.online/en/mcp-shopify-refund-permission-model.html">
+  <link rel="stylesheet" href="../style.css">
+  <link rel="stylesheet" href="../reading.css">
+
+  <meta property="og:type" content="article">
+  <meta property="og:title" content="How to Safely Give an MCP Server Permission to Refund Shopify Orders">
+  <meta property="og:description" content="A reproducible permission model for connecting an MCP server to Shopify while keeping refunds bounded, approved, and auditable.">
+  <meta property="og:url" content="https://agentlabjournal.online/en/mcp-shopify-refund-permission-model.html">
+  <meta property="og:image" content="https://agentlabjournal.online/assets/covers/llm-context-window-budget-social.png">
+  <meta property="og:site_name" content="Agent Lab Journal">
+
+  <meta name="twitter:card" content="summary_large_image">
+  <meta name="twitter:title" content="How to Safely Give an MCP Server Permission to Refund Shopify Orders">
+  <meta name="twitter:description" content="A practical permission model for safe, approved, and auditable Shopify refunds through an MCP server.">
+  <meta name="twitter:image" content="https://agentlabjournal.online/assets/covers/llm-context-window-budget-social.png">
+
+  <meta name="reading-time" content="45 minutes">
+  <meta name="article:reading_time" content="45 minutes">
+  <meta name="article:section" content="Security">
+  <meta name="article:level" content="Advanced">
+  <meta name="article:published_time" content="2026-11-24">
+  <meta name="article:modified_time" content="2026-11-24">
+
+  <script type="application/ld+json">
+  {
+    "@context": "https://schema.org",
+    "@type": "Article",
+    "headline": "How to Safely Give an MCP Server Permission to Refund Shopify Orders",
+    "description": "A reproducible permission model for connecting an MCP server to Shopify while keeping refunds bounded, approved, and auditable.",
+    "image": ["https://agentlabjournal.online/assets/covers/llm-context-window-budget-social.png"],
+    "dateModified": "2026-11-24",
+    "author": {
+      "@type": "Organization",
+      "name": "Agent Lab Journal"
+    },
+    "publisher": {
+      "@type": "Organization",
+      "name": "Agent Lab Journal",
+      "url": "https://agentlabjournal.online/"
+    },
+    "mainEntityOfPage": {
+      "@type": "WebPage",
+      "@id": "https://agentlabjournal.online/en/mcp-shopify-refund-permission-model.html"
+    }
+  }
+  </script>
+<link rel="stylesheet" href="../homepage.css"><link rel="stylesheet" href="../max-promo.css">  <meta property="og:image:alt" content="Как безопасно дать MCP-серверу право возвращать заказы Shopify">
+</head>
+<body>
+  <header class="site-header">
+    <div class="site-header__inner">
+      <a class="site-header__brand" href="../index.html">Agent Lab Journal</a>
+      <nav class="site-header__nav" aria-label="Primary navigation">
+        <a href="../guides.html">Guides</a>
+        <a href="../glossary.html">Glossary</a>
+      </nav>
+    </div>
+  </header>
+
+  <main>
+    <article class="reading">
+      <header class="reading-header">
+        <p class="reading-kicker">Security · Advanced</p>
+        <h1>How to Safely Give an MCP Server Permission to Refund Shopify Orders</h1>
+        <figure class="article-cover" data-editorial-cover="mcp-shopify-refund-permission-model"><img src="../assets/covers/llm-context-window-budget.png" alt="Как безопасно дать MCP-серверу право возвращать заказы Shopify" width="1280" height="720" fetchpriority="high"><figcaption>Temporary fallback cover; replace in editorial pass.</figcaption></figure>
+        <p class="reading-dek">A refund is a financial side effect. Treat it as a controlled operation with narrow inputs, server-side policy checks, explicit approval, and an audit trail—not as a general-purpose command an AI assistant can freely invoke.</p>
+        <div class="reading-meta">
+          <span>45 min read</span>
+          <span>Updated November 24, 2026</span>
+          <span>By Agent Lab Journal</span>
+        </div>
+      </header>
+
+      <p>Connecting an <a href="../glossary.html#mcp">MCP (Model Context Protocol)</a> server to <a href="../glossary.html#shopify">Shopify</a> can make order support dramatically faster. An <a href="../glossary.html#ai-assistant">AI assistant</a> can locate an order, explain its payment state, identify eligible items, and prepare a refund request. The dangerous design is letting that same assistant hold a broadly privileged Shopify token and call a refund endpoint whenever a prompt appears to justify it.</p>
+
+      <p>This guide builds a safer model around four boundaries:</p>
+
+      <ul>
+        <li>read-only order and payment inspection by default;</li>
+        <li>server-side limits that the model cannot override;</li>
+        <li>human approval for every risky refund operation; and</li>
+        <li>structured audit events for requests, decisions, execution, and failures.</li>
+      </ul>
+
+      <p>The examples are implementation patterns, not claims about a particular Shopify store, MCP implementation, employee directory, or production result. Replace the placeholder values with your own configuration and verify the behavior in a non-production environment before enabling any write operation.</p>
+
+      <h2 id="threat-model">1. Define the threat model before defining tools</h2>
+
+      <p>The first mistake is to begin with a tool named <code>refund_order</code>. Begin with the business action and its failure modes.</p>
+
+      <h3>What must be protected?</h3>
+
+      <ul>
+        <li>Money: the refund amount must not exceed the amount allowed by your policy or the amount actually refundable.</li>
+        <li>Customer data: order lookup should disclose only the fields needed for the support task.</li>
+        <li>Employee authority: an assistant must not turn a support employee’s conversational request into manager-level approval.</li>
+        <li>Operational integrity: a repeated request must not create duplicate refunds.</li>
+        <li>Evidence: the organization must be able to reconstruct who requested, approved, attempted, and completed the action.</li>
+      </ul>
+
+      <h3>Assume the model can be wrong</h3>
+
+      <p>Prompt instructions are not an authorization system. A model can misunderstand an order, follow malicious text embedded in an order note, select the wrong line item, or produce a plausible explanation for an action that policy should reject. The server must make the final authorization and validation decisions using trusted request context and Shopify’s current state.</p>
+
+      <p>Also assume that a user may ask for an action that is outside their role, that a tool call may be replayed, and that a downstream API may return a partial or ambiguous failure. The design should remain safe when the model is helpful but mistaken, not only when it is malicious.</p>
+
+      <h2 id="permission-model">2. Use capability separation instead of one powerful tool</h2>
+
+      <p>Give the assistant a small set of capabilities. A useful split is:</p>
+
+      <table>
+        <thead>
+          <tr>
+            <th>Capability</th>
+            <th>Purpose</th>
+            <th>Default permission</th>
+            <th>Side effect</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td><code>orders.search</code></td>
+            <td>Find candidate orders using narrowly scoped fields</td>
+            <td>Support staff</td>
+            <td>None</td>
+          </tr>
+          <tr>
+            <td><code>orders.get_summary</code></td>
+            <td>Return payment, fulfillment, and refund state</td>
+            <td>Support staff</td>
+            <td>None</td>
+          </tr>
+          <tr>
+            <td><code>refunds.quote</code></td>
+            <td>Calculate an eligible refund and explain policy decisions</td>
+            <td>Support staff</td>
+            <td>None</td>
+          </tr>
+          <tr>
+            <td><code>refunds.request</code></td>
+            <td>Create a pending approval request</td>
+            <td>Support staff</td>
+            <td>Creates an internal record</td>
+          </tr>
+          <tr>
+            <td><code>refunds.approve</code></td>
+            <td>Approve a pending request</td>
+            <td>Authorized approver</td>
+            <td>Changes approval state</td>
+          </tr>
+          <tr>
+            <td><code>refunds.execute</code></td>
+            <td>Submit the approved refund to Shopify</td>
+            <td>Dedicated service identity</td>
+            <td>Financial side effect</td>
+          </tr>
+        </tbody>
+      </table>
+
+      <p>Do not expose <code>refunds.execute</code> as a general conversational tool. In a stronger design, the assistant can create a request, while a separate approval interface or workflow authorizes it. Execution then happens only after the server verifies that the approval is valid, current, tied to the exact request, and made by an eligible employee.</p>
+
+      <h3>Why a quote tool matters</h3>
+
+      <p>A quote operation creates a safe intermediate state. It can return:</p>
+
+      <pre><code>{
+  "order_id": "gid://shopify/Order/EXAMPLE",
+  "currency": "USD",
+  "requested_lines": [
+    {
+      "line_item_id": "gid://shopify/LineItem/EXAMPLE",
+      "quantity": 1
+    }
+  ],
+  "eligible_amount": "25.00",
+  "shipping_refund_allowed": false,
+  "reason_codes": ["ITEM_FULFILLED", "WITHIN_POLICY_WINDOW"],
+  "requires_approval": true,
+  "quote_expires_at": "2026-11-24T12:00:00Z"
+}</code></pre>
+
+      <p>These values are illustrative. The server should calculate them from current Shopify data and your policy, not accept them as facts supplied by the model.</p>
+
+      <h2 id="identity">3. Bind every request to a real employee identity</h2>
+
+      <p>The MCP connection needs two distinct identities:</p>
+
+      <ol>
+        <li>The human identity that initiated or approved the action.</li>
+        <li>The server or service identity that calls Shopify.</li>
+      </ol>
+
+      <p>Do not use the service identity as a substitute for the employee. It is an execution credential, not proof that the employee was authorized. Carry a verified identity context into every tool call:</p>
+
+      <pre><code>{
+  "actor": {
+    "employee_id": "employee-example",
+    "role": "support_agent",
+    "authentication_method": "enterprise_sso",
+    "session_id": "session-example"
+  },
+  "request_context": {
+    "conversation_id": "conversation-example",
+    "client": "internal-support-console"
+  }
+}</code></pre>
+
+      <p>This is a data-shape example. In a real system, populate the identity from a trusted authenticated session or gateway. Never let the model provide or change <code>employee_id</code>, <code>role</code>, or approval attributes in ordinary tool arguments.</p>
+
+      <h3>Map roles to capabilities server-side</h3>
+
+      <p>A policy can be represented as configuration, code, or a policy engine. The important property is that it is evaluated by the MCP server or an authorization service:</p>
+
+      <pre><code>{
+  "roles": {
+    "support_agent": {
+      "allow": [
+        "orders.search",
+        "orders.get_summary",
+        "refunds.quote",
+        "refunds.request"
+      ],
+      "approval_limit": "0.00"
+    },
+    "support_lead": {
+      "allow": [
+        "orders.search",
+        "orders.get_summary",
+        "refunds.quote",
+        "refunds.request",
+        "refunds.approve"
+      ],
+      "approval_limit": "500.00"
+    },
+    "refund_service": {
+      "allow": [
+        "refunds.execute"
+      ],
+      "machine_identity_only": true
+    }
+  }
+}</code></pre>
+
+      <p>Do not treat this sample as a universal policy. The appropriate roles, amounts, currencies, and approval rules depend on your organization. A useful default is that the employee who requests a refund cannot approve the same request, and the execution identity cannot approve anything.</p>
+
+      <h2 id="server-side-limits">4. Put non-negotiable limits on the server</h2>
+
+      <p><a href="../glossary.html#server-side-validation">Server-side validation</a> is the control that remains in force even when the model supplies unexpected arguments. Validate every field against current state and policy.</p>
+
+      <h3>Validate the order and line items</h3>
+
+      <ul>
+        <li>Accept a canonical Shopify order identifier, not an ambiguous display name.</li>
+        <li>Load the order from Shopify immediately before creating the quote.</li>
+        <li>Confirm that each requested line item belongs to that order.</li>
+        <li>Reject quantities greater than the remaining refundable quantity.</li>
+        <li>Do not trust a price, tax amount, shipping amount, or currency supplied by the model.</li>
+        <li>Reject orders in states your refund policy excludes.</li>
+      </ul>
+
+      <h3>Validate the amount</h3>
+
+      <p>Calculate the amount from authoritative order and transaction data. Then apply a policy ceiling. For example:</p>
+
+      <pre><code>eligible_amount =
+  min(
+    remaining_refundable_amount,
+    policy_maximum_for_actor,
+    policy_maximum_for_currency
+  )</code></pre>
+
+      <p>Use decimal arithmetic suitable for money. Do not use binary floating-point arithmetic for currency calculations. If the requested amount differs from the server-calculated amount, stop and require the employee to review a new quote.</p>
+
+      <h3>Validate time and freshness</h3>
+
+      <p>Quotes and approvals should expire. A short validity period reduces the chance that an approval created for one order state is reused after the order changes. At execution time, re-read the relevant Shopify state and compare it with the approved snapshot or version.</p>
+
+      <h3>Use an allowlist for refund reasons</h3>
+
+      <p>Free-form explanations are useful for notes, but they should not determine policy. Store a controlled reason code such as <code>DAMAGED_ITEM</code>, <code>DUPLICATE_CHARGE</code>, or <code>CUSTOMER_GOODWILL</code>, then optionally store a separate human-readable note. Validate the reason code against the employee’s allowed reasons and any documentation requirements.</p>
+
+      <h2 id="approval">5. Make approval an explicit state transition</h2>
+
+      <p>Approval should not be a phrase in a chat transcript. It should be a signed or otherwise authenticated decision over an immutable request.</p>
+
+      <p>A minimal state machine is:</p>
+
+      <pre><code>QUOTED
+  -> PENDING_APPROVAL
+  -> APPROVED
+  -> EXECUTING
+  -> SUCCEEDED
+
+PENDING_APPROVAL -> REJECTED
+PENDING_APPROVAL -> EXPIRED
+APPROVED -> CANCELLED
+EXECUTING -> UNKNOWN_OUTCOME</code></pre>
+
+      <p><code>UNKNOWN_OUTCOME</code> is important. If the connection fails after Shopify may have accepted the refund, do not blindly retry. Mark the operation for reconciliation and query Shopify using the provider’s identifiers or transaction state.</p>
+
+      <h3>Approval record</h3>
+
+      <p>Store the exact decision context:</p>
+
+      <pre><code>{
+  "refund_request_id": "refund-request-example",
+  "order_id": "gid://shopify/Order/EXAMPLE",
+  "quote_hash": "sha256-example",
+  "amount": "25.00",
+  "currency": "USD",
+  "reason_code": "DAMAGED_ITEM",
+  "requested_by": "employee-requester-example",
+  "approved_by": "employee-approver-example",
+  "approved_at": "2026-11-24T11:00:00Z",
+  "expires_at": "2026-11-24T12:00:00Z",
+  "decision": "approved"
+}</code></pre>
+
+      <p>The hash should cover the canonicalized request fields that matter to the decision. At execution, recompute the hash and reject the operation if the order, lines, quantity, amount, currency, or reason changed.</p>
+
+      <h3>Prevent self-approval</h3>
+
+      <p>Compare immutable employee identifiers, not display names or email strings typed into a prompt. If delegated approval is supported, represent the delegation in a trusted directory or policy system and log which delegation rule was used.</p>
+
+      <h2 id="shopify-credentials">6. Scope the Shopify credential and the MCP exposure separately</h2>
+
+      <p>There are two permission layers:</p>
+
+      <ol>
+        <li>What the MCP server exposes to the assistant.</li>
+        <li>What the server’s Shopify credential can do downstream.</li>
+      </ol>
+
+      <p>Both must be narrow. Hiding a tool from the model is not sufficient if the server accepts arbitrary operations or if the credential has unrelated administrative permissions.</p>
+
+      <p>Create a dedicated Shopify app or integration identity for this workflow where the platform and your operating model support it. Grant only the scopes required for order inspection and the approved refund path. Keep read and write credentials distinct when practical. Store credentials in a secrets manager, rotate them, and do not place them in prompts, source files, logs, or tool results.</p>
+
+      <p>The exact Shopify scopes and API mutations vary by API version, app type, store configuration, and refund workflow. Consult the Shopify documentation for the version you use and verify the effective permissions in the target store. This article does not assert a particular scope name or mutation shape.</p>
+
+      <h2 id="tool-contracts">7. Design tool contracts that make unsafe calls difficult</h2>
+
+      <p>A tool schema should express the narrowest useful operation. For example, a request tool might accept:</p>
+
+      <pre><code>{
+  "name": "refunds.request",
+  "description": "Create a pending refund request for an eligible Shopify order. Does not send a refund.",
+  "inputSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": ["order_id", "line_items", "reason_code", "customer_note"],
+    "properties": {
+      "order_id": {
+        "type": "string",
+        "description": "Canonical Shopify order ID"
+      },
+      "line_items": {
+        "type": "array",
+        "minItems": 1,
+        "items": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["line_item_id", "quantity"],
+          "properties": {
+            "line_item_id": {"type": "string"},
+            "quantity": {"type": "integer", "minimum": 1}
+          }
+        }
+      },
+      "reason_code": {
+        "type": "string",
+        "enum": ["DAMAGED_ITEM", "DUPLICATE_CHARGE", "CUSTOMER_GOODWILL"]
+      },
+      "customer_note": {
+        "type": "string",
+        "maxLength": 1000
+      }
+    }
+  }
+}</code></pre>
+
+      <p>The description says “does not send a refund” because tool descriptions influence model behavior. That text is helpful, but it is not a security boundary. The handler must enforce the same rule.</p>
+
+      <p>For the execution tool, avoid exposing arbitrary amount fields if the amount can be derived from an approved request:</p>
+
+      <pre><code>{
+  "name": "refunds.execute",
+  "description": "Execute an already approved refund request. Rejects unapproved, changed, expired, or duplicate requests.",
+  "inputSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": ["refund_request_id"],
+    "properties": {
+      "refund_request_id": {
+        "type": "string"
+      }
+    }
+  }
+}</code></pre>
+
+      <p>The server should load the request, verify authorization, re-check Shopify state, enforce idempotency, and derive the final operation from the stored approved data.</p>
+
+      <h2 id="idempotency">8. Make retries safe</h2>
+
+      <p>Network retries are normal. A refund endpoint that treats every retry as a new financial action is not safe.</p>
+
+      <p>Use an idempotency key that is generated by the server and stored with the refund request. The key should be stable for one approved operation and never reused for a different order or amount:</p>
+
+      <pre><code>idempotency_key =
+  "refund:" + refund_request_id + ":" + approved_quote_hash</code></pre>
+
+      <p>Before calling Shopify:</p>
+
+      <ol>
+        <li>Lock or atomically claim the refund request.</li>
+        <li>Check whether this idempotency key already has a completed result.</li>
+        <li>Check whether another worker is executing the same request.</li>
+        <li>Call Shopify with the stored key if the API supports idempotency for the operation.</li>
+        <li>Persist the provider response and internal outcome.</li>
+      </ol>
+
+      <p>If the provider does not offer idempotency for your exact operation, use a reconciliation record and a state lock. Do not claim that a timeout means the refund failed.</p>
+
+      <h2 id="audit">9. Log enough to investigate without leaking secrets</h2>
+
+      <p>Audit logs should answer five questions:</p>
+
+      <ul>
+        <li>Who requested the action?</li>
+        <li>What order, lines, amount, currency, and reason were evaluated?</li>
+        <li>Who approved or rejected the exact request?</li>
+        <li>Which service identity attempted execution, and when?</li>
+        <li>What did Shopify return, and how was the outcome reconciled?</li>
+      </ul>
+
+      <p>Use structured events with correlation identifiers:</p>
+
+      <pre><code>{
+  "event": "refund.execution.completed",
+  "timestamp": "2026-11-24T11:04:00Z",
+  "refund_request_id": "refund-request-example",
+  "order_id": "gid://shopify/Order/EXAMPLE",
+  "actor_id": "employee-requester-example",
+  "approver_id": "employee-approver-example",
+  "service_identity": "shopify-refund-service",
+  "amount": "25.00",
+  "currency": "USD",
+  "provider_reference": "provider-reference-example",
+  "outcome": "succeeded",
+  "request_correlation_id": "correlation-example"
+}</code></pre>
+
+      <p>Do not log access tokens, authorization headers, full payment details, unnecessary customer addresses, or complete conversation transcripts by default. Define retention, access, and redaction rules for the audit store. An audit record should be useful to an investigator without becoming a second source of sensitive customer data.</p>
+
+      <h2 id="reference-flow">10. Reference request flow</h2>
+
+      <p>A safe conversational flow can look like this:</p>
+
+      <ol>
+        <li>The employee asks the assistant to inspect an order.</li>
+        <li>The assistant calls <code>orders.search</code> or <code>orders.get_summary</code>.</li>
+        <li>The employee identifies the intended order and refund reason.</li>
+        <li>The assistant calls <code>refunds.quote</code>.</li>
+        <li>The server returns the calculated amount, affected items, policy result, and approval requirement.</li>
+        <li>The employee confirms that the quote is correct.</li>
+        <li>The assistant calls <code>refunds.request</code>, creating a pending request.</li>
+        <li>An eligible approver reviews the request outside the model’s authority boundary.</li>
+        <li>The server records the approval and makes the request executable.</li>
+        <li>A controlled worker calls <code>refunds.execute</code> with only the request ID.</li>
+        <li>The worker records success, failure, or unknown outcome and triggers reconciliation when needed.</li>
+      </ol>
+
+      <p>The employee’s conversational confirmation in step 6 is useful for avoiding misunderstandings, but it is not the approval in step 8 unless your organization has explicitly designed and authenticated it as such. Keeping those concepts separate prevents “the user said yes” from becoming an accidental bypass.</p>
+
+      <h2 id="implementation-checklist">11. Reproducible implementation checklist</h2>
+
+      <p>Use this sequence when implementing the model in a test environment:</p>
+
+      <ol>
+        <li>Document the refund policy: eligible states, reasons, limits, currencies, approval roles, and expiry.</li>
+        <li>Create separate read, request, approval, and execution capabilities.</li>
+        <li>Authenticate the human at the gateway and pass trusted identity context to the server.</li>
+        <li>Define schemas with closed objects, required fields, bounded strings, bounded quantities, and reason-code allowlists.</li>
+        <li>Implement quote calculation from current Shopify data using decimal money arithmetic.</li>
+        <li>Implement server-side authorization for every tool, including execution.</li>
+        <li>Create a durable refund-request record with an immutable quote snapshot or hash.</li>
+        <li>Require a distinct eligible approver and prevent self-approval.</li>
+        <li>Expire quotes and approvals.</li>
+        <li>Re-read order state immediately before execution.</li>
+        <li>Add idempotency and an explicit unknown-outcome state.</li>
+        <li>Emit redacted audit events for every state transition.</li>
+        <li>Use a dedicated, least-privileged Shopify integration identity.</li>
+        <li>Test denied calls, changed orders, duplicate calls, expired approvals, and provider timeouts.</li>
+      </ol>
+
+      <h2 id="verification">12. Verification: prove the boundaries, not just the happy path</h2>
+
+      <p>Before production access, run a test matrix using test orders and non-production credentials. Record observed results; do not infer them from tool descriptions.</p>
+
+      <table>
+        <thead>
+          <tr>
+            <th>Test</th>
+            <th>Expected safety property</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>Support agent calls <code>refunds.execute</code> directly</td>
+            <td>Denied before any Shopify write</td>
+          </tr>
+          <tr>
+            <td>Model supplies a larger amount than the quote</td>
+            <td>Amount is ignored or rejected; no enlarged refund is sent</td>
+          </tr>
+          <tr>
+            <td>Approval is made by the requester</td>
+            <td>Approval is rejected</td>
+          </tr>
+          <tr>
+            <td>Approval is expired</td>
+            <td>Execution is rejected and a new quote is required</td>
+          </tr>
+          <tr>
+            <td>Order state changes after approval</td>
+            <td>Execution is rejected or re-quoted</td>
+          </tr>
+          <tr>
+            <td>Same request is submitted twice</td>
+            <td>At most one provider operation is created</td>
+          </tr>
+          <tr>
+            <td>Provider response times out</td>
+            <td>Outcome becomes unknown; automatic blind retry is prevented</td>
+          </tr>
+          <tr>
+            <td>Order note contains instructions to ignore policy</td>
+            <td>Note is treated as untrusted data, not as authorization</td>
+          </tr>
+          <tr>
+            <td>Credential lacks the required Shopify permission</td>
+            <td>Failure is captured without exposing secrets or falsely reporting success</td>
+          </tr>
+        </tbody>
+      </table>
+
+      <p>For each case, verify both the external effect and the internal evidence: authorization decision, tool handler result, stored state transition, audit event, and any Shopify reference. A test that only checks the assistant’s text is insufficient.</p>
+
+      <h2 id="failure-cases">13. Failure cases and operational responses</h2>
+
+      <h3>“The assistant says it refunded the order, but no refund exists”</h3>
+
+      <p>Treat the assistant’s response as untrusted presentation. Read the durable execution record and reconcile with Shopify. The user-facing status should distinguish “not attempted,” “rejected,” “failed,” and “unknown outcome.” Never mark a refund successful because the model generated a confident sentence.</p>
+
+      <h3>“Shopify accepted the refund, but the server crashed before saving it”</h3>
+
+      <p>Use the stored idempotency key, provider reference, and reconciliation job to find the external result. The recovery path must be able to discover a completed operation before retrying.</p>
+
+      <h3>“An approver approved the wrong line item”</h3>
+
+      <p>Make the approval screen display canonical order and line-item details, and bind approval to a hash of the exact request. If any detail changes, invalidate the approval.</p>
+
+      <h3>“A support employee asks the model to use a manager’s identity”</h3>
+
+      <p>Ignore identity fields supplied by the model or user. Derive identity from the authenticated session and evaluate the session’s actual role. Log the denied attempt if your security policy allows it.</p>
+
+      <h3>“An order contains prompt injection text”</h3>
+
+      <p>Separate retrieved order data from instructions. Mark customer names, notes, addresses, and product text as untrusted content. The server must still enforce role checks, amount limits, approval requirements, and state validation if the model follows malicious text.</p>
+
+      <h2 id="limitations">14. Limitations</h2>
+
+      <p>This model does not eliminate business-policy ambiguity, compromised employee accounts, Shopify outages, incorrect source data, or every possible fraud scenario. It also does not replace Shopify’s own app permissions, your identity provider, secure secret storage, incident response process, or financial reconciliation controls.</p>
+
+      <p>The example schemas are intentionally platform-neutral. Shopify’s available APIs, permission names, refund semantics, and version behavior can change. Verify current platform documentation and the effective behavior of the specific app and store configuration you operate.</p>
+
+      <p>Approval is not a substitute for least privilege. Least privilege is not a substitute for approval. Audit logs are not a substitute for prevention. The controls work as a layered system.</p>
+
+      <h2 id="conclusion">Conclusion</h2>
+
+      <p>The safe answer to “How can an MCP server refund Shopify orders?” is not “give the model the refund scope.” Expose read operations broadly enough to help, make the server calculate and constrain the proposed action, turn the action into a durable approval request, require an independent authorized decision, and let a narrow execution identity perform only the approved request.</p>
+
+      <p>If you can delete or bypass the approval record, change the amount after approval, execute with a support employee’s ordinary session, or retry an unknown outcome blindly, the permission model is not complete yet.</p>
+
+      <p>Continue with the <a href="../guides.html">Agent Lab Journal guides</a> or look up implementation terms in the <a href="../glossary.html">glossary</a>.</p>
+    <section class="service-note">
+  <b>We publish what works for us—and implement the same solutions for your business.</b>
+  We design AI automation, Telegram bots, chats, and AI agents for real-world processes.
+  <a href="../contacts-en.html">Discuss your project →</a>
+</section>
+</article>
+  </main>
+
+  <footer class="site-footer">
+    <div class="site-footer__inner">
+      <p>© 2026 Agent Lab Journal</p>
+      <nav aria-label="Footer navigation">
+        <a href="../guides.html">Guides</a>
+        <a href="../glossary.html">Glossary</a>
+      </nav>
+    </div>
+  </footer>
+</body>
+</html>
