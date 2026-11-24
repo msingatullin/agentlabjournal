@@ -1,0 +1,326 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>KV Cache Under LLM Load: Testing PagedAttention and vLLM</title>
+  <meta name="description" content="KV Cache Under LLM Load: Testing PagedAttention and vLLM with a reproducible method for measuring throughput, TTFT, inter-token latency, memory pressure, and request preemption.">
+  <link rel="canonical" href="https://agentlabjournal.online/en/pagedattention-vllm-kv-cache.html">
+  <link rel="stylesheet" href="../style.css">
+  <link rel="stylesheet" href="../reading.css">
+
+  <meta property="og:type" content="article">
+  <meta property="og:locale" content="en_US">
+  <meta property="og:title" content="KV Cache Under LLM Load: Testing PagedAttention and vLLM">
+  <meta property="og:description" content="A reproducible method for testing KV-cache pressure, throughput, latency, fragmentation, and request preemption with vLLM.">
+  <meta property="og:url" content="https://agentlabjournal.online/en/pagedattention-vllm-kv-cache.html">
+  <meta property="og:image" content="https://agentlabjournal.online/assets/covers/llm-context-window-budget-social.png">
+
+  <meta name="twitter:card" content="summary_large_image">
+  <meta name="twitter:title" content="KV Cache Under LLM Load: Testing PagedAttention and vLLM">
+  <meta name="twitter:description" content="A reproducible method for testing KV-cache pressure, throughput, latency, fragmentation, and request preemption with vLLM.">
+  <meta name="twitter:image" content="https://agentlabjournal.online/assets/covers/llm-context-window-budget-social.png">
+
+  <script type="application/ld+json">
+  {
+    "@context": "https://schema.org",
+    "@type": "Article",
+    "headline": "KV Cache Under LLM Load: Testing PagedAttention and vLLM",
+    "description": "A reproducible method for testing KV-cache pressure, throughput, latency, memory pressure, fragmentation, and request preemption with vLLM.",
+    "image": ["https://agentlabjournal.online/assets/covers/llm-context-window-budget-social.png"],
+    "dateModified": "2026-11-24",
+    "author": {
+      "@type": "Organization",
+      "name": "Agent Lab Journal"
+    },
+    "publisher": {
+      "@type": "Organization",
+      "name": "Agent Lab Journal",
+      "url": "https://agentlabjournal.online/"
+    },
+    "mainEntityOfPage": {
+      "@type": "WebPage",
+      "@id": "https://agentlabjournal.online/en/pagedattention-vllm-kv-cache.html"
+    }
+  }
+  </script>
+<link rel="stylesheet" href="../homepage.css"><link rel="stylesheet" href="../max-promo.css">  <meta property="og:image:alt" content="KV-кэш LLM под нагрузкой: проверяем PagedAttention и vLLM">
+</head>
+<body>
+  <header class="site-header">
+    <div class="site-header__inner">
+      <a class="site-header__brand" href="../index.html">Agent Lab Journal</a>
+      <nav class="site-nav" aria-label="Main navigation">
+        <a href="../guides.html">Guides</a>
+        <a href="../glossary.html">Glossary</a>
+      </nav>
+    </div>
+  </header>
+
+  <main>
+    <article class="reading">
+      <header class="reading-header">
+        <p class="reading-kicker">Serving systems · Advanced</p>
+        <h1>KV Cache Under LLM Load: Testing PagedAttention and vLLM</h1>
+        <figure class="article-cover" data-editorial-cover="pagedattention-vllm-kv-cache"><img src="../assets/covers/llm-context-window-budget.png" alt="KV-кэш LLM под нагрузкой: проверяем PagedAttention и vLLM" width="1280" height="720" fetchpriority="high"><figcaption>Temporary fallback cover; replace in editorial pass.</figcaption></figure>
+        <p class="reading-meta">15 min read · Updated November 24, 2026</p>
+        <p class="reading-lead">
+          When a language-model service accepts several users at once, the first resource to fail is often neither the GPU’s arithmetic throughput nor its raw allocation limit. It is the space and scheduling behavior of the <a href="../glossary.html#kv-cache">KV cache</a>: the attention state retained for tokens that are already in context. This guide builds a repeatable experiment around <a href="../glossary.html#pagedattention">PagedAttention</a> and <a href="../glossary.html#vllm">vLLM</a>, then shows how to measure throughput, time to first token, inter-token latency, and request preemption without inventing performance claims.
+        </p>
+      </header>
+
+      <section>
+        <h2>The concrete problem</h2>
+        <p>
+          Imagine an inference endpoint serving chat requests with different prompt lengths and different generation lengths. A short request may finish quickly; another may keep thousands of tokens resident while it generates. Under concurrency, each request needs space for key and value tensors. If the service reserves memory in large contiguous regions, variable-length requests can leave unusable gaps. The GPU can have free bytes in aggregate while a new request still cannot obtain the shape or block it needs.
+        </p>
+        <p>
+          The practical symptom is a service that appears compute-capable but becomes unstable as concurrency rises: queueing increases, first-token latency becomes erratic, requests are paused or evicted, and the reported KV-cache utilization approaches its limit. The experiment below is designed to reveal that transition rather than hide it behind one average latency number.
+        </p>
+        <aside class="reading-note">
+          <strong>Evidence boundary.</strong> No benchmark result is asserted here. Commands and formulas define a method you can run on your own hardware, model, driver, and vLLM version. Record the environment and publish the raw measurements alongside any conclusion.
+        </aside>
+      </section>
+
+      <section>
+        <h2>What the experiment isolates</h2>
+        <p>
+          PagedAttention stores KV-cache data in fixed-size blocks and lets the serving engine map a sequence’s logical positions to physical blocks. The intended benefit is operational: allocation can follow the actual sequence length, and completed or paused sequences can release or move blocks without requiring one large contiguous region for every request. That mechanism does not make the model’s attention computation free, and it does not remove the finite capacity of GPU memory.
+        </p>
+        <p>
+          The test therefore compares behavior across controlled load levels. It should answer four questions:
+        </p>
+        <ul>
+          <li>How does aggregate generated-token throughput change as concurrency increases?</li>
+          <li>How does time to first token change independently of generation speed?</li>
+          <li>How stable is inter-token latency while requests share the GPU?</li>
+          <li>At what load does the scheduler preempt, pause, or reject requests?</li>
+        </ul>
+      </section>
+
+      <section>
+        <h2>Record the environment before starting</h2>
+        <p>
+          Reproducibility starts with an inventory. Save the exact model identifier, revision or digest, quantization mode, tokenizer, GPU model, available memory, CUDA and driver versions, container image, vLLM version, Python version, and server arguments. Also record whether the GPU is shared with another process.
+        </p>
+        <pre><code>nvidia-smi
+python --version
+python -c "import vllm; print(vllm.__version__)"
+python -c "import torch; print(torch.__version__, torch.version.cuda)"
+</code></pre>
+        <p>
+          Treat the output as part of the benchmark artifact. If a command is unavailable in your image, note that explicitly and use the corresponding platform-specific inspection method. Do not compare results from different model revisions or quantization settings as if they were one run.
+        </p>
+      </section>
+
+      <section>
+        <h2>Start a minimal vLLM server</h2>
+        <p>
+          The following example uses a placeholder model name. Replace it with a model you are authorized to download and run. The command is intentionally explicit so that another operator can reproduce the serving configuration.
+        </p>
+        <pre><code>export MODEL_ID="your-org/your-model"
+export PORT="8000"
+
+vllm serve "$MODEL_ID" \
+  --host 0.0.0.0 \
+  --port "$PORT" \
+  --dtype auto \
+  --max-model-len 4096 \
+  --gpu-memory-utilization 0.90 \
+  --max-num-seqs 64 \
+  --enable-prefix-caching
+</code></pre>
+        <p>
+          Prefix caching is workload-dependent. Keep it enabled only if your production-like workload reuses prompt prefixes. For a clean KV-cache allocation experiment, run a second series with it disabled and label the series separately. The important rule is to keep every server argument constant inside one comparison.
+        </p>
+        <p>
+          Check that the process is ready before sending load. The endpoint and response shape can vary by vLLM release, so use the health or model endpoint documented for the installed version and verify that the model identifier matches the requested one.
+        </p>
+        <pre><code>curl -sS "http://127.0.0.1:${PORT}/v1/models"
+</code></pre>
+      </section>
+
+      <section>
+        <h2>Build a controlled request set</h2>
+        <p>
+          A useful first workload has three prompt classes and two generation targets:
+        </p>
+        <ul>
+          <li>Short prompt: roughly 128 input tokens.</li>
+          <li>Medium prompt: roughly 1,024 input tokens.</li>
+          <li>Long prompt: close to the configured context limit, while leaving room for output.</li>
+          <li>Short generation: roughly 64 output tokens.</li>
+          <li>Long generation: roughly 512 output tokens.</li>
+        </ul>
+        <p>
+          These values are examples, not measured facts or universal requirements. Tokenize the actual prompts with the exact tokenizer used by the server and report the resulting input and output lengths. Use deterministic prompt fixtures stored in a file; do not generate new random text for every run unless randomness is the variable being studied.
+        </p>
+        <p>
+          Warm the server with a small number of requests before collecting measurements. Exclude warm-up requests from the report, and state how many were sent. Keep the request order reproducible, or randomize it with a recorded seed.
+        </p>
+      </section>
+
+      <section>
+        <h2>Measure the four required dimensions</h2>
+
+        <h3>1. Throughput</h3>
+        <p>
+          Measure both request throughput and generated-token throughput. For a window from the first admitted request to the last completed request:
+        </p>
+        <pre><code>request_throughput = completed_requests / elapsed_seconds
+token_throughput = sum(generated_tokens) / elapsed_seconds
+</code></pre>
+        <p>
+          Report the measurement window, concurrency, prompt-token distribution, generated-token distribution, and whether queued time is included. A server that produces many tokens per second but delays admission can still be poor for interactive traffic.
+        </p>
+
+        <h3>2. Time to first token</h3>
+        <p>
+          Time to first token (TTFT) is the elapsed time from request submission until the first streamed output token is received. Measure it at the client boundary, using a monotonic clock. Keep connection setup separate if possible; otherwise state that connection setup is included.
+        </p>
+        <pre><code>ttft = timestamp(first_output_token) - timestamp(request_submission)
+</code></pre>
+        <p>
+          Report median and tail percentiles such as p95 and p99 when the sample size supports them. Averages alone can conceal the queueing spikes caused by cache pressure.
+        </p>
+
+        <h3>3. Inter-token latency</h3>
+        <p>
+          Inter-token latency (ITL) is the interval between successive streamed output tokens. For one request, calculate the intervals after the first token, then summarize them across requests. Distinguish the first interval from later intervals; the first interval contains prompt processing and scheduling effects that later decode steps do not.
+        </p>
+        <pre><code>itl[i] = timestamp(token[i]) - timestamp(token[i - 1])
+</code></pre>
+        <p>
+          Record whether the client measures network arrival time or server-side token production time. Network buffering, proxies, and client event-loop scheduling can alter observed ITL.
+        </p>
+
+        <h3>4. Request preemption</h3>
+        <p>
+          Request preemption means the scheduler pauses a request and later resumes it, or otherwise reclaims its execution opportunity to admit or progress other work. Identify it from the server’s documented metrics or logs for your release. Do not infer preemption solely from a slow request: queueing, synchronization, memory allocation, and transport delays can look similar at the client.
+        </p>
+        <p>
+          Capture preemption counters or log events per interval and correlate them with KV-cache utilization, queue depth, TTFT, and ITL. The result should say exactly what signal was counted and what it means in that version.
+        </p>
+      </section>
+
+      <section>
+        <h2>A simple load sweep</h2>
+        <p>
+          Run the same request mix at increasing offered concurrency, for example 1, 2, 4, 8, 16, 32, and 64 clients. These levels are a starting sequence; stop or adjust them when the server cannot maintain the intended test duration. Use several repetitions per level and allow the system to return to a comparable idle state between repetitions.
+        </p>
+        <pre><code>for concurrency in 1 2 4 8 16 32 64; do
+  ./run_benchmark \
+    --base-url http://127.0.0.1:8000 \
+    --model "$MODEL_ID" \
+    --workload workloads/mixed-prompts.jsonl \
+    --concurrency "$concurrency" \
+    --duration 120 \
+    --output "results/c${concurrency}.jsonl"
+done
+</code></pre>
+        <p>
+          The executable above is a placeholder for your benchmark client. It must emit per-request submission time, first-token time, every token arrival time or an equivalent ITL summary, completion time, input-token count, output-token count, status, and an error or preemption field when available.
+        </p>
+        <p>
+          Keep offered concurrency and active concurrency separate. If requests queue outside the server, the client may report the former while the server is operating at a different active level.
+        </p>
+      </section>
+
+      <section>
+        <h2>Verification checklist</h2>
+        <p>
+          Before interpreting the results, verify the following:
+        </p>
+        <ul>
+          <li>The model, tokenizer, server version, and server flags are identical across compared runs.</li>
+          <li>Input and output token counts are measured, not assumed from character counts.</li>
+          <li>Warm-up samples are excluded and the exclusion rule is recorded.</li>
+          <li>Client clocks use a monotonic timer and timestamps are written with sufficient precision.</li>
+          <li>HTTP errors, cancellations, timeouts, and incomplete streams are retained in the raw output.</li>
+          <li>GPU memory and server metrics are sampled at a known interval with synchronized run identifiers.</li>
+          <li>Results include repetitions or confidence intervals appropriate to the workload duration.</li>
+        </ul>
+        <p>
+          A minimal result table should contain: run ID, server configuration hash, concurrency, completed requests, input tokens, output tokens, throughput, TTFT p50/p95/p99, ITL p50/p95/p99, preemption count, error count, peak memory, and notes.
+        </p>
+      </section>
+
+      <section>
+        <h2>Failure cases and how to interpret them</h2>
+
+        <h3>Out-of-memory during model startup</h3>
+        <p>
+          This is a model-footprint or reservation problem before the intended load test begins. Confirm the model, tensor parallel configuration, dtype, maximum context, and GPU assignment. Lowering the context limit may reduce the KV-cache reservation, but it changes the experiment and must be recorded.
+        </p>
+
+        <h3>Out-of-memory only under concurrency</h3>
+        <p>
+          Check whether the workload exceeds the configured context length, whether output limits are enforced, and whether another process is consuming memory. Inspect server logs and cache metrics before attributing the failure to fragmentation. A single client retry loop can also create an artificial load multiplier.
+        </p>
+
+        <h3>High TTFT with normal ITL</h3>
+        <p>
+          This pattern commonly points toward admission queueing or prompt processing rather than slow decode. Compare TTFT with queue depth, prompt length, and active sequences. Do not collapse TTFT and ITL into one latency metric.
+        </p>
+
+        <h3>High ITL with low TTFT</h3>
+        <p>
+          This can indicate decode contention, a scheduling bottleneck, or a client-side streaming issue. Compare server-side timing with packet or client arrival timing, and test a local client on the same host to reduce transport uncertainty.
+        </p>
+
+        <h3>Preemption appears without an obvious memory failure</h3>
+        <p>
+          Preemption can be a normal scheduling response near a resource limit. Confirm the exact event definition in the installed release, then correlate the event with active sequence count, cache utilization, request lengths, and latency tails. A preemption counter without workload context is not enough to establish a regression.
+        </p>
+
+        <h3>Results change between repetitions</h3>
+        <p>
+          Investigate prompt order, prefix reuse, background GPU work, model compilation or kernel caches, temperature or power throttling, and client-side rate limiting. Preserve the anomalous run instead of silently dropping it.
+        </p>
+      </section>
+
+      <section>
+        <h2>Limitations</h2>
+        <p>
+          This method evaluates one serving stack and one workload definition at a time. It does not prove that PagedAttention is faster for every model, GPU, context length, quantization format, or traffic pattern. It also does not isolate every source of memory fragmentation: allocator behavior, CUDA workspace requirements, model weights, activation buffers, and external processes can all affect available memory.
+        </p>
+        <p>
+          Client-observed latency is an end-to-end signal. It includes queueing and transport, and it may include buffering in the HTTP stack. For a deeper study, collect server-side traces or metrics with the same run IDs and compare them to client timestamps.
+        </p>
+        <p>
+          Finally, a benchmark that uses only uniform prompts and uniform output lengths can miss the allocation churn seen in production. Include mixed lengths and realistic cancellation behavior before using the result for capacity planning.
+        </p>
+      </section>
+
+      <section>
+        <h2>What a defensible conclusion looks like</h2>
+        <p>
+          A defensible report names the exact configuration, shows the raw workload and measurement definitions, and identifies the point at which latency tails, preemption, errors, or cache utilization change materially. It can say, for example, that a particular configuration sustained a specified token rate at a specified concurrency under a named workload, or that preemption began above a recorded load. It should not generalize that observation to all vLLM deployments.
+        </p>
+        <p>
+          The useful outcome is a capacity envelope: a range of concurrency and token lengths in which throughput and latency remain acceptable, plus a documented failure boundary. That envelope is more actionable than a single peak-throughput number because it connects memory pressure to the user-visible behavior of the service.
+        </p>
+      </section>
+
+      <footer class="reading-footer">
+        <p>Continue with the <a href="../guides.html">Agent Lab Journal guides</a> or look up serving terms in the <a href="../glossary.html">glossary</a>.</p>
+      </footer>
+    <section class="service-note">
+  <b>We publish what works for us—and implement the same solutions for your business.</b>
+  We design AI automation, Telegram bots, chats, and AI agents for real-world processes.
+  <a href="../contacts-en.html">Discuss your project →</a>
+</section>
+</article>
+  </main>
+
+  <footer class="site-footer">
+    <div class="site-footer__inner">
+      <p>&copy; 2026 Agent Lab Journal</p>
+      <nav aria-label="Footer navigation">
+        <a href="../guides.html">Guides</a>
+        <a href="../glossary.html">Glossary</a>
+      </nav>
+    </div>
+  </footer>
+</body>
+</html>
