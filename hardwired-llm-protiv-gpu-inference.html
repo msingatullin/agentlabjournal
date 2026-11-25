@@ -1,0 +1,266 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Hardwired LLM против GPU: проверяем скорость и компромиссы инференса</title>
+  <meta name="description" content="Hardwired LLM против GPU: проверяем скорость и компромиссы инференса на примере ChatJimmy, HC1 и обычного GPU-инференса.">
+  <link rel="canonical" href="https://agentlabjournal.online/hardwired-llm-protiv-gpu-inference.html">
+  <link rel="stylesheet" href="style.css">
+  <link rel="stylesheet" href="reading.css">
+
+  <meta property="og:type" content="article">
+  <meta property="og:locale" content="ru_RU">
+  <meta property="og:title" content="Hardwired LLM против GPU: проверяем скорость и компромиссы инференса">
+  <meta property="og:description" content="Практическое сравнение скорости генерации, задержки и ограничений контекста для ChatJimmy на HC1 и обычном GPU-инференсе.">
+  <meta property="og:url" content="https://agentlabjournal.online/hardwired-llm-protiv-gpu-inference.html">
+
+  <meta name="twitter:card" content="summary">
+  <meta name="twitter:title" content="Hardwired LLM против GPU: проверяем скорость и компромиссы инференса">
+  <meta name="twitter:description" content="Практическое сравнение ChatJimmy на HC1 и обычном GPU-инференсе.">
+
+  <script type="application/ld+json">
+  {
+    "@context": "https://schema.org",
+    "@type": "Article",
+    "headline": "Hardwired LLM против GPU: проверяем скорость и компромиссы инференса",
+    "description": "Практическое сравнение скорости генерации, задержки и ограничений контекста для ChatJimmy на HC1 и обычном GPU-инференсе.",
+    "url": "https://agentlabjournal.online/hardwired-llm-protiv-gpu-inference.html",
+    "inLanguage": "ru",
+    "publisher": {
+      "@type": "Organization",
+      "name": "Agent Lab Journal",
+      "url": "https://agentlabjournal.online/"
+    }
+  }
+  </script>
+<link rel="stylesheet" href="homepage.css"><link rel="stylesheet" href="max-promo.css">  <meta property="og:image" content="https://agentlabjournal.online/assets/covers/llm-context-window-budget-social.png">
+  <meta property="og:image:alt" content="Hardwired LLM против GPU: проверяем скорость и компромиссы инференса">
+  <meta name="twitter:image" content="https://agentlabjournal.online/assets/covers/llm-context-window-budget-social.png">
+</head>
+<body>
+  <header class="site-header">
+    <div class="container">
+      <a class="site-brand" href="index.html">Agent Lab Journal</a>
+      <nav aria-label="Основная навигация">
+        <a href="guides.html">Гайды</a>
+        <a href="glossary.html">Глоссарий</a>
+      </nav>
+    </div>
+  </header>
+
+  <main>
+    <article class="reading">
+      <header class="reading-header">
+        <p class="reading-kicker">Инфраструктура · инференс</p>
+        <h1>Hardwired LLM против GPU: проверяем скорость и компромиссы инференса</h1>
+        <figure class="article-cover" data-editorial-cover="hardwired-llm-protiv-gpu-inference"><img src="assets/covers/llm-context-window-budget.png" alt="Hardwired LLM против GPU: проверяем скорость и компромиссы инференса" width="1280" height="720" fetchpriority="high"><figcaption>Temporary fallback cover; replace in editorial pass.</figcaption></figure>
+        <div class="reading-meta">
+          <span>Уровень: продвинутый</span>
+          <span>Время чтения: до 12 минут</span>
+          <span>Фокус: ChatJimmy, HC1 и GPU</span>
+        </div>
+      </header>
+<a href="https://max.ru/channel_AgentLab?utm_source=agentlabjournal&utm_medium=article&utm_campaign=max_channel&utm_content=article_footer" class="max-promo-block" target="_blank" rel="noopener noreferrer" aria-label="Самое важное из мира AI в канале MAX AgentLab">
+  <span class="max-promo-block__icon" aria-hidden="true"></span>
+  <span class="max-promo-block__content"><span class="max-promo-block__title">Самое важное из мира AI — в канале MAX AgentLab</span><span class="max-promo-block__desc">Отдельные разборы, инструменты и практические схемы</span></span>
+  <span class="max-promo-block__arrow" aria-hidden="true">→</span>
+</a>
+<a href="https://t.me/pelmenews?utm_source=agentlabjournal&utm_medium=article&utm_campaign=telegram_channel&utm_content=article_intro" class="telegram-promo-block" target="_blank" rel="noopener noreferrer" aria-label="Читайте Agent Lab в Telegram">
+  <span class="telegram-promo-block__icon" aria-hidden="true"></span>
+  <span class="telegram-promo-block__content">
+    <span class="telegram-promo-block__title">Читайте Agent Lab в Telegram</span>
+    <span class="telegram-promo-block__desc">Разборы, кейсы и новости о практических AI-агентах без лишней воды.</span>
+  </span>
+  <span class="telegram-promo-block__arrow" aria-hidden="true">→</span>
+</a>
+
+      <p class="lead">
+        Специализированный чип с зашитыми весами обещает предсказуемую задержку и высокую скорость генерации. Но для одного пользователя это ещё не означает автоматического превосходства над GPU. В этой статье разбираем, как корректно сравнить <a href="glossary.html#hardwired-llm">hardwired LLM</a> и обычный GPU-инференс, какие измерения действительно важны и почему итоговый выбор упирается не только в токены в секунду.
+      </p>
+
+      <div class="notice">
+        <strong>О статусе результатов.</strong>
+        В исходных материалах не приведены числовые замеры, конфигурация GPU и ограничения HC1. Поэтому ниже нет выдуманных значений скорости, задержки, цен или ёмкости контекста. Текст даёт воспроизводимый протокол и рамку для честной публикации результатов.
+      </div>
+
+      <h2 id="question">Что именно сравниваем</h2>
+      <p>
+        Вопрос не сводится к тому, какой ускоритель быстрее в идеальном тесте. Для одного пользователя важны как минимум четыре величины:
+      </p>
+      <ul>
+        <li>время до первого токена;</li>
+        <li>скорость последующей генерации;</li>
+        <li>стабильность задержки от запроса к запросу;</li>
+        <li>максимальный полезный контекст при заданном сценарии.</li>
+      </ul>
+      <p>
+        У hardwired-подхода веса и вычислительный граф тесно связаны с конкретным устройством. Это может сократить накладные расходы, но одновременно уменьшает гибкость: смена модели, формата весов или параметров контекста может потребовать отдельной поддержки. GPU обычно проигрывает в специализации, зато выигрывает в универсальности и инструментальной экосистеме.
+      </p>
+
+      <h2 id="method">Воспроизводимый протокол</h2>
+      <p>
+        Сравнение ChatJimmy на HC1 и на GPU нужно проводить на одинаковых входах, одинаковой длине вывода и одинаковом режиме выборки. Нельзя смешивать холодный старт одного варианта с прогретым запуском другого.
+      </p>
+
+      <h3>1. Зафиксируйте окружение</h3>
+      <p>Сохраните перед тестом:</p>
+      <ul>
+        <li>версию модели ChatJimmy;</li>
+        <li>тип и объём памяти GPU;</li>
+        <li>формат и квантование весов, если они используются;</li>
+        <li>версию runtime и драйвера;</li>
+        <li>размер контекста, температуру, top-p и лимит новых токенов;</li>
+        <li>режим прогрева и число повторов.</li>
+      </ul>
+
+      <h3>2. Используйте фиксированный набор запросов</h3>
+      <p>
+        Набор должен включать короткий запрос, длинный контекст, многошаговую инструкцию и генерацию с фиксированным лимитом новых токенов. Точный текст запросов следует хранить в файле и не менять между прогонами.
+      </p>
+
+      <pre><code># Пример безопасной структуры каталога
+mkdir -p benchmark/prompts benchmark/results
+printf '%s\n' \
+  'Кратко объясни принцип работы кэширования KV.' \
+  'Сравни два подхода к инференсу по фиксированным критериям.' \
+  &gt; benchmark/prompts/smoke.txt</code></pre>
+
+      <p>
+        Это только пример подготовки файлов, а не результат измерения. Не подставляйте секреты, токены доступа или персональные данные в тестовые запросы.
+      </p>
+
+      <h3>3. Разделите холодный и прогретый запуск</h3>
+      <p>
+        Для каждого варианта выполните отдельную серию холодных запусков, затем несколько прогретых повторов. Отдельно записывайте время инициализации модели: оно особенно важно для интерактивного сценария одного пользователя.
+      </p>
+
+      <h3>4. Записывайте события, а не только среднее</h3>
+      <p>
+        Минимальный журнал должен содержать timestamp запроса, время первого токена, время окончания генерации, число входных и выходных токенов, статус завершения и причину остановки. Среднее значение без медианы и разброса скрывает нестабильность.
+      </p>
+
+      <h2 id="metrics">Как считать скорость и задержку</h2>
+      <p>
+        Для каждого прогона используйте одинаковые определения:
+      </p>
+      <ul>
+        <li><strong>TTFT</strong> — время от отправки запроса до первого принятого токена;</li>
+        <li><strong>скорость декодирования</strong> — число новых токенов, делённое на время после первого токена до завершения;</li>
+        <li><strong>полная задержка</strong> — время от отправки до последнего токена;</li>
+        <li><strong>эффективный контекст</strong> — максимальный объём входа, при котором модель корректно принимает запрос и выдаёт полный ответ.</li>
+      </ul>
+      <p>
+        Публикуйте медиану, минимум, максимум и, если повторов достаточно, высокий перцентиль. Для одного пользователя это полезнее рекламного пикового значения: именно хвост распределения определяет, насколько интерфейс ощущается стабильным.
+      </p>
+
+      <h2 id="comparison">Что может показать сравнение</h2>
+      <p>
+        Без фактических измерений нельзя утверждать, что HC1 быстрее или медленнее конкретного GPU. Однако архитектурные компромиссы можно сформулировать заранее.
+      </p>
+
+      <table>
+        <thead>
+          <tr>
+            <th>Критерий</th>
+            <th>HC1 с зашитыми весами</th>
+            <th>Обычный GPU-инференс</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>Специализация</td>
+            <td>Высокая, если модель и граф поддерживаются напрямую</td>
+            <td>Ниже, но обычно доступно больше runtime и моделей</td>
+          </tr>
+          <tr>
+            <td>Гибкость модели</td>
+            <td>Зависит от поддержки конкретного чипа</td>
+            <td>Обычно проще менять модели, форматы и настройки</td>
+          </tr>
+          <tr>
+            <td>Холодный старт</td>
+            <td>Нужно измерять отдельно; загрузка может быть устроена иначе</td>
+            <td>Зависит от загрузки весов и состояния памяти</td>
+          </tr>
+          <tr>
+            <td>Контекст</td>
+            <td>Ограничен реализацией чипа, памятью и прошивкой</td>
+            <td>Ограничен памятью GPU, runtime и конфигурацией модели</td>
+          </tr>
+          <tr>
+            <td>Обновление модели</td>
+            <td>Может требовать специального процесса</td>
+            <td>Чаще выполняется заменой весов или конфигурации</td>
+          </tr>
+        </tbody>
+      </table>
+
+      <h2 id="context">Ограничения контекста важнее пиковых токенов в секунду</h2>
+      <p>
+        Если HC1 показывает высокую скорость на коротком запросе, это ещё не доказывает преимущество в рабочем сценарии. Длинный контекст увеличивает стоимость prefill и может упереться в аппаратный предел. На GPU рост контекста тоже влияет на задержку и память, но у пользователя обычно больше способов изменить квантование, размер батча или стратегию выгрузки.
+      </p>
+      <p>
+        Проверяйте контекст ступенчато: увеличивайте число входных токенов, фиксируйте TTFT, полную задержку, статус ответа и признаки усечения. Отдельно отмечайте «принято runtime» и «полезно для задачи»: формально принятый контекст не всегда означает, что модель сохранила нужную информацию.
+      </p>
+
+      <h2 id="errors">Типовые ошибки</h2>
+      <ul>
+        <li><strong>Сравнение разных моделей.</strong> Даже близкие по названию модели могут иметь разный граф и качество.</li>
+        <li><strong>Смешение prefill и decode.</strong> Длинный вход и длинный ответ создают разные профили нагрузки.</li>
+        <li><strong>Один запуск.</strong> Он не показывает разброс и не выявляет нестабильность.</li>
+        <li><strong>Игнорирование холодного старта.</strong> Для редких запросов загрузка может определять весь пользовательский опыт.</li>
+        <li><strong>Сравнение по одному числу.</strong> Скорость генерации без TTFT и ограничения контекста неполна.</li>
+        <li><strong>Непрозрачная остановка.</strong> Нужно различать нормальное завершение, лимит токенов и ошибку контекста.</li>
+      </ul>
+
+      <h2 id="verification">Проверка результата</h2>
+      <p>
+        Перед публикацией таблицы убедитесь, что для обеих платформ совпадают модель, запросы, лимит вывода и параметры выборки. Проверьте, что число токенов получено одним и тем же способом, а время измеряется от одинакового события. Повторите хотя бы часть серии в другой момент и сохраните исходные журналы вместе с итоговой таблицей.
+      </p>
+      <p>
+        Если числовые данные ещё не собраны, честная формулировка результата — «протокол подготовлен, измерения не предоставлены». Не заменяйте её оценочными словами вроде «молниеносный» или «значительно быстрее».
+      </p>
+
+      <h2 id="conclusion">Вывод</h2>
+      <p>
+        Hardwired LLM может дать реальное преимущество одному пользователю, если фиксированная модель, короткий путь вычислений и предсказуемая задержка совпадают с рабочей нагрузкой. Но это преимущество нужно доказывать полным профилем: TTFT, скоростью декодирования, полной задержкой, холодным стартом и пределом контекста.
+      </p>
+      <p>
+        GPU остаётся сильным выбором, когда важны смена моделей, расширяемость и контроль над настройками. HC1 имеет смысл оценивать как специализированную систему, а не как универсальную замену GPU. Итог должен следовать из воспроизводимых замеров ChatJimmy, а не из самого факта наличия зашитых весов.
+      </p>
+
+      <nav class="article-links" aria-label="Связанные материалы">
+        <a href="guides.html">Перейти к практическим гайдам</a>
+        <a href="glossary.html">Открыть глоссарий терминов</a>
+      </nav>
+<aside class="service-note" aria-label="Связаться по проекту">
+  <div class="service-note__copy">
+    <p class="service-note__label">Связь с Agent Lab</p>
+    <p class="service-note__title">Внедрим такой контур в ваш процесс</p>
+    <p class="service-note__text">Напишите инженеру Agent Lab в Telegram: опишите задачу, бота или интеграцию — предложим пилот с проверками и понятными границами.</p>
+  </div>
+  <a class="service-note__link" href="https://t.me/msrzn007?utm_source=journal&amp;utm_medium=article&amp;utm_campaign=service_note" target="_blank" rel="noopener">Написать в Telegram
+    <svg viewBox="0 0 16 16" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"><path d="M3 13 13 3M6 3h7v7"/></svg>
+  </a>
+</aside>
+<aside class="service-note service-note--sitevisor" aria-label="Экспресс-аудит сайта">
+  <div class="service-note__copy">
+    <p class="service-note__label">SiteVisor</p>
+    <p class="service-note__title">Проверьте техническое состояние и готовность вашего сайта к рекламе</p>
+    <p class="service-note__text">Экспресс-аудит на SiteVisor.pro: индексация, скорость, разметка, аналитика и точки конверсии.</p>
+  </div>
+  <a class="service-note__link" href="https://sitevisor.pro/?utm_source=journal&amp;utm_medium=article&amp;utm_campaign=leadmagnet" target="_blank" rel="noopener">Экспресс-аудит на SiteVisor.pro
+    <svg viewBox="0 0 16 16" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"><path d="M3 13 13 3M6 3h7v7"/></svg>
+  </a>
+</aside>
+</article>
+  </main>
+
+  <footer class="site-footer">
+    <div class="container">
+      <p>© Agent Lab Journal</p>
+    </div>
+  </footer>
+</body>
+</html>

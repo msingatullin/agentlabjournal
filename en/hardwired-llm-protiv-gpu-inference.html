@@ -1,0 +1,561 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Hardwired LLM vs. GPU: Testing Inference Speed and Trade-offs</title>
+  <meta name="description" content="Hardwired LLM vs. GPU: Testing Inference Speed and Trade-offs — a reproducible method for comparing ChatJimmy on HC1 with regular GPU inference, including speed, latency, and context limits.">
+  <link rel="canonical" href="https://agentlabjournal.online/en/hardwired-llm-protiv-gpu-inference.html">
+  <link rel="stylesheet" href="../style.css">
+  <link rel="stylesheet" href="../reading.css">
+
+  <meta property="og:type" content="article">
+  <meta property="og:title" content="Hardwired LLM vs. GPU: Testing Inference Speed and Trade-offs">
+  <meta property="og:description" content="A reproducible, evidence-bounded method for comparing ChatJimmy on HC1 with regular GPU inference.">
+  <meta property="og:url" content="https://agentlabjournal.online/en/hardwired-llm-protiv-gpu-inference.html">
+  <meta property="og:image" content="https://agentlabjournal.online/assets/covers/llm-context-window-budget-social.png">
+  <meta property="og:site_name" content="Agent Lab Journal">
+
+  <meta name="twitter:card" content="summary_large_image">
+  <meta name="twitter:title" content="Hardwired LLM vs. GPU: Testing Inference Speed and Trade-offs">
+  <meta name="twitter:description" content="A reproducible comparison protocol for ChatJimmy on HC1 versus regular GPU inference.">
+  <meta name="twitter:image" content="https://agentlabjournal.online/assets/covers/llm-context-window-budget-social.png">
+
+  <script type="application/ld+json">
+  {
+    "@context": "https://schema.org",
+    "@type": "Article",
+    "headline": "Hardwired LLM vs. GPU: Testing Inference Speed and Trade-offs",
+    "description": "A reproducible, evidence-bounded method for comparing ChatJimmy on HC1 with regular GPU inference, including generation speed, latency, and context limitations.",
+    "image": ["https://agentlabjournal.online/assets/covers/llm-context-window-budget-social.png"],
+    "dateModified": "2026-11-25",
+    "author": {
+      "@type": "Organization",
+      "name": "Agent Lab Journal"
+    },
+    "publisher": {
+      "@type": "Organization",
+      "name": "Agent Lab Journal"
+    },
+    "mainEntityOfPage": {
+      "@type": "WebPage",
+      "@id": "https://agentlabjournal.online/en/hardwired-llm-protiv-gpu-inference.html"
+    }
+  }
+  </script>
+<link rel="stylesheet" href="../homepage.css"><link rel="stylesheet" href="../max-promo.css">  <meta property="og:image:alt" content="Hardwired LLM против GPU: проверяем скорость и компромиссы инференса">
+</head>
+<body>
+  <header class="site-header">
+    <div class="container">
+      <a class="site-logo" href="../index.html">Agent Lab Journal</a>
+      <nav aria-label="Primary navigation">
+        <a href="../guides.html">Guides</a>
+        <a href="../glossary.html">Glossary</a>
+      </nav>
+    </div>
+  </header>
+
+  <main>
+    <article class="reading">
+      <header class="reading-header">
+        <p class="eyebrow">Benchmarking · Advanced</p>
+        <h1>Hardwired LLM vs. GPU: Testing Inference Speed and Trade-offs</h1>
+        <figure class="article-cover" data-editorial-cover="hardwired-llm-protiv-gpu-inference"><img src="../assets/covers/llm-context-window-budget.png" alt="Hardwired LLM против GPU: проверяем скорость и компромиссы инференса" width="1280" height="720" fetchpriority="high"><figcaption>Temporary fallback cover; replace in editorial pass.</figcaption></figure>
+        <p class="reading-dek">
+          Does a specialized chip with hardwired weights provide a real advantage over a GPU for a single user? This article defines a repeatable test for ChatJimmy on HC1 versus regular GPU inference, covering generation speed, end-to-end latency, and context limitations.
+        </p>
+        <div class="reading-meta">
+          <span>40 min read</span>
+          <span>Updated 25 November 2026</span>
+          <span>Agent Lab Journal</span>
+        </div>
+      </header>
+
+      <div class="reading-body">
+        <p class="callout">
+          <strong>Evidence boundary:</strong> No raw HC1 or GPU measurements were supplied with this brief. The article therefore does not claim a winner or invent benchmark numbers. It provides the exact protocol, commands, result schema, and interpretation rules needed to produce a defensible comparison.
+        </p>
+
+        <h2>The short answer</h2>
+
+        <p>
+          A hardwired language-model accelerator can be faster for a narrow, fixed workload, but “faster” is not one number. For a single user, the relevant comparison is usually the time before the first visible token, the sustained generation rate, the total time to finish a response, and whether the requested context fits at all.
+        </p>
+
+        <p>
+          <a href="../glossary.html#hardwired-weights">Hardwired weights</a> can reduce flexibility because model parameters are physically or logically fixed for a particular execution path. A <a href="../glossary.html#gpu">GPU</a> normally offers a broader software surface: different models, quantization formats, batch sizes, context lengths, and kernels can be selected after deployment. That flexibility may cost memory, initialization time, or power, but it also changes what counts as a fair test.
+        </p>
+
+        <p>
+          The useful question is not “which chip is theoretically faster?” It is: for the same model, prompt, output requirement, and measurement conditions, does HC1 reduce the user-visible wait enough to justify its context and deployment constraints?
+        </p>
+
+        <h2>What is being compared</h2>
+
+        <p>
+          The test compares the same ChatJimmy model and the same request on two execution paths:
+        </p>
+
+        <ol>
+          <li>ChatJimmy on HC1, using the accelerator’s supported hardwired or compiled model path.</li>
+          <li>ChatJimmy on a regular GPU, using the nearest equivalent model, precision, and serving configuration.</li>
+        </ol>
+
+        <p>
+          <a href="../glossary.html#inference">Inference</a> means producing tokens from an already-available model. Training is outside the scope of this test. Likewise, this is a single-user benchmark: it measures one active request at a time, not throughput under concurrent traffic.
+        </p>
+
+        <p>
+          The comparison is valid only if both paths are identified precisely. Record the model identifier, revision or checksum, tokenizer, prompt template, precision, maximum context, sampling parameters, server version, driver version, device model, and whether model loading is included in the timing.
+        </p>
+
+        <h2>Metrics that answer different questions</h2>
+
+        <h3>Time to first token</h3>
+
+        <p>
+          <a href="../glossary.html#time-to-first-token">Time to first token</a> (TTFT) is the interval between submitting a request and receiving the first generated token. It includes request handling and prompt processing, often called prefill. TTFT matters most for interactive chat: a system that begins responding quickly can feel responsive even when the complete answer takes longer.
+        </p>
+
+        <h3>Inter-token latency</h3>
+
+        <p>
+          <a href="../glossary.html#inter-token-latency">Inter-token latency</a> (ITL) is the time between successive generated tokens. A low average ITL usually appears to the user as smooth streaming. Report both the mean and a high percentile such as p95 because occasional stalls are perceptible.
+        </p>
+
+        <h3>Generation speed</h3>
+
+        <p>
+          <a href="../glossary.html#tokens-per-second">Tokens per second</a> (tokens/s) is the number of output tokens divided by the decode interval. Do not calculate it from wall-clock time unless you explicitly label it as end-to-end throughput. A common split is:
+        </p>
+
+        <pre><code>prefill_time = first_token_time - request_start_time
+decode_time  = last_token_time - first_token_time
+decode_tps   = output_tokens / decode_time
+e2e_tps      = output_tokens / (last_token_time - request_start_time)</code></pre>
+
+        <p>
+          The exact boundary must be documented. Some clients receive a stream event before the first visible text token; use the same event type on both systems.
+        </p>
+
+        <h3>Total completion latency</h3>
+
+        <p>
+          Total completion latency is the time from request submission until the final token. It is the metric most closely tied to “when is the answer ready?” It combines prompt processing, queueing, first-token delay, and decoding.
+        </p>
+
+        <h3>Context capacity and context quality</h3>
+
+        <p>
+          The <a href="../glossary.html#context-window">context window</a> is the maximum token budget available to the prompt, conversation history, retrieved material, and generated answer. A system that generates quickly but rejects the target prompt is not faster for that workload. Test the largest prompt that both systems accept, and test whether the server truncates, rejects, or silently modifies excess input.
+        </p>
+
+        <h2>Define the experiment before running it</h2>
+
+        <p>
+          Write a small test manifest. This prevents configuration drift and makes the result auditable.
+        </p>
+
+        <pre><code>experiment: chatjimmy-hc1-vs-gpu
+date_utc: 2026-11-25
+model:
+  name: &lt;exact ChatJimmy identifier&gt;
+  revision: &lt;revision or checksum&gt;
+  tokenizer: &lt;identifier and revision&gt;
+  precision: &lt;format&gt;
+  quantization: &lt;format or none&gt;
+prompt_template: &lt;exact template identifier or inline hash&gt;
+sampling:
+  temperature: 0
+  top_p: 1
+  max_new_tokens: 256
+devices:
+  hc1: &lt;firmware, runtime, device identifier&gt;
+  gpu: &lt;GPU model, driver, runtime&gt;
+server:
+  hc1: &lt;server version and flags&gt;
+  gpu: &lt;server version and flags&gt;
+measurement:
+  repetitions: 30
+  warmup_requests: 5
+  concurrency: 1
+  include_model_load: false</code></pre>
+
+        <p>
+          Replace every placeholder before treating the run as a benchmark. If a field cannot be obtained, record “unknown” rather than guessing.
+        </p>
+
+        <h2>Choose prompts that expose the trade-off</h2>
+
+        <p>
+          One prompt is not enough. Use a fixed suite with distinct prompt lengths and output requirements. Store the prompts in a version-controlled text file and compute a checksum so accidental edits are visible.
+        </p>
+
+        <table>
+          <thead>
+            <tr>
+              <th>Case</th>
+              <th>Purpose</th>
+              <th>Controlled variable</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td>Short chat</td>
+              <td>Interactive responsiveness</td>
+              <td>Small input, short output</td>
+            </tr>
+            <tr>
+              <td>Long answer</td>
+              <td>Sustained decode speed</td>
+              <td>Same input, larger max output</td>
+            </tr>
+            <tr>
+              <td>Long context</td>
+              <td>Prefill cost and capacity</td>
+              <td>Increasing input tokens</td>
+            </tr>
+            <tr>
+              <td>Near-limit context</td>
+              <td>Acceptance and stability</td>
+              <td>Prompt approaching the smaller limit</td>
+            </tr>
+            <tr>
+              <td>Over-limit context</td>
+              <td>Failure behavior</td>
+              <td>Prompt beyond the declared limit</td>
+            </tr>
+          </tbody>
+        </table>
+
+        <p>
+          Keep generation deterministic where possible. Temperature zero is useful for repeatability, but it does not guarantee byte-identical output across different kernels. Compare timing independently from text equality. If the systems use different tokenizers, report that as a confounder.
+        </p>
+
+        <h2>Prepare identical serving conditions</h2>
+
+        <p>
+          Install the same application revision and use equivalent request settings. Pin the GPU to a known power and performance policy if the platform permits it. Record ambient conditions only if thermal throttling is plausible. Do not compare a warmed GPU against a cold HC1 or vice versa.
+        </p>
+
+        <p>
+          The model-loading decision must be explicit. For an interactive single-user comparison, report two views when possible:
+        </p>
+
+        <ul>
+          <li><strong>Warm serving:</strong> model already loaded; measures request responsiveness.</li>
+          <li><strong>Cold start:</strong> process and model loading included; measures time to usable service.</li>
+        </ul>
+
+        <p>
+          Never mix these views into one average. A one-time load penalty can dominate a short test but may be irrelevant for a continuously running service.
+        </p>
+
+        <h2>Example request and timing capture</h2>
+
+        <p>
+          The following example uses a generic OpenAI-compatible streaming endpoint. It is a template, not a claim about the actual HC1 interface. Adapt the URL, authentication method, and response schema to the installed ChatJimmy server.
+        </p>
+
+        <pre><code>curl -N -sS http://127.0.0.1:8000/v1/chat/completions \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "model": "chatjimmy",
+    "messages": [
+      {
+        "role": "user",
+        "content": "Explain the difference between prefill and decode in language-model inference."
+      }
+    ],
+    "temperature": 0,
+    "top_p": 1,
+    "max_tokens": 128,
+    "stream": true
+  }'</code></pre>
+
+        <p>
+          For a real benchmark, use a small client that records a monotonic timestamp for request start, the first stream event containing generated text, and the final stream event. Also record reported prompt and completion token counts. Do not use wall-clock timestamps for elapsed-time arithmetic because clock adjustments can distort intervals.
+        </p>
+
+        <p>
+          A minimal CSV schema is:
+        </p>
+
+        <pre><code>run_id,system,case,warmup,accepted,
+prompt_tokens,output_tokens,
+request_start_ns,first_token_ns,last_token_ns,
+ttft_ms,decode_ms,decode_tps,total_ms,
+error_type,error_message</code></pre>
+
+        <p>
+          If the server does not report token counts, use the tokenizer associated with that exact model and record the tokenizer revision. Counting characters or whitespace-separated words is not a substitute for model tokens.
+        </p>
+
+        <h2>Run order and repetitions</h2>
+
+        <p>
+          Make five warm-up requests before recording data. Then run at least 30 measured requests per case if the service is stable enough to support that sample. Alternate systems or randomize the order so a gradual temperature rise does not assign all later runs to one device.
+        </p>
+
+        <pre><code>for case in short_chat long_answer long_context near_limit over_limit; do
+  for run in $(seq 1 30); do
+    run_request --system hc1 --case "$case" --run "$run"
+    run_request --system gpu --case "$case" --run "$run"
+  done
+done</code></pre>
+
+        <p>
+          The command is illustrative: <code>run_request</code> is the benchmark client you must implement or replace. Preserve the raw response and the manifest alongside the CSV. If a request fails, keep the row with an error classification; deleting failures creates survivorship bias.
+        </p>
+
+        <h2>Verification before interpreting results</h2>
+
+        <p>
+          A benchmark result is only as credible as its checks. Verify the following before calculating a winner:
+        </p>
+
+        <ol>
+          <li>Both systems loaded the intended ChatJimmy model revision.</li>
+          <li>The tokenizer and prompt template are equivalent, or the difference is documented.</li>
+          <li>Prompt and output token counts are recorded for every successful run.</li>
+          <li>Concurrency is one and no unrelated requests are using either device.</li>
+          <li>Warm-up rows are excluded from the reported warm-serving statistics.</li>
+          <li>Streaming timestamps come from the client’s monotonic clock.</li>
+          <li>Rejected and truncated prompts are not silently grouped with successful requests.</li>
+          <li>Temperature, sampling, maximum output, and stop conditions match.</li>
+          <li>The process did not reload the model between warm runs.</li>
+          <li>Thermal or power-state changes are visible in the run log.</li>
+        </ol>
+
+        <p>
+          If the output is nondeterministic, verify the request settings and compare token counts before comparing completion times. A shorter answer can make a device appear faster even when its per-token decode rate is lower.
+        </p>
+
+        <h2>Analysis: report distributions, not a single impressive number</h2>
+
+        <p>
+          For each system and case, report median, p95, minimum, maximum, and sample count for TTFT, decode tokens/s, and total latency. Use the median for typical behavior and p95 for interactive tail behavior. Include the number of accepted, rejected, truncated, and timed-out requests.
+        </p>
+
+        <p>
+          A useful summary table has this shape:
+        </p>
+
+        <table>
+          <thead>
+            <tr>
+              <th>Case</th>
+              <th>System</th>
+              <th>Accepted</th>
+              <th>TTFT median / p95</th>
+              <th>Decode median</th>
+              <th>Total median / p95</th>
+              <th>Context outcome</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td>Short chat</td>
+              <td>HC1</td>
+              <td>n / 30</td>
+              <td>recorded value</td>
+              <td>recorded value</td>
+              <td>recorded value</td>
+              <td>accepted</td>
+            </tr>
+            <tr>
+              <td>Short chat</td>
+              <td>GPU</td>
+              <td>n / 30</td>
+              <td>recorded value</td>
+              <td>recorded value</td>
+              <td>recorded value</td>
+              <td>accepted</td>
+            </tr>
+          </tbody>
+        </table>
+
+        <p>
+          Replace the placeholders only with measured values. Do not infer them from specifications, marketing claims, or another model. If the two systems use different output lengths, the table is not a direct speed comparison.
+        </p>
+
+        <h2>How to compare HC1 with a GPU fairly</h2>
+
+        <p>
+          A hardwired path may have an advantage when the model graph, weight layout, and execution precision are fixed in advance. The comparison should therefore distinguish hardware advantage from configuration advantage. If HC1 uses a compiled low-precision representation while the GPU uses a slower reference precision, run an additional GPU configuration with the closest supported representation and label both comparisons.
+        </p>
+
+        <p>
+          Conversely, do not force the GPU into an artificially narrow configuration if the user’s real requirement is to change models or context length. Flexibility is a legitimate part of the trade-off. Report the fastest equivalent configuration and the practical configuration the operator would actually deploy.
+        </p>
+
+        <p>
+          For a single user, batching is usually not the central metric. A GPU may achieve excellent aggregate throughput with many concurrent requests while providing no improvement to one request’s TTFT. If the stated problem is one user, set concurrency to one and keep queueing out of the measurement.
+        </p>
+
+        <h2>Context-limit testing</h2>
+
+        <p>
+          Generate prompts at measured token lengths rather than character lengths. Start below the smaller declared context and increase in fixed increments. At each step, record:
+        </p>
+
+        <ul>
+          <li>whether the request was accepted;</li>
+          <li>the server’s reported prompt-token count;</li>
+          <li>TTFT and total latency;</li>
+          <li>whether the input was truncated;</li>
+          <li>whether the requested output reduced the available input budget;</li>
+          <li>the exact error returned when the request failed.</li>
+        </ul>
+
+        <p>
+          The relevant budget is often approximately:
+        </p>
+
+        <pre><code>input_tokens + requested_output_tokens &lt;= usable_context_limit</code></pre>
+
+        <p>
+          The inequality is a testing model, not a universal implementation rule. Some servers reserve special tokens, apply sliding-window attention, or enforce a smaller application-level limit. The observed acceptance behavior is more important than a value copied from a product page.
+        </p>
+
+        <h2>Failure cases that change the conclusion</h2>
+
+        <h3>HC1 accepts only a shorter context</h3>
+
+        <p>
+          If HC1 is faster on short prompts but rejects the long-context case required by the application, report a workload-dependent result. “HC1 is faster” would be incomplete; the accurate conclusion is that it is faster within the supported context envelope.
+        </p>
+
+        <h3>The GPU runs out of memory</h3>
+
+        <p>
+          An out-of-memory failure is a capacity result, not a speed result. Record the prompt length, model configuration, allocator behavior if available, and whether a smaller batch, lower precision, or reduced context makes the request fit. Do not replace the failed run with a different model without labeling the comparison.
+        </p>
+
+        <h3>First-token time is fast but streaming stalls</h3>
+
+        <p>
+          This can indicate a strong prefill path but unstable decode performance, host-device transfers, thermal throttling, or server-side buffering. Inspect the ITL distribution and the raw stream timestamps. A low TTFT alone does not establish good interactive behavior.
+        </p>
+
+        <h3>Reported tokens per second looks unusually high</h3>
+
+        <p>
+          Check whether the server reports speculative, drafted, or accepted tokens differently from the client. Verify that the output-token count excludes prompt tokens and that the final stream event was not timestamped before the last visible text arrived.
+        </p>
+
+        <h3>Outputs differ substantially</h3>
+
+        <p>
+          Confirm model revision, tokenizer, chat template, stop sequences, random seed behavior, and sampling parameters. If the systems cannot produce comparable token streams, compare latency for a fixed requested output length and state that semantic output equivalence was not established.
+        </p>
+
+        <h3>Cold-start results dominate</h3>
+
+        <p>
+          Keep cold-start and warm-serving results separate. A specialized device may be excellent once initialized but unsuitable for sporadic use if initialization is expensive. A GPU may have the opposite profile. The right choice depends on request frequency and the user’s tolerance for startup delay.
+        </p>
+
+        <h2>Limitations of this comparison</h2>
+
+        <p>
+          This protocol cannot establish a universal ranking. Results depend on the exact ChatJimmy model, compiler, runtime, driver, precision, tokenizer, prompt distribution, output length, thermal state, and server implementation. A result from one HC1 firmware or one GPU model should not be generalized to every device in either category.
+        </p>
+
+        <p>
+          The protocol also measures responsiveness, not energy use, acquisition cost, reliability over long periods, model availability, or operational support. Those may matter more than a modest latency difference. Add power and cost measurements only when they are collected with documented instruments and a defined workload.
+        </p>
+
+        <p>
+          Finally, a synthetic prompt suite may not represent production traffic. After the controlled test, replay a sanitized sample of real request shapes if you have permission to do so. Keep personal data, secrets, API keys, and proprietary prompts out of shared logs.
+        </p>
+
+        <h2>Decision rule for a single user</h2>
+
+        <p>
+          Use a simple decision matrix after the measurements are complete:
+        </p>
+
+        <table>
+          <thead>
+            <tr>
+              <th>Observed result</th>
+              <th>Practical interpretation</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td>Lower TTFT and similar context</td>
+              <td>Strong case for HC1 in interactive chat.</td>
+            </tr>
+            <tr>
+              <td>Higher decode rate but worse TTFT</td>
+              <td>Useful for long answers; less compelling for short replies.</td>
+            </tr>
+            <tr>
+              <td>Fast short prompts, smaller context</td>
+              <td>Good for bounded assistants; not a general replacement.</td>
+            </tr>
+            <tr>
+              <td>GPU is slower but accepts required workloads</td>
+              <td>Flexibility may outweigh the measured speed gap.</td>
+            </tr>
+            <tr>
+              <td>HC1 fails or truncates required prompts</td>
+              <td>It does not meet the application requirement, regardless of speed.</td>
+            </tr>
+          </tbody>
+        </table>
+
+        <p>
+          The final article or internal report should state the workload first, then the measured result, then the constraint. For example: “For the defined single-user short-chat case, system A had lower median TTFT; system B accepted the longer context case that A rejected.” This wording preserves what was actually tested.
+        </p>
+
+        <h2>Reproducibility checklist</h2>
+
+        <ul>
+          <li>Publish the manifest and prompt-suite checksum.</li>
+          <li>Record exact model, tokenizer, runtime, firmware, driver, and server versions.</li>
+          <li>Separate cold-start, warm-serving, and failed-request results.</li>
+          <li>Use monotonic timestamps and preserve raw stream logs.</li>
+          <li>Report token counts, sample sizes, medians, and p95 values.</li>
+          <li>Test at least one short prompt, one long output, and one near-limit context.</li>
+          <li>State every mismatch between HC1 and GPU configurations.</li>
+          <li>Do not publish credentials, private prompts, personal data, or customer information.</li>
+          <li>Do not call a device faster unless the same workload was accepted and measured.</li>
+        </ul>
+
+        <h2>Conclusion</h2>
+
+        <p>
+          A specialized hardwired chip can provide a real single-user advantage, but only a controlled measurement can show whether that advantage appears as faster first-token response, smoother streaming, shorter completion time, or merely a better result for one narrow context range. The GPU remains valuable when model choice, context size, precision, and software flexibility are part of the requirement.
+        </p>
+
+        <p>
+          Until the HC1 and GPU runs described here are completed with recorded raw data, the defensible conclusion is methodological rather than numerical: measure the same ChatJimmy workload, separate prefill from decode, include failures, and treat context capacity as part of performance.
+        </p>
+
+        <p class="article-next">
+          Continue with the <a href="../guides.html">guides</a> or look up terms in the <a href="../glossary.html">glossary</a>.
+        </p>
+      </div>
+    <section class="service-note">
+  <b>We publish what works for us—and implement the same solutions for your business.</b>
+  We design AI automation, Telegram bots, chats, and AI agents for real-world processes.
+  <a href="../contacts-en.html">Discuss your project →</a>
+</section>
+</article>
+  </main>
+
+  <footer class="site-footer">
+    <div class="container">
+      <p>© Agent Lab Journal</p>
+      <nav aria-label="Footer navigation">
+        <a href="../guides.html">Guides</a>
+        <a href="../glossary.html">Glossary</a>
+      </nav>
+    </div>
+  </footer>
+</body>
+</html>
