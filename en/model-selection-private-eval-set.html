@@ -1,0 +1,491 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Why a Private Evaluation Set Beats a Public Leaderboard</title>
+  <meta name="description" content="Why a Private Evaluation Set Beats a Public Leaderboard: a reproducible template for testing schema, quality, cost, and latency on 50–100 real request examples.">
+  <link rel="canonical" href="https://agentlabjournal.online/en/model-selection-private-eval-set.html">
+  <link rel="stylesheet" href="../style.css">
+  <link rel="stylesheet" href="../reading.css">
+
+  <meta property="og:type" content="article">
+  <meta property="og:title" content="Why a Private Evaluation Set Beats a Public Leaderboard">
+  <meta property="og:description" content="A practical, reproducible template for comparing models against your own requests, quality requirements, cost assumptions, and latency budget.">
+  <meta property="og:url" content="https://agentlabjournal.online/en/model-selection-private-eval-set.html">
+  <meta property="og:image" content="https://agentlabjournal.online/assets/covers/llm-context-window-budget-social.png">
+
+  <meta name="twitter:card" content="summary_large_image">
+  <meta name="twitter:title" content="Why a Private Evaluation Set Beats a Public Leaderboard">
+  <meta name="twitter:description" content="Build a private 50–100-example evaluation set covering schema checks, quality, cost, and latency.">
+  <meta name="twitter:image" content="https://agentlabjournal.online/assets/covers/llm-context-window-budget-social.png">
+
+  <script type="application/ld+json">
+  {
+    "@context": "https://schema.org",
+    "@type": "Article",
+    "headline": "Why a Private Evaluation Set Beats a Public Leaderboard",
+    "description": "A practical, reproducible template for comparing models against private requests, schema requirements, quality criteria, cost assumptions, and latency budgets.",
+    "image": ["https://agentlabjournal.online/assets/covers/llm-context-window-budget-social.png"],
+    "dateModified": "2026-11-25",
+    "author": {
+      "@type": "Organization",
+      "name": "Agent Lab Journal"
+    },
+    "publisher": {
+      "@type": "Organization",
+      "name": "Agent Lab Journal",
+      "url": "https://agentlabjournal.online/"
+    },
+    "mainEntityOfPage": {
+      "@type": "WebPage",
+      "@id": "https://agentlabjournal.online/en/model-selection-private-eval-set.html"
+    }
+  }
+  </script>
+<link rel="stylesheet" href="../homepage.css"><link rel="stylesheet" href="../max-promo.css">  <meta property="og:image:alt" content="Почему собственного eval-набора недостаточно заменить лидербордом">
+</head>
+<body>
+  <header class="site-header">
+    <div class="site-header__inner">
+      <a class="site-header__brand" href="../index.html">Agent Lab Journal</a>
+      <nav class="site-header__nav" aria-label="Primary navigation">
+        <a href="guides.html">Guides</a>
+        <a href="../glossary.html">Glossary</a>
+      </nav>
+    </div>
+  </header>
+
+  <main>
+    <article class="reading">
+      <div class="reading-meta">
+        <span>Model selection</span>
+        <span aria-hidden="true">·</span>
+        <span>12 min read</span>
+        <span aria-hidden="true">·</span>
+        <time datetime="2026-11-25">Updated November 25, 2026</time>
+      </div>
+
+      <h1>Why a Private Evaluation Set Beats a Public Leaderboard</h1>
+        <figure class="article-cover" data-editorial-cover="model-selection-private-eval-set"><img src="../assets/covers/llm-context-window-budget.png" alt="Почему собственного eval-набора недостаточно заменить лидербордом" width="1280" height="720" fetchpriority="high"><figcaption>Temporary fallback cover; replace in editorial pass.</figcaption></figure>
+
+      <p class="lead">
+        A public ranking can tell you which model performs well on someone else’s test. It cannot tell you which model handles your requests, returns your required format, fits your budget, or answers quickly enough for your product. A small private <a href="../glossary.html#evaluation-set">evaluation set</a> gives you evidence that is closer to the decision you actually need to make.
+      </p>
+
+      <p>
+        This article presents a repeatable template for a private set of 50–100 examples. The template covers four dimensions: schema compliance, answer quality, cost, and <a href="../glossary.html#latency">latency</a>. The numbers below are examples of a test design, not measured results. Replace them with values from your own requests and model runs.
+      </p>
+
+      <h2>The decision a leaderboard cannot make</h2>
+
+      <p>
+        Imagine that a team needs a model for an assistant that reads support messages and produces a structured triage record. The output must contain a category, urgency, short summary, and a next action. Some messages are incomplete. Some contain irrelevant text. A few contain instructions that should be treated as content rather than as commands.
+      </p>
+
+      <p>
+        The team may compare models using a <a href="../glossary.html#public-leaderboard">public leaderboard</a>. That ranking may be useful for generating a shortlist, but it does not answer the operational questions:
+      </p>
+
+      <ul>
+        <li>Does the model return valid JSON every time?</li>
+        <li>Does it choose the correct category on the team’s real message types?</li>
+        <li>Does it avoid inventing missing information?</li>
+        <li>How many input and output tokens does each request use?</li>
+        <li>Does the response arrive within the application’s time budget?</li>
+      </ul>
+
+      <p>
+        A private evaluation set turns those questions into checks that can be rerun after a model, prompt, provider, or decoding setting changes.
+      </p>
+
+      <h2>What to put in a 50–100-example set</h2>
+
+      <p>
+        Start with examples that represent the work, not examples that are easy to write. Remove names, email addresses, account numbers, access tokens, and other personal or secret data before storing the set. If the original request cannot be safely retained, create a redacted or synthetic equivalent and mark it as such.
+      </p>
+
+      <p>A practical distribution for 50 examples is:</p>
+
+      <table>
+        <thead>
+          <tr>
+            <th scope="col">Example group</th>
+            <th scope="col">Suggested count</th>
+            <th scope="col">What it tests</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>Common requests</td>
+            <td>20</td>
+            <td>Normal task performance</td>
+          </tr>
+          <tr>
+            <td>Ambiguous or incomplete requests</td>
+            <td>10</td>
+            <td>Clarification and uncertainty handling</td>
+          </tr>
+          <tr>
+            <td>Long or noisy requests</td>
+            <td>8</td>
+            <td>Context use and instruction priority</td>
+          </tr>
+          <tr>
+            <td>Rare but important cases</td>
+            <td>7</td>
+            <td>High-impact failure modes</td>
+          </tr>
+          <tr>
+            <td>Adversarial or malformed inputs</td>
+            <td>5</td>
+            <td>Robustness and safe failure</td>
+          </tr>
+        </tbody>
+      </table>
+
+      <p>
+        For 100 examples, keep the categories roughly balanced rather than simply duplicating common requests. The exact mix is an experiment-design choice. Record the reason for each example so that a future editor can tell whether the set still represents the product.
+      </p>
+
+      <h2>Use a data record that separates facts from judgments</h2>
+
+      <p>
+        Store one row or JSON object per example. Keep the original request, the expected behavior, and the model output separate. A reference answer can be useful, but it should not be treated as the only acceptable wording when several answers would be correct.
+      </p>
+
+      <pre><code>{
+  "id": "triage-001",
+  "input": "The replacement part arrived damaged. What should I do?",
+  "source": "synthetic",
+  "expected": {
+    "category": "replacement",
+    "urgency": "normal",
+    "must_include": ["next step"],
+    "must_not_include": ["invented order number"]
+  },
+  "quality_notes": "A concise explanation and a request for the missing order details are acceptable.",
+  "tags": ["common", "missing_context"]
+}</code></pre>
+
+      <p>
+        The <code>source</code> field distinguishes a redacted production example from a synthetic one. The <code>expected</code> field describes observable requirements. This makes review more consistent than asking a reviewer whether an answer “feels good.”
+      </p>
+
+      <h2>Check schema compliance first</h2>
+
+      <p>
+        If your application consumes structured output, begin with <a href="../glossary.html#schema-validation">schema validation</a>. A fluent answer that cannot be parsed is a failed request for many workflows.
+      </p>
+
+      <p>
+        Define the required shape in <a href="../glossary.html#json-schema">JSON Schema</a> or the equivalent format supported by your application. For example:
+      </p>
+
+      <pre><code>{
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["category", "urgency", "summary", "next_action"],
+  "properties": {
+    "category": {
+      "type": "string",
+      "enum": ["billing", "technical", "replacement", "other"]
+    },
+    "urgency": {
+      "type": "string",
+      "enum": ["low", "normal", "high"]
+    },
+    "summary": {
+      "type": "string",
+      "minLength": 1
+    },
+    "next_action": {
+      "type": "string",
+      "minLength": 1
+    }
+  }
+}</code></pre>
+
+      <p>
+        A schema check should record at least three outcomes: valid, invalid, and unavailable. “Unavailable” covers cases where the provider returned no usable response or a transport error occurred. Do not silently count unavailable responses as valid or as quality failures; report them separately.
+      </p>
+
+      <p>
+        A minimal validation command might look like this when using a local JSON file and a validator already installed in your environment:
+      </p>
+
+      <pre><code>jsonschema -i output.json schema.json</code></pre>
+
+      <p>
+        The command is illustrative. The exact command depends on the validator and language used by your project. The reproducible requirement is to record the schema version, validator version, and result for every example.
+      </p>
+
+      <h2>Measure quality with explicit criteria</h2>
+
+      <p>
+        Quality is not one universal score. Define criteria that match the task. For the triage example, a reviewer could score each response on a 0–2 scale:
+      </p>
+
+      <table>
+        <thead>
+          <tr>
+            <th scope="col">Criterion</th>
+            <th scope="col">0</th>
+            <th scope="col">1</th>
+            <th scope="col">2</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>Correct category</td>
+            <td>Wrong</td>
+            <td>Partly justified</td>
+            <td>Correct</td>
+          </tr>
+          <tr>
+            <td>Appropriate urgency</td>
+            <td>Unsafe or wrong</td>
+            <td>Debatable</td>
+            <td>Supported by input</td>
+          </tr>
+          <tr>
+            <td>Useful next action</td>
+            <td>Missing or misleading</td>
+            <td>Partly useful</td>
+            <td>Clear and actionable</td>
+          </tr>
+          <tr>
+            <td>Groundedness</td>
+            <td>Invents facts</td>
+            <td>Minor unsupported detail</td>
+            <td>Uses only supported facts</td>
+          </tr>
+        </tbody>
+      </table>
+
+      <p>
+        Define a pass rule before comparing models. One example is: schema valid, no critical error, and a total quality score of at least 6 out of 8. This threshold is a test-design example, not a verified standard. Choose a threshold with the people responsible for the outcome, then keep it fixed during the comparison.
+      </p>
+
+      <p>
+        For a first pass, have one reviewer score all outputs and have a second reviewer independently score a smaller sample, such as 10 examples. Discuss disagreements and update the rubric before the next evaluation. Do not present a reviewer score as objective ground truth when the rubric remains ambiguous.
+      </p>
+
+      <h2>Record cost using the same assumptions</h2>
+
+      <p>
+        Cost comparisons are only meaningful when the request, output limit, tools, retries, and pricing assumptions are held constant. Do not copy a price into the article or evaluation file unless it has been verified for the provider, region, account, and date of the run.
+      </p>
+
+      <p>
+        Record usage fields returned by the provider whenever available:
+      </p>
+
+      <pre><code>{
+  "input_tokens": 842,
+  "output_tokens": 126,
+  "retries": 0,
+  "request_status": "success",
+  "price_snapshot": "record provider price source and date here"
+}</code></pre>
+
+      <p>
+        A simple calculation for one request is:
+      </p>
+
+      <pre><code>request_cost =
+  (input_tokens / 1_000_000) * input_price_per_million
+  + (output_tokens / 1_000_000) * output_price_per_million</code></pre>
+
+      <p>
+        The expression is a template. Insert the prices that apply to the run and preserve the source and date of those prices in your internal evaluation record. Include retry costs if retries are part of the production behavior.
+      </p>
+
+      <h2>Measure latency as a distribution</h2>
+
+      <p>
+        A single average can hide slow requests. Measure elapsed time from the start of the request until the application receives a complete usable response. Record the timestamp, model identifier, region or deployment context if relevant, timeout, retry count, and whether the response was streamed.
+      </p>
+
+      <p>
+        Report the median and a high percentile such as <a href="../glossary.html#p95">p95 latency</a>. For 50 examples, p95 is sensitive to a single slow request, which is useful but should be described clearly. If your application has a strict deadline, also report the percentage that finishes before that deadline.
+      </p>
+
+      <pre><code>started_at,finished_at,status,input_tokens,output_tokens,latency_ms
+2026-11-25T10:00:00Z,2026-11-25T10:00:01Z,success,842,126,1000</code></pre>
+
+      <p>
+        The timestamp above is an example record format, not a measured result. Use a monotonic clock for elapsed time in code when possible, and retain wall-clock timestamps only for traceability.
+      </p>
+
+      <h2>Run the comparison with a fixed configuration</h2>
+
+      <p>
+        Create one configuration file per model. Keep the system instruction, user-message template, schema, temperature or equivalent decoding settings, maximum output tokens, timeout, and retry policy explicit.
+      </p>
+
+      <pre><code>{
+  "model": "MODEL_ID_TO_VERIFY",
+  "system_prompt_version": "triage-v3",
+  "schema_version": "triage-schema-v2",
+  "temperature": 0,
+  "max_output_tokens": 300,
+  "timeout_seconds": 20,
+  "max_retries": 0
+}</code></pre>
+
+      <p>
+        Run every example against every candidate using the same input files and configuration rules. Save raw responses separately from normalized evaluation rows. A run identifier should connect the configuration, code revision, schema version, and outputs.
+      </p>
+
+      <p>At minimum, the normalized result should contain:</p>
+
+      <pre><code>{
+  "run_id": "2026-11-25-model-a-triage-v3",
+  "example_id": "triage-001",
+  "model": "MODEL_ID_TO_VERIFY",
+  "schema_valid": true,
+  "quality_score": 7,
+  "critical_error": false,
+  "input_tokens": 842,
+  "output_tokens": 126,
+  "latency_ms": 1000,
+  "status": "success"
+}</code></pre>
+
+      <h2>Verify the result before choosing a model</h2>
+
+      <p>
+        Do not choose a model from one headline number. Verify the raw records and the aggregation logic.
+      </p>
+
+      <ol>
+        <li>Confirm that every example has one result per candidate.</li>
+        <li>Check that failed requests were not dropped from the denominator.</li>
+        <li>Recalculate schema pass rate from raw validation results.</li>
+        <li>Recalculate quality summaries from the stored rubric scores.</li>
+        <li>Recalculate cost from recorded token usage and the documented price snapshot.</li>
+        <li>Inspect latency outliers and confirm that timeouts and retries are visible.</li>
+        <li>Review all critical failures, even when the aggregate score is high.</li>
+        <li>Repeat a small sample if outputs are nondeterministic or if the provider documents variable behavior.</li>
+      </ol>
+
+      <p>
+        A decision table can make the trade-off visible:
+      </p>
+
+      <table>
+        <thead>
+          <tr>
+            <th scope="col">Dimension</th>
+            <th scope="col">Decision question</th>
+            <th scope="col">Evidence to retain</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>Schema</td>
+            <td>Can the application parse the response?</td>
+            <td>Raw output, schema version, validator result</td>
+          </tr>
+          <tr>
+            <td>Quality</td>
+            <td>Does it meet the task rubric?</td>
+            <td>Scores, reviewer notes, critical-error flags</td>
+          </tr>
+          <tr>
+            <td>Cost</td>
+            <td>What does one comparable request cost?</td>
+            <td>Token usage, price source, retry count</td>
+          </tr>
+          <tr>
+            <td>Latency</td>
+            <td>Does it meet the response-time budget?</td>
+            <td>Elapsed time, timeout, percentile calculation</td>
+          </tr>
+        </tbody>
+      </table>
+
+      <h2>Common failure cases</h2>
+
+      <h3>The set contains only easy examples</h3>
+      <p>
+        A model can look excellent when every request is short, complete, and unambiguous. Add incomplete, noisy, rare, and adversarial cases. Keep tags so you can see which group causes failures.
+      </p>
+
+      <h3>The reference answer is treated as the only correct answer</h3>
+      <p>
+        This penalizes valid variation. Use required facts, forbidden claims, and task-specific criteria where wording can vary.
+      </p>
+
+      <h3>Invalid JSON is repaired before scoring</h3>
+      <p>
+        If production code repairs malformed output, evaluate both the raw response and the repaired result. Otherwise you may hide a reliability problem or fail to measure the actual application behavior.
+      </p>
+
+      <h3>Cost is compared without output limits</h3>
+      <p>
+        A model allowed to generate twice as much text is not being compared under the same operating conditions. Fix the output limit and record truncation.
+      </p>
+
+      <h3>Latency is measured from inconsistent points</h3>
+      <p>
+        Decide whether timing includes queueing, network transfer, parsing, retries, and post-processing. Use the same boundary for every candidate.
+      </p>
+
+      <h3>The set becomes public</h3>
+      <p>
+        A private set can contain sensitive business patterns even after obvious identifiers are removed. Restrict access, avoid secrets, and rotate examples if publication or leakage could change future behavior.
+      </p>
+
+      <h2>Limitations</h2>
+
+      <p>
+        Fifty to one hundred examples are enough to expose many practical differences, but they cannot prove universal performance. A small set may miss rare failures, and human scoring may be inconsistent. Provider behavior, model versions, pricing, and service capacity can change after the run.
+      </p>
+
+      <p>
+        Treat the evaluation as decision evidence with a scope, date, configuration, and known uncertainty. Add new examples when users report a failure, and rerun the set after material changes to prompts, schemas, tools, models, or application logic.
+      </p>
+
+      <h2>A compact repeatable template</h2>
+
+      <ol>
+        <li>Collect 50–100 representative, redacted or synthetic requests.</li>
+        <li>Tag each request by scenario and failure risk.</li>
+        <li>Define the output schema and version it.</li>
+        <li>Write a quality rubric with explicit pass and critical-error rules.</li>
+        <li>Fix model, prompt, schema, decoding, timeout, and retry configuration.</li>
+        <li>Run every candidate on the same examples.</li>
+        <li>Store raw outputs, validation results, quality scores, usage, and latency.</li>
+        <li>Inspect failures and report results by scenario, not only as one average.</li>
+        <li>Choose the model that meets the required quality and reliability constraints within the cost and latency budget.</li>
+        <li>Keep the set private, versioned, and updated as the real workload changes.</li>
+      </ol>
+
+      <p>
+        Public rankings are useful for discovering candidates. A private evaluation set is what lets you defend a model choice against the requests your system actually receives.
+      </p>
+
+      <p class="reading-next">
+        Continue with <a href="guides.html">all guides</a> or look up terms in the <a href="../glossary.html">glossary</a>.
+      </p>
+    <section class="service-note">
+  <b>We publish what works for us—and implement the same solutions for your business.</b>
+  We design AI automation, Telegram bots, chats, and AI agents for real-world processes.
+  <a href="../contacts-en.html">Discuss your project →</a>
+</section>
+</article>
+  </main>
+
+  <footer class="site-footer">
+    <div class="site-footer__inner">
+      <span>Agent Lab Journal</span>
+      <nav aria-label="Footer navigation">
+        <a href="guides.html">Guides</a>
+        <a href="../glossary.html">Glossary</a>
+      </nav>
+    </div>
+  </footer>
+</body>
+</html>
