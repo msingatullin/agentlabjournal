@@ -1,0 +1,791 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>How to Measure and Reduce Position Bias in LLM-as-a-Judge</title>
+  <meta name="description" content="How to Measure and Reduce Position Bias in LLM-as-a-Judge with an order-swapping harness, verdict-flip metrics, tie handling, verification, and practical limitations.">
+  <link rel="canonical" href="https://agentlabjournal.online/en/kak-ubrat-position-bias-iz-llm-as-a-judge.html">
+  <link rel="stylesheet" href="../style.css">
+  <link rel="stylesheet" href="../reading.css">
+
+  <meta property="og:type" content="article">
+  <meta property="og:locale" content="en_US">
+  <meta property="og:title" content="How to Measure and Reduce Position Bias in LLM-as-a-Judge">
+  <meta property="og:description" content="A reproducible method for detecting order effects in LLM evaluation, measuring verdict flips, and treating disputed pairs as ties.">
+  <meta property="og:url" content="https://agentlabjournal.online/en/kak-ubrat-position-bias-iz-llm-as-a-judge.html">
+  <meta property="og:image" content="https://agentlabjournal.online/assets/covers/llm-context-window-budget-social.png">
+
+  <meta name="twitter:card" content="summary_large_image">
+  <meta name="twitter:title" content="How to Measure and Reduce Position Bias in LLM-as-a-Judge">
+  <meta name="twitter:description" content="A reproducible harness for measuring and reducing position bias in LLM-as-a-Judge.">
+  <meta name="twitter:image" content="https://agentlabjournal.online/assets/covers/llm-context-window-budget-social.png">
+
+  <meta name="reading-time" content="60 minutes">
+  <meta name="reading-level" content="Advanced">
+  <meta name="article:section" content="Evaluation">
+  <meta name="article:modified_time" content="2026-11-25">
+
+  <script type="application/ld+json">
+  {
+    "@context": "https://schema.org",
+    "@type": "Article",
+    "headline": "How to Measure and Reduce Position Bias in LLM-as-a-Judge",
+    "description": "A reproducible method for detecting order effects in LLM evaluation, measuring verdict flips, and treating disputed pairs as ties.",
+    "image": ["https://agentlabjournal.online/assets/covers/llm-context-window-budget-social.png"],
+    "dateModified": "2026-11-25",
+    "author": {
+      "@type": "Organization",
+      "name": "Agent Lab Journal"
+    },
+    "publisher": {
+      "@type": "Organization",
+      "name": "Agent Lab Journal"
+    },
+    "mainEntityOfPage": {
+      "@type": "WebPage",
+      "@id": "https://agentlabjournal.online/en/kak-ubrat-position-bias-iz-llm-as-a-judge.html"
+    }
+  }
+  </script>
+<link rel="stylesheet" href="../homepage.css"><link rel="stylesheet" href="../max-promo.css">  <meta property="og:image:alt" content="Как измерить и уменьшить position bias в LLM-as-a-judge">
+</head>
+<body>
+  <header class="site-header">
+    <div class="container">
+      <a class="site-brand" href="../index.html">Agent Lab Journal</a>
+      <nav aria-label="Primary navigation">
+        <a href="../guides.html">Guides</a>
+        <a href="../glossary.html">Glossary</a>
+      </nav>
+    </div>
+  </header>
+
+  <main>
+    <article class="reading">
+      <header class="reading-header">
+        <p class="reading-kicker">Evaluation · Advanced · 60-minute read</p>
+        <h1>How to Measure and Reduce Position Bias in LLM-as-a-Judge</h1>
+        <figure class="article-cover" data-editorial-cover="kak-ubrat-position-bias-iz-llm-as-a-judge"><img src="../assets/covers/llm-context-window-budget.png" alt="Как измерить и уменьшить position bias в LLM-as-a-judge" width="1280" height="720" fetchpriority="high"><figcaption>Temporary fallback cover; replace in editorial pass.</figcaption></figure>
+        <p class="reading-dek">
+          If an evaluator sees answer A before answer B, does it still choose A when the order is reversed?
+          This guide builds a reproducible harness that swaps answer order, measures verdict flips, and treats
+          disputed pairs as ties instead of pretending the evidence is decisive.
+        </p>
+        <div class="reading-meta">
+          <span>Updated 25 November 2026</span>
+          <span>By Agent Lab Journal</span>
+          <span>Advanced</span>
+          <span>60 minutes</span>
+        </div>
+      </header>
+
+      <aside class="reading-callout">
+        <strong>Expected result:</strong> You will have an evaluation harness that runs each comparison in both
+        orders, records raw judge outputs, normalizes verdicts, calculates order sensitivity, and excludes
+        unresolved reversals from win-rate claims by scoring them as ties.
+      </aside>
+
+      <section>
+        <h2>The problem: a judge can evaluate order, not quality</h2>
+
+        <p>
+          An <a href="../glossary.html#llm-as-a-judge">LLM-as-a-Judge</a> is a language model used to assess
+          another model’s output. It is attractive because it is faster and cheaper to scale than human review,
+          and because a natural-language rubric can cover dimensions that are difficult to encode as simple tests.
+          But a judge does not observe “quality” directly. It observes a prompt, two candidate answers, a rubric,
+          and the order in which those candidates were presented.
+        </p>
+
+        <p>
+          <a href="../glossary.html#position-bias">Position bias</a> is the tendency to prefer an answer because of
+          its displayed position, such as first or second, rather than because of its content. The practical risk
+          is easy to state: if the judge selects answer A in one presentation and answer B after the same answers
+          are swapped, the comparison is not stable enough to support a clean win for either answer.
+        </p>
+
+        <p>
+          This does not prove that the judge is useless. It proves that the evaluation protocol contains another
+          variable. The order of presentation must be measured, reported, and controlled before aggregate rankings
+          are trusted.
+        </p>
+      </section>
+
+      <section>
+        <h2>A concrete case</h2>
+
+        <p>
+          Suppose you are comparing two answers to the same customer-support question. Answer A is concise and
+          gives a safe next step. Answer B is longer, includes a plausible explanation, but buries the next step
+          near the end. You ask a judge to choose the better answer.
+        </p>
+
+        <pre><code>Original order:
+  Answer A: concise recommendation
+  Answer B: detailed explanation
+  Judge verdict: A
+
+Swapped order:
+  Answer B: detailed explanation
+  Answer A: concise recommendation
+  Judge verdict: A</code></pre>
+
+        <p>
+          The second verdict still names the same underlying answer, so this pair is order-consistent. Now consider
+          the following result:
+        </p>
+
+        <pre><code>Original order:
+  Answer A: concise recommendation
+  Answer B: detailed explanation
+  Judge verdict: A
+
+Swapped order:
+  Answer B: detailed explanation
+  Answer A: concise recommendation
+  Judge verdict: B</code></pre>
+
+        <p>
+          If the judge’s “B” means the first displayed answer, the underlying answer selected in both runs is
+          actually Answer B. If “B” means the answer with the stable candidate identifier, the result is different.
+          This is why the harness must preserve stable candidate IDs and separately record displayed positions.
+          A letter in a model response is not a reliable data model.
+        </p>
+
+        <p>
+          The correct unit of analysis is the pair of runs for one comparison, with the same prompt, rubric,
+          candidate texts, model configuration, and candidate identities. Only the display order should change.
+        </p>
+      </section>
+
+      <section>
+        <h2>Define the measurement before calling the judge</h2>
+
+        <p>
+          Start with an explicit comparison record. Each row should identify the task, the two candidate answers,
+          and the exact configuration used for both runs.
+        </p>
+
+        <pre><code>{
+  "pair_id": "support-0042",
+  "task_id": "support-0042",
+  "prompt": "How should a user rotate an exposed API key?",
+  "rubric_version": "support-v3",
+  "candidate_a": {
+    "id": "model-x",
+    "text": "..."
+  },
+  "candidate_b": {
+    "id": "model-y",
+    "text": "..."
+  },
+  "judge_model": "judge-model-id",
+  "temperature": 0,
+  "seed": 17
+}</code></pre>
+
+        <p>
+          The example values are placeholders, not verified recommendations. Replace them with values supported by
+          your provider and record the actual model identifier, sampling parameters, system prompt, rubric version,
+          retry policy, and timestamp. If the provider does not guarantee a seed, do not describe the run as
+          deterministic.
+        </p>
+
+        <p>
+          Use stable IDs such as <code>model-x</code> and <code>model-y</code>. Do not infer identity from the
+          answer text, output letter, or position. For each run, store both the displayed order and the normalized
+          choice.
+        </p>
+
+        <table>
+          <caption>Minimum fields for one paired comparison</caption>
+          <thead>
+            <tr>
+              <th>Field</th>
+              <th>Purpose</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td><code>pair_id</code></td>
+              <td>Joins the original and swapped runs.</td>
+            </tr>
+            <tr>
+              <td><code>display_order</code></td>
+              <td>Records which stable candidate appeared first.</td>
+            </tr>
+            <tr>
+              <td><code>raw_output</code></td>
+              <td>Preserves the judge’s complete response for audit.</td>
+            </tr>
+            <tr>
+              <td><code>parsed_choice</code></td>
+              <td>Stores the extracted candidate ID, not only “A” or “B”.</td>
+            </tr>
+            <tr>
+              <td><code>parse_status</code></td>
+              <td>Separates valid verdicts from ambiguous or malformed outputs.</td>
+            </tr>
+            <tr>
+              <td><code>request_fingerprint</code></td>
+              <td>Helps verify that only candidate order changed.</td>
+            </tr>
+          </tbody>
+        </table>
+      </section>
+
+      <section>
+        <h2>The paired swap design</h2>
+
+        <p>
+          For every pair, issue two requests:
+        </p>
+
+        <ol>
+          <li>Present candidate A first and candidate B second.</li>
+          <li>Present candidate B first and candidate A second.</li>
+        </ol>
+
+        <p>
+          Keep the task prompt, rubric, candidate content, judge model, generation settings, and parser constant.
+          The only intended intervention is the position of the candidates. If the prompt contains phrases such as
+          “the first answer,” update them so they refer to the displayed slots consistently in both runs.
+        </p>
+
+        <p>
+          A useful judge output schema is deliberately small:
+        </p>
+
+        <pre><code>{
+  "winner_id": "model-x",
+  "confidence": "high",
+  "reason": "..."
+}</code></pre>
+
+        <p>
+          Treat <code>winner_id</code> as the machine-readable decision and <code>reason</code> as diagnostic
+          evidence. Do not let a parser recover a winner from a persuasive paragraph when the required field is
+          absent. An invalid or ambiguous output should be recorded as invalid, not silently forced into A or B.
+        </p>
+
+        <p>
+          If structured output is unavailable, require a strict marker such as
+          <code>WINNER_ID=model-x</code>. Still retain the complete raw response. A robust parser should reject
+          multiple markers, unknown IDs, missing markers, and answers that mention a candidate without explicitly
+          selecting it.
+        </p>
+      </section>
+
+      <section>
+        <h2>A minimal harness</h2>
+
+        <p>
+          The following Python-like example shows the protocol. The <code>call_judge</code> function is intentionally
+          left as an adapter because providers expose different APIs. The code is a reproducible reference for data
+          flow and normalization, not a claim that it has been executed here.
+        </p>
+
+        <pre><code>from dataclasses import dataclass
+from hashlib import sha256
+import json
+from typing import Any
+
+@dataclass
+class Candidate:
+    id: str
+    text: str
+
+def fingerprint(request: dict[str, Any]) -&gt; str:
+    payload = json.dumps(request, sort_keys=True, ensure_ascii=False)
+    return sha256(payload.encode("utf-8")).hexdigest()
+
+def build_request(task: dict[str, Any],
+                  first: Candidate,
+                  second: Candidate) -&gt; dict[str, Any]:
+    return {
+        "system": task["judge_system"],
+        "user": {
+            "prompt": task["prompt"],
+            "rubric": task["rubric"],
+            "answer_1": {"id": first.id, "text": first.text},
+            "answer_2": {"id": second.id, "text": second.text},
+            "instruction": (
+                "Return JSON with winner_id, confidence, and reason. "
+                "winner_id must be one of the supplied stable candidate IDs."
+            )
+        },
+        "model": task["judge_model"],
+        "temperature": task["temperature"],
+        "seed": task.get("seed")
+    }
+
+def parse_result(raw: dict[str, Any],
+                 candidate_ids: set[str]) -&gt; dict[str, Any]:
+    # Do not infer identity from answer_1/answer_2 after this point.
+    winner = raw.get("winner_id")
+    if winner not in candidate_ids:
+        return {
+            "parse_status": "invalid",
+            "winner_id": None
+        }
+
+    return {
+        "parse_status": "valid",
+        "winner_id": winner,
+        "confidence": raw.get("confidence"),
+        "reason": raw.get("reason", "")
+    }
+
+def evaluate_pair(task: dict[str, Any],
+                  a: Candidate,
+                  b: Candidate) -&gt; dict[str, Any]:
+    runs = []
+
+    for order, first, second in [
+        ("a_first", a, b),
+        ("b_first", b, a)
+    ]:
+        request = build_request(task, first, second)
+        raw = call_judge(request)  # provider-specific adapter
+        parsed = parse_result(raw, {a.id, b.id})
+
+        runs.append({
+            "pair_id": task["pair_id"],
+            "display_order": order,
+            "first_id": first.id,
+            "second_id": second.id,
+            "request_fingerprint": fingerprint(request),
+            "raw_output": raw,
+            **parsed
+        })
+
+    valid = [r for r in runs if r["parse_status"] == "valid"]
+
+    if len(valid) != 2:
+        pair_verdict = "invalid"
+    elif valid[0]["winner_id"] == valid[1]["winner_id"]:
+        pair_verdict = "stable"
+    else:
+        pair_verdict = "disputed_tie"
+
+    return {
+        "pair_id": task["pair_id"],
+        "runs": runs,
+        "pair_verdict": pair_verdict
+    }</code></pre>
+
+        <p>
+          Two implementation details matter. First, the parser returns stable IDs, so a verdict remains comparable
+          after swapping display positions. Second, the pair verdict is computed only after both runs are available.
+          Do not aggregate the first run immediately and “correct” it later; that makes partial data easy to
+          misinterpret.
+        </p>
+      </section>
+
+      <section>
+        <h2>Metrics that expose order sensitivity</h2>
+
+        <h3>1. Valid-pair rate</h3>
+
+        <p>
+          Before measuring bias, measure whether the harness can produce valid paired decisions:
+        </p>
+
+        <pre><code>valid_pair_rate =
+  pairs_with_two_valid_runs / all_attempted_pairs</code></pre>
+
+        <p>
+          A low valid-pair rate is a protocol problem. It may indicate an unreliable schema, an overly complex
+          rubric, model refusal behavior, truncation, or a parser defect. Do not hide invalid pairs by assigning
+          them a winner.
+        </p>
+
+        <h3>2. Verdict-flip rate</h3>
+
+        <p>
+          A <a href="../glossary.html#verdict-flip">verdict flip</a> occurs when the normalized winner changes after
+          the candidate order changes:
+        </p>
+
+        <pre><code>flip_rate =
+  disputed_pairs / pairs_with_two_valid_runs</code></pre>
+
+        <p>
+          This is the most direct answer to the question “does the judge choose the same underlying answer in both
+          orders?” A disputed pair should be treated as a tie for ranking purposes. It can remain visible in a
+          separate diagnostic count.
+        </p>
+
+        <h3>3. First-position selection rate</h3>
+
+        <p>
+          To detect a directional preference, count how often the judge selects the candidate shown first:
+        </p>
+
+        <pre><code>first_position_rate =
+  first_position_wins / all_valid_runs</code></pre>
+
+        <p>
+          A rate above or below the midpoint can signal position preference, but it is not sufficient by itself.
+          Candidate quality may be correlated with the order assignment, especially if the randomization is faulty.
+          Report the assignment balance and calculate this metric on a balanced set.
+        </p>
+
+        <h3>4. Stable win rate</h3>
+
+        <p>
+          If disputed pairs become ties, the stable win rate for candidate A can be calculated as:
+        </p>
+
+        <pre><code>stable_win_rate_A =
+  stable_pairs_won_by_A /
+  (stable_pairs_won_by_A + stable_pairs_won_by_B + disputed_pairs)</code></pre>
+
+        <p>
+          This convention gives a disputed pair zero wins for both candidates. It is conservative: uncertain
+          comparisons reduce the amount of evidence for a ranking instead of manufacturing a winner. If you also
+          publish a conditional rate among stable pairs, label it clearly:
+        </p>
+
+        <pre><code>conditional_win_rate_A =
+  stable_pairs_won_by_A /
+  (stable_pairs_won_by_A + stable_pairs_won_by_B)</code></pre>
+
+        <p>
+          Never present the conditional rate without the number of disputed pairs. A candidate can appear dominant
+          among stable pairs while the majority of all comparisons remain unresolved.
+        </p>
+      </section>
+
+      <section>
+        <h2>Confidence intervals and uncertainty</h2>
+
+        <p>
+          A point estimate such as “the flip rate is 8%” does not communicate how much data supports it. For a
+          proportion, report the numerator, denominator, and an uncertainty interval. A
+          <a href="../glossary.html#confidence-interval">confidence interval</a> can be calculated with an exact
+          binomial method or a suitable interval estimator.
+        </p>
+
+        <p>
+          For paired evaluation, resample complete pairs rather than individual runs. The two orders are dependent
+          observations from the same comparison; splitting them during resampling breaks the design.
+        </p>
+
+        <pre><code>for each bootstrap replicate:
+  sample pair records with replacement
+  recompute:
+    valid_pair_rate
+    flip_rate
+    first_position_rate
+    stable_win_rate
+take the requested percentile range</code></pre>
+
+        <p>
+          If you use a statistical library, record its version and interval method in the experiment metadata.
+          Do not call a bootstrap interval “proof” that the judge is unbiased. It only quantifies sampling
+          uncertainty under the assumptions of the resampling procedure.
+        </p>
+
+        <p>
+          The unit of sampling also matters. If many pairs come from the same task template, sampling individual
+          pairs can make the interval look narrower than the variation across tasks. For a broader estimate, consider
+          a hierarchical analysis or cluster resampling by task family. State which unit you used.
+        </p>
+      </section>
+
+      <section>
+        <h2>Make the randomization auditable</h2>
+
+        <p>
+          Randomization is useful only when it is real and inspectable. Generate an assignment plan before calling
+          the judge and save it with the run:
+        </p>
+
+        <pre><code>pair_id,first_id,second_id
+support-0001,model-x,model-y
+support-0002,model-y,model-x
+support-0003,model-x,model-y</code></pre>
+
+        <p>
+          For a balanced experiment, each candidate should appear first approximately equally often. Exact balance
+          is convenient when the sample size permits it. If a failed request is retried, retry the same assigned
+          order. Do not reroll the order during a retry, or the retry becomes a new experimental condition.
+        </p>
+
+        <p>
+          Save a content fingerprint for the rendered request. After both runs finish, compare fingerprints of the
+          non-order fields or store a canonical request representation with candidate positions removed. This catches
+          accidental changes such as a different rubric version, truncation, system prompt, or answer text.
+        </p>
+      </section>
+
+      <section>
+        <h2>Reducing position bias in the protocol</h2>
+
+        <h3>Use paired order swaps by default</h3>
+
+        <p>
+          The strongest practical control is to evaluate both orders and score only stable pairs as wins. This does
+          not remove the judge’s internal preference, but it prevents one order from silently deciding the result.
+        </p>
+
+        <h3>Ask for criteria before the winner</h3>
+
+        <p>
+          A rubric can ask the judge to assess correctness, completeness, safety, and instruction following before
+          selecting a winner. This makes the decision auditable, but it is not a guarantee against position bias.
+          Criteria can themselves be affected by order, and a confident explanation can rationalize an unstable
+          choice. Measure the paired outcomes anyway.
+        </p>
+
+        <h3>Separate candidate identity from display labels</h3>
+
+        <p>
+          Stable IDs should be opaque enough that they do not communicate rank or source quality. Avoid labels such
+          as <code>best_answer</code>, <code>baseline</code>, or <code>new_model</code> if they could influence the
+          judge. Keep display slots generic and map them back to stable IDs in your harness.
+        </p>
+
+        <h3>Use a tie option only with a defined rule</h3>
+
+        <p>
+          A judge may need to declare two answers effectively equivalent. If you allow a direct tie, define whether
+          it is a substantive judgment or an error state. A disputed swap pair is a different kind of tie: it means
+          the protocol did not produce a stable preference. Keep these categories separate in the data even if both
+          contribute zero wins.
+        </p>
+
+        <h3>Repeat only when repetition answers a question</h3>
+
+        <p>
+          Multiple samples per order can help estimate stochastic variability, but they increase cost and complicate
+          the analysis. If you repeat, predefine the aggregation rule. For example, aggregate within each order first,
+          then compare the two order-level decisions. Do not choose the most favorable sample after inspecting the
+          results.
+        </p>
+
+        <h3>Consider independent judges</h3>
+
+        <p>
+          A second judge model can reveal whether the observed order effect is specific to one evaluator. Agreement
+          between judges is not proof of correctness, and disagreement is not proof of bias. Treat judge choice as
+          another experimental factor and report it.
+        </p>
+      </section>
+
+      <section>
+        <h2>Verification checklist</h2>
+
+        <p>
+          Before trusting a report, verify the mechanics rather than reading only the aggregate table.
+        </p>
+
+        <ul>
+          <li>Every completed pair has exactly two intended display orders.</li>
+          <li>The same task prompt and rubric version were used in both runs.</li>
+          <li>Stable candidate IDs are preserved in the raw request and parsed result.</li>
+          <li>The parser rejects unknown, missing, or conflicting winner fields.</li>
+          <li>Retries preserve the original order assignment.</li>
+          <li>First-position assignments are balanced or the imbalance is reported.</li>
+          <li>Raw judge outputs are retained for disputed pairs.</li>
+          <li>Invalid pairs are not silently counted as wins or ties.</li>
+          <li>Disputed pairs are excluded from candidate win totals.</li>
+          <li>Aggregate rates include numerators, denominators, and uncertainty information.</li>
+          <li>The report distinguishes stable wins, disputed ties, direct ties, and invalid outputs.</li>
+        </ul>
+
+        <p>
+          A useful test fixture contains deliberately simple cases: an identical pair, an obviously superior
+          candidate, an order-sensitive mocked judge, an invalid JSON response, an unknown candidate ID, and a
+          retry. The harness should classify each fixture as expected before you run it on real evaluation data.
+        </p>
+      </section>
+
+      <section>
+        <h2>Failure cases that commonly invalidate the result</h2>
+
+        <h3>Parsing the displayed letter as identity</h3>
+
+        <p>
+          If the original run maps A to <code>model-x</code> but the swapped run maps A to
+          <code>model-y</code>, comparing the letters produces a false conclusion. Normalize to stable IDs first.
+        </p>
+
+        <h3>Changing more than order</h3>
+
+        <p>
+          A different system prompt, rubric, answer truncation, or temperature means the two runs are not a clean
+          swap test. Store request metadata and compare the rendered requests.
+        </p>
+
+        <h3>Counting only one side of a disagreement</h3>
+
+        <p>
+          Assigning the first run’s winner to the pair and treating the swapped run as a diagnostic note preserves
+          the original bias. The pair is disputed until the protocol produces a stable decision.
+        </p>
+
+        <h3>Retrying until the preferred answer wins</h3>
+
+        <p>
+          A retry policy that stops when a desired verdict appears is outcome-dependent sampling. Define retry
+          limits and invalid-output handling before looking at results.
+        </p>
+
+        <h3>Using a biased candidate pool</h3>
+
+        <p>
+          If one model’s answers are always shown first, first-position selection rate is confounded with candidate
+          identity. Balance the assignment independently of candidate quality.
+        </p>
+
+        <h3>Overinterpreting confidence fields</h3>
+
+        <p>
+          A judge’s self-reported confidence is an output, not a calibrated probability. A high-confidence reversal
+          is still a reversal. Use the confidence field for stratified diagnostics unless it has been calibrated
+          against an external reference.
+        </p>
+
+        <h3>Assuming order swaps solve every evaluator problem</h3>
+
+        <p>
+          The protocol addresses a specific threat: dependence on display order. It does not detect factual errors,
+          rubric omissions, verbosity preferences, domain blind spots, contamination, prompt sensitivity, or
+          correlated errors between judge and candidate models.
+        </p>
+      </section>
+
+      <section>
+        <h2>A report format readers can audit</h2>
+
+        <p>
+          Publish enough information for another engineer to understand what was measured without exposing private
+          prompts, personal data, secrets, or proprietary answer text. A compact report can include:
+        </p>
+
+        <pre><code>Evaluation:
+  task_families: 4
+  attempted_pairs: 800
+  pairs_with_two_valid_runs: 776
+  assignment:
+    model-x-first: 400
+    model-y-first: 400
+  stable_pairs: 702
+  disputed_pairs: 74
+  direct_ties: 0
+  invalid_pairs: 24
+
+Metrics:
+  valid_pair_rate: 776 / 800
+  flip_rate: 74 / 776
+  first_position_rate: report numerator / denominator
+  stable_win_rate:
+    model-x: report wins / all attempted valid pairs
+    model-y: report wins / all attempted valid pairs
+
+Configuration:
+  judge_model: exact provider model identifier
+  rubric_version: exact version
+  sampling: exact supported settings
+  parser_version: exact code revision
+  interval_method: exact method and parameters</code></pre>
+
+        <p>
+          The numbers in this block are illustrative placeholders only. Replace them with measured values from your
+          own run; do not copy them into a result section. The important property is the separation of attempted,
+          valid, stable, disputed, direct-tie, and invalid records.
+        </p>
+      </section>
+
+      <section>
+        <h2>Interpreting the outcome</h2>
+
+        <p>
+          There is no universal flip-rate threshold at which an evaluator becomes acceptable. The tolerance depends
+          on the decision being made. A small order effect may be material when two models are close and the ranking
+          will trigger a release decision. A larger effect may be tolerable for exploratory triage if every conclusion
+          is labeled provisional.
+        </p>
+
+        <p>
+          Compare the measured order sensitivity with the margin you are trying to claim. If candidate A wins only
+          slightly more stable pairs than candidate B, but the disputed-pair rate is large, the honest conclusion is
+          that the comparison is unresolved. More judge calls do not automatically fix a systematic protocol flaw.
+        </p>
+
+        <p>
+          A good operational rule is to gate claims on stability: publish a candidate ranking only when the stable
+          evidence is sufficient for the decision, the disputed fraction is visible, and the result survives the
+          predefined checks. Otherwise, report a tie or collect better evidence.
+        </p>
+      </section>
+
+      <section>
+        <h2>Limitations and extensions</h2>
+
+        <p>
+          The paired swap design controls one variable at a time. It does not establish that the judge’s preferences
+          match human preferences. Human adjudication on a sampled set remains useful for checking validity, while
+          the swap harness checks order sensitivity.
+        </p>
+
+        <p>
+          For tasks with more than two candidates, pairwise comparisons multiply quickly. You can use a tournament
+          or sampled pair design, but define how disputed pairs affect the final ranking. A ranking algorithm that
+          discards ties may reintroduce overconfidence downstream.
+        </p>
+
+        <p>
+          Position can also operate at more than one level. The judge may prefer the first answer, the first
+          explanation, the first criterion mentioned, or the first tool result in a longer context. If the real
+          system has multiple ordered components, design additional permutations rather than assuming a two-answer
+          swap captures every order effect.
+        </p>
+
+        <p>
+          Finally, provider-side nondeterminism can produce different decisions even when order is unchanged. If that
+          matters, add repeated same-order runs and estimate stochastic variability separately. Do not label every
+          change across requests a position effect.
+        </p>
+      </section>
+
+      <section>
+        <h2>Takeaway</h2>
+
+        <p>
+          To measure and reduce position bias in LLM-as-a-Judge, make answer order an explicit experimental factor.
+          Run both orders, preserve stable candidate IDs, parse strictly, join the paired runs, and count a
+          disagreement as a disputed tie. Report invalid outputs and uncertainty instead of hiding them inside a
+          single win rate.
+        </p>
+
+        <p>
+          The resulting ranking may contain fewer decisive wins. That is a feature: the evaluation now distinguishes
+          evidence of quality from evidence that the judge changed its mind when the layout changed.
+        </p>
+      </section>
+
+      <nav class="reading-next" aria-label="Further reading">
+        <p>Continue with the site's <a href="../guides.html">guides</a> or look up evaluation terms in the <a href="../glossary.html">glossary</a>.</p>
+      </nav>
+    <section class="service-note">
+  <b>We publish what works for us—and implement the same solutions for your business.</b>
+  We design AI automation, Telegram bots, chats, and AI agents for real-world processes.
+  <a href="../contacts-en.html">Discuss your project →</a>
+</section>
+</article>
+  </main>
+
+  <footer class="site-footer">
+    <div class="container">
+      <p>© Agent Lab Journal</p>
+      <nav aria-label="Footer navigation">
+        <a href="../guides.html">Guides</a>
+        <a href="../glossary.html">Glossary</a>
+      </nav>
+    </div>
+  </footer>
+</body>
+</html>

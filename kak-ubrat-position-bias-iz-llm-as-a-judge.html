@@ -1,0 +1,477 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Как измерить и уменьшить position bias в LLM-as-a-judge</title>
+  <meta name="description" content="Как измерить и уменьшить position bias в LLM-as-a-judge: воспроизводимый стенд, перестановка ответов, подсчёт переворотов вердиктов и обработка спорных пар как ничьей.">
+  <link rel="canonical" href="https://agentlabjournal.online/kak-ubrat-position-bias-iz-llm-as-a-judge.html">
+  <link rel="stylesheet" href="style.css">
+  <link rel="stylesheet" href="reading.css">
+
+  <meta property="og:type" content="article">
+  <meta property="og:locale" content="ru_RU">
+  <meta property="og:title" content="Как измерить и уменьшить position bias в LLM-as-a-judge">
+  <meta property="og:description" content="Практический стенд для проверки того, оценивает ли LLM-as-a-judge качество ответов или предпочитает первый вариант.">
+  <meta property="og:url" content="https://agentlabjournal.online/kak-ubrat-position-bias-iz-llm-as-a-judge.html">
+
+  <meta name="twitter:card" content="summary">
+  <meta name="twitter:title" content="Как измерить и уменьшить position bias в LLM-as-a-judge">
+  <meta name="twitter:description" content="Перестановка ответов, метрика переворотов и безопасная обработка спорных пар в LLM-as-a-judge.">
+<link rel="stylesheet" href="homepage.css"><link rel="stylesheet" href="max-promo.css">  <meta property="og:image" content="https://agentlabjournal.online/assets/covers/llm-context-window-budget-social.png">
+  <meta property="og:image:alt" content="Как измерить и уменьшить position bias в LLM-as-a-judge">
+  <meta name="twitter:image" content="https://agentlabjournal.online/assets/covers/llm-context-window-budget-social.png">
+</head>
+<body>
+  <header class="site-header">
+    <div class="container">
+      <a class="site-brand" href="index.html">Agent Lab Journal</a>
+      <nav aria-label="Основная навигация">
+        <a href="guides.html">Гайды</a>
+        <a href="glossary.html">Глоссарий</a>
+      </nav>
+    </div>
+  </header>
+
+  <main>
+    <article class="reading">
+      <header class="reading-header">
+        <p class="reading-kicker">Evaluation · LLM-as-a-judge</p>
+        <h1>Как измерить и уменьшить position bias в LLM-as-a-judge</h1>
+        <figure class="article-cover" data-editorial-cover="kak-ubrat-position-bias-iz-llm-as-a-judge"><img src="assets/covers/llm-context-window-budget.png" alt="Как измерить и уменьшить position bias в LLM-as-a-judge" width="1280" height="720" fetchpriority="high"><figcaption>Temporary fallback cover; replace in editorial pass.</figcaption></figure>
+        <div class="reading-meta">
+          <span>Продвинутый уровень</span>
+          <span>До 12 минут</span>
+          <span>Практический стенд</span>
+        </div>
+      </header>
+<a href="https://max.ru/channel_AgentLab?utm_source=agentlabjournal&utm_medium=article&utm_campaign=max_channel&utm_content=article_footer" class="max-promo-block" target="_blank" rel="noopener noreferrer" aria-label="Самое важное из мира AI в канале MAX AgentLab">
+  <span class="max-promo-block__icon" aria-hidden="true"></span>
+  <span class="max-promo-block__content"><span class="max-promo-block__title">Самое важное из мира AI — в канале MAX AgentLab</span><span class="max-promo-block__desc">Отдельные разборы, инструменты и практические схемы</span></span>
+  <span class="max-promo-block__arrow" aria-hidden="true">→</span>
+</a>
+<a href="https://t.me/pelmenews?utm_source=agentlabjournal&utm_medium=article&utm_campaign=telegram_channel&utm_content=article_intro" class="telegram-promo-block" target="_blank" rel="noopener noreferrer" aria-label="Читайте Agent Lab в Telegram">
+  <span class="telegram-promo-block__icon" aria-hidden="true"></span>
+  <span class="telegram-promo-block__content">
+    <span class="telegram-promo-block__title">Читайте Agent Lab в Telegram</span>
+    <span class="telegram-promo-block__desc">Разборы, кейсы и новости о практических AI-агентах без лишней воды.</span>
+  </span>
+  <span class="telegram-promo-block__arrow" aria-hidden="true">→</span>
+</a>
+
+      <p class="lead">
+        <a href="glossary.html#position-bias">Position bias</a> — это систематическое предпочтение ответа из-за его позиции в запросе, а не из-за качества. В парном сравнении проблема проявляется особенно неприятно: модель выбирает ответ A, но после простой перестановки тех же ответов выбирает уже ответ B.
+      </p>
+
+      <p>
+        Ниже — минимальный тестовый стенд без привязки к конкретному провайдеру. Он дважды отправляет одну и ту же пару ответов: сначала в порядке A/B, затем в порядке B/A. Если итоговое предпочтение не сохраняется, пара считается спорной и превращается в ничью. Это позволяет не выдавать нестабильный вердикт за надёжный сигнал качества.
+      </p>
+
+      <h2>Что именно измеряем</h2>
+
+      <p>
+        Пусть судья сравнивает ответы <code>a</code> и <code>b</code>. Обозначим его решение в исходном порядке как <code>r₁</code>, а решение после перестановки — как <code>r₂</code>. После восстановления исходных имён ответов получаем четыре случая:
+      </p>
+
+      <table>
+        <thead>
+          <tr>
+            <th>Исходный вердикт</th>
+            <th>Вердикт после перестановки</th>
+            <th>Итог</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>A лучше B</td>
+            <td>A лучше B</td>
+            <td>Стабильная победа A</td>
+          </tr>
+          <tr>
+            <td>B лучше A</td>
+            <td>B лучше A</td>
+            <td>Стабильная победа B</td>
+          </tr>
+          <tr>
+            <td>A лучше B</td>
+            <td>B лучше A</td>
+            <td>Переворот, итог — ничья</td>
+          </tr>
+          <tr>
+            <td>Ничья</td>
+            <td>Любой результат</td>
+            <td>Ничья</td>
+          </tr>
+        </tbody>
+      </table>
+
+      <p>
+        Основная диагностическая метрика — доля переворотов среди пар, где оба запуска дали противоположные строгие вердикты:
+      </p>
+
+      <p class="formula">
+        <code>flip_rate = число переворотов / число пар с двумя строгими вердиктами</code>
+      </p>
+
+      <p>
+        Для принятия решений полезнее смотреть не только на среднее значение, но и на разрезы: по типу задания, длине ответа, языку, модели-судье и температуре. Смешивание всех пар в одну цифру может скрыть bias только на длинных или только на англоязычных ответах.
+      </p>
+
+      <h2>Формат входных данных</h2>
+
+      <p>
+        Создайте файл <code>pairs.jsonl</code>. Одна строка — одна пара ответов. Поле <code>id</code> нужно для трассировки, а <code>criteria</code> должно содержать те же критерии, которые используются в вашей реальной оценке.
+      </p>
+
+      <pre><code>{"id":"case-001","question":"Объясните идемпотентность HTTP-запросов.","criteria":["точность","полнота","ясность"],"a":"Идемпотентный запрос можно повторить без дополнительного изменения результата на сервере.","b":"Идемпотентность означает, что запрос всегда выполняется быстрее при повторе."}
+{"id":"case-002","question":"Предложите способ проверить утечку данных в логах.","criteria":["безопасность","практичность","полнота"],"a":"Нужно искать секреты по регулярным выражениям и проверить выборку логов вручную.","b":"Нужно определить источники логов, применить обнаружение секретов, проверить false positive и ограничить доступ к результатам."}</code></pre>
+
+      <h2>Контракт адаптера судьи</h2>
+
+      <p>
+        Чтобы стенд не зависел от SDK конкретной модели, вынесем вызов судьи в отдельную команду. Стенд передаёт ей JSON через стандартный ввод. Адаптер обязан вернуть один JSON-объект:
+      </p>
+
+      <pre><code>{"winner":"A","reason":"Короткое обоснование"}
+{"winner":"B","reason":"Короткое обоснование"}
+{"winner":"tie","reason":"Ответы сопоставимы или различие недостаточно убедительно"}</code></pre>
+
+      <p>
+        Значение <code>winner</code> должно быть ровно одним из <code>A</code>, <code>B</code> или <code>tie</code>. В промпте адаптера важно явно объяснить, что A и B — это метки текущих позиций, а не постоянные имена кандидатов.
+      </p>
+
+      <h2>Стенд перестановки</h2>
+
+      <p>
+        Сохраните следующий файл как <code>position_bias_check.py</code>. Он не выполняет shell-команду через оболочку: команда разбирается через <code>shlex.split</code>, а запуск идёт с ограничением времени. Это снижает риск случайного исполнения содержимого входного файла.
+      </p>
+
+      <pre><code>#!/usr/bin/env python3
+import argparse
+import json
+import shlex
+import subprocess
+import sys
+from pathlib import Path
+
+
+def run_judge(command, payload, timeout):
+    completed = subprocess.run(
+        command,
+        input=json.dumps(payload, ensure_ascii=False) + "\n",
+        text=True,
+        capture_output=True,
+        timeout=timeout,
+        check=False,
+    )
+
+    if completed.returncode != 0:
+        raise RuntimeError(
+            f"judge exited with {completed.returncode}: "
+            f"{completed.stderr.strip()}"
+        )
+
+    try:
+        result = json.loads(completed.stdout)
+    except json.JSONDecodeError as exc:
+        raise RuntimeError("judge returned invalid JSON") from exc
+
+    winner = result.get("winner")
+    if winner not in {"A", "B", "tie"}:
+        raise RuntimeError("winner must be A, B or tie")
+
+    return winner
+
+
+def make_prompt(pair, first, second):
+    criteria = "\n".join(f"- {item}" for item in pair["criteria"])
+
+    return {
+        "system": (
+            "Ты строгий pairwise-judge. Сравни два ответа только по вопросу "
+            "и критериям. Не используй позицию ответа как аргумент. "
+            "Верни JSON с winner: A, B или tie."
+        ),
+        "question": pair["question"],
+        "criteria": criteria,
+        "answer_A": first,
+        "answer_B": second,
+    }
+
+
+def restore_original_labels(winner_after_swap):
+    if winner_after_swap == "A":
+        return "B"
+    if winner_after_swap == "B":
+        return "A"
+    return "tie"
+
+
+def evaluate_pair(pair, command, timeout):
+    first = run_judge(
+        command,
+        make_prompt(pair, pair["a"], pair["b"]),
+        timeout,
+    )
+
+    swapped = run_judge(
+        command,
+        make_prompt(pair, pair["b"], pair["a"]),
+        timeout,
+    )
+
+    second_in_original_labels = restore_original_labels(swapped)
+
+    if first == "tie" or second_in_original_labels == "tie":
+        outcome = "tie"
+        flip = False
+    elif first == second_in_original_labels:
+        outcome = first
+        flip = False
+    else:
+        outcome = "tie"
+        flip = True
+
+    return {
+        "id": pair["id"],
+        "first": first,
+        "after_swap_in_original_labels": second_in_original_labels,
+        "outcome": outcome,
+        "flip": flip,
+    }
+
+
+def main():
+    parser = argparse.ArgumentParser()
+    parser.add_argument("input", type=Path)
+    parser.add_argument("--judge-cmd", required=True)
+    parser.add_argument("--timeout", type=float, default=60)
+    args = parser.parse_args()
+
+    command = shlex.split(args.judge_cmd)
+    results = []
+    strict_pairs = 0
+    flips = 0
+
+    with args.input.open(encoding="utf-8") as stream:
+        for line_number, line in enumerate(stream, start=1):
+            if not line.strip():
+                continue
+
+            try:
+                pair = json.loads(line)
+                result = evaluate_pair(pair, command, args.timeout)
+            except Exception as exc:
+                print(
+                    f"line {line_number}: {exc}",
+                    file=sys.stderr,
+                )
+                raise SystemExit(1)
+
+            results.append(result)
+
+            if result["first"] != "tie" and (
+                result["after_swap_in_original_labels"] != "tie"
+            ):
+                strict_pairs += 1
+
+            if result["flip"]:
+                flips += 1
+
+    for result in results:
+        print(json.dumps(result, ensure_ascii=False))
+
+    flip_rate = flips / strict_pairs if strict_pairs else 0.0
+    summary = {
+        "pairs": len(results),
+        "strict_pairs": strict_pairs,
+        "flips": flips,
+        "flip_rate": round(flip_rate, 4),
+        "stable_or_tie_outcomes": sum(
+            result["outcome"] in {"A", "B", "tie"}
+            for result in results
+        ),
+    }
+
+    print(
+        json.dumps({"summary": summary}, ensure_ascii=False),
+        file=sys.stderr,
+    )
+
+
+if __name__ == "__main__":
+    main()</code></pre>
+
+      <h2>Как запустить проверку</h2>
+
+      <p>
+        Команда ниже предполагает, что рядом находится ваш адаптер <code>judge_adapter.py</code>, который читает один JSON из stdin и печатает один JSON в stdout.
+      </p>
+
+      <pre><code>python3 position_bias_check.py pairs.jsonl \
+  --judge-cmd "python3 judge_adapter.py" \
+  --timeout 60</code></pre>
+
+      <p>
+        Результаты по парам будут выведены в stdout. Итоговая строка появится в stderr и выглядит примерно так:
+      </p>
+
+      <pre><code>{"summary":{"pairs":2,"strict_pairs":2,"flips":1,"flip_rate":0.5,"stable_or_tie_outcomes":2}}</code></pre>
+
+      <p>
+        Это иллюстрация формата, а не измеренный результат конкретной модели. В реальном запуске число зависит от набора пар, промпта, параметров генерации и реализации адаптера.
+      </p>
+
+      <h2>Как интерпретировать результат</h2>
+
+      <p>
+        Нулевая доля переворотов не доказывает отсутствие position bias: судья может стабильно выбирать первый ответ, если пары случайно устроены так, что первый действительно чаще лучше. Поэтому перестановку нужно сочетать с независимой проверкой качества и с балансировкой данных.
+      </p>
+
+      <p>
+        Практическая диагностика выглядит так:
+      </p>
+
+      <ul>
+        <li>сравните долю побед A и B в исходном порядке;</li>
+        <li>посмотрите flip rate по категориям задач;</li>
+        <li>проверьте, не растёт ли нестабильность на длинных ответах;</li>
+        <li>сравните вердикты с человеческой разметкой на небольшой контрольной выборке;</li>
+        <li>отдельно посчитайте долю ничьих после применения правила перестановки.</li>
+      </ul>
+
+      <p>
+        Если A выигрывает заметно чаще B, а при перестановке появляется много переворотов, это сильный сигнал позиционной зависимости. Если переворотов мало, но корреляция с человеческой оценкой низкая, проблема, вероятно, не в позиции, а в критериях, промпте или способности судьи оценивать предметную область.
+      </p>
+
+      <h2>Как уменьшить position bias</h2>
+
+      <h3>1. Делайте обязательную перестановку</h3>
+
+      <p>
+        Для каждой пары запускайте обе конфигурации и агрегируйте только восстановленные исходные метки. Один запуск дешевле, но он не позволяет отличить качество ответа от эффекта позиции.
+      </p>
+
+      <h3>2. Используйте симметричный промпт</h3>
+
+      <p>
+        Не называйте варианты «эталонным» и «кандидатским», если это не отражает вашу задачу. Формулировки должны быть одинаковыми для A и B. Критерии лучше перечислять до ответов, чтобы судья применял их к обоим вариантам.
+      </p>
+
+      <h3>3. Запрещайте аргумент «первый лучше»</h3>
+
+      <p>
+        Это не устранит bias само по себе, но уменьшит вероятность, что модель легализует его в объяснении. В адаптере требуйте сначала внутренне сравнить ответы по критериям, а затем вернуть структурированный результат.
+      </p>
+
+      <h3>4. Считайте спорные пары ничьёй</h3>
+
+      <p>
+        Если строгий вердикт меняется после перестановки, не выбирайте победителя случайным образом. Ничья честнее: она сохраняет информацию о нестабильности и не загрязняет рейтинг кандидатов ложным преимуществом.
+      </p>
+
+      <h3>5. Не полагайтесь на объяснение как на доказательство</h3>
+
+      <p>
+        Судья может привести убедительную причину уже после случайного выбора. Анализируйте структурированное поле <code>winner</code>, а объяснения используйте для аудита отдельных случаев.
+      </p>
+
+      <h3>6. Контролируйте генерацию</h3>
+
+      <p>
+        Зафиксируйте модель, версию промпта, температуру и остальные параметры. При наличии seed сохраните его, но не считайте детерминированность доказательством корректности: одинаково воспроизводимая ошибка всё равно остаётся ошибкой.
+      </p>
+
+      <h2>Типовые ошибки</h2>
+
+      <ul>
+        <li><strong>Неправильное восстановление меток.</strong> После swap победитель A означает победу исходного B, а победитель B — исходного A.</li>
+        <li><strong>Смешивание ничьих и переворотов.</strong> Ничья в одном из запусков — это неопределённость, а не строгий flip.</li>
+        <li><strong>Одинаковый текст ответа в обеих позициях.</strong> Такие пары не тестируют позиционную зависимость.</li>
+        <li><strong>Неравноценные пары.</strong> Если один ответ очевидно лучше почти во всех случаях, отсутствие переворота ничего не говорит о тонком bias.</li>
+        <li><strong>Промпт, раскрывающий правильный ответ.</strong> Если в нём есть фразы вроде «проверь, почему A лучше», тест становится односторонним.</li>
+        <li><strong>Оценка только по средней доле побед.</strong> Нужны перевороты, ничьи и разрезы по подгруппам.</li>
+        <li><strong>Безлимитный вызов адаптера.</strong> Устанавливайте timeout и обрабатывайте невалидный JSON, чтобы один сбой не создавал бесконечный процесс.</li>
+      </ul>
+
+      <h2>Ограничения метода</h2>
+
+      <p>
+        Парная перестановка измеряет чувствительность к позиции, но не доказывает объективность судьи. Она не заменяет эталонную разметку, проверку фактической точности и анализ соответствия критериям. При высокой случайности модель может давать разные ответы даже без выраженного position bias, поэтому полезно повторять проверку на нескольких независимых запусках.
+      </p>
+
+      <p>
+        Ничья также не всегда означает, что ответы равноценны. В этом стенде она означает более узкое утверждение: по наблюдаемому поведению судьи нельзя надёжно выбрать победителя после перестановки.
+      </p>
+
+      <h2>Минимальный чек-лист перед публикацией метрики</h2>
+
+      <ol>
+        <li>Входные пары сбалансированы по порядку и покрывают реальные типы задач.</li>
+        <li>Адаптер возвращает только допустимые значения <code>A</code>, <code>B</code> или <code>tie</code>.</li>
+        <li>После swap метки корректно возвращаются к исходным ответам.</li>
+        <li>Перевороты считаются отдельно от обычных ничьих.</li>
+        <li>Сохраняются модель, промпт, параметры и версия стенда.</li>
+        <li>В отчёте есть общий результат и разрезы по важным подгруппам.</li>
+        <li>Спорные пары не превращаются в случайного победителя.</li>
+      </ol>
+
+      <p>
+        Дополнительные практические материалы собраны в <a href="guides.html">разделе guides</a>, а определения терминов — в <a href="glossary.html">глоссарии</a>.
+      </p>
+<aside class="service-note" aria-label="Связаться по проекту">
+  <div class="service-note__copy">
+    <p class="service-note__label">Связь с Agent Lab</p>
+    <p class="service-note__title">Внедрим такой контур в ваш процесс</p>
+    <p class="service-note__text">Напишите инженеру Agent Lab в Telegram: опишите задачу, бота или интеграцию — предложим пилот с проверками и понятными границами.</p>
+  </div>
+  <a class="service-note__link" href="https://t.me/msrzn007?utm_source=journal&amp;utm_medium=article&amp;utm_campaign=service_note" target="_blank" rel="noopener">Написать в Telegram
+    <svg viewBox="0 0 16 16" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"><path d="M3 13 13 3M6 3h7v7"/></svg>
+  </a>
+</aside>
+<aside class="service-note service-note--sitevisor" aria-label="Экспресс-аудит сайта">
+  <div class="service-note__copy">
+    <p class="service-note__label">SiteVisor</p>
+    <p class="service-note__title">Проверьте техническое состояние и готовность вашего сайта к рекламе</p>
+    <p class="service-note__text">Экспресс-аудит на SiteVisor.pro: индексация, скорость, разметка, аналитика и точки конверсии.</p>
+  </div>
+  <a class="service-note__link" href="https://sitevisor.pro/?utm_source=journal&amp;utm_medium=article&amp;utm_campaign=leadmagnet" target="_blank" rel="noopener">Экспресс-аудит на SiteVisor.pro
+    <svg viewBox="0 0 16 16" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"><path d="M3 13 13 3M6 3h7v7"/></svg>
+  </a>
+</aside>
+</article>
+  </main>
+
+  <footer class="site-footer">
+    <div class="container">
+      <p>Agent Lab Journal · Практика оценки LLM-систем</p>
+      <nav aria-label="Навигация в подвале">
+        <a href="guides.html">Гайды</a>
+        <a href="glossary.html">Глоссарий</a>
+      </nav>
+    </div>
+  </footer>
+
+  <script type="application/ld+json">
+  {
+    "@context": "https://schema.org",
+    "@type": "Article",
+    "headline": "Как измерить и уменьшить position bias в LLM-as-a-judge",
+    "description": "Практический стенд для проверки position bias в LLM-as-a-judge с перестановкой ответов, подсчётом переворотов и обработкой спорных пар как ничьей.",
+    "inLanguage": "ru-RU",
+    "mainEntityOfPage": {
+      "@type": "WebPage",
+      "@id": "https://agentlabjournal.online/kak-ubrat-position-bias-iz-llm-as-a-judge.html"
+    },
+    "publisher": {
+      "@type": "Organization",
+      "name": "Agent Lab Journal"
+    },
+    "author": {
+      "@type": "Organization",
+      "name": "Agent Lab Journal"
+    }
+  }
+  </script>
+</body>
+</html>
