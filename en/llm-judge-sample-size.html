@@ -1,0 +1,401 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>How Many Labeled Examples Do You Need to Validate an LLM Judge?</title>
+  <meta name="description" content="How Many Labeled Examples Do You Need to Validate an LLM Judge? Learn how to measure agreement with experts using TPR, TNR, bootstrap intervals, and a failure-rich holdout set.">
+  <link rel="canonical" href="https://agentlabjournal.online/en/llm-judge-sample-size.html">
+  <link rel="stylesheet" href="../style.css">
+  <link rel="stylesheet" href="../reading.css">
+
+  <meta property="og:type" content="article">
+  <meta property="og:title" content="How Many Labeled Examples Do You Need to Validate an LLM Judge?">
+  <meta property="og:description" content="A reproducible method for checking whether an LLM judge agrees with experts instead of benefiting from imbalanced data.">
+  <meta property="og:url" content="https://agentlabjournal.online/en/llm-judge-sample-size.html">
+  <meta property="og:image" content="https://agentlabjournal.online/assets/covers/llm-context-window-budget-social.png">
+
+  <meta name="twitter:card" content="summary_large_image">
+  <meta name="twitter:title" content="How Many Labeled Examples Do You Need to Validate an LLM Judge?">
+  <meta name="twitter:description" content="Measure an LLM judge with TPR, TNR, bootstrap confidence intervals, and a failure-rich held-out set.">
+  <meta name="twitter:image" content="https://agentlabjournal.online/assets/covers/llm-context-window-budget-social.png">
+
+  <meta name="reading-time" content="15 minutes">
+  <meta name="article-level" content="advanced">
+  <meta name="article-topic" content="LLM judge validation">
+
+  <script type="application/ld+json">
+  {
+    "@context": "https://schema.org",
+    "@type": "Article",
+    "headline": "How Many Labeled Examples Do You Need to Validate an LLM Judge?",
+    "description": "A reproducible method for checking whether an LLM judge agrees with experts instead of benefiting from imbalanced data.",
+    "image": ["https://agentlabjournal.online/assets/covers/llm-context-window-budget-social.png"],
+    "dateModified": "2026-11-25",
+    "author": {
+      "@type": "Organization",
+      "name": "Agent Lab Journal"
+    },
+    "publisher": {
+      "@type": "Organization",
+      "name": "Agent Lab Journal",
+      "url": "https://agentlabjournal.online/"
+    },
+    "mainEntityOfPage": {
+      "@type": "WebPage",
+      "@id": "https://agentlabjournal.online/en/llm-judge-sample-size.html"
+    }
+  }
+  </script>
+<link rel="stylesheet" href="../homepage.css"><link rel="stylesheet" href="../max-promo.css">  <meta property="og:image:alt" content="Сколько размеченных примеров нужно для проверки LLM-судьи">
+</head>
+
+<body>
+  <header class="site-header">
+    <a href="../index.html">Agent Lab Journal</a>
+    <nav aria-label="Primary navigation">
+      <a href="guides.html">Guides</a>
+      <a href="../glossary.html">Glossary</a>
+    </nav>
+  </header>
+
+  <main>
+    <article class="reading">
+      <header class="reading-header">
+        <p class="reading-kicker">Evaluation · Advanced · 15-minute read</p>
+        <h1>How Many Labeled Examples Do You Need to Validate an LLM Judge?</h1>
+        <figure class="article-cover" data-editorial-cover="llm-judge-sample-size"><img src="../assets/covers/llm-context-window-budget.png" alt="Сколько размеченных примеров нужно для проверки LLM-судьи" width="1280" height="720" fetchpriority="high"><figcaption>Temporary fallback cover; replace in editorial pass.</figcaption></figure>
+        <p class="reading-dek">A judge can look accurate while missing most of the failures that matter. This guide shows how to measure agreement with experts, quantify uncertainty, and design a holdout set that exposes the problem.</p>
+        <p class="reading-meta">Updated November 25, 2026 · Agent Lab Journal</p>
+      </header>
+
+      <p>The short answer is: enough examples to estimate performance separately on acceptable and unacceptable cases. A single accuracy number is rarely enough. If 95% of your evaluation set contains acceptable outputs, a judge that always says “pass” can score 95% while detecting none of the failures.</p>
+
+      <p>Validation should therefore answer two questions:</p>
+
+      <ul>
+        <li>When an expert says an output is a failure, how often does the judge detect it?</li>
+        <li>When an expert says an output is acceptable, how often does the judge leave it alone?</li>
+      </ul>
+
+      <p>Those questions map to <a href="../glossary.html#true-positive-rate">true positive rate (TPR)</a> and <a href="../glossary.html#true-negative-rate">true negative rate (TNR)</a>. The sample size is driven mainly by the precision you need for those two estimates, especially TPR when failures are rare.</p>
+
+      <h2>The concrete case: a judge for support answers</h2>
+
+      <p>Suppose a team uses an LLM judge to flag support answers that contain a material factual error. Human reviewers provide the reference labels. The judge returns either <code>fail</code> or <code>pass</code>.</p>
+
+      <p>The production stream contains mostly acceptable answers. That distribution is useful for estimating how often the judge raises an alert, but it is a poor way to learn whether the judge catches failures. A random sample from production might contain too few failures to produce a stable TPR.</p>
+
+      <p>Instead, create a labeled evaluation set with two deliberate properties:</p>
+
+      <ul>
+        <li>Each item has an expert label established independently of the judge.</li>
+        <li>The held-out portion contains enough real or carefully constructed failures to measure detection performance.</li>
+      </ul>
+
+      <p>“Enough” is not one universal number. It depends on the interval width you can tolerate and on the lowest failure-detection rate that would be acceptable.</p>
+
+      <h2>Start with a two-by-two table</h2>
+
+      <p>For binary evaluation, compare the judge’s decision with the expert label. The resulting <a href="../glossary.html#confusion-matrix">confusion matrix</a> has four cells:</p>
+
+      <table>
+        <caption>Judge decisions compared with expert labels</caption>
+        <thead>
+          <tr>
+            <th scope="col"></th>
+            <th scope="col">Expert: failure</th>
+            <th scope="col">Expert: acceptable</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <th scope="row">Judge: fail</th>
+            <td>True positive (TP)</td>
+            <td>False positive (FP)</td>
+          </tr>
+          <tr>
+            <th scope="row">Judge: pass</th>
+            <td>False negative (FN)</td>
+            <td>True negative (TN)</td>
+          </tr>
+        </tbody>
+      </table>
+
+      <p>Here, “positive” means “failure detected.” Define that direction before labeling anything. Reversing the positive class changes the interpretation of every metric.</p>
+
+      <p>The two primary rates are:</p>
+
+      <p><code>TPR = TP / (TP + FN)</code></p>
+
+      <p>TPR is also called sensitivity or recall for the failure class. It answers: among the failures experts found, how many did the judge catch?</p>
+
+      <p><code>TNR = TN / (TN + FP)</code></p>
+
+      <p>TNR is also called specificity. It answers: among the acceptable cases, how many did the judge correctly leave unflagged?</p>
+
+      <p>Accuracy is:</p>
+
+      <p><code>accuracy = (TP + TN) / (TP + TN + FP + FN)</code></p>
+
+      <p>Accuracy is not useless, but it depends strongly on the class mix. TPR and TNR do not have that same dependence because each is calculated within one expert-labeled class.</p>
+
+      <h2>Why imbalance can make a weak judge look good</h2>
+
+      <p>Imagine 1,000 evaluation items: 950 acceptable and 50 failures. A judge that predicts <code>pass</code> every time gets:</p>
+
+      <ul>
+        <li>TPR: 0 / 50 = 0%</li>
+        <li>TNR: 950 / 950 = 100%</li>
+        <li>Accuracy: 950 / 1,000 = 95%</li>
+      </ul>
+
+      <p>The 95% accuracy sounds strong until the operational question is made explicit: the judge catches no failures. This is the failure mode to guard against when the goal is quality control, release gating, or alerting.</p>
+
+      <p>A balanced test set can make comparison easier, but it does not reproduce production prevalence. Keep the sampling design and the intended use separate:</p>
+
+      <ul>
+        <li>Use a stratified or failure-enriched set to estimate TPR and TNR with useful precision.</li>
+        <li>Use a production-like set when you need estimates of alert volume, positive predictive value, or expected workload.</li>
+      </ul>
+
+      <p>If you change the class proportions for testing, do not present the resulting accuracy as production accuracy.</p>
+
+      <h2>How many labeled examples do you need?</h2>
+
+      <p>For a rough planning calculation, treat TPR as a binomial proportion among the expert-labeled failures. If you expect a rate near <code>p</code> and want an approximate 95% margin of error <code>e</code>, the simple normal approximation is:</p>
+
+      <p><code>n ≈ 1.96² × p × (1 − p) / e²</code></p>
+
+      <p>When you do not know <code>p</code>, use <code>0.5</code> for a conservative planning estimate. This gives approximately:</p>
+
+      <table>
+        <caption>Approximate examples per class for a 95% margin of error</caption>
+        <thead>
+          <tr>
+            <th scope="col">Target margin</th>
+            <th scope="col">Approximate examples in the class</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>±10 percentage points</td>
+            <td>96</td>
+          </tr>
+          <tr>
+            <td>±5 percentage points</td>
+            <td>385</td>
+          </tr>
+          <tr>
+            <td>±3 percentage points</td>
+            <td>1,068</td>
+          </tr>
+        </tbody>
+      </table>
+
+      <p>These are planning numbers, not guarantees. The normal approximation can be poor near 0 or 1, and it does not account for correlated examples, ambiguous labels, repeated users, or multiple judge prompts. Use an exact or Wilson interval for planning and reporting.</p>
+
+      <p>For a failure-focused validation, the practical rule is simple: plan the number of failure examples from the precision required for TPR, and plan the number of acceptable examples from the precision required for TNR. If failures are rare in production, this usually means oversampling failures for the validation set.</p>
+
+      <h2>Use a held-out set with enough failures</h2>
+
+      <p>A reliable split separates development from final validation:</p>
+
+      <ol>
+        <li>Define the failure policy and expert-labeling rubric.</li>
+        <li>Collect candidate examples without using the final judge result to select labels.</li>
+        <li>Reserve a held-out set before tuning the judge prompt, model, thresholds, or parsing rules.</li>
+        <li>Stratify the held-out set so it contains the planned number of expert-labeled failures and acceptable cases.</li>
+        <li>Run the final judge configuration once on the held-out set and calculate metrics with confidence intervals.</li>
+      </ol>
+
+      <p>Do not repeatedly inspect the holdout, change the judge, and report the best result. That turns the holdout into another development set. If the judge must change, create a fresh final holdout or clearly report the iteration.</p>
+
+      <p>For expert labels, record at least the item identifier, the expert decision, the judge decision, and the labeling protocol version. Keep private user content out of logs where it is not required for analysis.</p>
+
+      <h2>Bootstrap confidence intervals, step by step</h2>
+
+      <p>A <a href="../glossary.html#bootstrap-confidence-interval">bootstrap confidence interval</a> estimates uncertainty by repeatedly resampling the observed labeled items with replacement. For TPR, resample only the expert-labeled failures. For TNR, resample only the expert-labeled acceptable cases. This preserves the denominator for each rate.</p>
+
+      <p>The following Python example uses an illustrative dataset. Replace the arrays with your own held-out results; the numbers below are not reported measurements.</p>
+
+      <pre><code>import numpy as np
+
+# 1 means the judge flagged a failure, 0 means it passed the item.
+# Illustrative data only:
+expert_failure_judge = np.array(
+    [1, 1, 0, 1, 0, 1, 1, 1, 0, 1]
+)
+
+# 1 means the judge correctly left an acceptable item unflagged.
+expert_ok_judge = np.array(
+    [1, 1, 1, 0, 1, 1, 1, 1, 0, 1]
+)
+
+def bootstrap_rate(values, iterations=20_000, seed=7):
+    rng = np.random.default_rng(seed)
+    values = np.asarray(values, dtype=float)
+
+    draws = rng.integers(
+        0, len(values), size=(iterations, len(values))
+    )
+    samples = values[draws]
+    rates = samples.mean(axis=1)
+
+    estimate = values.mean()
+    lower, upper = np.quantile(rates, [0.025, 0.975])
+    return estimate, lower, upper
+
+tpr = bootstrap_rate(expert_failure_judge)
+tnr = bootstrap_rate(expert_ok_judge)
+
+print("TPR:", tpr)
+print("TNR:", tnr)</code></pre>
+
+      <p>The output contains a point estimate and percentile interval for each rate. With only ten examples in each class, the intervals will usually be wide. That is expected: the code quantifies uncertainty; it does not create information that the sample does not contain.</p>
+
+      <p>For a larger evaluation, compute the cells directly:</p>
+
+      <pre><code>def confusion_counts(expert, judge):
+    expert = np.asarray(expert)
+    judge = np.asarray(judge)
+
+    tp = np.sum((expert == 1) & (judge == 1))
+    fn = np.sum((expert == 1) & (judge == 0))
+    tn = np.sum((expert == 0) & (judge == 0))
+    fp = np.sum((expert == 0) & (judge == 1))
+
+    return {"tp": tp, "fn": fn, "tn": tn, "fp": fp}
+
+def rates_from_counts(counts):
+    failure_total = counts["tp"] + counts["fn"]
+    acceptable_total = counts["tn"] + counts["fp"]
+
+    return {
+        "tpr": counts["tp"] / failure_total
+            if failure_total else float("nan"),
+        "tnr": counts["tn"] / acceptable_total
+            if acceptable_total else float("nan"),
+    }</code></pre>
+
+      <h2>Bootstrap the whole evaluation when items are paired</h2>
+
+      <p>When each item has both an expert label and a judge decision, resample complete item rows if you need a joint view of the evaluation. Do not independently shuffle expert labels and judge decisions; that destroys the pairing.</p>
+
+      <pre><code>def bootstrap_rates(expert, judge, iterations=20_000, seed=7):
+    rng = np.random.default_rng(seed)
+    expert = np.asarray(expert)
+    judge = np.asarray(judge)
+
+    indices = rng.integers(
+        0, len(expert), size=(iterations, len(expert))
+    )
+
+    tprs = []
+    tnrs = []
+
+    for row in indices:
+        e = expert[row]
+        j = judge[row]
+
+        failure = e == 1
+        acceptable = e == 0
+
+        tpr = np.mean(j[failure] == 1) if failure.any() else np.nan
+        tnr = np.mean(j[acceptable] == 0) if acceptable.any() else np.nan
+
+        tprs.append(tpr)
+        tnrs.append(tnr)
+
+    def interval(values):
+        values = np.asarray(values)
+        values = values[~np.isnan(values)]
+        return np.mean(values), *np.quantile(values, [0.025, 0.975])
+
+    return {
+        "tpr": interval(tprs),
+        "tnr": interval(tnrs),
+    }</code></pre>
+
+      <p>For small samples or rates close to the boundaries, compare bootstrap results with a Wilson or exact binomial interval. If the methods disagree materially, report that sensitivity rather than selecting the most flattering interval.</p>
+
+      <h2>Verification checklist</h2>
+
+      <p>Before trusting the result, verify the analysis mechanically:</p>
+
+      <ul>
+        <li>The positive class is explicitly defined as failure detection.</li>
+        <li>Every held-out row has exactly one expert label and one judge decision.</li>
+        <li>There are no duplicate item identifiers across development and holdout sets.</li>
+        <li>TPR uses only expert-labeled failures in its denominator.</li>
+        <li>TNR uses only expert-labeled acceptable items in its denominator.</li>
+        <li>The interval method and random seed are recorded.</li>
+        <li>The holdout was not used to tune the reported judge configuration.</li>
+        <li>Any class enrichment is disclosed.</li>
+        <li>Production prevalence is not silently substituted for the validation prevalence.</li>
+      </ul>
+
+      <p>A small independent script can recompute the confusion matrix from the raw export. Compare its counts with the dashboard or notebook before writing conclusions. This catches common errors such as inverted labels, dropped rows, and percentages calculated with the wrong denominator.</p>
+
+      <h2>Failure cases to expect</h2>
+
+      <h3>Too few failures</h3>
+
+      <p>If the holdout has ten failures, one missed item changes TPR by ten percentage points. A high observed TPR can therefore coexist with substantial uncertainty. Add failures to the validation sample or weaken the precision claim.</p>
+
+      <h3>Expert disagreement</h3>
+
+      <p>If experts disagree often, the target is not a single unquestionable label. Define an adjudication rule, measure inter-rater agreement, or represent uncertainty in the reference label. A judge cannot be fairly evaluated against a target that has not been specified.</p>
+
+      <h3>Label leakage</h3>
+
+      <p>The judge may see metadata, reference answers, or rubric text that would not be available in production. Test the exact input boundary used at runtime. Leakage can inflate both TPR and TNR.</p>
+
+      <h3>Correlated examples</h3>
+
+      <p>Ten examples from one conversation or one template are not equivalent to ten independent cases. Grouped or clustered data can make ordinary intervals too narrow. Split by the relevant unit, such as user, conversation, document, or task family, when that unit creates dependence.</p>
+
+      <h3>Metric drift after deployment</h3>
+
+      <p>A judge can agree with experts on one task family and fail on another. Report results by important slice, not only as one pooled number. If a slice has too few examples, mark the estimate as uncertain rather than hiding it in the aggregate.</p>
+
+      <h2>What to report</h2>
+
+      <p>A reproducible validation report should state:</p>
+
+      <ul>
+        <li>What counts as a positive failure.</li>
+        <li>How expert labels were produced.</li>
+        <li>How many failures and acceptable items were included.</li>
+        <li>The judge model, prompt, rubric, threshold, and parser version.</li>
+        <li>TPR and TNR with their interval method and interval bounds.</li>
+        <li>The class proportions in the validation set and, separately, the expected production proportions.</li>
+        <li>Known exclusions, dependencies, and ambiguous cases.</li>
+      </ul>
+
+      <p>For the main question—whether the judge agrees with experts—the minimum useful result is usually a confusion matrix plus TPR and TNR intervals. Accuracy can be included, but it should not replace those measurements.</p>
+
+      <h2>Bottom line</h2>
+
+      <p>There is no single sample size that validates every LLM judge. Start with the uncertainty you can accept. Plan enough expert-labeled failures to estimate TPR, enough acceptable examples to estimate TNR, and keep a final holdout untouched during tuning.</p>
+
+      <p>If your data is imbalanced, a strong accuracy score may say more about the data distribution than about the judge. A failure-rich held-out set, explicit class definitions, and bootstrap intervals make that weakness visible.</p>
+
+      <p>Continue with the <a href="guides.html">evaluation guides</a> or look up terms in the <a href="../glossary.html">glossary</a>.</p>
+    <section class="service-note">
+  <b>We publish what works for us—and implement the same solutions for your business.</b>
+  We design AI automation, Telegram bots, chats, and AI agents for real-world processes.
+  <a href="../contacts-en.html">Discuss your project →</a>
+</section>
+</article>
+  </main>
+
+  <footer class="site-footer">
+    <p>© 2026 Agent Lab Journal</p>
+    <nav aria-label="Footer navigation">
+      <a href="guides.html">Guides</a>
+      <a href="../glossary.html">Glossary</a>
+    </nav>
+  </footer>
+</body>
+</html>
