@@ -1,0 +1,444 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>How to Connect Claude Code and Codex for Automated Checks and Second Opinions</title>
+  <meta name="description" content="How to Connect Claude Code and Codex for Automated Checks and Second Opinions: build a reproducible shell-based workflow for reviewing images, plans, and technical decisions.">
+  <link rel="canonical" href="https://agentlabjournal.online/en/claude-code-codex-setup.html">
+  <link rel="stylesheet" href="../style.css">
+  <link rel="stylesheet" href="../reading.css">
+
+  <meta property="og:type" content="article">
+  <meta property="og:locale" content="en_US">
+  <meta property="og:title" content="How to Connect Claude Code and Codex for Automated Checks and Second Opinions">
+  <meta property="og:description" content="A practical, reproducible shell-based workflow for using Claude Code and Codex together to check images, plans, and technical decisions.">
+  <meta property="og:url" content="https://agentlabjournal.online/en/claude-code-codex-setup.html">
+  <meta property="og:image" content="https://agentlabjournal.online/assets/covers/llm-context-window-budget-social.png">
+
+  <meta name="twitter:card" content="summary_large_image">
+  <meta name="twitter:title" content="How to Connect Claude Code and Codex for Automated Checks and Second Opinions">
+  <meta name="twitter:description" content="A reproducible shell-based workflow for connecting Claude Code and Codex without manually copying context.">
+  <meta name="twitter:image" content="https://agentlabjournal.online/assets/covers/llm-context-window-budget-social.png">
+
+  <meta name="reading-time" content="20 minutes">
+  <meta name="reading-level" content="advanced">
+  <meta name="article:section" content="Developer workflows">
+
+  <script type="application/ld+json">
+  {
+    "@context": "https://schema.org",
+    "@type": "Article",
+    "headline": "How to Connect Claude Code and Codex for Automated Checks and Second Opinions",
+    "description": "A practical, reproducible shell-based workflow for using Claude Code and Codex together to check images, plans, and technical decisions.",
+    "image": ["https://agentlabjournal.online/assets/covers/llm-context-window-budget-social.png"],
+    "dateModified": "2026-11-26",
+    "author": {
+      "@type": "Organization",
+      "name": "Agent Lab Journal"
+    },
+    "publisher": {
+      "@type": "Organization",
+      "name": "Agent Lab Journal",
+      "url": "https://agentlabjournal.online/"
+    },
+    "mainEntityOfPage": {
+      "@type": "WebPage",
+      "@id": "https://agentlabjournal.online/en/claude-code-codex-setup.html"
+    }
+  }
+  </script>
+<link rel="stylesheet" href="../homepage.css"><link rel="stylesheet" href="../max-promo.css">  <meta property="og:image:alt" content="Как связать Claude Code и Codex для автоматизации проверок и вторых мнений">
+</head>
+<body>
+  <header class="site-header">
+    <div class="site-header__inner">
+      <a class="site-header__brand" href="../index.html">Agent Lab Journal</a>
+      <nav class="site-header__nav" aria-label="Primary navigation">
+        <a href="../guides.html">Guides</a>
+        <a href="../glossary.html">Glossary</a>
+      </nav>
+    </div>
+  </header>
+
+  <main>
+    <article class="reading">
+      <header class="reading-header">
+        <p class="reading-kicker">Developer workflows · Advanced</p>
+        <h1>How to Connect Claude Code and Codex for Automated Checks and Second Opinions</h1>
+        <figure class="article-cover" data-editorial-cover="claude-code-codex-setup"><img src="../assets/covers/llm-context-window-budget.png" alt="Как связать Claude Code и Codex для автоматизации проверок и вторых мнений" width="1280" height="720" fetchpriority="high"><figcaption>Temporary fallback cover; replace in editorial pass.</figcaption></figure>
+        <p class="reading-lead">Use one coding agent to do the work and another to inspect the result, while keeping the hand-off reproducible, local, and explicit.</p>
+        <div class="reading-meta">
+          <span>20 min read</span>
+          <span>Updated 26 November 2026</span>
+          <span>English</span>
+        </div>
+      </header>
+
+      <section>
+        <p>The practical problem is not whether two coding agents can generate useful text. It is how to make them cooperate without repeatedly copying a plan, an image path, or a diff from one terminal into another.</p>
+
+        <p>This guide connects <a href="../glossary.html#claude-code">Claude Code</a> and <a href="../glossary.html#codex">Codex</a> through a small shell wrapper. Claude Code remains the primary operator. It writes a request file containing the relevant context, calls the Codex <a href="../glossary.html#cli">CLI</a>, and reads the resulting report. The same mechanism can check a screenshot, review an implementation plan, or challenge a technical decision.</p>
+
+        <p>The result is a controlled <a href="../glossary.html#automated-checks">automated check</a>, not an autonomous approval system. The second agent produces evidence and questions; a human still decides whether the change is safe to merge.</p>
+      </section>
+
+      <section>
+        <h2>What the finished workflow looks like</h2>
+
+        <p>The hand-off has four explicit artifacts:</p>
+
+        <ol>
+          <li>A request file with the question and bounded context.</li>
+          <li>Optional local inputs, such as an image, plan, or diff.</li>
+          <li>A Codex report written to a known output path.</li>
+          <li>A short summary returned to Claude Code.</li>
+        </ol>
+
+        <pre><code>Claude Code
+    │
+    ├── writes /tmp/agent-review/request.md
+    ├── selects local files
+    └── invokes review-codex.sh
+              │
+              └── codex exec ...
+                        │
+                        └── writes /tmp/agent-review/report.md
+    │
+    └── reads the report and decides what to do next</code></pre>
+
+        <p>The wrapper is intentionally boring. It gives the second agent a stable interface, avoids shell quoting problems in long prompts, and makes it easier to audit what was sent.</p>
+      </section>
+
+      <section>
+        <h2>Prerequisites and assumptions</h2>
+
+        <p>This article assumes:</p>
+
+        <ul>
+          <li>Both command-line tools are already installed and authenticated in the environment where the wrapper runs.</li>
+          <li>The shell can execute the Codex command.</li>
+          <li>The files being reviewed are local and readable by that process.</li>
+          <li>You are comfortable checking the installed command syntax with <code>--help</code>.</li>
+        </ul>
+
+        <p>Command names and flags can vary by release. The examples below use the common <code>codex exec</code> pattern. Before adopting them, run:</p>
+
+        <pre><code>command -v codex
+codex --help
+codex exec --help</code></pre>
+
+        <p>If your installed version exposes different flags, preserve the design but adjust the invocation. This article does not claim that the commands were executed in your environment.</p>
+      </section>
+
+      <section>
+        <h2>Step 1: Create a review directory</h2>
+
+        <p>Use a project-local directory when the review should be retained with the project, or a temporary directory when it should disappear after the session. The following example keeps review material outside the repository:</p>
+
+        <pre><code>mkdir -p /tmp/agent-review
+chmod 700 /tmp/agent-review</code></pre>
+
+        <p>Do not place API keys, session tokens, private customer data, or unredacted production logs in this directory. Treat every request file as input that may be sent to an external model service.</p>
+      </section>
+
+      <section>
+        <h2>Step 2: Write a narrow request</h2>
+
+        <p>A second opinion is most useful when the question is falsifiable. “Review this” is weak. “Find contradictions between the stated constraints and the proposed retry behavior” is actionable.</p>
+
+        <p>Create a request file like this:</p>
+
+        <pre><code>cat &gt; /tmp/agent-review/request.md &lt;&lt;'EOF'
+You are reviewing work produced by another coding agent.
+
+Goal:
+Check whether the proposed implementation is internally consistent and
+whether the stated verification plan would detect the important failures.
+
+Review rules:
+- Do not modify files.
+- Do not invent facts about the repository.
+- Separate observations, risks, and assumptions.
+- If evidence is missing, say exactly what is missing.
+- End with: PASS, NEEDS_REVIEW, or INCONCLUSIVE.
+
+Question:
+Does the attached plan adequately cover image validation, error handling,
+and rollback behavior?
+
+Relevant context:
+- The primary agent is preparing a change for local review.
+- The reviewer should inspect only the files explicitly listed below.
+EOF</code></pre>
+
+        <p>The heredoc is quoted so that the shell does not expand variables inside the request. If the prompt contains sensitive data, redact it before writing the file.</p>
+      </section>
+
+      <section>
+        <h2>Step 3: Build the Codex wrapper</h2>
+
+        <p>Create a wrapper named <code>review-codex.sh</code> somewhere on your executable path, or keep it in a project’s <code>scripts/</code> directory.</p>
+
+        <pre><code>#!/usr/bin/env bash
+set -euo pipefail
+
+review_dir="${1:?usage: review-codex.sh REQUEST_FILE [INPUT_FILE ...]}"
+request_file="$review_dir"
+shift
+
+output_file="${CODEX_REVIEW_OUTPUT:-/tmp/agent-review/report.md}"
+
+if [[ ! -f "$request_file" ]]; then
+  printf 'Request file not found: %s\n' "$request_file" &gt;&amp;2
+  exit 2
+fi
+
+{
+  printf '%s\n\n' 'The following is the review request:'
+  cat "$request_file"
+
+  if (($# &gt; 0)); then
+    printf '\n\n%s\n' 'Explicitly listed local inputs:'
+    for input_file in "$@"; do
+      if [[ ! -f "$input_file" ]]; then
+        printf 'Input file not found: %s\n' "$input_file" &gt;&amp;2
+        exit 2
+      fi
+      printf '\n--- FILE: %s ---\n' "$input_file"
+      cat "$input_file"
+    done
+  fi
+} &gt; /tmp/agent-review/codex-prompt.txt
+
+codex exec \
+  --full-auto \
+  "$(cat /tmp/agent-review/codex-prompt.txt)" \
+  &gt; "$output_file"
+
+printf '%s\n' "$output_file"</code></pre>
+
+        <p>Make it executable:</p>
+
+        <pre><code>chmod 700 ./scripts/review-codex.sh</code></pre>
+
+        <p>The wrapper treats listed files as data and passes their contents in one prompt. This is suitable for text plans, decision records, and diffs. It is not sufficient for visual inspection: an image must be supplied through a supported image-input mechanism, or converted into a form the installed Codex interface can actually inspect.</p>
+
+        <p>If your Codex version does not support <code>--full-auto</code>, remove that flag or replace it with the documented non-interactive option from <code>codex exec --help</code>. For a review-only wrapper, a mode that prevents file changes is preferable.</p>
+      </section>
+
+      <section>
+        <h2>Step 4: Call the wrapper from Claude Code</h2>
+
+        <p>In Claude Code, ask the primary agent to create the request and invoke the wrapper. A useful instruction is:</p>
+
+        <pre><code>Prepare a Codex review of the current implementation plan.
+
+1. Write the review request to /tmp/agent-review/request.md.
+2. Include only the plan and the specific question.
+3. Call ./scripts/review-codex.sh with that request file.
+4. Read the returned report.
+5. Summarize observations separately from assumptions.
+6. Do not change code until I approve the review findings.</code></pre>
+
+        <p>The important part is the contract: Claude Code owns the preparation and interpretation, while the wrapper owns the second-agent call. This prevents a vague “ask another model” instruction from becoming an uncontrolled loop.</p>
+
+        <p>You can also make the call explicit in a shell step:</p>
+
+        <pre><code>report_path="$(
+  ./scripts/review-codex.sh /tmp/agent-review/request.md
+)"
+
+sed -n '1,240p' "$report_path"</code></pre>
+      </section>
+
+      <section>
+        <h2>Review case A: a technical plan</h2>
+
+        <p>For a plan review, include the plan, constraints, affected interfaces, and proposed verification. Do not include the entire repository unless the question requires it.</p>
+
+        <pre><code>./scripts/review-codex.sh \
+  /tmp/agent-review/request.md \
+  docs/implementation-plan.md \
+  docs/decision-record.md</code></pre>
+
+        <p>Ask the reviewer to answer concrete questions:</p>
+
+        <ul>
+          <li>Are the preconditions and postconditions explicit?</li>
+          <li>Does the rollback path cover partial failure?</li>
+          <li>Are retries idempotent?</li>
+          <li>Does the test plan exercise the most dangerous branch?</li>
+          <li>Which claim depends on an assumption rather than evidence?</li>
+        </ul>
+
+        <p>A useful report should point to the supplied material and say when it cannot verify a claim. “The plan mentions retries but does not define an idempotency key” is stronger than a general score.</p>
+      </section>
+
+      <section>
+        <h2>Review case B: a technical decision</h2>
+
+        <p>For architecture or implementation decisions, use a decision record with alternatives and constraints. The review request should ask for counterexamples, not a replacement design by default.</p>
+
+        <pre><code>cat &gt; /tmp/agent-review/decision-request.md &lt;&lt;'EOF'
+Evaluate this technical decision.
+
+Return:
+1. The strongest argument in favor.
+2. The strongest argument against.
+3. A failure mode that the decision record does not address.
+4. A condition under which the decision should be revisited.
+5. One small verification experiment.
+
+Do not select a winner unless the supplied evidence supports one.
+EOF
+
+./scripts/review-codex.sh \
+  /tmp/agent-review/decision-request.md \
+  docs/decision-record.md</code></pre>
+
+        <p>This turns the second model into an adversarial reader. It does not make the model an authority, and it does not remove the need to validate the proposed experiment.</p>
+      </section>
+
+      <section>
+        <h2>Review case C: an image or screenshot</h2>
+
+        <p>Image review needs a separate handling decision. A path such as <code>screenshots/home.png</code> is meaningful to the local shell, but it does not automatically give a model visual access to the pixels.</p>
+
+        <p>First establish what the installed Codex interface accepts. Check its help output and local documentation for an image-input option. If it supports a path directly, pass the image using that documented mechanism. If it requires an attachment or a different input format, use that mechanism instead.</p>
+
+        <p>A review request can still be prepared consistently:</p>
+
+        <pre><code>cat &gt; /tmp/agent-review/image-request.md &lt;&lt;'EOF'
+Inspect the supplied screenshot as a visual QA review.
+
+Check:
+- content clipping at the viewport edges
+- unreadable text or insufficient contrast
+- inconsistent spacing and alignment
+- missing focus, loading, empty, or error states
+- visual differences from the stated acceptance criteria
+
+Report each finding with:
+- severity
+- visible evidence
+- affected area
+- suggested next check
+
+If the image is unavailable or cannot be inspected, say so.
+EOF</code></pre>
+
+        <p>Do not claim that an image was checked merely because its filename appeared in a prompt. The verification is successful only when the reviewer confirms that it received and inspected the image, or when you can otherwise establish that the visual input was available.</p>
+      </section>
+
+      <section>
+        <h2>Make the hand-off safer</h2>
+
+        <h3>Keep the context boundary explicit</h3>
+
+        <p>List every file sent to the reviewer. Avoid commands such as <code>find . -type f -exec cat {} \;</code>; they can expose secrets, generated files, and irrelevant context.</p>
+
+        <h3>Use a clean output path</h3>
+
+        <p>Set a per-review output path when several checks can run concurrently:</p>
+
+        <pre><code>CODEX_REVIEW_OUTPUT="/tmp/agent-review/plan-$(date +%s).md" \
+  ./scripts/review-codex.sh /tmp/agent-review/request.md \
+  docs/implementation-plan.md</code></pre>
+
+        <p>For reproducibility, record the request file, input file list, command version, and report path. Do not record authentication tokens or private prompts in shared logs.</p>
+
+        <h3>Separate review from execution</h3>
+
+        <p>The reviewer should normally be read-only. If it recommends a code change, Claude Code can inspect the recommendation and make the change under a separate approval step. Avoid giving a second opinion permission to edit the same working tree while the primary agent is still reasoning about the result.</p>
+
+        <h3>Defend against instructions inside inputs</h3>
+
+        <p>Plans, source files, screenshots, and logs may contain text that looks like instructions. Treat those files as untrusted data. The wrapper’s request should state that instructions found inside reviewed material are evidence to analyze, not commands to execute. This is a basic defense against <a href="../glossary.html#prompt-injection">prompt injection</a>.</p>
+      </section>
+
+      <section>
+        <h2>Verification checklist</h2>
+
+        <p>Run these checks before relying on the setup:</p>
+
+        <pre><code>test -x ./scripts/review-codex.sh
+test -f /tmp/agent-review/request.md
+command -v codex
+codex exec --help</code></pre>
+
+        <p>Then perform a harmless smoke test with a deliberately small request:</p>
+
+        <pre><code>cat &gt; /tmp/agent-review/smoke.md &lt;&lt;'EOF'
+Return exactly:
+SMOKE_OK
+
+Do not inspect files or make changes.
+EOF
+
+CODEX_REVIEW_OUTPUT=/tmp/agent-review/smoke-report.md \
+  ./scripts/review-codex.sh /tmp/agent-review/smoke.md
+
+grep -Fx 'SMOKE_OK' /tmp/agent-review/smoke-report.md</code></pre>
+
+        <p>This verifies the local wrapper contract only: the request can be read, the command can be invoked, and output can be written. It does not verify the quality of a model’s review, visual understanding, account permissions, or production suitability.</p>
+      </section>
+
+      <section>
+        <h2>Failure cases and fixes</h2>
+
+        <h3><code>codex: command not found</code></h3>
+        <p>The process running Claude Code cannot see the same executable path as your interactive shell. Check <code>command -v codex</code> in that process and use an absolute path only after verifying it. Avoid silently installing software from inside the review wrapper.</p>
+
+        <h3>The wrapper hangs waiting for input</h3>
+        <p>The selected command may be interactive, or it may require a different non-interactive flag. Compare the invocation with <code>codex exec --help</code>. A review automation path must fail clearly when it cannot run unattended.</p>
+
+        <h3>The report is empty or contains only a generic answer</h3>
+        <p>Check that the request file exists, that its contents are included, and that the listed inputs are readable. Narrow the question and require evidence references. A second model cannot recover context that was never sent.</p>
+
+        <h3>An image review says the image is unavailable</h3>
+        <p>A local path alone is not proof of visual access. Use the image-input feature supported by your installed client, or mark the result as inconclusive.</p>
+
+        <h3>The reviewer proposes changes to files</h3>
+        <p>Remove write permissions from the review workflow, use a read-only mode if available, and keep the report separate from the working tree. A review and an implementation should be distinct operations.</p>
+
+        <h3>Private data appears in the report</h3>
+        <p>Stop the workflow, remove the sensitive material from subsequent prompts, and review where the request and output are retained. Do not add credentials to “make the integration work.”</p>
+      </section>
+
+      <section>
+        <h2>Limitations</h2>
+
+        <p>This pattern coordinates two command-line clients; it does not create shared memory between them. Each invocation sees only the context you provide. It also does not guarantee that the agents will disagree, detect a defect, or understand a visual input correctly.</p>
+
+        <p>Long prompts increase cost and reduce attention. A compact evidence packet is usually better than a repository dump. Conversely, an overly small packet can make the conclusion meaningless. The correct boundary is the smallest set of files that can support or falsify the question.</p>
+
+        <p>Finally, a model-generated PASS is not a test result. Treat it as a review observation that still needs deterministic checks, human judgment, or both.</p>
+      </section>
+
+      <section>
+        <h2>Conclusion</h2>
+
+        <p>The reliable way to connect Claude Code and Codex is to make the hand-off explicit: write a narrow request, list local inputs, invoke the second CLI through a small wrapper, save the report, and inspect its evidence. The same interface supports plan reviews, architectural second opinions, and image checks, while keeping secrets and execution authority under control.</p>
+
+        <p>For related workflows, continue with the <a href="../guides.html">guides</a> or look up unfamiliar terms in the <a href="../glossary.html">glossary</a>.</p>
+      </section>
+    <section class="service-note">
+  <b>We publish what works for us—and implement the same solutions for your business.</b>
+  We design AI automation, Telegram bots, chats, and AI agents for real-world processes.
+  <a href="../contacts-en.html">Discuss your project →</a>
+</section>
+</article>
+  </main>
+
+  <footer class="site-footer">
+    <div class="site-footer__inner">
+      <p>&copy; 2026 Agent Lab Journal</p>
+      <nav aria-label="Footer navigation">
+        <a href="../guides.html">Guides</a>
+        <a href="../glossary.html">Glossary</a>
+      </nav>
+    </div>
+  </footer>
+</body>
+</html>
