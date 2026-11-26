@@ -1,0 +1,805 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>How to Test the Action Order of a Voice AI Agent</title>
+  <meta name="description" content="How to Test the Action Order of a Voice AI Agent: reproducible scenarios, traces, assertions, and failure cases for detecting early bookings, wrong data, and confirmation-order violations.">
+  <link rel="canonical" href="https://agentlabjournal.online/en/callproof-testy-poryadka-deystviy-voice-agenta.html">
+  <link rel="stylesheet" href="../style.css">
+  <link rel="stylesheet" href="../reading.css">
+
+  <meta property="og:type" content="article">
+  <meta property="og:title" content="How to Test the Action Order of a Voice AI Agent">
+  <meta property="og:description" content="Reproducible scenarios, traces, assertions, and failure cases for testing whether a voice AI agent calls tools only after valid user confirmation.">
+  <meta property="og:url" content="https://agentlabjournal.online/en/callproof-testy-poryadka-deystviy-voice-agenta.html">
+  <meta property="og:image" content="https://agentlabjournal.online/assets/covers/llm-context-window-budget-social.png">
+  <meta property="og:site_name" content="Agent Lab Journal">
+  <meta property="og:locale" content="en_US">
+
+  <meta name="twitter:card" content="summary_large_image">
+  <meta name="twitter:title" content="How to Test the Action Order of a Voice AI Agent">
+  <meta name="twitter:description" content="A practical method for detecting early bookings, incorrect data, and tool-call ordering violations in voice AI agents.">
+  <meta name="twitter:image" content="https://agentlabjournal.online/assets/covers/llm-context-window-budget-social.png">
+
+  <meta name="reading-time" content="25 min">
+  <meta name="article:reading_time" content="25 minutes">
+
+  <script type="application/ld+json">
+  {
+    "@context": "https://schema.org",
+    "@type": "Article",
+    "headline": "How to Test the Action Order of a Voice AI Agent",
+    "description": "Reproducible scenarios, traces, assertions, and failure cases for testing whether a voice AI agent calls tools only after valid user confirmation.",
+    "image": ["https://agentlabjournal.online/assets/covers/llm-context-window-budget-social.png"],
+    "dateModified": "2026-11-26",
+    "author": {
+      "@type": "Organization",
+      "name": "Agent Lab Journal"
+    },
+    "publisher": {
+      "@type": "Organization",
+      "name": "Agent Lab Journal",
+      "url": "https://agentlabjournal.online/"
+    },
+    "mainEntityOfPage": {
+      "@type": "WebPage",
+      "@id": "https://agentlabjournal.online/en/callproof-testy-poryadka-deystviy-voice-agenta.html"
+    }
+  }
+  </script>
+<link rel="stylesheet" href="../homepage.css"><link rel="stylesheet" href="../max-promo.css">  <meta property="og:image:alt" content="Как тестировать порядок действий голосового AI-агента">
+</head>
+<body>
+  <header class="site-header">
+    <div class="site-header__inner">
+      <a href="../index.html" class="site-logo">Agent Lab Journal</a>
+      <nav aria-label="Primary navigation">
+        <a href="guides.html">Guides</a>
+        <a href="../glossary.html">Glossary</a>
+      </nav>
+    </div>
+  </header>
+
+  <main>
+    <article class="reading">
+      <header class="reading-header">
+        <p class="reading-kicker">Testing · Voice agents · Advanced</p>
+        <h1>How to Test the Action Order of a Voice AI Agent</h1>
+        <figure class="article-cover" data-editorial-cover="callproof-testy-poryadka-deystviy-voice-agenta"><img src="../assets/covers/llm-context-window-budget.png" alt="Как тестировать порядок действий голосового AI-агента" width="1280" height="720" fetchpriority="high"><figcaption>Temporary fallback cover; replace in editorial pass.</figcaption></figure>
+        <p class="reading-meta">25 min read · Updated 26 November 2026</p>
+        <p class="reading-dek">
+          A transcript can sound perfect while the system has already made a reservation, sent a message, or changed a record before the caller agreed. The reliable test is not “does the dialogue read correctly?” It is “what observable event happened first?”
+        </p>
+      </header>
+
+      <section>
+        <p>
+          This article presents a reproducible way to test the action order of a voice AI agent. It focuses on a common production risk: the agent collects details, summarizes them, receives an ambiguous or negative reply, and still invokes a booking tool. The same method applies to payments, cancellations, account changes, dispatches, and any other side effect.
+        </p>
+
+        <p>
+          The central rule is simple:
+        </p>
+
+        <blockquote>
+          <p>A side-effecting tool call must not occur until the trace contains a valid confirmation for the exact operation and the exact data being submitted.</p>
+        </blockquote>
+
+        <p>
+          The examples below are test fixtures, not customer records or verified results. No external service, credential, appointment, price, or customer fact is required.
+        </p>
+      </section>
+
+      <section>
+        <h2>Why a correct-looking transcript is insufficient</h2>
+
+        <p>
+          A transcript is a presentation of conversation. It is not necessarily a complete record of execution. Many systems display assistant text while tool events are stored elsewhere, emitted asynchronously, retried, or omitted from the transcript renderer.
+        </p>
+
+        <p>
+          Consider this simplified dialogue:
+        </p>
+
+        <pre><code>Agent: I can book Tuesday at 14:00 for Alex Morgan. Shall I confirm it?
+User: I am not sure. What other times are available?
+Agent: Of course. Tuesday at 16:00 is also available.</code></pre>
+
+        <p>
+          The visible exchange appears safe. But the event stream might actually be:
+        </p>
+
+        <pre><code>09:14:02 assistant.message
+09:14:03 booking.create { "date": "2026-12-01", "time": "14:00", "name": "Alex Morgan" }
+09:14:04 user.message
+09:14:05 assistant.message</code></pre>
+
+        <p>
+          If the booking happened at 09:14:03, the transcript is not evidence that the booking waited for confirmation. It only shows that the final wording did not expose the violation.
+        </p>
+
+        <p>
+          The test target is therefore an <a href="../glossary.html#event-trace">event trace</a>: an ordered sequence of timestamped or sequenced events produced by the runtime. The trace should include user turns, assistant turns, tool requests, tool responses, and relevant state transitions.
+        </p>
+      </section>
+
+      <section>
+        <h2>Define the contract before writing tests</h2>
+
+        <p>
+          A useful test starts with a behavioral contract. Avoid vague requirements such as “the agent should ask for confirmation.” Write conditions that can be evaluated from recorded events.
+        </p>
+
+        <p>For a booking flow, a minimal contract can be:</p>
+
+        <ol>
+          <li>The agent must collect all required booking fields.</li>
+          <li>The agent must present the exact fields it intends to submit.</li>
+          <li>The agent must ask for confirmation of that exact booking.</li>
+          <li>A booking tool request is allowed only after a valid affirmative reply.</li>
+          <li>A reply about availability, uncertainty, correction, or another topic is not confirmation.</li>
+          <li>If a field changes after confirmation, the previous confirmation is invalidated.</li>
+          <li>If the tool fails or times out, the agent must not silently claim success.</li>
+        </ol>
+
+        <p>
+          The contract should distinguish an <a href="../glossary.html#intent">intent</a> to book from authorization to execute. “I need an appointment” expresses intent. “Yes, book Tuesday at 14:00 under Alex Morgan” can authorize a specific operation, depending on the product rules. The test must state which utterances count.
+        </p>
+
+        <h3>Model the protected operation</h3>
+
+        <p>
+          Represent the side effect as a structured operation rather than as a sentence:
+        </p>
+
+        <pre><code>{
+  "operation": "booking.create",
+  "data": {
+    "date": "2026-12-01",
+    "time": "14:00",
+    "timezone": "Europe/Moscow",
+    "name": "Alex Morgan",
+    "service": "consultation"
+  }
+}</code></pre>
+
+        <p>
+          The exact values above are synthetic fixture data. In a real test, use a dedicated test identity and a fake or isolated backend. Do not place real personal data, credentials, or production identifiers in fixtures.
+        </p>
+
+        <p>
+          A confirmation should be evaluated against this structured operation. A generic “yes” may be sufficient only when the immediately preceding confirmation uniquely identifies the operation and no relevant field has changed.
+        </p>
+      </section>
+
+      <section>
+        <h2>Capture the events that matter</h2>
+
+        <p>
+          Your harness needs a <a href="../glossary.html#mock">mock</a> or sandbox implementation of every side-effecting tool. The mock should record calls and return controlled responses. It should not create a real booking.
+        </p>
+
+        <p>At minimum, record:</p>
+
+        <ul>
+          <li>a monotonically increasing sequence number;</li>
+          <li>the event type;</li>
+          <li>the conversation turn or utterance identifier;</li>
+          <li>the tool name and arguments, when applicable;</li>
+          <li>the agent state relevant to authorization;</li>
+          <li>the mock response;</li>
+          <li>timestamps if the runtime uses asynchronous processing.</li>
+        </ul>
+
+        <p>A compact event shape is enough for most order assertions:</p>
+
+        <pre><code>{
+  "seq": 7,
+  "type": "tool.request",
+  "tool": "booking.create",
+  "args": {
+    "date": "2026-12-01",
+    "time": "14:00",
+    "timezone": "Europe/Moscow",
+    "name": "Alex Morgan",
+    "service": "consultation"
+  },
+  "turn_id": "turn-04",
+  "state": "awaiting_confirmation"
+}</code></pre>
+
+        <p>
+          The <code>state</code> field is useful for diagnosis, but it is not a substitute for order assertions. An agent can label itself <code>awaiting_confirmation</code> and still emit a tool request. The sequence of observable events remains authoritative for this test.
+        </p>
+      </section>
+
+      <section>
+        <h2>A minimal test harness</h2>
+
+        <p>
+          The following Python-like example is intentionally framework-neutral. It illustrates the checks; adapt the adapter functions to the voice runtime you use. It is not presented as executed code or as a claim about a particular vendor API.
+        </p>
+
+        <pre><code>from dataclasses import dataclass, field
+from typing import Any
+
+@dataclass
+class Trace:
+    events: list[dict[str, Any]] = field(default_factory=list)
+
+    def add(self, event_type: str, **values: Any) -&gt; None:
+        self.events.append({
+            "seq": len(self.events) + 1,
+            "type": event_type,
+            **values,
+        })
+
+    def tool_requests(self, tool_name: str) -&gt; list[dict[str, Any]]:
+        return [
+            event for event in self.events
+            if event["type"] == "tool.request"
+            and event.get("tool") == tool_name
+        ]
+
+
+def is_affirmative_confirmation(text: str) -&gt; bool:
+    normalized = text.strip().lower()
+    return normalized in {
+        "yes",
+        "yes, book it",
+        "book it",
+        "confirm",
+        "confirmed",
+    }
+
+
+def assert_no_booking_before_confirmation(trace: Trace) -&gt; None:
+    confirmed_seq = next(
+        (
+            event["seq"]
+            for event in trace.events
+            if event["type"] == "user.message"
+            and event.get("confirms") is True
+        ),
+        None,
+    )
+
+    for request in trace.tool_requests("booking.create"):
+        assert confirmed_seq is not None, (
+            "booking.create was called without a confirmation event"
+        )
+        assert request["seq"] &gt; confirmed_seq, (
+            f"booking.create at seq {request['seq']} "
+            f"preceded confirmation at seq {confirmed_seq}"
+        )</code></pre>
+
+        <p>
+          In a production-grade harness, do not infer confirmation only from raw text inside the assertion. Have the test adapter annotate the event with a decision made by the same explicit confirmation policy that the product intends to enforce, or use a separate policy oracle. The important point is that the annotation must be inspectable and tied to the exact operation.
+        </p>
+
+        <h3>Prefer an operation-specific confirmation</h3>
+
+        <p>
+          A stronger check compares the operation submitted to the tool with the operation that was confirmed:
+        </p>
+
+        <pre><code>def assert_booking_matches_confirmation(trace: Trace) -&gt; None:
+    confirmation = next(
+        event for event in trace.events
+        if event["type"] == "confirmation.accepted"
+    )
+    request = next(
+        event for event in trace.events
+        if event["type"] == "tool.request"
+        and event.get("tool") == "booking.create"
+    )
+
+    assert request["args"] == confirmation["operation"]["data"], (
+        "The booking arguments differ from the confirmed operation"
+    )</code></pre>
+
+        <p>
+          This catches a different class of error: the agent waits for “yes” but submits a changed time, wrong name, default timezone, stale date, or another value that the caller did not approve.
+        </p>
+      </section>
+
+      <section>
+        <h2>Build scenarios around adversarial turns</h2>
+
+        <p>
+          Happy-path tests are necessary but weak. The most valuable cases place a tempting tool call immediately before, during, or after an ambiguous user response.
+        </p>
+
+        <h3>Scenario 1: direct confirmation</h3>
+
+        <p>Purpose: establish that the intended flow can execute.</p>
+
+        <pre><code>[
+  {"role": "user", "text": "I need a consultation next Tuesday."},
+  {"role": "agent", "text": "I can book Tuesday at 14:00 under Alex Morgan. Shall I confirm it?"},
+  {"role": "user", "text": "Yes, book it."}
+]</code></pre>
+
+        <p>Expected event ordering:</p>
+
+        <pre><code>user.message
+assistant.message
+user.message        # accepted confirmation
+confirmation.accepted
+tool.request        # booking.create
+tool.response
+assistant.message</code></pre>
+
+        <p>
+          Assert that exactly one booking request exists, that it follows the accepted confirmation, and that its arguments equal the confirmed operation.
+        </p>
+
+        <h3>Scenario 2: availability question instead of confirmation</h3>
+
+        <p>Purpose: detect early booking when the user asks for more information.</p>
+
+        <pre><code>[
+  {"role": "user", "text": "I need a consultation next Tuesday."},
+  {"role": "agent", "text": "I can book Tuesday at 14:00 under Alex Morgan. Shall I confirm it?"},
+  {"role": "user", "text": "What other times are available?"}
+]</code></pre>
+
+        <p>Expected result:</p>
+
+        <ul>
+          <li>zero <code>booking.create</code> requests;</li>
+          <li>an availability lookup is allowed only if the product permits it;</li>
+          <li>the availability lookup must not be confused with a booking;</li>
+          <li>the agent should preserve or restate the pending booking details.</li>
+        </ul>
+
+        <p>
+          This scenario matters because a transcript may show a helpful availability answer while a hidden booking request was emitted first.
+        </p>
+
+        <h3>Scenario 3: uncertainty</h3>
+
+        <pre><code>[
+  {"role": "user", "text": "Book Tuesday at 14:00."},
+  {"role": "agent", "text": "I can book Tuesday at 14:00 under Alex Morgan. Shall I confirm it?"},
+  {"role": "user", "text": "I am not sure."}
+]</code></pre>
+
+        <p>
+          Expected result: no booking request. The agent may ask a follow-up question or offer alternatives. “I am not sure” is not an authorization signal.
+        </p>
+
+        <h3>Scenario 4: negative answer</h3>
+
+        <pre><code>[
+  {"role": "agent", "text": "I can book Tuesday at 14:00 under Alex Morgan. Shall I confirm it?"},
+  {"role": "user", "text": "No."}
+]</code></pre>
+
+        <p>
+          Expected result: no booking request. Also check that a delayed retry cannot create the booking after the negative answer.
+        </p>
+
+        <h3>Scenario 5: correction after a summary</h3>
+
+        <pre><code>[
+  {"role": "agent", "text": "I can book Tuesday at 14:00 under Alex Morgan. Shall I confirm it?"},
+  {"role": "user", "text": "Actually, make that 16:00."},
+  {"role": "agent", "text": "I can book Tuesday at 16:00 under Alex Morgan. Shall I confirm it?"},
+  {"role": "user", "text": "Yes."}
+]</code></pre>
+
+        <p>
+          Expected result: no request for 14:00, and one request for 16:00 only after the second confirmation. This tests whether the first confirmation state is invalidated when a protected field changes.
+        </p>
+
+        <h3>Scenario 6: confirmation for a different operation</h3>
+
+        <pre><code>[
+  {"role": "agent", "text": "I can book Tuesday at 14:00. Shall I confirm it?"},
+  {"role": "user", "text": "Yes, send me the details by email."}
+]</code></pre>
+
+        <p>
+          Expected result: the sentence may authorize an email, but it does not authorize a booking unless the product explicitly defines it that way. Separate permissions for separate side effects.
+        </p>
+
+        <h3>Scenario 7: field injection through speech recognition</h3>
+
+        <p>
+          Voice transcription can introduce substitutions such as “fourteen hundred” becoming “four hundred,” or a name being normalized incorrectly. Test with a controlled transcript fixture and verify that the value in the tool request is the value that was confirmed, not merely the value first recognized.
+        </p>
+
+        <pre><code>[
+  {"role": "user", "text": "Book Tuesday at fourteen hundred."},
+  {"role": "agent", "text": "I heard Tuesday at 14:00. Is that correct?"},
+  {"role": "user", "text": "Yes."}
+]</code></pre>
+
+        <p>
+          The expected operation is the normalized value shown in the confirmation, provided that the normalization policy allows it. If the agent silently changes the value without saying so, the test should fail or require clarification.
+        </p>
+
+        <h3>Scenario 8: interruption and replay</h3>
+
+        <p>
+          Interrupt the agent while it is reading the summary, then resume the conversation. Check that an interrupted summary does not count as confirmation and that replaying audio does not duplicate a tool request.
+        </p>
+      </section>
+
+      <section>
+        <h2>Assert ordering, not just counts</h2>
+
+        <p>
+          A count assertion such as “one booking was created” misses the central defect. A booking can be created exactly once and still be created too early.
+        </p>
+
+        <p>
+          Use a partial-order assertion for the protected sequence:
+        </p>
+
+        <pre><code>required_order = [
+    "fields.complete",
+    "summary.presented",
+    "confirmation.accepted",
+    "tool.request:booking.create",
+]
+
+def positions(trace, labels):
+    result = []
+    for label in labels:
+        for event in trace.events:
+            event_label = event["type"]
+            if event_label == label:
+                result.append(event["seq"])
+                break
+        else:
+            raise AssertionError(f"Missing required event: {label}")
+    return result
+
+positions_found = positions(trace, required_order)
+assert positions_found == sorted(positions_found)</code></pre>
+
+        <p>
+          This basic form is useful, but production checks should be more precise. There may be multiple summaries, unrelated tools, retries, or parallel events. Identify events by operation ID, turn ID, and protected data where possible.
+        </p>
+
+        <h3>Forbidden-before assertions</h3>
+
+        <p>
+          Add explicit negative assertions for every event that must not happen before confirmation:
+        </p>
+
+        <pre><code>FORBIDDEN_BEFORE_CONFIRMATION = {
+    "booking.create",
+    "booking.cancel",
+    "payment.capture",
+    "customer.update",
+    "dispatch.create",
+}
+
+def assert_no_forbidden_side_effect(trace):
+    confirmed = min(
+        event["seq"]
+        for event in trace.events
+        if event["type"] == "confirmation.accepted"
+    )
+
+    for event in trace.events:
+        if (
+            event["type"] == "tool.request"
+            and event.get("tool") in FORBIDDEN_BEFORE_CONFIRMATION
+            and event["seq"] &lt; confirmed
+        ):
+            raise AssertionError(
+                f"{event['tool']} called before confirmation"
+            )</code></pre>
+
+        <p>
+          Keep read-only tools in a separate allowlist. An availability search may be safe before confirmation; a booking creation is not. The distinction must be explicit rather than inferred from naming conventions.
+        </p>
+      </section>
+
+      <section>
+        <h2>Test data integrity at the same boundary</h2>
+
+        <p>
+          Correct order does not guarantee correct data. Every side-effecting request should be compared against the last accepted confirmation for the same operation.
+        </p>
+
+        <p>Check at least these fields:</p>
+
+        <ul>
+          <li>date and local time;</li>
+          <li>timezone;</li>
+          <li>customer or test identity;</li>
+          <li>service type;</li>
+          <li>duration, when relevant;</li>
+          <li>location or channel;</li>
+          <li>consent or notification preferences;</li>
+          <li>an idempotency key, if the backend supports one.</li>
+        </ul>
+
+        <p>
+          Compare normalized structures, not rendered sentences. For example, “Tuesday afternoon” should not be treated as equal to a concrete time unless the product's policy has resolved the ambiguity and exposed the result to the caller.
+        </p>
+
+        <pre><code>def normalized_booking(data):
+    return {
+        "date": data["date"],
+        "time": data["time"],
+        "timezone": data["timezone"],
+        "name": data["name"].strip().casefold(),
+        "service": data["service"].casefold(),
+    }
+
+assert normalized_booking(tool_args) == normalized_booking(confirmed_data)</code></pre>
+
+        <p>
+          Do not normalize away meaningful differences. Case folding a name may be harmless for comparison, while changing a timezone or rounding a time can alter the operation.
+        </p>
+      </section>
+
+      <section>
+        <h2>Exercise asynchronous and retry behavior</h2>
+
+        <p>
+          Order bugs often appear only when events are concurrent. A voice runtime may stream tokens, process a partial utterance, run a tool call, and receive the final user turn through different queues.
+        </p>
+
+        <p>Include controlled tests for:</p>
+
+        <ol>
+          <li>tool latency while the user changes their answer;</li>
+          <li>duplicate delivery of the same user turn;</li>
+          <li>late arrival of a “no” after a tool request was queued;</li>
+          <li>network timeout followed by an automatic retry;</li>
+          <li>agent reconnect after a dropped audio stream;</li>
+          <li>barge-in during the confirmation prompt;</li>
+          <li>two simultaneous sessions sharing a test identity.</li>
+        </ol>
+
+        <p>
+          A safe implementation should make the authorization check close to the side effect, not only in the language model prompt. If a request is queued before confirmation, the executor should re-check authorization and the operation fingerprint before sending it to the external system.
+        </p>
+
+        <p>A useful executor boundary looks like this:</p>
+
+        <pre><code>def execute_booking(session, operation, trace):
+    if not session.confirmed_operation:
+        raise PermissionError("booking requires confirmation")
+
+    if session.confirmed_operation != operation:
+        raise PermissionError("operation differs from confirmation")
+
+    trace.add(
+        "tool.request",
+        tool="booking.create",
+        args=operation,
+        authorization="confirmed",
+    )
+
+    return booking_backend.create(
+        operation,
+        idempotency_key=session.operation_id,
+    )</code></pre>
+
+        <p>
+          The example expresses a design requirement, not a verified implementation. Whether the check belongs in the agent runtime, a policy service, or the backend depends on the system architecture. The side-effect boundary should nevertheless reject unauthorized or mismatched operations.
+        </p>
+      </section>
+
+      <section>
+        <h2>Use a separate policy oracle</h2>
+
+        <p>
+          If the same model both conducts the conversation and decides whether the user confirmed, a test can accidentally validate the model against its own interpretation. A separate <a href="../glossary.html#oracle">test oracle</a> makes the rule inspectable.
+        </p>
+
+        <p>
+          The oracle can be a deterministic function, a small state machine, or a manually authored scenario label. It should answer:
+        </p>
+
+        <ul>
+          <li>which operation is pending;</li>
+          <li>whether all required fields are known;</li>
+          <li>what exact text or structured event establishes confirmation;</li>
+          <li>whether a correction invalidates prior confirmation;</li>
+          <li>which tool classes are read-only and which have side effects.</li>
+        </ul>
+
+        <p>
+          For high-risk actions, prefer explicit confirmation tokens in the runtime state rather than asking a test to infer them from prose. For example, the policy layer may emit <code>confirmation.accepted(operation_id="op-123")</code> only after validating the user's turn against the pending operation.
+        </p>
+      </section>
+
+      <section>
+        <h2>Run the checks in layers</h2>
+
+        <p>
+          A repeatable test suite should separate fast deterministic checks from slower voice-level tests.
+        </p>
+
+        <h3>Layer 1: policy unit tests</h3>
+
+        <p>
+          Feed the confirmation policy synthetic text and pending operations. These tests should cover affirmative, negative, ambiguous, corrective, unrelated, and adversarial utterances. They do not require audio or a live model.
+        </p>
+
+        <h3>Layer 2: orchestration tests</h3>
+
+        <p>
+          Run the agent against a fake tool server. Inspect the complete trace and assert order, operation identity, and retry behavior. This layer detects the most important early-call bugs.
+        </p>
+
+        <h3>Layer 3: speech-to-text fixtures</h3>
+
+        <p>
+          Replay recorded or generated audio fixtures with known transcripts. Keep the fixtures synthetic or consented, and redact personal information. Compare the recognized values with the values spoken, confirmed, and submitted.
+        </p>
+
+        <h3>Layer 4: end-to-end sandbox tests</h3>
+
+        <p>
+          If an external provider offers a sandbox, run a small set of tests against it. Confirm that the sandbox record is isolated and removable according to its own rules. Do not use production credentials or real customer data for this article's test design.
+        </p>
+
+        <p>
+          The layers answer different questions. Passing a policy unit test does not prove that an asynchronous executor enforces the policy. Passing a transcript review does not prove that the tool call waited. Passing an orchestration test with text input does not prove that speech recognition preserves the confirmed fields.
+        </p>
+      </section>
+
+      <section>
+        <h2>Example command-line workflow</h2>
+
+        <p>
+          The following commands show one possible workflow for a project that exposes a test runner. The names are illustrative; replace them with the commands used by your repository.
+        </p>
+
+        <pre><code># Run deterministic confirmation-policy cases
+pytest tests/policy/test_confirmation.py -q
+
+# Run orchestration scenarios with the booking tool replaced by a mock
+pytest tests/orchestration/test_booking_order.py -q
+
+# Run only negative scenarios
+pytest tests/orchestration/test_booking_order.py -q -m negative
+
+# Save an event trace for inspection
+pytest tests/orchestration/test_booking_order.py::test_availability_question \
+  --trace-out artifacts/traces/availability-question.json</code></pre>
+
+        <p>
+          A useful CI rule is to fail the build if a side-effecting tool appears before its authorization event, even when the final assistant message and test count look correct.
+        </p>
+
+        <pre><code>python scripts/check_trace_order.py \
+  artifacts/traces/*.json \
+  --forbid-before confirmation.accepted \
+  --tools booking.create,booking.cancel,payment.capture</code></pre>
+
+        <p>
+          Keep trace artifacts safe. They should contain synthetic identities, redacted audio references, and no authorization headers, API keys, phone numbers, or real appointment details.
+        </p>
+      </section>
+
+      <section>
+        <h2>Failure cases worth making permanent</h2>
+
+        <p>
+          When a test catches a defect, preserve the smallest scenario that reproduces it. A regression test should explain the violated contract, not merely encode a particular model response.
+        </p>
+
+        <h3>Early booking after an availability question</h3>
+
+        <p>
+          Symptom: the user asks for alternatives, but the booking request already exists. Detection: a <code>booking.create</code> event precedes <code>confirmation.accepted</code>.
+        </p>
+
+        <h3>Wrong time after correction</h3>
+
+        <p>
+          Symptom: the user changes 14:00 to 16:00, confirms, and the request contains 14:00. Detection: compare the request to the latest confirmed operation, not the first summary.
+        </p>
+
+        <h3>Confirmation leakage across operations</h3>
+
+        <p>
+          Symptom: approval of an email or a read-only lookup is reused to authorize a booking. Detection: bind confirmation to an operation ID and operation type.
+        </p>
+
+        <h3>Duplicate booking after retry</h3>
+
+        <p>
+          Symptom: a timeout causes a second create request. Detection: assert one logical operation and inspect idempotency keys. The backend should make duplicate submission safe where possible.
+        </p>
+
+        <h3>Tool call hidden by transcript rendering</h3>
+
+        <p>
+          Symptom: the transcript has no suspicious line, but the backend contains a side effect. Detection: test against raw runtime events or a tool-server access log, not only the user-facing transcript.
+        </p>
+
+        <h3>Confirmation inferred from silence</h3>
+
+        <p>
+          Symptom: a caller is silent, interrupted, or disconnected and the agent proceeds. Detection: include no-audio, partial-audio, timeout, and hang-up scenarios. Silence is not affirmative confirmation unless the product explicitly defines and safeguards such a flow.
+        </p>
+      </section>
+
+      <section>
+        <h2>Verification checklist</h2>
+
+        <p>
+          Before treating an action-order test as meaningful, verify the test itself:
+        </p>
+
+        <ul>
+          <li>The side-effecting tool is replaced with a spy, mock, or isolated sandbox.</li>
+          <li>The trace includes tool requests that are not visible in the transcript.</li>
+          <li>The assertion checks sequence, not only final state or call count.</li>
+          <li>The confirmation is tied to the exact operation and data.</li>
+          <li>Corrections invalidate old confirmation.</li>
+          <li>Read-only tools are distinguished from side-effecting tools.</li>
+          <li>Retries and late events are covered.</li>
+          <li>Test data is synthetic or properly consented and redacted.</li>
+          <li>No secret is printed in trace artifacts or failure messages.</li>
+          <li>The test fails when the tool is called one event too early.</li>
+        </ul>
+
+        <p>
+          A particularly strong verification step is mutation testing: deliberately move the tool call before confirmation in a test double or orchestration branch and confirm that the suite fails. If the suite still passes, the assertion is observing the wrong layer or is too permissive.
+        </p>
+      </section>
+
+      <section>
+        <h2>Limitations and scope</h2>
+
+        <p>
+          These checks can prove that recorded events satisfy a defined ordering contract for the scenarios exercised. They cannot prove that every possible natural-language utterance will be interpreted correctly, that an external provider will never duplicate a request, or that a production deployment has identical timing and configuration.
+        </p>
+
+        <p>
+          Audio replay also has limits. A fixture can cover known recognition errors, but it cannot represent every accent, interruption pattern, acoustic environment, or barge-in timing. Treat coverage as evidence about tested scenarios, not as a universal guarantee.
+        </p>
+
+        <p>
+          Finally, a confirmation rule is a product and risk decision. Some actions may require explicit words; others may require a button, keypad input, authenticated session, or human review. The test should enforce the rule that the product actually intends, and that rule should be documented independently of the model prompt.
+        </p>
+      </section>
+
+      <section>
+        <h2>Conclusion</h2>
+
+        <p>
+          To test the action order of a voice AI agent, observe the execution trace rather than trusting the transcript. Replace side-effecting tools with recording mocks or isolated sandboxes, define the exact operation that must be confirmed, generate adversarial conversation scenarios, and assert that authorization precedes the tool request. Then compare submitted data with the data the caller approved and exercise retries, interruptions, corrections, and delayed events.
+        </p>
+
+        <p>
+          The most important failure is often only one event wide: the booking happens before the “yes.” A trace-based test makes that defect visible, reproducible, and preventable.
+        </p>
+      </section>
+
+      <footer class="reading-footer">
+        <p>Continue with the <a href="guides.html">Agent Lab Journal guides</a> or look up terms in the <a href="../glossary.html">glossary</a>.</p>
+      </footer>
+    <section class="service-note">
+  <b>We publish what works for us—and implement the same solutions for your business.</b>
+  We design AI automation, Telegram bots, chats, and AI agents for real-world processes.
+  <a href="../contacts-en.html">Discuss your project →</a>
+</section>
+</article>
+  </main>
+
+  <footer class="site-footer">
+    <div class="site-footer__inner">
+      <p>Agent Lab Journal</p>
+      <nav aria-label="Footer navigation">
+        <a href="guides.html">Guides</a>
+        <a href="../glossary.html">Glossary</a>
+      </nav>
+    </div>
+  </footer>
+</body>
+</html>
