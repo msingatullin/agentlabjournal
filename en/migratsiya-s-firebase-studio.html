@@ -1,0 +1,420 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>How to migrate an app from Firebase Studio before the shutdown</title>
+  <meta name="description" content="How to migrate an app from Firebase Studio before the shutdown: export source code, preserve configuration, move to a repository, test authentication and builds, and prepare deployment.">
+  <link rel="canonical" href="https://agentlabjournal.online/en/migratsiya-s-firebase-studio.html">
+  <link rel="stylesheet" href="../style.css">
+  <link rel="stylesheet" href="../reading.css">
+
+  <meta property="og:type" content="article">
+  <meta property="og:locale" content="en_US">
+  <meta property="og:title" content="How to migrate an app from Firebase Studio before the shutdown">
+  <meta property="og:description" content="A reproducible migration checklist for exporting a Firebase Studio workspace, moving the app to a repository, testing it outside the workspace, and preparing deployment.">
+  <meta property="og:url" content="https://agentlabjournal.online/en/migratsiya-s-firebase-studio.html">
+  <meta property="og:image" content="https://agentlabjournal.online/assets/covers/llm-context-window-budget-social.png">
+  <meta property="og:site_name" content="Agent Lab Journal">
+  <meta property="article:published_time" content="2026-11-27">
+  <meta property="article:modified_time" content="2026-11-27">
+
+  <meta name="twitter:card" content="summary_large_image">
+  <meta name="twitter:title" content="How to migrate an app from Firebase Studio before the shutdown">
+  <meta name="twitter:description" content="Export, migrate, test, and prepare a Firebase Studio app for continued development and deployment.">
+  <meta name="twitter:image" content="https://agentlabjournal.online/assets/covers/llm-context-window-budget-social.png">
+
+  <script type="application/ld+json">
+  {
+    "@context": "https://schema.org",
+    "@type": "Article",
+    "headline": "How to migrate an app from Firebase Studio before the shutdown",
+    "description": "A reproducible migration checklist for exporting a Firebase Studio workspace, moving the app to a repository, testing it outside the workspace, and preparing deployment.",
+    "image": ["https://agentlabjournal.online/assets/covers/llm-context-window-budget-social.png"],
+    "dateModified": "2026-11-27",
+    "author": {
+      "@type": "Organization",
+      "name": "Agent Lab Journal"
+    },
+    "publisher": {
+      "@type": "Organization",
+      "name": "Agent Lab Journal",
+      "url": "https://agentlabjournal.online/"
+    },
+    "mainEntityOfPage": {
+      "@type": "WebPage",
+      "@id": "https://agentlabjournal.online/en/migratsiya-s-firebase-studio.html"
+    }
+  }
+  </script>
+<link rel="stylesheet" href="../homepage.css"><link rel="stylesheet" href="../max-promo.css">  <meta property="og:image:alt" content="Как перенести приложение из Firebase Studio до закрытия среды">
+</head>
+<body>
+  <header class="site-header">
+    <div class="site-header__inner">
+      <a class="site-header__brand" href="../index.html">Agent Lab Journal</a>
+      <nav class="site-nav" aria-label="Main navigation">
+        <a href="guides.html">Guides</a>
+        <a href="../glossary.html">Glossary</a>
+      </nav>
+    </div>
+  </header>
+
+  <main>
+    <article class="reading">
+      <header class="reading-header">
+        <p class="reading-kicker">Migration guide</p>
+        <h1>How to migrate an app from Firebase Studio before the shutdown</h1>
+        <figure class="article-cover" data-editorial-cover="migratsiya-s-firebase-studio"><img src="../assets/covers/llm-context-window-budget.png" alt="Как перенести приложение из Firebase Studio до закрытия среды" width="1280" height="720" fetchpriority="high"><figcaption>Temporary fallback cover; replace in editorial pass.</figcaption></figure>
+        <div class="reading-meta">
+          <span>15 min read</span>
+          <span>Updated November 27, 2026</span>
+          <span>Level: from scratch</span>
+        </div>
+        <p class="reading-lead">
+          If your app still exists only inside <a href="../glossary.html#firebase-studio">Firebase Studio</a>, treat the workspace as temporary. Export the source code, identify every external dependency, place the project in a <a href="../glossary.html#repository">repository</a>, and prove that it can build and run elsewhere before the shutdown deadline.
+        </p>
+      </header>
+
+      <div class="reading-body">
+        <p>
+          This guide describes a cautious migration path for a typical web app created or edited in Firebase Studio. It does not assume a particular framework, hosting provider, project ID, or authentication setup. Commands below are examples: replace them with the commands declared by your own project files.
+        </p>
+
+        <aside class="reading-callout">
+          <strong>Important:</strong> Do not copy secrets into this article, a public repository, screenshots, shell history, or issue comments. A successful export is not the same as a verified migration.
+        </aside>
+
+        <h2>What you should have at the end</h2>
+
+        <p>A migration is complete only when you can answer “yes” to all of these questions:</p>
+
+        <ul>
+          <li>The source code and required project files are stored outside Firebase Studio.</li>
+          <li>The repository contains a documented install and build procedure.</li>
+          <li>The app starts locally from a clean checkout.</li>
+          <li>Authentication works using the intended test accounts and authorized domains.</li>
+          <li>The production build completes without relying on the old workspace.</li>
+          <li>The deployment target, environment variables, and rollback path are documented.</li>
+        </ul>
+
+        <p>
+          The last three items require testing in your own environment. This article does not claim that any particular app, provider, or command has been tested here.
+        </p>
+
+        <h2>Case: a small app that must leave the workspace</h2>
+
+        <p>
+          Consider a simple app with a frontend, a Firebase backend, sign-in, and a deployment pipeline configured in the workspace. Its source files may be easy to download, but the application can still fail after export because configuration is often split between files, environment variables, Firebase Console settings, service accounts, and provider-specific build settings.
+        </p>
+
+        <p>
+          The safe approach is to create an inventory before changing anything. Record names and locations, not secret values:
+        </p>
+
+        <ul>
+          <li>the framework and runtime version;</li>
+          <li>the package manager and lockfile;</li>
+          <li>the build, test, lint, and start scripts;</li>
+          <li>Firebase project identifiers and enabled services;</li>
+          <li>authentication providers, authorized domains, and redirect URLs;</li>
+          <li>database or storage rules and indexes;</li>
+          <li>environment-variable names required by the application;</li>
+          <li>the current deployment provider and its build settings.</li>
+        </ul>
+
+        <h2>Step 1: freeze a recoverable copy</h2>
+
+        <p>
+          Before editing or deleting anything, make an export of the workspace using the export or download option available in your Firebase Studio interface. If the interface offers a connection to a Git provider, use it only after checking which files will be committed.
+        </p>
+
+        <p>
+          Keep the first export unchanged. Name it with a date and store it in a private location controlled by your team. The copy is a recovery artifact, not yet a trustworthy source of truth.
+        </p>
+
+        <p>
+          If the workspace contains generated files, dependency directories, build output, or local caches, do not assume they belong in version control. Inspect the project structure and the existing ignore file before committing.
+        </p>
+
+        <h2>Step 2: inspect the exported project</h2>
+
+        <p>From the exported project directory, identify the package manager and available scripts.</p>
+
+        <pre><code>ls -la
+find . -maxdepth 2 -type f | sort
+sed -n '1,220p' package.json</code></pre>
+
+        <p>
+          The exact commands may differ on Windows. The important evidence is in the files themselves. Look for <code>package.json</code>, a lockfile such as <code>package-lock.json</code>, <code>pnpm-lock.yaml</code>, or <code>yarn.lock</code>, framework configuration, Firebase configuration, and deployment configuration.
+        </p>
+
+        <p>Read the scripts section before running anything:</p>
+
+        <pre><code>{
+  "scripts": {
+    "dev": "...",
+    "build": "...",
+    "start": "...",
+    "test": "...",
+    "lint": "..."
+  }
+}</code></pre>
+
+        <p>
+          Do not invent a missing build command. If the project has no build script, identify the framework’s documented build command and record the decision in the repository README.
+        </p>
+
+        <h2>Step 3: separate configuration from secrets</h2>
+
+        <p>
+          Configuration tells the app where to connect. Secrets authorize access. They must be handled differently. Search for environment-variable references and suspicious hard-coded credentials, but avoid printing their values:
+        </p>
+
+        <pre><code>rg -n --hidden \
+  -g '!node_modules' \
+  -g '!dist' \
+  -g '!build' \
+  'process\.env|import\.meta\.env|AIza|PRIVATE_KEY|CLIENT_SECRET|TOKEN|PASSWORD' .</code></pre>
+
+        <p>
+          A browser Firebase configuration object can contain identifiers intended for client-side use, but that does not make every nearby value safe to publish. Treat service-account keys, private keys, access tokens, database administrator credentials, and deployment tokens as secrets.
+        </p>
+
+        <p>
+          Create a safe configuration template containing names only:
+        </p>
+
+        <pre><code># .env.example
+PUBLIC_FIREBASE_API_KEY=
+PUBLIC_FIREBASE_AUTH_DOMAIN=
+PUBLIC_FIREBASE_PROJECT_ID=
+PUBLIC_FIREBASE_STORAGE_BUCKET=
+PUBLIC_FIREBASE_MESSAGING_SENDER_ID=
+PUBLIC_FIREBASE_APP_ID=</code></pre>
+
+        <p>
+          Use the variable names your framework expects. Add the real <code>.env</code> file to <code>.gitignore</code>, and verify that it is not already tracked:
+        </p>
+
+        <pre><code>git check-ignore -v .env .env.local
+git ls-files | rg '(^|/)\.env(\.|$)|service-account|credentials|secret'</code></pre>
+
+        <p>
+          If a secret was committed, removing the file is not enough. Rotate or revoke the exposed credential through the relevant provider, then remove it from the repository history using a reviewed procedure.
+        </p>
+
+        <h2>Step 4: create the repository</h2>
+
+        <p>
+          Create an empty private repository in the Git provider selected by your team. Do not initialize it with a second README or unrelated template if you already have a project directory.
+        </p>
+
+        <p>From the exported project directory:</p>
+
+        <pre><code>git init
+git add .
+git status
+git commit -m "Preserve exported app before migration"
+git branch -M main
+git remote add origin https://example.com/OWNER/REPOSITORY.git
+git push -u origin main</code></pre>
+
+        <p>
+          The remote URL above is an example, not a value to copy. Confirm the destination before pushing. Review <code>git status</code> and the staged file list for secrets, personal data, large generated files, and unrelated workspace metadata.
+        </p>
+
+        <p>
+          Add a README that states the runtime version, package-manager command, required environment-variable names, local start command, build command, deployment target, and known limitations. Never put secret values in the README.
+        </p>
+
+        <h2>Step 5: reproduce the install from a clean checkout</h2>
+
+        <p>
+          A migration is not reproducible if it works only in the exported directory with its existing dependency directory. Clone the repository into a new directory or use a clean machine.
+        </p>
+
+        <pre><code>git clone https://example.com/OWNER/REPOSITORY.git app-migration-check
+cd app-migration-check</code></pre>
+
+        <p>
+          Install with the package manager that matches the lockfile. Examples:
+        </p>
+
+        <pre><code>npm ci
+# or
+pnpm install --frozen-lockfile
+# or
+yarn install --frozen-lockfile</code></pre>
+
+        <p>
+          If a frozen install fails, do not immediately regenerate the lockfile. First check the runtime and package-manager versions, the lockfile committed to the repository, private package access, and whether the original workspace used an undocumented dependency.
+        </p>
+
+        <h2>Step 6: verify the development build</h2>
+
+        <p>
+          Copy only the required values into a local environment file. Start the app using the script from <code>package.json</code>:
+        </p>
+
+        <pre><code>npm run dev</code></pre>
+
+        <p>
+          Open the local URL shown by the command. Check the primary route, browser console, network requests, static assets, and any server-side logs. Record the runtime version and the exact command that worked.
+        </p>
+
+        <p>
+          Then run the production build:
+        </p>
+
+        <pre><code>npm run build</code></pre>
+
+        <p>
+          A build that completes is useful evidence, but it does not prove that authentication, database rules, redirects, or deployment work. Keep those checks separate.
+        </p>
+
+        <h2>Step 7: test authentication deliberately</h2>
+
+        <p>
+          <a href="../glossary.html#authentication">Authentication</a> has at least two sides: the client configuration and the provider’s project settings. Test the same sign-in flows that real users need, using non-production test accounts where possible.
+        </p>
+
+        <ol>
+          <li>Open the app from the local development URL.</li>
+          <li>Attempt the supported sign-in flow.</li>
+          <li>Confirm that the user session appears after sign-in.</li>
+          <li>Reload the page and check whether the session is restored as intended.</li>
+          <li>Sign out and verify that protected content is no longer available.</li>
+          <li>Inspect the browser console and network responses for redirect or domain errors.</li>
+        </ol>
+
+        <p>
+          If sign-in fails locally, compare the local origin with the authorized domains configured for the Firebase project. For provider redirects, verify the callback URL and the application’s public URL. Do not “fix” the issue by disabling security rules or publishing credentials.
+        </p>
+
+        <h2>Step 8: verify Firebase services and rules</h2>
+
+        <p>
+          List the Firebase services the code actually uses. Common examples include Authentication, Firestore, Realtime Database, Storage, Cloud Functions, and Hosting. For each service, identify its configuration and a safe test action.
+        </p>
+
+        <p>
+          If the project uses Firestore or Realtime Database, test both an allowed operation and a deliberately denied operation with a test account. If it uses Storage, test the expected upload and download boundaries. Treat a successful request as evidence only for that specific path and account; it is not a complete security review.
+        </p>
+
+        <p>
+          Preserve rules and indexes in source control when the project supports that workflow. Review them before deployment because an export may omit console-only settings or generated metadata.
+        </p>
+
+        <h2>Step 9: prepare deployment outside Firebase Studio</h2>
+
+        <p>
+          Choose the deployment target before the workspace disappears. It may be Firebase Hosting, a Git-connected hosting provider, a container platform, or another service compatible with the framework.
+        </p>
+
+        <p>Document these values in the repository without exposing secrets:</p>
+
+        <ul>
+          <li>the build command;</li>
+          <li>the output directory;</li>
+          <li>the runtime or Node.js version;</li>
+          <li>required environment-variable names;</li>
+          <li>the branch used for production;</li>
+          <li>redirect and rewrite rules;</li>
+          <li>the deployment command or provider workflow;</li>
+          <li>the rollback procedure.</li>
+        </ul>
+
+        <p>
+          Configure environment variables in the deployment provider’s secret store. Deploy a preview or staging environment first. Verify the deployed URL, sign-in, protected routes, API calls, static assets, and browser console before promoting the build.
+        </p>
+
+        <h2>Verification checklist</h2>
+
+        <p>Use this checklist as the acceptance record for the migration:</p>
+
+        <ul>
+          <li>Repository clone succeeds in a new directory.</li>
+          <li>Dependency installation succeeds using the committed lockfile.</li>
+          <li>Development server starts with documented commands.</li>
+          <li>Production build completes from the clean checkout.</li>
+          <li>Required environment-variable names are documented.</li>
+          <li>No secrets or personal data are tracked by Git.</li>
+          <li>Sign-in and sign-out work with a test account.</li>
+          <li>Session persistence behaves as expected after reload.</li>
+          <li>Database and storage operations follow the intended rules.</li>
+          <li>Preview deployment loads the application correctly.</li>
+          <li>Production deployment and rollback steps are documented.</li>
+          <li>The repository is accessible to the people responsible for maintenance.</li>
+        </ul>
+
+        <p>
+          Save the date, commit identifier, runtime version, commands, and observed failures in a migration note. This creates an audit trail without claiming more than you verified.
+        </p>
+
+        <h2>Common failure cases</h2>
+
+        <h3>The export is missing files</h3>
+        <p>
+          Compare the exported directory with the workspace tree. Generated files may be excluded intentionally, while ignored source files may indicate a configuration problem. Re-export from the original workspace and inspect hidden files before deciding what to restore.
+        </p>
+
+        <h3>The install works only in the old workspace</h3>
+        <p>
+          Check the lockfile, runtime version, private registry settings, native dependencies, and environment variables. The workspace may have supplied tools or credentials implicitly. Make the dependency explicit or document the required setup.
+        </p>
+
+        <h3>The app builds but the browser shows a blank page</h3>
+        <p>
+          Inspect the browser console, network requests, output directory, base path, and client-side routing rules. A successful compiler result does not prove that the server returns the correct fallback document for every route.
+        </p>
+
+        <h3>Authentication fails after deployment</h3>
+        <p>
+          Compare the deployed origin with authorized domains and redirect URLs. Confirm that the deployed environment received the required public configuration and that no server-side secret was accidentally exposed to client code.
+        </p>
+
+        <h3>Deployment cannot find the output directory</h3>
+        <p>
+          Read the framework configuration and the actual build output. Set the provider’s output directory to the directory produced by the build, then repeat the preview deployment from a clean commit.
+        </p>
+
+        <h2>Limitations and scope</h2>
+
+        <p>
+          This guide cannot determine the exact Firebase Studio shutdown date, the contents of a specific workspace, or the settings of your Firebase project. Confirm deadline notices and product-specific instructions in the official channels available to your account. The commands are illustrative and must be matched to the project’s framework and package manager.
+        </p>
+
+        <p>
+          Exporting source code also does not automatically migrate data, billing ownership, custom domains, scheduled jobs, third-party integrations, or production credentials. Treat each of those as a separate workstream with its own owner and verification evidence.
+        </p>
+
+        <h2>Final handoff</h2>
+
+        <p>
+          Once the repository has a clean-checkout build, tested authentication, a documented deployment path, and no exposed secrets, the app is no longer dependent on the Firebase Studio workspace for continued work. Keep the original export until the new process has been exercised by the people who will maintain it.
+        </p>
+
+        <p>
+          Continue with the site’s <a href="guides.html">guides</a> or look up unfamiliar terms in the <a href="../glossary.html">glossary</a>.
+        </p>
+      </div>
+    <section class="service-note">
+  <b>We publish what works for us—and implement the same solutions for your business.</b>
+  We design AI automation, Telegram bots, chats, and AI agents for real-world processes.
+  <a href="../contacts-en.html">Discuss your project →</a>
+</section>
+</article>
+  </main>
+
+  <footer class="site-footer">
+    <div class="site-footer__inner">
+      <span>Agent Lab Journal</span>
+      <nav aria-label="Footer navigation">
+        <a href="guides.html">Guides</a>
+        <a href="../glossary.html">Glossary</a>
+      </nav>
+    </div>
+  </footer>
+</body>
+</html>
