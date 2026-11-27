@@ -1,0 +1,504 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Асинхронный генератор корпоративной брошюры на FastAPI с потоковой выдачей</title>
+  <meta name="description" content="Асинхронный генератор корпоративной брошюры на FastAPI с потоковой выдачей: очистка HTML, фильтрация ссылок, контроль контекста, AsyncOpenAI и резервный LLM-провайдер.">
+  <link rel="canonical" href="https://agentlabjournal.online/async-fastapi-generator-broshyur.html">
+  <link rel="stylesheet" href="style.css">
+  <link rel="stylesheet" href="reading.css">
+
+  <meta property="og:type" content="article">
+  <meta property="og:locale" content="ru_RU">
+  <meta property="og:title" content="Асинхронный генератор корпоративной брошюры на FastAPI с потоковой выдачей">
+  <meta property="og:description" content="Практическая архитектура сервиса для сбора сайта, фильтрации страниц и потоковой генерации корпоративной брошюры.">
+  <meta property="og:url" content="https://agentlabjournal.online/async-fastapi-generator-broshyur.html">
+
+  <meta name="twitter:card" content="summary">
+  <meta name="twitter:title" content="Асинхронный генератор корпоративной брошюры на FastAPI с потоковой выдачей">
+  <meta name="twitter:description" content="FastAPI, BeautifulSoup, AsyncOpenAI, StreamingResponse и резервный LLM-провайдер в одном рабочем конвейере.">
+
+  <script type="application/ld+json">
+  {
+    "@context": "https://schema.org",
+    "@type": "Article",
+    "headline": "Асинхронный генератор корпоративной брошюры на FastAPI с потоковой выдачей",
+    "description": "Практическая архитектура сервиса для сбора сайта, фильтрации страниц и потоковой генерации корпоративной брошюры.",
+    "inLanguage": "ru-RU",
+    "mainEntityOfPage": {
+      "@type": "WebPage",
+      "@id": "https://agentlabjournal.online/async-fastapi-generator-broshyur.html"
+    },
+    "publisher": {
+      "@type": "Organization",
+      "name": "Agent Lab Journal"
+    }
+  }
+  </script>
+<link rel="stylesheet" href="homepage.css"><link rel="stylesheet" href="max-promo.css">  <meta property="og:image" content="https://agentlabjournal.online/assets/covers/llm-context-window-budget-social.png">
+  <meta property="og:image:alt" content="Асинхронный генератор корпоративной брошюры на FastAPI с потоковой выдачей">
+  <meta name="twitter:image" content="https://agentlabjournal.online/assets/covers/llm-context-window-budget-social.png">
+</head>
+<body>
+  <header class="site-header">
+    <div class="container">
+      <a class="site-brand" href="index.html">Agent Lab Journal</a>
+      <nav aria-label="Основная навигация">
+        <a href="guides.html">Практические руководства</a>
+        <a href="glossary.html">Глоссарий</a>
+      </nav>
+    </div>
+  </header>
+
+  <main>
+    <article class="reading">
+<a href="https://max.ru/channel_AgentLab?utm_source=agentlabjournal&utm_medium=article&utm_campaign=max_channel&utm_content=article_footer" class="max-promo-block" target="_blank" rel="noopener noreferrer" aria-label="Самое важное из мира AI в канале MAX AgentLab">
+  <span class="max-promo-block__icon" aria-hidden="true"></span>
+  <span class="max-promo-block__content"><span class="max-promo-block__title">Самое важное из мира AI — в канале MAX AgentLab</span><span class="max-promo-block__desc">Отдельные разборы, инструменты и практические схемы</span></span>
+  <span class="max-promo-block__arrow" aria-hidden="true">→</span>
+</a>
+<a href="https://t.me/pelmenews?utm_source=agentlabjournal&utm_medium=article&utm_campaign=telegram_channel&utm_content=article_intro" class="telegram-promo-block" target="_blank" rel="noopener noreferrer" aria-label="Читайте Agent Lab в Telegram">
+  <span class="telegram-promo-block__icon" aria-hidden="true"></span>
+  <span class="telegram-promo-block__content">
+    <span class="telegram-promo-block__title">Читайте Agent Lab в Telegram</span>
+    <span class="telegram-promo-block__desc">Разборы, кейсы и новости о практических AI-агентах без лишней воды.</span>
+  </span>
+  <span class="telegram-promo-block__arrow" aria-hidden="true">→</span>
+</a>
+      <div class="reading-meta">
+        <span>Практическое руководство</span>
+        <span>Средний уровень</span>
+        <span>Чтение: до 12 минут</span>
+      </div>
+
+      <h1>Асинхронный генератор корпоративной брошюры на FastAPI с потоковой выдачей</h1>
+        <figure class="article-cover" data-editorial-cover="async-fastapi-generator-broshyur"><img src="assets/covers/llm-context-window-budget.png" alt="Асинхронный генератор корпоративной брошюры на FastAPI с потоковой выдачей" width="1280" height="720" fetchpriority="high"><figcaption>Temporary fallback cover; replace in editorial pass.</figcaption></figure>
+
+      <p class="lead">
+        Генерация корпоративной брошюры по сайту состоит не только из запроса к языковой модели. Нужно получить HTML, удалить навигационный шум, выбрать полезные страницы, ограничить объём контекста и показать пользователю результат без долгого ожидания. В этой статье соберём такой конвейер на FastAPI.
+      </p>
+
+      <p>
+        Под <a href="glossary.html#html-cleaning">HTML-очисткой</a> будем понимать удаление из страницы элементов, которые не помогают описать компанию: меню, формы, скрипты, стили, футеры и повторяющиеся служебные блоки.
+      </p>
+
+      <h2>Что будем строить</h2>
+
+      <p>Сервис принимает URL сайта и возвращает поток текста. Конвейер выглядит так:</p>
+
+      <ol>
+        <li>проверяет URL и ограничивает область обхода исходным доменом;</li>
+        <li>загружает главную страницу и извлекает ссылки;</li>
+        <li>отбрасывает ссылки по расширению, якорю, протоколу и очевидному шуму;</li>
+        <li>вторым этапом ранжирует оставшиеся страницы по полезности;</li>
+        <li>очищает HTML и обрезает текст до заданного бюджета;</li>
+        <li>передаёт контекст модели через асинхронный клиент;</li>
+        <li>отдаёт токены пользователю через <code>StreamingResponse</code>;</li>
+        <li>переключается на резервный провайдер при ошибке основного.</li>
+      </ol>
+
+      <p>
+        Пример ниже показывает архитектуру и ключевые фрагменты. Названия моделей, адреса провайдеров и лимиты являются настройками примера, а не утверждением о доступности конкретного сервиса.
+      </p>
+
+      <h2>Зависимости и безопасный запуск</h2>
+
+      <p>Создайте отдельное окружение и установите минимальный набор библиотек:</p>
+
+      <pre><code>python -m venv .venv
+. .venv/bin/activate
+python -m pip install --upgrade pip
+pip install fastapi uvicorn httpx beautifulsoup4 lxml openai pydantic-settings</code></pre>
+
+      <p>Секреты не следует хранить в исходном коде. Используйте переменные окружения:</p>
+
+      <pre><code>export OPENAI_API_KEY="замените-на-ключ-в-локальном-окружении"
+export FALLBACK_API_KEY="замените-на-резервный-ключ"
+export PRIMARY_MODEL="модель-основного-провайдера"
+export FALLBACK_MODEL="модель-резервного-провайдера"</code></pre>
+
+      <p>
+        В рабочей среде ключи лучше передавать через секрет-хранилище или менеджер переменных окружения. Не добавляйте файл с секретами в систему контроля версий.
+      </p>
+
+      <h2>Модель настроек</h2>
+
+      <p>Настройки вынесем в отдельный объект. Это упрощает тестирование и замену провайдера:</p>
+
+      <pre><code>from pydantic_settings import BaseSettings, SettingsConfigDict
+
+class Settings(BaseSettings):
+    primary_api_key: str
+    fallback_api_key: str | None = None
+    primary_model: str = "primary-model"
+    fallback_model: str = "fallback-model"
+    max_pages: int = 8
+    max_chars_per_page: int = 8000
+    request_timeout: float = 15.0
+
+    model_config = SettingsConfigDict(
+        env_prefix="",
+        env_file=".env",
+        extra="ignore"
+    )
+
+settings = Settings(
+    primary_api_key=os.environ["OPENAI_API_KEY"],
+    fallback_api_key=os.getenv("FALLBACK_API_KEY")
+)</code></pre>
+
+      <p>
+        В реальном приложении можно позволить <code>BaseSettings</code> читать переменные автоматически. Важно, чтобы значения лимитов имели консервативные значения по умолчанию.
+      </p>
+
+      <h2>Загрузка и очистка HTML</h2>
+
+      <p>
+        Для сетевых запросов используем <code>httpx.AsyncClient</code>. Таймаут, ограничение размера ответа и проверка домена нужны до передачи данных модели.
+      </p>
+
+      <pre><code>from urllib.parse import urlparse
+import httpx
+from bs4 import BeautifulSoup
+
+async def fetch_html(url: str) -&gt; str:
+    timeout = httpx.Timeout(settings.request_timeout)
+    headers = {"User-Agent": "AgentLabJournalBot/1.0"}
+
+    async with httpx.AsyncClient(
+        timeout=timeout,
+        follow_redirects=True,
+        headers=headers
+    ) as client:
+        response = await client.get(url)
+        response.raise_for_status()
+
+        content_type = response.headers.get("content-type", "")
+        if "text/html" not in content_type:
+            raise ValueError("URL не содержит HTML-документ")
+
+        raw = response.content
+        if len(raw) &gt; 2_000_000:
+            raise ValueError("HTML-документ слишком большой")
+
+        return raw.decode(response.encoding or "utf-8", errors="replace")
+
+def clean_html(html: str) -&gt; str:
+    soup = BeautifulSoup(html, "lxml")
+
+    for tag in soup([
+        "script", "style", "noscript", "svg",
+        "nav", "footer", "form", "aside"
+    ]):
+        tag.decompose()
+
+    text = soup.get_text(" ", strip=True)
+    return " ".join(text.split())</code></pre>
+
+      <p>
+        Этот очиститель намеренно простой. Он не понимает смысл страницы и может удалить полезный блок, если сайт использует нестандартную структуру. Для конкретного домена обычно стоит добавить селекторы основного содержимого.
+      </p>
+
+      <h2>Двухэтапная фильтрация ссылок</h2>
+
+      <p>
+        Одного условия «ссылка ведёт на тот же домен» недостаточно: оно пропустит страницы поиска, календари, PDF-файлы и повторяющиеся URL с параметрами. Поэтому применим два этапа.
+      </p>
+
+      <h3>Этап 1: техническая фильтрация</h3>
+
+      <pre><code>from urllib.parse import urljoin, urldefrag, urlparse
+
+SKIP_EXTENSIONS = (
+    ".pdf", ".jpg", ".jpeg", ".png", ".gif",
+    ".zip", ".doc", ".docx", ".xls", ".xlsx"
+)
+
+SKIP_PARTS = (
+    "/login", "/cart", "/search", "/tag/",
+    "/author/", "/feed"
+)
+
+def same_site(candidate: str, root: str) -&gt; bool:
+    return urlparse(candidate).netloc == urlparse(root).netloc
+
+def technical_filter(href: str, root: str) -&gt; str | None:
+    absolute = urljoin(root, href)
+    absolute, _ = urldefrag(absolute)
+    parsed = urlparse(absolute)
+
+    if parsed.scheme not in {"http", "https"}:
+        return None
+    if not same_site(absolute, root):
+        return None
+
+    path = parsed.path.lower()
+    if path.endswith(SKIP_EXTENSIONS):
+        return None
+    if any(part in path for part in SKIP_PARTS):
+        return None
+
+    return absolute.rstrip("/")</code></pre>
+
+      <h3>Этап 2: смысловой отбор</h3>
+
+      <p>
+        После технического фильтра можно оставить несколько страниц, путь которых похож на корпоративные разделы: <code>about</code>, <code>company</code>, <code>services</code>, <code>products</code>, <code>contacts</code>. Остальные ссылки не обязательно удалять сразу — их можно добавить после приоритетных.
+      </p>
+
+      <pre><code>PRIORITY_WORDS = {
+    "about": 5, "company": 5, "services": 4,
+    "products": 4, "solutions": 4, "contact": 3,
+    "contacts": 3, "team": 2
+}
+
+def score_url(url: str) -&gt; int:
+    path = urlparse(url).path.lower()
+    return sum(weight for word, weight in PRIORITY_WORDS.items()
+               if word in path)
+
+def select_links(html: str, root: str, limit: int) -&gt; list[str]:
+    soup = BeautifulSoup(html, "lxml")
+    candidates = {
+        item for link in soup.find_all("a", href=True)
+        if (item := technical_filter(link["href"], root))
+    }
+
+    ranked = sorted(candidates, key=score_url, reverse=True)
+    return ranked[:limit]</code></pre>
+
+      <p>
+        На практике полезно добавить нормализацию завершающего слеша, удаление трекинговых параметров и ограничение глубины обхода. Не обходите весь сайт без лимита: это повышает стоимость, время ответа и риск попасть на бесконечные URL.
+      </p>
+
+      <h2>Контроль контекста</h2>
+
+      <p>
+        Даже несколько страниц могут превысить допустимый контекст модели. Поэтому зададим общий бюджет символов и будем сохранять источник каждого фрагмента. Это помогает отлаживать итог и не смешивать данные разных страниц.
+      </p>
+
+      <pre><code>def build_context(pages: list[tuple[str, str]]) -&gt; str:
+    chunks = []
+    remaining = settings.max_chars_per_page * settings.max_pages
+
+    for url, text in pages:
+        if remaining &lt;= 0:
+            break
+
+        fragment = text[:min(settings.max_chars_per_page, remaining)]
+        chunks.append(f"ИСТОЧНИК: {url}\n{fragment}")
+        remaining -= len(fragment)
+
+    return "\n\n---\n\n".join(chunks)</code></pre>
+
+      <p>
+        Лимит в примере измеряется в символах, а не токенах. Это простая защитная граница, но точное планирование контекста требует токенизатора конкретной модели.
+      </p>
+
+      <h2>Асинхронный LLM-клиент и резервный провайдер</h2>
+
+      <p>
+        Клиент основного провайдера создадим один раз на запрос генерации. Резервный клиент должен иметь совместимый интерфейс или отдельный адаптер. Важно переключаться только на ошибки, при которых повтор действительно имеет смысл: сетевой сбой, таймаут или временная ошибка провайдера.
+      </p>
+
+      <pre><code>from openai import AsyncOpenAI
+
+def make_client(api_key: str, base_url: str | None = None):
+    return AsyncOpenAI(api_key=api_key, base_url=base_url)
+
+async def stream_with_fallback(messages):
+    providers = [
+        (make_client(settings.primary_api_key), settings.primary_model)
+    ]
+
+    if settings.fallback_api_key:
+        providers.append(
+            (make_client(settings.fallback_api_key), settings.fallback_model)
+        )
+
+    last_error = None
+
+    for client, model in providers:
+        try:
+            stream = await client.chat.completions.create(
+                model=model,
+                messages=messages,
+                temperature=0.2,
+                stream=True,
+            )
+
+            async for chunk in stream:
+                delta = chunk.choices[0].delta.content
+                if delta:
+                    yield delta
+
+            return
+        except Exception as exc:
+            last_error = exc
+
+    raise RuntimeError("Все LLM-провайдеры недоступны") from last_error</code></pre>
+
+      <p>
+        Тип исключений в рабочем проекте следует сузить до известных ошибок SDK. Широкий <code>Exception</code> здесь показан только для компактности примера.
+      </p>
+
+      <h2>Потоковый endpoint FastAPI</h2>
+
+      <p>
+        <code>StreamingResponse</code> начинает отправлять данные, как только генератор получает первый фрагмент. Пользователь видит прогресс, а серверу не нужно собирать весь текст в памяти до ответа.
+      </p>
+
+      <pre><code>import os
+from fastapi import FastAPI, HTTPException
+from fastapi.responses import StreamingResponse
+from pydantic import AnyHttpUrl, BaseModel
+
+app = FastAPI()
+
+class BrochureRequest(BaseModel):
+    url: AnyHttpUrl
+
+async def collect_pages(root: str):
+    home_html = await fetch_html(root)
+    urls = select_links(home_html, root, settings.max_pages - 1)
+    urls = [root, *urls]
+
+    pages = []
+    for url in urls:
+        try:
+            html = await fetch_html(url)
+            pages.append((url, clean_html(html)))
+        except (httpx.HTTPError, ValueError):
+            continue
+
+    if not pages:
+        raise HTTPException(
+            status_code=422,
+            detail="Не удалось получить ни одной HTML-страницы"
+        )
+
+    return pages
+
+@app.post("/brochure")
+async def generate_brochure(payload: BrochureRequest):
+    root = str(payload.url)
+
+    async def output():
+        pages = await collect_pages(root)
+        context = build_context(pages)
+
+        messages = [
+            {
+                "role": "system",
+                "content": (
+                    "Составь фактическую корпоративную брошюру на русском языке. "
+                    "Не выдумывай сведения, которых нет в источниках. "
+                    "Отмечай пробелы в данных."
+                ),
+            },
+            {
+                "role": "user",
+                "content": (
+                    f"Сайт: {root}\n\n"
+                    f"Материалы сайта:\n{context}\n\n"
+                    "Структура: краткое описание, продукты или услуги, "
+                    "отличия, целевая аудитория, контакты и ограничения данных."
+                ),
+            },
+        ]
+
+        async for token in stream_with_fallback(messages):
+            yield token
+
+    return StreamingResponse(
+        output(),
+        media_type="text/plain; charset=utf-8",
+        headers={"Cache-Control": "no-cache"}
+    )</code></pre>
+
+      <p>
+        Для больших сайтов сбор страниц в этом варианте идёт последовательно. Это проще контролировать, но медленнее. Следующий шаг — ограниченный параллелизм через <code>asyncio.Semaphore</code>, чтобы не создавать чрезмерную нагрузку на сайт.
+      </p>
+
+      <h2>Проверка результата</h2>
+
+      <p>Запустите приложение:</p>
+
+      <pre><code>uvicorn app:app --reload</code></pre>
+
+      <p>Проверьте потоковую выдачу из другого терминала:</p>
+
+      <pre><code>curl --no-buffer \
+  -X POST http://127.0.0.1:8000/brochure \
+  -H "Content-Type: application/json" \
+  -d '{"url":"https://example.com"}'</code></pre>
+
+      <p>
+        Воспроизводимая проверка должна подтвердить: endpoint принимает только HTTP(S)-URL, ссылки за пределами домена не попадают в контекст, не-HTML-ответы отбрасываются, объём текста ограничен, а клиент получает фрагменты до завершения всей генерации. Адрес <code>example.com</code> здесь служит учебным примером, а не источником фактов для брошюры.
+      </p>
+
+      <h2>Типовые ошибки</h2>
+
+      <ul>
+        <li><strong>Весь текст сайта попадает в промпт.</strong> Добавьте очистку HTML, список приоритетных страниц и общий бюджет контекста.</li>
+        <li><strong>Сервис обходит чужие домены.</strong> Проверяйте <code>netloc</code> после разрешения относительных ссылок.</li>
+        <li><strong>Поток не отображается в браузере.</strong> Проверьте, что генератор действительно выдаёт части текста, а прокси не буферизует ответ.</li>
+        <li><strong>Резервный провайдер вызывается после любой ошибки.</strong> Разделите ошибки валидации, лимитов и временной недоступности.</li>
+        <li><strong>Сайт блокирует запросы.</strong> Уважайте правила сайта, задавайте понятный User-Agent, ограничивайте частоту и не обходите защитные механизмы.</li>
+        <li><strong>В брошюре появляются выдуманные сведения.</strong> Передавайте URL-источники в контекст и требуйте явно отмечать отсутствие данных.</li>
+      </ul>
+
+      <h2>Ограничения архитектуры</h2>
+
+      <p>
+        Это минимальная рабочая схема, а не полноценный краулер. Она не хранит кэш, не поддерживает очередь длительных задач, не извлекает данные из JavaScript-приложений и не гарантирует, что HTML содержит актуальную редакционную версию страницы.
+      </p>
+
+      <p>
+        Для production-сценария потребуются кэширование страниц, ограничение частоты запросов, SSRF-защита, проверка DNS и IP-диапазонов, наблюдаемость, идентификаторы задач, отмена клиентом и отдельное хранилище результатов. Также стоит очищать чувствительные данные до отправки в LLM и формально определить политику хранения URL и содержимого страниц.
+      </p>
+
+      <h2>Итог</h2>
+
+      <p>
+        Асинхронный генератор корпоративной брошюры на FastAPI с потоковой выдачей строится вокруг нескольких простых границ: сеть отвечает только за безопасную загрузку, BeautifulSoup — за очистку, фильтры — за отбор источников, контекстный сборщик — за лимиты, а LLM-адаптер — за генерацию и резервирование. Такое разделение облегчает замену провайдера и позволяет отдельно проверять каждый этап.
+      </p>
+
+      <p>
+        Для следующего шага см. другие <a href="guides.html">руководства Agent Lab Journal</a> и определения терминов в <a href="glossary.html">глоссарии</a>.
+      </p>
+<aside class="service-note" aria-label="Связаться по проекту">
+  <div class="service-note__copy">
+    <p class="service-note__label">Связь с Agent Lab</p>
+    <p class="service-note__title">Внедрим такой контур в ваш процесс</p>
+    <p class="service-note__text">Напишите инженеру Agent Lab в Telegram: опишите задачу, бота или интеграцию — предложим пилот с проверками и понятными границами.</p>
+  </div>
+  <a class="service-note__link" href="https://t.me/msrzn007?utm_source=journal&amp;utm_medium=article&amp;utm_campaign=service_note" target="_blank" rel="noopener">Написать в Telegram
+    <svg viewBox="0 0 16 16" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"><path d="M3 13 13 3M6 3h7v7"/></svg>
+  </a>
+</aside>
+<aside class="service-note service-note--sitevisor" aria-label="Экспресс-аудит сайта">
+  <div class="service-note__copy">
+    <p class="service-note__label">SiteVisor</p>
+    <p class="service-note__title">Проверьте техническое состояние и готовность вашего сайта к рекламе</p>
+    <p class="service-note__text">Экспресс-аудит на SiteVisor.pro: индексация, скорость, разметка, аналитика и точки конверсии.</p>
+  </div>
+  <a class="service-note__link" href="https://sitevisor.pro/?utm_source=journal&amp;utm_medium=article&amp;utm_campaign=leadmagnet" target="_blank" rel="noopener">Экспресс-аудит на SiteVisor.pro
+    <svg viewBox="0 0 16 16" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"><path d="M3 13 13 3M6 3h7v7"/></svg>
+  </a>
+</aside>
+</article>
+  </main>
+
+  <footer class="site-footer">
+    <div class="container">
+      <p>Agent Lab Journal — практические материалы о разработке AI-сервисов.</p>
+      <nav aria-label="Дополнительная навигация">
+        <a href="guides.html">Руководства</a>
+        <a href="glossary.html">Глоссарий</a>
+      </nav>
+    </div>
+  </footer>
+</body>
+</html>

@@ -1,0 +1,508 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Building an Async Company Brochure Generator with FastAPI and Live Streaming</title>
+  <meta name="description" content="Building an Async Company Brochure Generator with FastAPI and Live Streaming: clean website HTML, select useful pages, control context, and stream brochure output.">
+  <link rel="canonical" href="https://agentlabjournal.online/en/async-fastapi-generator-broshyur.html">
+  <link rel="stylesheet" href="../style.css">
+  <link rel="stylesheet" href="../reading.css">
+
+  <meta property="og:type" content="article">
+  <meta property="og:title" content="Building an Async Company Brochure Generator with FastAPI and Live Streaming">
+  <meta property="og:description" content="A practical architecture for turning a company website into a streamed brochure with asynchronous FastAPI, HTML cleanup, link filtering, and an LLM fallback.">
+  <meta property="og:url" content="https://agentlabjournal.online/en/async-fastapi-generator-broshyur.html">
+  <meta property="og:image" content="https://agentlabjournal.online/assets/covers/llm-context-window-budget-social.png">
+  <meta property="og:site_name" content="Agent Lab Journal">
+
+  <meta name="twitter:card" content="summary_large_image">
+  <meta name="twitter:title" content="Building an Async Company Brochure Generator with FastAPI and Live Streaming">
+  <meta name="twitter:description" content="Clean website content, choose useful pages, control context, and stream a company brochure from FastAPI.">
+  <meta name="twitter:image" content="https://agentlabjournal.online/assets/covers/llm-context-window-budget-social.png">
+
+  <meta name="reading-time" content="15 minutes">
+  <meta name="article:section" content="Engineering">
+  <meta name="article:level" content="Intermediate">
+  <meta name="article:reading_time" content="15 minutes">
+
+  <script type="application/ld+json">
+  {
+    "@context": "https://schema.org",
+    "@type": "Article",
+    "headline": "Building an Async Company Brochure Generator with FastAPI and Live Streaming",
+    "description": "A practical architecture for turning a company website into a streamed brochure with asynchronous FastAPI, HTML cleanup, link filtering, and an LLM fallback.",
+    "image": ["https://agentlabjournal.online/assets/covers/llm-context-window-budget-social.png"],
+    "dateModified": "2026-11-27",
+    "author": {
+      "@type": "Organization",
+      "name": "Agent Lab Journal"
+    },
+    "publisher": {
+      "@type": "Organization",
+      "name": "Agent Lab Journal"
+    },
+    "mainEntityOfPage": {
+      "@type": "WebPage",
+      "@id": "https://agentlabjournal.online/en/async-fastapi-generator-broshyur.html"
+    }
+  }
+  </script>
+<link rel="stylesheet" href="../homepage.css"><link rel="stylesheet" href="../max-promo.css">  <meta property="og:image:alt" content="Асинхронный генератор корпоративной брошюры на FastAPI с потоковой выдачей">
+</head>
+<body>
+  <header class="site-header">
+    <div class="site-header__inner">
+      <a class="site-logo" href="../index.html">Agent Lab Journal</a>
+      <nav aria-label="Main navigation">
+        <a href="../guides.html">Guides</a>
+        <a href="../glossary.html">Glossary</a>
+      </nav>
+    </div>
+  </header>
+
+  <main>
+    <article class="reading">
+      <header class="reading-header">
+        <p class="reading-kicker">Engineering · Intermediate · 15 min read</p>
+        <h1>Building an Async Company Brochure Generator with FastAPI and Live Streaming</h1>
+        <figure class="article-cover" data-editorial-cover="async-fastapi-generator-broshyur"><img src="../assets/covers/llm-context-window-budget.png" alt="Асинхронный генератор корпоративной брошюры на FastAPI с потоковой выдачей" width="1280" height="720" fetchpriority="high"><figcaption>Temporary fallback cover; replace in editorial pass.</figcaption></figure>
+        <p class="reading-lead">
+          A company brochure generator looks simple until it receives a real website. The input may contain navigation, cookie notices, duplicated pages, legal text, tracking parameters, and more content than a language model can use safely. This guide builds a reproducible pipeline that cleans HTML, selects useful pages in two stages, limits context, streams the result, and falls back to a second provider when the primary model is unavailable.
+        </p>
+        <p class="reading-meta">
+          Updated <time datetime="2026-11-27">27 November 2026</time> · 15 minutes · Practical architecture
+        </p>
+      </header>
+
+      <section>
+        <h2>The concrete case</h2>
+        <p>
+          Assume a user submits a company homepage. The service should discover a small set of related pages, extract readable text, ask a model to draft a brochure, and begin returning useful output before the whole generation is complete.
+        </p>
+        <p>
+          The important design decision is to separate the work into stages:
+        </p>
+        <ol>
+          <li>Fetch the starting page and normalize its links.</li>
+          <li>Apply inexpensive link rules before downloading candidate pages.</li>
+          <li>Fetch and clean only the most promising pages.</li>
+          <li>Apply a second content-aware filter.</li>
+          <li>Build a bounded prompt from the selected text.</li>
+          <li>Stream the brochure through the HTTP response.</li>
+          <li>Retry with a fallback provider if the primary provider fails.</li>
+        </ol>
+        <p>
+          This is an architecture pattern, not a claim that every site or model behaves identically. The exact limits, timeouts, model names, and provider APIs must be configured for the deployment.
+        </p>
+      </section>
+
+      <section>
+        <h2>Why asynchronous processing matters</h2>
+        <p>
+          <a href="../glossary.html#fastapi">FastAPI</a> is a suitable HTTP layer for this workflow because the request spends much of its time waiting for network responses: page downloads and model tokens. An asynchronous endpoint can yield during those waits instead of blocking the server thread.
+        </p>
+        <p>
+          The endpoint still has to be disciplined. Async code does not make CPU-heavy parsing free, does not remove remote rate limits, and does not prevent a user from disconnecting. Use explicit timeouts, bounded concurrency, and cancellation-aware generators.
+        </p>
+      </section>
+
+      <section>
+        <h2>Minimal project setup</h2>
+        <p>One possible dependency set is:</p>
+        <pre><code>python -m venv .venv
+source .venv/bin/activate
+pip install fastapi uvicorn httpx beautifulsoup4 openai pydantic-settings</code></pre>
+        <p>
+          The example uses <a href="../glossary.html#beautifulsoup">BeautifulSoup</a> for HTML parsing and <code>httpx.AsyncClient</code> for asynchronous HTTP requests. Keep secrets in environment variables rather than in source control.
+        </p>
+
+        <pre><code>export PRIMARY_MODEL_API_KEY="replace-me"
+export FALLBACK_MODEL_API_KEY="replace-me"
+export PRIMARY_MODEL_NAME="your-primary-model"
+export FALLBACK_MODEL_NAME="your-fallback-model"
+uvicorn app:app --reload</code></pre>
+
+        <p>
+          The values above are placeholders. They are configuration examples, not credentials or provider-specific guarantees.
+        </p>
+      </section>
+
+      <section>
+        <h2>Stage one: discover and filter links</h2>
+        <p>
+          Start with cheap rules. Keep links on the same host, remove fragments and tracking parameters, reject obvious binary files, and rank paths whose names commonly indicate useful company information.
+        </p>
+
+        <pre><code>from urllib.parse import parse_qsl, urlencode, urljoin, urlsplit, urlunsplit
+
+TRACKING_KEYS = {"utm_source", "utm_medium", "utm_campaign", "utm_term", "utm_content", "gclid"}
+BLOCKED_SUFFIXES = {
+    ".jpg", ".jpeg", ".png", ".gif", ".svg", ".webp",
+    ".pdf", ".zip", ".doc", ".docx", ".xls", ".xlsx"
+}
+USEFUL_TERMS = {
+    "about": 5, "company": 5, "product": 4, "service": 4,
+    "solution": 4, "contact": 3, "team": 3, "careers": 2
+}
+
+def normalize_url(raw_url: str, base_url: str) -&gt; str | None:
+    absolute = urljoin(base_url, raw_url)
+    parts = urlsplit(absolute)
+
+    if parts.scheme not in {"http", "https"}:
+        return None
+
+    query = [
+        (key, value)
+        for key, value in parse_qsl(parts.query, keep_blank_values=True)
+        if key.lower() not in TRACKING_KEYS
+    ]
+
+    return urlunsplit((
+        parts.scheme,
+        parts.netloc.lower(),
+        parts.path or "/",
+        urlencode(query),
+        ""
+    ))
+
+def first_stage_score(url: str, root_host: str) -&gt; int:
+    parts = urlsplit(url)
+    if parts.netloc != root_host:
+        return -100
+
+    path = parts.path.lower()
+    if any(path.endswith(suffix) for suffix in BLOCKED_SUFFIXES):
+        return -100
+
+    score = 0
+    for term, weight in USEFUL_TERMS.items():
+        if term in path:
+            score += weight
+
+    if path == "/":
+        score += 1
+
+    return score</code></pre>
+
+        <p>
+          This first pass should be conservative. It does not prove that a page is useful; it only avoids downloading obvious noise. Set a maximum number of candidate URLs, such as 20, before the next stage.
+        </p>
+      </section>
+
+      <section>
+        <h2>Stage two: fetch, clean, and score content</h2>
+        <p>
+          A URL can look promising while containing almost no useful text. After the first filter, fetch a bounded number of pages and remove elements that usually do not belong in a brochure.
+        </p>
+
+        <pre><code>from bs4 import BeautifulSoup
+
+REMOVE_SELECTORS = (
+    "script", "style", "noscript", "svg", "nav",
+    "footer", "form", "iframe", "aside"
+)
+
+def clean_html(html: str, limit: int = 12000) -&gt; str:
+    soup = BeautifulSoup(html, "html.parser")
+
+    for selector in REMOVE_SELECTORS:
+        for node in soup.select(selector):
+            node.decompose()
+
+    main = soup.find("main") or soup.find("article") or soup.body or soup
+    text = " ".join(main.get_text(" ", strip=True).split())
+
+    return text[:limit]
+
+def second_stage_score(url: str, text: str) -&gt; int:
+    if len(text) &lt; 160:
+        return -100
+
+    score = min(len(text) // 500, 8)
+    lowered = f"{url} {text}".lower()
+
+    for term, weight in USEFUL_TERMS.items():
+        if term in lowered:
+            score += weight
+
+    return score</code></pre>
+
+        <p>
+          The two-stage approach controls both network cost and prompt quality. URL scoring prevents needless downloads; content scoring prevents thin, empty, or boilerplate pages from consuming context.
+        </p>
+      </section>
+
+      <section>
+        <h2>Fetching pages safely</h2>
+        <p>
+          Use one client with a timeout and a clear user agent. In production, also consider robots rules, SSRF protections, redirect limits, maximum response sizes, and an allowlist or denylist appropriate to your product.
+        </p>
+
+        <pre><code>import httpx
+
+TIMEOUT = httpx.Timeout(15.0, connect=5.0)
+HEADERS = {"User-Agent": "AgentLabBrochureBot/1.0"}
+
+async def fetch_page(client: httpx.AsyncClient, url: str) -&gt; str | None:
+    try:
+        response = await client.get(url, headers=HEADERS, follow_redirects=True)
+        response.raise_for_status()
+
+        content_type = response.headers.get("content-type", "")
+        if "text/html" not in content_type:
+            return None
+
+        return response.text
+    except (httpx.HTTPError, UnicodeError):
+        return None</code></pre>
+
+        <p>
+          Do not treat a successful HTTP status as proof that the page is suitable. Check the media type, enforce size limits, and handle pages that fail independently.
+        </p>
+      </section>
+
+      <section>
+        <h2>Build a bounded context</h2>
+        <p>
+          Even after filtering, the selected pages may exceed the model’s context window or dilute the important facts. A simple, reproducible policy is to cap the number of pages and the characters contributed by each page.
+        </p>
+
+        <pre><code>def build_context(pages: list[tuple[str, str]],
+                  max_pages: int = 6,
+                  chars_per_page: int = 5000,
+                  total_chars: int = 24000) -&gt; str:
+    chunks = []
+    used = 0
+
+    for url, text in pages[:max_pages]:
+        chunk = f"SOURCE: {url}\n{text[:chars_per_page]}"
+        if used + len(chunk) &gt; total_chars:
+            break
+        chunks.append(chunk)
+        used += len(chunk)
+
+    return "\n\n---\n\n".join(chunks)</code></pre>
+
+        <p>
+          Context limits are product decisions. If a brochure must be factually strict, preserve source URLs alongside the text and instruct the model to omit claims that are not supported by the supplied material.
+        </p>
+      </section>
+
+      <section>
+        <h2>Streaming with AsyncOpenAI</h2>
+        <p>
+          The <a href="../glossary.html#asyncopenai">AsyncOpenAI</a> client can consume streamed model output asynchronously. The application should emit small text chunks as they arrive rather than waiting for the complete brochure.
+        </p>
+
+        <pre><code>import os
+from openai import AsyncOpenAI
+
+primary_client = AsyncOpenAI(api_key=os.environ["PRIMARY_MODEL_API_KEY"])
+
+SYSTEM_PROMPT = """You write concise company brochures.
+Use only facts present in the supplied source material.
+If a fact is missing, do not invent it.
+Organize the result with a title, overview, offerings, and contact section.
+"""
+
+async def stream_from_primary(context: str):
+    stream = await primary_client.chat.completions.create(
+        model=os.environ["PRIMARY_MODEL_NAME"],
+        messages=[
+            {"role": "system", "content": SYSTEM_PROMPT},
+            {"role": "user", "content": f"Source material:\n\n{context}"}
+        ],
+        stream=True,
+    )
+
+    async for event in stream:
+        delta = event.choices[0].delta.content
+        if delta:
+            yield delta</code></pre>
+
+        <p>
+          The exact request shape depends on the selected SDK version and provider-compatible endpoint. Pin dependencies and verify the streaming event format in the environment where the service runs.
+        </p>
+      </section>
+
+      <section>
+        <h2>Fallback provider without duplicating the pipeline</h2>
+        <p>
+          The fallback should replace the model call, not repeat crawling and parsing. Keep the shared context and prompt assembly outside the provider-specific functions.
+        </p>
+
+        <pre><code>fallback_client = AsyncOpenAI(api_key=os.environ["FALLBACK_MODEL_API_KEY"])
+
+async def stream_from_fallback(context: str):
+    stream = await fallback_client.chat.completions.create(
+        model=os.environ["FALLBACK_MODEL_NAME"],
+        messages=[
+            {"role": "system", "content": SYSTEM_PROMPT},
+            {"role": "user", "content": f"Source material:\n\n{context}"}
+        ],
+        stream=True,
+    )
+
+    async for event in stream:
+        delta = event.choices[0].delta.content
+        if delta:
+            yield delta</code></pre>
+
+        <p>
+          A fallback provider is not automatically equivalent to the primary provider. Output quality, supported parameters, safety behavior, latency, and token accounting may differ. Treat fallback use as an observable event and review it operationally.
+        </p>
+      </section>
+
+      <section>
+        <h2>Expose the workflow through FastAPI</h2>
+        <p>
+          <a href="../glossary.html#streamingresponse">StreamingResponse</a> turns the async generator into an HTTP response. The endpoint below shows the control flow while keeping crawling and provider logic separate.
+        </p>
+
+        <pre><code>from fastapi import FastAPI, HTTPException
+from fastapi.responses import StreamingResponse
+from pydantic import BaseModel, HttpUrl
+from urllib.parse import urlsplit
+
+app = FastAPI()
+
+class BrochureRequest(BaseModel):
+    url: HttpUrl
+
+async def collect_pages(start_url: str) -&gt; list[tuple[str, str]]:
+    root = urlsplit(start_url)
+    found: dict[str, int] = {}
+
+    async with httpx.AsyncClient(timeout=TIMEOUT) as client:
+        homepage = await fetch_page(client, start_url)
+        if not homepage:
+            return []
+
+        soup = BeautifulSoup(homepage, "html.parser")
+        for anchor in soup.select("a[href]"):
+            candidate = normalize_url(anchor["href"], start_url)
+            if not candidate:
+                continue
+            score = first_stage_score(candidate, root.netloc)
+            if score &gt;= 0:
+                found[candidate] = max(score, found.get(candidate, -1))
+
+        ranked = sorted(found, key=found.get, reverse=True)[:20]
+        pages = []
+
+        for url in ranked:
+            html = await fetch_page(client, url)
+            if not html:
+                continue
+
+            text = clean_html(html)
+            score = second_stage_score(url, text)
+            if score &gt;= 0:
+                pages.append((url, text, score))
+
+    pages.sort(key=lambda item: item[2], reverse=True)
+    return [(url, text) for url, text, _ in pages[:6]]
+
+@app.post("/brochure")
+async def generate_brochure(payload: BrochureRequest):
+    pages = await collect_pages(str(payload.url))
+    if not pages:
+        raise HTTPException(status_code=422, detail="No usable pages were found")
+
+    context = build_context(pages)
+
+    async def output():
+        try:
+            async for chunk in stream_from_primary(context):
+                yield chunk
+        except Exception:
+            async for chunk in stream_from_fallback(context):
+                yield chunk
+
+    return StreamingResponse(
+        output(),
+        media_type="text/plain; charset=utf-8",
+        headers={"X-Content-Type-Options": "nosniff"},
+    )</code></pre>
+
+        <p>
+          The broad exception handler is intentionally minimal for illustration. A production service should log a sanitized error, distinguish authentication failures from timeouts, and avoid silently masking programming errors.
+        </p>
+      </section>
+
+      <section>
+        <h2>Verification you can reproduce</h2>
+        <p>
+          Start the service locally and submit a URL that you are permitted to fetch:
+        </p>
+
+        <pre><code>uvicorn app:app --reload
+
+curl -N \
+  -H "Content-Type: application/json" \
+  -d '{"url":"https://example.com"}' \
+  http://127.0.0.1:8000/brochure</code></pre>
+
+        <p>
+          The <code>-N</code> option asks curl not to buffer the response. Verify that the response begins before the full brochure is finished, that unsupported pages are skipped, and that a provider failure reaches the fallback path in a controlled test environment.
+        </p>
+        <p>
+          These are verification steps, not reported test results. This article does not claim that they have been run against a particular deployment.
+        </p>
+      </section>
+
+      <section>
+        <h2>Failure cases to handle explicitly</h2>
+        <ul>
+          <li><strong>JavaScript-rendered sites:</strong> a plain HTTP client may receive little content because the page is assembled in the browser. Add a separate rendering service only when the product justifies its cost and security implications.</li>
+          <li><strong>Robots and access restrictions:</strong> a page may reject automated requests, require authentication, or disallow crawling. Respect applicable rules and never bypass access controls.</li>
+          <li><strong>Redirects and SSRF:</strong> validate destinations after redirects and block private network ranges when users can submit arbitrary URLs.</li>
+          <li><strong>Oversized pages:</strong> enforce response and text limits before parsing and before inserting content into the prompt.</li>
+          <li><strong>Disconnected clients:</strong> cancellation should stop unnecessary downstream work where the framework and provider SDK support it.</li>
+          <li><strong>Provider failure:</strong> use bounded retries, record which provider was used, and avoid retry storms.</li>
+          <li><strong>Prompt injection:</strong> treat website text as untrusted input. Tell the model that source content is data, not instructions, and consider additional content isolation.</li>
+          <li><strong>Unsupported claims:</strong> require source-grounded writing and preserve URLs for later review.</li>
+        </ul>
+      </section>
+
+      <section>
+        <h2>Limitations and next improvements</h2>
+        <p>
+          Path scoring is a heuristic. It can miss valuable pages with unusual URLs and select pages that merely contain a promising word. A stronger system could classify page titles and headings, deduplicate near-identical text, or use a small local ranking model before the expensive generation call.
+        </p>
+        <p>
+          Plain-text streaming is easy to consume but does not provide structured progress. A later version might stream newline-delimited JSON events such as <code>page_selected</code>, <code>generation_started</code>, and <code>text_delta</code>. If you do that, document the event schema and make clients tolerant of partial streams.
+        </p>
+        <p>
+          Finally, quality should be evaluated with a fixture set of representative websites. Measure source coverage, unsupported-claim rate, time to first token, completion time, and fallback frequency. Keep those measurements separate from the architecture itself: the numbers depend on your pages, limits, providers, and deployment.
+        </p>
+      </section>
+
+      <section>
+        <h2>Summary</h2>
+        <p>
+          A reliable async brochure generator is a pipeline, not a single model call. Clean the input, filter links twice, cap context, keep provider calls behind a small interface, and return output through an async stream. With explicit failure handling and source-grounded prompts, the same design can be tested locally and extended without coupling crawling logic to a particular model provider.
+        </p>
+      </section>
+
+      <footer class="reading-footer">
+        <p>Continue with the <a href="../guides.html">guides</a> or look up implementation terms in the <a href="../glossary.html">glossary</a>.</p>
+      </footer>
+    <section class="service-note">
+  <b>We publish what works for us—and implement the same solutions for your business.</b>
+  We design AI automation, Telegram bots, chats, and AI agents for real-world processes.
+  <a href="../contacts-en.html">Discuss your project →</a>
+</section>
+</article>
+  </main>
+
+  <footer class="site-footer">
+    <div class="site-footer__inner">
+      <a href="../guides.html">Guides</a>
+      <a href="../glossary.html">Glossary</a>
+    </div>
+  </footer>
+</body>
+</html>
