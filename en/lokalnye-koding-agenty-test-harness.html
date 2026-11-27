@@ -1,0 +1,506 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Local Coding Agents: How to Measure Harness Overhead and Compare Models</title>
+  <meta name="description" content="Local Coding Agents: How to Measure Harness Overhead and Compare Models with a reproducible protocol for first-response latency, tool-schema overhead, and denied-call recovery.">
+  <link rel="canonical" href="https://agentlabjournal.online/en/lokalnye-koding-agenty-test-harness.html">
+  <link rel="stylesheet" href="../style.css">
+  <link rel="stylesheet" href="../reading.css">
+
+  <meta property="og:type" content="article">
+  <meta property="og:title" content="Local Coding Agents: How to Measure Harness Overhead and Compare Models">
+  <meta property="og:description" content="A reproducible protocol for measuring local coding-agent harness overhead and comparing models fairly.">
+  <meta property="og:url" content="https://agentlabjournal.online/en/lokalnye-koding-agenty-test-harness.html">
+  <meta property="og:image" content="https://agentlabjournal.online/assets/covers/llm-context-window-budget-social.png">
+
+  <meta name="twitter:card" content="summary_large_image">
+  <meta name="twitter:title" content="Local Coding Agents: How to Measure Harness Overhead and Compare Models">
+  <meta name="twitter:description" content="Measure first response, tool-schema overhead, and recovery after denied tool calls.">
+  <meta name="twitter:image" content="https://agentlabjournal.online/assets/covers/llm-context-window-budget-social.png">
+
+  <meta name="reading-time" content="20 minutes">
+  <meta name="article:reading_time" content="20 minutes">
+  <meta name="article:section" content="Agent Engineering">
+  <meta name="dateModified" content="2026-11-27">
+
+  <script type="application/ld+json">
+  {
+    "@context": "https://schema.org",
+    "@type": "Article",
+    "headline": "Local Coding Agents: How to Measure Harness Overhead and Compare Models",
+    "description": "A reproducible protocol for measuring local coding-agent harness overhead and comparing models fairly.",
+    "image": ["https://agentlabjournal.online/assets/covers/llm-context-window-budget-social.png"],
+    "dateModified": "2026-11-27",
+    "author": {
+      "@type": "Organization",
+      "name": "Agent Lab Journal"
+    },
+    "publisher": {
+      "@type": "Organization",
+      "name": "Agent Lab Journal",
+      "url": "https://agentlabjournal.online/"
+    },
+    "mainEntityOfPage": {
+      "@type": "WebPage",
+      "@id": "https://agentlabjournal.online/en/lokalnye-koding-agenty-test-harness.html"
+    }
+  }
+  </script>
+<link rel="stylesheet" href="../homepage.css"><link rel="stylesheet" href="../max-promo.css">  <meta property="og:image:alt" content="Локальные coding-агенты: как измерить цену harness и сравнить модели">
+</head>
+
+<body>
+  <header class="site-header">
+    <div class="site-header__inner">
+      <a class="site-header__brand" href="../index.html">Agent Lab Journal</a>
+      <nav class="site-header__nav" aria-label="Primary navigation">
+        <a href="../guides.html">Guides</a>
+        <a href="../glossary.html">Glossary</a>
+      </nav>
+    </div>
+  </header>
+
+  <main>
+    <article class="reading">
+      <header class="reading-header">
+        <p class="reading-kicker">Agent Engineering · Measurement</p>
+        <h1>Local Coding Agents: How to Measure Harness Overhead and Compare Models</h1>
+        <figure class="article-cover" data-editorial-cover="lokalnye-koding-agenty-test-harness"><img src="../assets/covers/llm-context-window-budget.png" alt="Локальные coding-агенты: как измерить цену harness и сравнить модели" width="1280" height="720" fetchpriority="high"><figcaption>Temporary fallback cover; replace in editorial pass.</figcaption></figure>
+        <p class="reading-lede">
+          A local <a href="../glossary.html#coding-agent">coding agent</a> can appear slow before it reads a single file. The delay may come from the model, but it may also come from the <a href="../glossary.html#harness-overhead">harness overhead</a>: prompt assembly, tool-schema serialization, process startup, safety checks, and retries. This guide separates those costs so model comparisons remain meaningful.
+        </p>
+        <div class="reading-meta">
+          <span>20-minute read</span>
+          <span>Updated 27 November 2026</span>
+          <span>Reproducible protocol</span>
+        </div>
+      </header>
+
+      <section>
+        <h2>The practical question</h2>
+        <p>
+          Suppose an agent receives a small repository and a task such as “find the configuration entry for the HTTP timeout.” You press Enter, then wait two or three minutes before the agent opens its first file. That elapsed time is an observation, not an explanation.
+        </p>
+        <p>
+          The wait can include at least four different phases:
+        </p>
+        <ul>
+          <li>the launcher starting the local runtime;</li>
+          <li>the harness constructing the system prompt and tool definitions;</li>
+          <li>the model generating its first response or tool request;</li>
+          <li>the tool executor performing the first filesystem operation.</li>
+        </ul>
+        <p>
+          If these phases are reported as one number, a faster model can look slower because it is paired with a heavier harness. The purpose of this article is to measure the phases separately, not to declare a universal winner.
+        </p>
+      </section>
+
+      <section>
+        <h2>What to measure</h2>
+
+        <h3>1. Time to first response</h3>
+        <p>
+          <a href="../glossary.html#time-to-first-response">Time to first response</a> (TTFR) is the interval from the user action that starts an agent run to the first observable model output. Define the endpoint before testing. Possible endpoints include the first streamed token, the complete first assistant message, or the first tool-call request. These are different measurements and should not be mixed.
+        </p>
+
+        <h3>2. Time to first tool call</h3>
+        <p>
+          For coding agents, the first tool-call request is often more useful than the first visible token. It answers: “How long until the agent attempts to inspect or change the workspace?” Record the timestamp when the harness receives a valid tool invocation, not when the tool finishes.
+        </p>
+
+        <h3>3. Tool-schema overhead</h3>
+        <p>
+          A model usually receives a description of every available tool. This <a href="../glossary.html#tool-schema">tool schema</a> can contain names, parameter types, required fields, constraints, and long descriptions. Measure its serialized size separately from the rest of the prompt. Depending on the runtime, the schema may contribute to input-token processing, memory use, and the model’s decision space.
+        </p>
+
+        <h3>4. Recovery after a denied tool call</h3>
+        <p>
+          A realistic harness sometimes refuses a request: a path is outside the workspace, a command needs confirmation, or a policy blocks an operation. Measure how the agent behaves after a <a href="../glossary.html#denied-tool-call">denied tool call</a>. The useful outcome is not merely whether it eventually succeeds. Record whether it understands the denial, changes strategy, repeats the same request, or stops.
+        </p>
+
+        <h3>5. Task outcome</h3>
+        <p>
+          Latency without outcome is incomplete. Record whether the agent found the requested file, made the requested change, passed the agreed verification command, and avoided unrelated modifications. A shorter run that fails the task is not automatically better.
+        </p>
+      </section>
+
+      <section>
+        <h2>A minimal test design</h2>
+        <p>
+          Use one fixed repository, one fixed task, one fixed tool inventory, and one fixed runtime configuration. Change only the model when comparing models. If the harness must change because a model requires a different adapter, document that as part of the result.
+        </p>
+
+        <p>A useful three-part benchmark contains:</p>
+
+        <ol>
+          <li><strong>Cold start:</strong> launch the agent process and run the task without warming caches.</li>
+          <li><strong>Warm start:</strong> repeat the same task after the process and model files are already loaded.</li>
+          <li><strong>Denied-call recovery:</strong> inject one controlled denial during the task and measure the next response.</li>
+        </ol>
+
+        <p>
+          Run each case more than once. Do not report a single run as a stable performance characteristic. If you cannot perform repeated trials, label the result as an observation rather than a benchmark.
+        </p>
+
+        <aside class="reading-callout">
+          <strong>Evidence boundary</strong>
+          <p>
+            This article provides a protocol and example instrumentation. It does not provide model rankings or hardware results. Those require a named machine, runtime versions, model files, quantization settings, task repository, and recorded runs.
+          </p>
+        </aside>
+      </section>
+
+      <section>
+        <h2>Prepare a controlled workspace</h2>
+        <p>
+          Make the task small enough to inspect manually but realistic enough to exercise the harness. For example, create a repository containing a source file, a configuration file, a test, and a short README. The exact repository is less important than keeping it unchanged across runs.
+        </p>
+
+        <pre><code>mkdir -p agent-bench/src agent-bench/tests
+cd agent-bench
+
+printf '%s\n' \
+  '[server]' \
+  'request_timeout_ms = 1500' \
+  &gt; config.toml
+
+printf '%s\n' \
+  'def request_timeout_ms(config):' \
+  '    return config["server"]["request_timeout_ms"]' \
+  &gt; src/settings.py
+
+printf '%s\n' \
+  'from src.settings import request_timeout_ms' \
+  '' \
+  'def test_timeout(config):' \
+  '    assert request_timeout_ms(config) == 1500' \
+  &gt; tests/test_settings.py</code></pre>
+
+        <p>
+          The commands above are an example fixture, not a verified result from a particular agent. If your harness automatically adds files, ignores untracked files, or uses a different working-directory rule, record that before testing.
+        </p>
+      </section>
+
+      <section>
+        <h2>Instrument the harness, not just the terminal</h2>
+        <p>
+          Wall-clock timing from a human observer is too coarse for phase analysis. Add structured events at the boundaries that matter. JSON Lines, or <a href="../glossary.html#jsonl">JSONL</a>, is convenient because each event can be appended without rewriting previous records.
+        </p>
+
+        <pre><code>{"event":"run_started","ts_ns":0}
+{"event":"prompt_built","ts_ns":0,"prompt_bytes":0,"tool_schema_bytes":0}
+{"event":"request_sent","ts_ns":0}
+{"event":"first_output","ts_ns":0}
+{"event":"first_tool_call","ts_ns":0,"tool":"read_file"}
+{"event":"tool_denied","ts_ns":0,"reason":"outside_workspace"}
+{"event":"recovery_output","ts_ns":0}
+{"event":"run_finished","ts_ns":0,"status":"success"}</code></pre>
+
+        <p>
+          Replace the zero values with timestamps from a monotonic clock. A monotonic clock is required for elapsed durations because wall time can change during a run. Preserve the raw event log and derive summary values from it later.
+        </p>
+
+        <h3>Recommended event boundaries</h3>
+        <table>
+          <thead>
+            <tr>
+              <th>Event</th>
+              <th>Meaning</th>
+              <th>Why it matters</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td><code>run_started</code></td>
+              <td>The user action has reached the launcher.</td>
+              <td>Defines the start of end-to-end latency.</td>
+            </tr>
+            <tr>
+              <td><code>prompt_built</code></td>
+              <td>System prompt, conversation, and tool schema are assembled.</td>
+              <td>Separates harness preparation from model work.</td>
+            </tr>
+            <tr>
+              <td><code>request_sent</code></td>
+              <td>The request is handed to the local model runtime.</td>
+              <td>Marks the model-facing interval.</td>
+            </tr>
+            <tr>
+              <td><code>first_output</code></td>
+              <td>The first model output is received.</td>
+              <td>Supports TTFR.</td>
+            </tr>
+            <tr>
+              <td><code>first_tool_call</code></td>
+              <td>A parsed tool invocation is ready for execution.</td>
+              <td>Measures time until action.</td>
+            </tr>
+            <tr>
+              <td><code>tool_denied</code></td>
+              <td>The executor refuses a controlled request.</td>
+              <td>Starts the recovery interval.</td>
+            </tr>
+            <tr>
+              <td><code>recovery_output</code></td>
+              <td>The next assistant response after the denial is received.</td>
+              <td>Measures recovery latency and behavior.</td>
+            </tr>
+          </tbody>
+        </table>
+      </section>
+
+      <section>
+        <h2>Calculate the intervals</h2>
+        <p>
+          Derive values from event timestamps rather than recording rounded values by hand.
+        </p>
+
+        <pre><code>ttfr_ms = (first_output - run_started) / 1_000_000
+time_to_first_tool_ms = (first_tool_call - run_started) / 1_000_000
+prompt_build_ms = (request_sent - run_started) / 1_000_000
+model_to_first_output_ms = (first_output - request_sent) / 1_000_000
+recovery_ms = (recovery_output - tool_denied) / 1_000_000</code></pre>
+
+        <p>
+          These equations are only valid if all events use the same monotonic clock and the event order is unambiguous. If streaming is buffered by a client library, <code>first_output</code> may represent the buffer flush rather than the model’s actual first token. Document that limitation.
+        </p>
+
+        <p>
+          For a repeated test, report a distribution rather than only an average. The median shows a typical run; a high percentile shows how bad a slow run can be. Keep the raw samples so another reader can recompute the summary.
+        </p>
+      </section>
+
+      <section>
+        <h2>Measure tool-schema overhead directly</h2>
+        <p>
+          Count the serialized tool definition before it enters the request. Record at least byte length and, when your tokenizer is available, token count. A byte count is portable; a token count is closer to model-processing cost but depends on the tokenizer.
+        </p>
+
+        <pre><code># Example inspection commands; adapt paths to your harness.
+wc -c tools.json
+wc -l tools.json
+sha256sum tools.json</code></pre>
+
+        <p>
+          Compare two configurations with the same task and model:
+        </p>
+
+        <ul>
+          <li><strong>Minimal inventory:</strong> expose only the tools needed for the task.</li>
+          <li><strong>Full inventory:</strong> expose the normal production tool set.</li>
+        </ul>
+
+        <p>
+          The difference between the two runs is evidence about the combined effect of tool inventory and prompt construction. It is not, by itself, proof that every additional schema token causes a fixed amount of delay. Local runtimes can batch, cache, or process input differently.
+        </p>
+
+        <h3>Keep descriptions stable</h3>
+        <p>
+          Tool descriptions are part of the input. Avoid changing wording between model runs unless wording itself is the variable under test. A short, precise schema may improve both latency and tool selection, but that is a separate experiment from comparing model weights.
+        </p>
+      </section>
+
+      <section>
+        <h2>Design a controlled denied-call test</h2>
+        <p>
+          Recovery should be tested with a denial that is deterministic and safe. For example, configure the executor to reject a request for a path outside the benchmark workspace. Do not test by giving an agent access to real credentials, private directories, or destructive commands.
+        </p>
+
+        <p>The denial response should be explicit and machine-readable where possible:</p>
+
+        <pre><code>{
+  "ok": false,
+  "error": {
+    "type": "permission_denied",
+    "message": "The requested path is outside the workspace.",
+    "retryable": false
+  }
+}</code></pre>
+
+        <p>
+          Then observe the next model action. A useful recovery rubric is:
+        </p>
+
+        <ol>
+          <li><strong>Understands:</strong> acknowledges the constraint or changes the target to an allowed path.</li>
+          <li><strong>Adapts:</strong> chooses a viable alternative, such as listing the workspace or asking for clarification.</li>
+          <li><strong>Loops:</strong> repeats the denied request without a meaningful change.</li>
+          <li><strong>Stops safely:</strong> reports that it cannot continue and does not attempt an unsafe workaround.</li>
+        </ol>
+
+        <p>
+          Record both the latency and the category. A fast repeated denial is not successful recovery; a slower but correct adaptation may be the better operational behavior.
+        </p>
+      </section>
+
+      <section>
+        <h2>Compare models fairly</h2>
+        <p>
+          A fair <a href="../glossary.html#model-comparison">model comparison</a> changes as few variables as possible. Freeze the following:
+        </p>
+
+        <ul>
+          <li>hardware, power mode, and thermal conditions;</li>
+          <li>model file, quantization, context length, and runtime version;</li>
+          <li>system prompt, task prompt, tool schemas, and conversation history;</li>
+          <li>repository contents and working directory;</li>
+          <li>sampling settings and stop conditions;</li>
+          <li>measurement clock and event definitions.</li>
+        </ul>
+
+        <p>
+          If a model needs a different context limit or adapter, do not hide that difference. Present it as a configuration difference and avoid attributing every observed change to the model alone.
+        </p>
+
+        <h3>Use paired runs</h3>
+        <p>
+          Alternate models instead of running all trials for one model first. For example, run A, B, B, A, then repeat the sequence. This reduces the risk that temperature, background load, or an accidentally warmed cache belongs to only one model.
+        </p>
+
+        <h3>Separate capability from latency</h3>
+        <p>
+          Evaluate task correctness independently from timing. A model that needs one extra inspection call may have higher time-to-completion but better accuracy. Include tool-call count, files touched, verification status, and final answer quality alongside latency.
+        </p>
+      </section>
+
+      <section>
+        <h2>Example result format</h2>
+        <p>
+          The following table is a reporting template, not measured data.
+        </p>
+
+        <table>
+          <thead>
+            <tr>
+              <th>Run</th>
+              <th>Model</th>
+              <th>Start</th>
+              <th>First output</th>
+              <th>First tool</th>
+              <th>Recovery</th>
+              <th>Outcome</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td>1</td>
+              <td>Model A</td>
+              <td>recorded value</td>
+              <td>recorded value</td>
+              <td>recorded value</td>
+              <td>recorded value</td>
+              <td>pass/fail</td>
+            </tr>
+            <tr>
+              <td>2</td>
+              <td>Model B</td>
+              <td>recorded value</td>
+              <td>recorded value</td>
+              <td>recorded value</td>
+              <td>recorded value</td>
+              <td>pass/fail</td>
+            </tr>
+          </tbody>
+        </table>
+
+        <p>
+          A concise conclusion should state what was measured and what was not. For example: “With the same fixture and tool inventory, Model A had a lower median time to first tool call in the recorded trials. The test did not measure throughput, long-context quality, or performance on other hardware.”
+        </p>
+      </section>
+
+      <section>
+        <h2>Failure cases and misleading measurements</h2>
+
+        <h3>Counting launcher time as model latency</h3>
+        <p>
+          If the launcher initializes a runtime, loads a model, discovers tools, and then sends a request, TTFR includes all of those operations. That is valid for an end-user experience measurement, but it is not a pure model-latency measurement. Report both end-to-end TTFR and the interval after <code>request_sent</code> when possible.
+        </p>
+
+        <h3>Comparing cold and warm runs</h3>
+        <p>
+          A cold run may include disk reads and memory mapping that a warm run avoids. Mixing them produces a misleading average. Label cache state explicitly.
+        </p>
+
+        <h3>Changing tool descriptions between tests</h3>
+        <p>
+          A shorter schema can change tool selection and reasoning behavior, not just input size. Treat schema reduction as its own experimental variable.
+        </p>
+
+        <h3>Using different output endpoints</h3>
+        <p>
+          “First token,” “first complete sentence,” and “first parsed tool call” are not interchangeable. Choose one endpoint for each metric and name it in the report.
+        </p>
+
+        <h3>Ignoring retries</h3>
+        <p>
+          A client may retry timeouts or malformed tool calls automatically. Include retry count and retry delay in the event log. Otherwise, a harness can look like a slow model.
+        </p>
+
+        <h3>Letting background work run</h3>
+        <p>
+          Indexers, updates, compilation, and browser tabs can affect a local machine. You do not need a perfectly idle system, but you do need to record relevant background activity and keep it comparable across runs.
+        </p>
+      </section>
+
+      <section>
+        <h2>Verification checklist</h2>
+        <p>Before publishing a result, verify that:</p>
+
+        <ul>
+          <li>the raw event log exists for every reported run;</li>
+          <li>timestamps use one monotonic clock;</li>
+          <li>the first-output and first-tool endpoints are defined;</li>
+          <li>tool-schema size was measured from the actual serialized request;</li>
+          <li>cold and warm runs are labeled separately;</li>
+          <li>the denied-call response was deterministic and safe;</li>
+          <li>recovery behavior was classified, not just timed;</li>
+          <li>model, runtime, hardware, and configuration details are recorded;</li>
+          <li>task correctness was checked independently of latency;</li>
+          <li>no credentials, private paths, or personal data appear in logs.</li>
+        </ul>
+      </section>
+
+      <section>
+        <h2>Limitations</h2>
+        <p>
+          This protocol measures the behavior of a complete local agent setup. It cannot isolate every internal operation of a model runtime, operating system, tokenizer, or accelerator. Results can change with driver versions, memory pressure, quantization, context length, filesystem state, and prompt wording.
+        </p>
+        <p>
+          The protocol also does not establish general intelligence, coding quality, or production safety from a small fixture. It is a way to explain a specific wait and make a narrowly scoped comparison reproducible.
+        </p>
+      </section>
+
+      <section>
+        <h2>Conclusion</h2>
+        <p>
+          When a local coding agent spends minutes before opening its first file, treat the delay as a pipeline to decompose. Measure launcher and prompt construction separately from model response time; count the tool schema; record the first parsed tool call; and test what happens after a controlled denial. Then compare models under the same harness, task, runtime, and cache conditions.
+        </p>
+        <p>
+          The most useful result is not a single “fastest model” label. It is an evidence-bounded profile showing where time is spent, whether the agent completes the task, and whether it recovers safely when the environment refuses an action.
+        </p>
+      </section>
+
+      <footer class="reading-footer">
+        <p>Continue with the <a href="../guides.html">Agent Lab Journal guides</a> or look up terms in the <a href="../glossary.html">glossary</a>.</p>
+      </footer>
+    <section class="service-note">
+  <b>We publish what works for us—and implement the same solutions for your business.</b>
+  We design AI automation, Telegram bots, chats, and AI agents for real-world processes.
+  <a href="../contacts-en.html">Discuss your project →</a>
+</section>
+</article>
+  </main>
+
+  <footer class="site-footer">
+    <div class="site-footer__inner">
+      <span>Agent Lab Journal</span>
+      <nav aria-label="Footer navigation">
+        <a href="../guides.html">Guides</a>
+        <a href="../glossary.html">Glossary</a>
+      </nav>
+    </div>
+  </footer>
+</body>
+</html>
