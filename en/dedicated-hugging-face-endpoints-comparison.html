@@ -1,0 +1,719 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Where to Host a Hugging Face Model: Dedicated Endpoint Comparison</title>
+  <meta name="description" content="Where to Host a Hugging Face Model: Dedicated Endpoint Comparison. A reproducible framework for comparing private model serving, isolation, retention, support, and billing.">
+  <link rel="canonical" href="https://agentlabjournal.online/en/dedicated-hugging-face-endpoints-comparison.html">
+  <link rel="stylesheet" href="../style.css">
+  <link rel="stylesheet" href="../reading.css">
+
+  <meta property="og:type" content="article">
+  <meta property="og:title" content="Where to Host a Hugging Face Model: Dedicated Endpoint Comparison">
+  <meta property="og:description" content="A practical, evidence-bounded framework for choosing dedicated infrastructure for a privately served Hugging Face model.">
+  <meta property="og:url" content="https://agentlabjournal.online/en/dedicated-hugging-face-endpoints-comparison.html">
+  <meta property="og:image" content="https://agentlabjournal.online/assets/covers/llm-context-window-budget-social.png">
+  <meta property="og:site_name" content="Agent Lab Journal">
+
+  <meta name="twitter:card" content="summary_large_image">
+  <meta name="twitter:title" content="Where to Host a Hugging Face Model: Dedicated Endpoint Comparison">
+  <meta name="twitter:description" content="Compare dedicated hosting options for private Hugging Face model serving, including isolation, retention, support, and billing.">
+  <meta name="twitter:image" content="https://agentlabjournal.online/assets/covers/llm-context-window-budget-social.png">
+
+  <meta name="reading-time" content="40 minutes">
+  <meta name="article:section" content="Infrastructure">
+  <meta name="article:level" content="Intermediate">
+  <meta name="reading-meta" content="40 min read · Intermediate · Infrastructure">
+
+  <script type="application/ld+json">
+  {
+    "@context": "https://schema.org",
+    "@type": "Article",
+    "headline": "Where to Host a Hugging Face Model: Dedicated Endpoint Comparison",
+    "description": "A practical, evidence-bounded framework for choosing dedicated infrastructure for a privately served Hugging Face model.",
+    "image": ["https://agentlabjournal.online/assets/covers/llm-context-window-budget-social.png"],
+    "dateModified": "2026-11-28",
+    "author": {
+      "@type": "Organization",
+      "name": "Agent Lab Journal"
+    },
+    "publisher": {
+      "@type": "Organization",
+      "name": "Agent Lab Journal",
+      "url": "https://agentlabjournal.online/"
+    },
+    "mainEntityOfPage": {
+      "@type": "WebPage",
+      "@id": "https://agentlabjournal.online/en/dedicated-hugging-face-endpoints-comparison.html"
+    }
+  }
+  </script>
+<link rel="stylesheet" href="../homepage.css"><link rel="stylesheet" href="../max-promo.css">  <meta property="og:image:alt" content="Где разместить модель Hugging Face: сравнение выделенных endpoint’ов">
+</head>
+
+<body>
+  <header class="site-header">
+    <div class="container">
+      <a class="site-brand" href="../index.html">Agent Lab Journal</a>
+      <nav aria-label="Primary navigation">
+        <a href="../guides.html">Guides</a>
+        <a href="../glossary.html">Glossary</a>
+      </nav>
+    </div>
+  </header>
+
+  <main>
+    <article class="reading">
+      <header class="reading-header">
+        <p class="eyebrow">Infrastructure · Intermediate · 40 min read</p>
+        <h1>Where to Host a Hugging Face Model: Dedicated Endpoint Comparison</h1>
+        <figure class="article-cover" data-editorial-cover="dedicated-hugging-face-endpoints-comparison"><img src="../assets/covers/llm-context-window-budget.png" alt="Где разместить модель Hugging Face: сравнение выделенных endpoint’ов" width="1280" height="720" fetchpriority="high"><figcaption>Temporary fallback cover; replace in editorial pass.</figcaption></figure>
+        <p class="lede">
+          Hosting a private Hugging Face model is not mainly a question of finding the lowest hourly GPU price. The difficult part is proving that the serving path gives you the isolation, model compatibility, data handling, operational control, and billing behavior your application actually needs.
+        </p>
+        <p class="reading-meta">40 min read · Updated 28 November 2026 · Practical comparison</p>
+      </header>
+
+      <section>
+        <p>
+          This guide presents a repeatable way to compare a <a href="../glossary.html#dedicated-endpoint">dedicated endpoint</a>: a serving URL backed by infrastructure reserved for one deployment or tenant according to the provider’s documented model. The comparison is deliberately evidence-bounded. It does not assign current prices, promise a particular compliance posture, or claim that one provider is universally better. Provider plans and product capabilities change; verify them against the contract, service documentation, and a controlled deployment before committing.
+        </p>
+
+        <p>
+          The concrete case is a team that needs to serve a gated or private model from the <a href="../glossary.html#hugging-face-hub">Hugging Face Hub</a> behind an application API. The team wants predictable latency, no public model artifacts, a clear answer about request and log retention, and a bill that can be explained to finance. It has enough engineering experience to run a container, but does not want to own a full production platform unless that is the only way to meet its requirements.
+        </p>
+
+        <div class="callout">
+          <strong>Decision in one sentence:</strong> choose the least complex hosting model that can prove your required isolation, model-runtime compatibility, network controls, retention policy, and cost envelope with the exact model and traffic shape you intend to run.
+        </div>
+      </section>
+
+      <section>
+        <h2>What “dedicated” must mean before you compare providers</h2>
+
+        <p>
+          “Dedicated” is often used loosely. It can describe a physically reserved machine, a single-tenant virtual machine, a private deployment with logical isolation, or simply an endpoint that is not shared at the application layer. These are materially different claims.
+        </p>
+
+        <p>
+          Write the required property in operational language before looking at a product page. For example:
+        </p>
+
+        <ul>
+          <li>Only our deployment may execute on the assigned accelerator.</li>
+          <li>Model weights must not be copied into a provider-managed public registry.</li>
+          <li>Requests must enter through a private network path or an allowlisted gateway.</li>
+          <li>Request bodies and generated outputs must not be retained in ordinary logs.</li>
+          <li>Stopping the endpoint must stop accelerator billing, or the idle charge must be explicitly accepted.</li>
+        </ul>
+
+        <p>
+          Each sentence can be tested or documented. “Enterprise-grade” cannot. In this article, isolation means the provider’s documented execution boundary; retention means what happens to weights, inputs, outputs, logs, caches, and backups; and billing means the meter that continues while the endpoint is provisioned, running, idle, or scaling.
+        </p>
+      </section>
+
+      <section>
+        <h2>The four hosting patterns</h2>
+
+        <p>
+          The following patterns are useful comparison classes. They are not claims about every product sold under these labels.
+        </p>
+
+        <table>
+          <caption>Hosting patterns for a privately served Hugging Face model</caption>
+          <thead>
+            <tr>
+              <th scope="col">Pattern</th>
+              <th scope="col">What you operate</th>
+              <th scope="col">Best fit</th>
+              <th scope="col">Main question</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td>Managed model endpoint</td>
+              <td>Model configuration, access policy, deployment settings, and application integration</td>
+              <td>A team that wants a short path from model repository to HTTPS inference</td>
+              <td>Can the managed runtime load this exact model and meet the required isolation and retention terms?</td>
+            </tr>
+            <tr>
+              <td>Managed container service</td>
+              <td>Container image, health checks, rollout settings, networking, and secrets integration</td>
+              <td>A team that needs a custom server or runtime without managing physical machines</td>
+              <td>Which resources remain allocated when traffic is zero, and who owns the runtime patching boundary?</td>
+            </tr>
+            <tr>
+              <td>GPU virtual machine</td>
+              <td>Operating system, drivers, runtime, model server, firewall, updates, and monitoring</td>
+              <td>A team that needs operating-system control or unusual dependencies</td>
+              <td>Can the team operate the machine safely and prove deletion, backup, and log behavior?</td>
+            </tr>
+            <tr>
+              <td>Self-managed cluster or private platform</td>
+              <td>Scheduling, nodes, network policy, deployment system, observability, upgrades, and recovery</td>
+              <td>A platform team serving several models or requiring a uniform internal control plane</td>
+              <td>Will the platform’s operational cost be justified by reuse and control?</td>
+          </tbody>
+        </table>
+
+        <p>
+          A managed endpoint may minimize application work but constrain the available server, tokenizer behavior, or version choices. A virtual machine may maximize control but leave every security and lifecycle decision with your team. The correct comparison is therefore not “managed versus self-hosted” in the abstract; it is “which responsibility boundary can we operate and verify?”
+        </p>
+      </section>
+
+      <section>
+        <h2>Provider comparison table</h2>
+
+        <p>
+          Use this table as a decision worksheet. The “evidence to request” column is intentionally more important than the score. A blank answer is not proof of failure, but it is a risk that should remain visible.
+        </p>
+
+        <table>
+          <caption>Dedicated endpoint comparison checklist</caption>
+          <thead>
+            <tr>
+              <th scope="col">Criterion</th>
+              <th scope="col">Managed model endpoint</th>
+              <th scope="col">Managed container service</th>
+              <th scope="col">GPU virtual machine</th>
+              <th scope="col">Self-managed platform</th>
+              <th scope="col">Evidence to request</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td>Model support</td>
+              <td>Depends on supported tasks, architectures, formats, and runtime versions</td>
+              <td>Usually follows the selected image and server</td>
+              <td>Controlled by your installed runtime and drivers</td>
+              <td>Controlled by the platform stack and node images</td>
+              <td>Deployment log for the exact revision, architecture, task, and quantization mode</td>
+            </tr>
+            <tr>
+              <td>Private or gated repository access</td>
+              <td>May use an integration or scoped token</td>
+              <td>Usually configured through a secret or workload identity</td>
+              <td>Configured by the operating environment</td>
+              <td>Configured by platform identity and secret management</td>
+              <td>Documented secret path and a test showing the token is not exposed in logs</td>
+            </tr>
+            <tr>
+              <td>Execution isolation</td>
+              <td>Product-specific; do not infer physical isolation from “private”</td>
+              <td>Depends on tenant, task, and node isolation guarantees</td>
+              <td>Depends on the VM and host contract</td>
+              <td>Depends on node pools, scheduling, and policy</td>
+              <td>Contract language defining tenancy, hardware sharing, and administrative access</td>
+            </tr>
+            <tr>
+              <td>Network isolation</td>
+              <td>May be limited to endpoint authentication or private connectivity</td>
+              <td>Often configurable, but implementation varies</td>
+              <td>Usually under your firewall and routing control</td>
+              <td>Under platform network policy if configured correctly</td>
+              <td>Network diagram, ingress rules, egress rules, and a denied-path test</td>
+            </tr>
+            <tr>
+              <td>Data retention</td>
+              <td>Ask separately about inputs, outputs, logs, caches, and crash traces</td>
+              <td>Ask about platform logs and application logs</td>
+              <td>You control the application, but provider backups and disks still matter</td>
+              <td>You control more layers, but also own retention configuration</td>
+              <td>Retention schedule, deletion process, backup policy, and log redaction behavior</td>
+            </tr>
+            <tr>
+              <td>Cold start</td>
+              <td>May involve image, weights, and accelerator initialization</td>
+              <td>Depends on scale-to-zero and image size</td>
+              <td>Usually avoided while the VM stays running</td>
+              <td>Depends on scheduler and warm capacity</td>
+              <td>Measured startup from stopped state using the target revision</td>
+            </tr>
+            <tr>
+              <td>Scaling</td>
+              <td>May be simple but constrained by product limits</td>
+              <td>Usually exposes deployment-level scaling controls</td>
+              <td>Often manual unless paired with an autoscaler</td>
+              <td>Most flexible, with the highest platform burden</td>
+              <td>Scale-out limits, queue behavior, and whether replicas duplicate model memory</td>
+            </tr>
+            <tr>
+              <td>Operational responsibility</td>
+              <td>Lowest, but less runtime control</td>
+              <td>Moderate; image and service lifecycle are yours</td>
+              <td>High; patching and recovery are yours</td>
+              <td>Highest; the platform becomes a product you operate</td>
+              <td>Responsibility matrix covering patching, incidents, backups, and upgrades</td>
+            </tr>
+            <tr>
+              <td>Billing clarity</td>
+              <td>Check endpoint, accelerator, request, storage, and network meters</td>
+              <td>Check compute, image, storage, logs, and egress meters</td>
+              <td>Check VM, disk, IP, snapshots, and egress meters</td>
+              <td>Check nodes, control plane, storage, observability, and egress meters</td>
+              <td>Example invoice or calculator output for an explicitly defined test workload</td>
+            </tr>
+          </tbody>
+        </table>
+      </section>
+
+      <section>
+        <h2>A concrete case: serving a private text-generation model</h2>
+
+        <p>
+          Assume the application needs a text-generation model from a private repository. The model has a fixed revision, the API should accept JSON, and the application must not send prompts directly to a public service. The team has not yet chosen a provider.
+        </p>
+
+        <p>
+          The first design decision is to separate the application contract from the hosting product. Define a small internal API such as:
+        </p>
+
+        <pre><code>POST /v1/generate
+Content-Type: application/json
+
+{
+  "prompt": "Summarize this ticket in one sentence.",
+  "max_new_tokens": 80,
+  "temperature": 0.2
+}</code></pre>
+
+        <p>
+          The application should call an internal adapter, not embed provider-specific request formats throughout the codebase. That makes a provider trial reversible and lets the team compare latency, error behavior, and billing without rewriting business logic.
+        </p>
+
+        <p>
+          For a container-based trial, an illustrative environment might contain:
+        </p>
+
+        <pre><code>MODEL_ID=org-or-user/private-model
+MODEL_REVISION=replace-with-an-immutable-revision
+HF_TOKEN=provided-through-a-secret-manager
+PORT=8080
+LOG_PROMPTS=false
+LOG_OUTPUTS=false</code></pre>
+
+        <p>
+          These are configuration names, not provider requirements. Do not put a real token in a shell history, a Dockerfile, a public repository, or an article. Use a secret manager or an equivalent protected mechanism supported by the selected host.
+        </p>
+      </section>
+
+      <section>
+        <h2>Reproducible evaluation procedure</h2>
+
+        <p>
+          The most useful comparison is a small controlled experiment repeated on each candidate. Keep the model revision, prompt set, concurrency, timeout, and acceptance criteria constant. Record the provider, region, instance or endpoint type, runtime image, driver version, and deployment configuration so another engineer can repeat the run.
+        </p>
+
+        <h3>1. Pin the model revision</h3>
+
+        <p>
+          A mutable branch or tag makes comparisons difficult. Use an immutable commit or version identifier supported by the repository and serving tool. Record it in the test manifest:
+        </p>
+
+        <pre><code>{
+  "model_id": "org-or-user/private-model",
+  "revision": "immutable-revision-placeholder",
+  "task": "text-generation",
+  "input_set": "internal-synthetic-prompts-v1",
+  "max_new_tokens": 80
+}</code></pre>
+
+        <p>
+          The identifier above is a placeholder. Replace it with the revision you are authorized to use. Do not publish private repository names or credentials.
+        </p>
+
+        <h3>2. Verify the deployment boundary</h3>
+
+        <p>
+          Before sending meaningful data, test with synthetic prompts. Confirm that the endpoint requires authentication, rejects an unauthorized request, and is reachable only through the intended ingress path.
+        </p>
+
+        <pre><code># Expected result: an authentication error or equivalent denial.
+curl -i --fail-with-body \
+  -X POST "$ENDPOINT_URL/v1/generate" \
+  -H "Content-Type: application/json" \
+  -d '{"prompt":"synthetic access-control test","max_new_tokens":8}'</code></pre>
+
+        <p>
+          The exact status code is provider- and gateway-dependent, so record the observed response rather than assuming a specific number. Then repeat with the intended application credential and confirm that the request succeeds.
+        </p>
+
+        <h3>3. Verify model behavior</h3>
+
+        <p>
+          Use a fixed set of synthetic prompts that exercises the task, input length, output length, and any special tokens your application depends on. Capture only the minimum metadata needed for comparison:
+        </p>
+
+        <pre><code>request_id
+timestamp_utc
+provider_label
+deployment_revision
+input_token_count
+output_token_count
+time_to_first_token_if_available
+total_duration_ms
+status
+error_class</code></pre>
+
+        <p>
+          Do not record the prompt or output unless the test policy explicitly permits it. If the provider adds request logging by default, treat that as a retention finding and resolve it before using production data.
+        </p>
+
+        <h3>4. Verify restart and cold-start behavior</h3>
+
+        <p>
+          Measure two paths separately: a warm request after the model is loaded, and the first request after deployment or scale-from-zero. A large difference is not automatically a problem; it becomes a problem when the application’s timeout and user experience cannot tolerate it.
+        </p>
+
+        <p>
+          Use a simple timing wrapper:
+        </p>
+
+        <pre><code>for i in 1 2 3 4 5; do
+  /usr/bin/time -f "%e seconds" \
+    curl -sS --fail-with-body \
+      -X POST "$ENDPOINT_URL/v1/generate" \
+      -H "Authorization: Bearer $APP_TOKEN" \
+      -H "Content-Type: application/json" \
+      -d '{"prompt":"synthetic latency test","max_new_tokens":32}' \
+      -o /dev/null
+done</code></pre>
+
+        <p>
+          This command measures client-observed wall time, not a provider’s internal latency metric. Run it from a location representative of the application. If the endpoint streams tokens, add a separate measurement for time to first byte or first token.
+        </p>
+
+        <h3>5. Verify failure behavior</h3>
+
+        <p>
+          Deliberately test malformed JSON, an oversized input, a timeout, an invalid model revision during staging, and a revoked credential. Check whether errors are stable enough for the application to classify as retryable, non-retryable, or configuration-related.
+        </p>
+
+        <pre><code># Malformed JSON. The request should be rejected without a model-generated answer.
+curl -i --fail-with-body \
+  -X POST "$ENDPOINT_URL/v1/generate" \
+  -H "Authorization: Bearer $APP_TOKEN" \
+  -H "Content-Type: application/json" \
+  --data-binary '{"prompt":'</code></pre>
+
+        <p>
+          Do not retry every failure. A model server may return transient capacity errors, while an authentication or validation error requires a configuration change. Your adapter should preserve the provider request ID when one is available, while keeping sensitive request content out of logs.
+        </p>
+
+        <h3>6. Verify deletion and retention</h3>
+
+        <p>
+          Ask the provider or platform owner to identify every storage location involved in the deployment: downloaded weights, image layers, temporary files, request logs, audit logs, crash dumps, snapshots, backups, and monitoring exports. For each location, record retention duration, deletion trigger, and whether deletion is customer-controlled.
+        </p>
+
+        <p>
+          After deleting a test deployment, repeat the provider’s documented search or audit procedure. This is not proof that every backup copy has disappeared; it is evidence about the documented lifecycle and the control available to your team.
+        </p>
+      </section>
+
+      <section>
+        <h2>Model support: test the exact artifact</h2>
+
+        <p>
+          “Supports Hugging Face models” is not a sufficient compatibility statement. A model can be present in a repository and still fail to serve because of its architecture, task, tokenizer, custom code, precision, memory requirement, or required runtime version.
+        </p>
+
+        <p>
+          Test the exact combination of:
+        </p>
+
+        <ul>
+          <li>repository and immutable revision;</li>
+          <li>task, such as text generation, embeddings, classification, or image generation;</li>
+          <li>model architecture and tokenizer;</li>
+          <li>precision or <a href="../glossary.html#quantization">quantization</a> format;</li>
+          <li>maximum input and output lengths;</li>
+          <li>custom model code, if the runtime permits it;</li>
+          <li>server version, accelerator type, and driver stack.</li>
+        </ul>
+
+        <p>
+          Prefer a deployment log that identifies the loaded revision and runtime. A green control-plane status is not enough if the first real inference request fails. Also test the outputs that matter to your application: response schema, streaming behavior, stop sequences, truncation, and error encoding.
+        </p>
+      </section>
+
+      <section>
+        <h2>Isolation: ask what is isolated from what</h2>
+
+        <p>
+          Isolation has several layers. Treat them as separate questions:
+        </p>
+
+        <ol>
+          <li><strong>Request isolation:</strong> Can one tenant’s request reach another tenant’s application or response?</li>
+          <li><strong>Process isolation:</strong> Can workloads share a host, container runtime, or accelerator?</li>
+          <li><strong>Storage isolation:</strong> Can cached weights, temporary files, logs, or snapshots cross deployment boundaries?</li>
+          <li><strong>Network isolation:</strong> Can the endpoint be reached from the public internet, and can the serving process make outbound connections?</li>
+          <li><strong>Administrative isolation:</strong> Which provider personnel or support systems can access the workload or its metadata?</li>
+        </ol>
+
+        <p>
+          “Private endpoint” commonly answers only the access question. It may mean that callers need authentication; it may mean private network connectivity; or it may mean both. Request the precise definition used in the service agreement and record which properties are contractual, configurable, or merely recommended.
+        </p>
+
+        <p>
+          For a sensitive model, also check whether debugging features can capture prompts, generated text, headers, environment variables, or stack traces. A support bundle can create a separate data path even when ordinary application logs are clean.
+        </p>
+      </section>
+
+      <section>
+        <h2>Data retention: build a data-flow inventory</h2>
+
+        <p>
+          A private deployment can still retain sensitive data. The data-flow inventory should cover:
+        </p>
+
+        <table>
+          <caption>Retention questions by data type</caption>
+          <thead>
+            <tr>
+              <th scope="col">Data</th>
+              <th scope="col">Where it may appear</th>
+              <th scope="col">Question to answer</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td>Model weights</td>
+              <td>Persistent disk, cache, image layer, snapshot, backup</td>
+              <td>When are copies created, and what deletes them?</td>
+            </tr>
+            <tr>
+              <td>Prompts and inputs</td>
+              <td>Application logs, access logs, tracing, debugging, support exports</td>
+              <td>Are bodies logged, sampled, redacted, or disabled?</td>
+            </tr>
+            <tr>
+              <td>Generated outputs</td>
+              <td>Response logs, traces, client-side logs, error reports</td>
+              <td>Can outputs be retained without an explicit application decision?</td>
+            </tr>
+            <tr>
+              <td>Identifiers and metadata</td>
+              <td>Audit logs, metrics, billing records, request IDs</td>
+              <td>What remains after deployment deletion, and for how long?</td>
+            </tr>
+            <tr>
+              <td>Secrets</td>
+              <td>Environment variables, startup logs, crash dumps, build logs</td>
+              <td>Are secret values masked and excluded from diagnostic exports?</td>
+            </tr>
+          </tbody>
+        </table>
+
+        <p>
+          Keep the application’s own logging policy independent from the provider’s. Set a default of metadata-only logs, redact authorization headers, and make prompt logging an explicit temporary test mode. If a provider cannot disable a platform log containing request content, that should affect the decision even if the model itself is isolated.
+        </p>
+      </section>
+
+      <section>
+        <h2>Billing: compare a workload, not a headline rate</h2>
+
+        <p>
+          A useful cost model names every meter:
+        </p>
+
+        <pre><code>monthly_cost =
+  provisioned_compute
++ accelerator_runtime
++ storage
++ snapshots_or_backups
++ network_egress
++ request_or_token_charges
++ logging_and_monitoring
++ platform_overhead</code></pre>
+
+        <p>
+          The formula is intentionally generic. Some providers combine terms; others do not expose every term separately. The comparison becomes reproducible when you state the assumptions:
+        </p>
+
+        <ul>
+          <li>hours provisioned per month;</li>
+          <li>hours actively processing requests;</li>
+          <li>number of replicas;</li>
+          <li>model and image storage size;</li>
+          <li>request count and average input/output size;</li>
+          <li>expected egress;</li>
+          <li>logging volume;</li>
+          <li>whether scale-to-zero is enabled;</li>
+          <li>whether idle resources remain billable.</li>
+        </ul>
+
+        <p>
+          Ask for the cost of three states: always-on, scheduled availability, and scale-to-zero. The last state can reduce idle compute while increasing cold starts and deployment complexity. A seemingly inexpensive option can become more expensive when it requires extra replicas, larger machines, frequent downloads, or an additional gateway.
+        </p>
+
+        <p>
+          Do not publish a price from an unverified calculator screenshot. Prices, regions, discounts, commitments, and minimum charges change. Record the date, currency, region, assumptions, and source used for any internal estimate.
+        </p>
+      </section>
+
+      <section>
+        <h2>Choosing between the patterns</h2>
+
+        <h3>Choose a managed model endpoint when</h3>
+
+        <ul>
+          <li>the exact model and task are supported;</li>
+          <li>the provider can document the required isolation and retention behavior;</li>
+          <li>the application benefits from a standard HTTPS inference contract;</li>
+          <li>you value reduced operations more than runtime customization.</li>
+        </ul>
+
+        <h3>Choose a managed container service when</h3>
+
+        <ul>
+          <li>you need a custom model server or request adapter;</li>
+          <li>you want image-level control but not full machine administration;</li>
+          <li>the service exposes sufficient networking, secrets, scaling, and log controls;</li>
+          <li>you can make image patching part of your release process.</li>
+        </ul>
+
+        <h3>Choose a GPU virtual machine when</h3>
+
+        <ul>
+          <li>the runtime needs system packages or drivers unavailable in managed products;</li>
+          <li>you need long-lived warm memory and predictable process behavior;</li>
+          <li>your team can own operating-system patching, firewalling, monitoring, and recovery;</li>
+          <li>you have a clear plan for disks, snapshots, secrets, and deletion.</li>
+        </ul>
+
+        <h3>Choose a self-managed platform when</h3>
+
+        <ul>
+          <li>several deployments can share a real platform capability;</li>
+          <li>you need consistent policy across models and teams;</li>
+          <li>you can staff upgrades, capacity planning, incidents, and security review;</li>
+          <li>the reuse value is greater than the platform’s fixed operational cost.</li>
+        </ul>
+
+        <p>
+          Do not choose a cluster merely because it appears more professional. The platform should solve a repeated problem. For one model and one application, a smaller responsibility boundary is often easier to secure and audit.
+        </p>
+      </section>
+
+      <section>
+        <h2>Failure cases that change the decision</h2>
+
+        <h3>The model downloads successfully but fails on the first request</h3>
+
+        <p>
+          Possible causes include a task mismatch, unsupported architecture, missing custom code, insufficient accelerator memory, tokenizer incompatibility, or a server-specific request schema. Preserve the deployment log, model revision, runtime version, and first error. Do not treat a successful weight download as compatibility proof.
+        </p>
+
+        <h3>The endpoint is private but the logs contain prompts</h3>
+
+        <p>
+          Private network access does not solve retention. Disable body logging at the gateway, server, tracing system, and application layer. If any mandatory provider log retains bodies, classify the deployment as incompatible with the data policy until the retention path is accepted or changed.
+        </p>
+
+        <h3>Warm latency is acceptable but cold starts exceed the request timeout</h3>
+
+        <p>
+          Options include keeping one replica warm, changing the application timeout, loading weights during startup, using a smaller artifact, or choosing a host with a different scaling model. Measure the cost and user impact of each option. Do not hide the problem by retrying a cold request indefinitely.
+        </p>
+
+        <h3>The bill is higher than the compute estimate</h3>
+
+        <p>
+          Compare the invoice with the original meter list. Look for provisioned-but-idle accelerators, persistent disks, snapshots, egress, log ingestion, extra replicas, minimum charges, and deployment failures that repeatedly pulled the image or weights.
+        </p>
+
+        <h3>A provider cannot answer the retention question</h3>
+
+        <p>
+          Mark the answer as unknown rather than assuming “no retention.” Limit testing to synthetic data, request written clarification, and include the unresolved risk in the approval record. Unknown behavior is a decision input.
+        </p>
+      </section>
+
+      <section>
+        <h2>Evidence packet for an internal approval</h2>
+
+        <p>
+          A compact evidence packet makes the decision reviewable. Include:
+        </p>
+
+        <ol>
+          <li>the model repository and immutable revision;</li>
+          <li>the task, runtime, image, accelerator, and region;</li>
+          <li>the network diagram and ingress rules;</li>
+          <li>the secret-delivery method with secret values omitted;</li>
+          <li>the synthetic test prompts and measurement script;</li>
+          <li>warm and cold timing observations;</li>
+          <li>failure responses and retry classification;</li>
+          <li>the retention and deletion answers;</li>
+          <li>the billing assumptions and dated estimate;</li>
+          <li>known limitations and unresolved questions.</li>
+        </ol>
+
+        <p>
+          Store the packet with the deployment decision, not inside the model repository if that repository is shared more broadly. Remove private model names, tokens, customer prompts, and personal data from examples and test artifacts.
+        </p>
+      </section>
+
+      <section>
+        <h2>Final checklist</h2>
+
+        <p>Before approving a dedicated hosting option, check every item that applies:</p>
+
+        <ul class="checklist">
+          <li>☐ The exact model revision loads successfully.</li>
+          <li>☐ The required task, tokenizer, precision, and output behavior work.</li>
+          <li>☐ The serving runtime and accelerator have been recorded.</li>
+          <li>☐ Private or gated repository access uses a scoped secret.</li>
+          <li>☐ Authentication is required at the intended ingress point.</li>
+          <li>☐ Public access and unintended outbound access have been tested.</li>
+          <li>☐ The meaning of “dedicated” is documented.</li>
+          <li>☐ Host, process, storage, network, and administrative isolation are understood.</li>
+          <li>☐ Prompts and outputs are absent from ordinary logs unless explicitly approved.</li>
+          <li>☐ Model caches, disks, snapshots, backups, and support exports have retention answers.</li>
+          <li>☐ Deletion has a documented trigger and verification procedure.</li>
+          <li>☐ Warm and cold behavior fit the application’s timeout.</li>
+          <li>☐ Failure responses are classified as retryable or non-retryable.</li>
+          <li>☐ Scaling behavior and replica memory requirements are known.</li>
+          <li>☐ Billing assumptions include idle time, storage, network, logging, and platform overhead.</li>
+          <li>☐ The comparison was run with synthetic data before production data was sent.</li>
+          <li>☐ Unverified claims remain labeled as unknown or provider-specific.</li>
+        </ul>
+      </section>
+
+      <section>
+        <h2>Conclusion</h2>
+
+        <p>
+          The best place to host a Hugging Face model is the option whose responsibility boundary you can explain and verify. A managed endpoint may be the right answer when its runtime supports the exact artifact and its isolation and retention terms fit the workload. A managed container or virtual machine may be better when you need runtime control. A self-managed platform is justified when several deployments can share its operational capabilities.
+        </p>
+
+        <p>
+          Start with the model revision and data-flow requirements, run the same synthetic test on each candidate, and compare the complete cost and control surface. The resulting decision will be more durable than a provider ranking because it records why the selected host fits this model, this traffic pattern, and this data policy.
+        </p>
+      </section>
+
+      <footer class="reading-footer">
+        <p>Continue with the <a href="../guides.html">Agent Lab Journal guides</a> or check the <a href="../glossary.html">glossary</a> for infrastructure terms.</p>
+      </footer>
+    <section class="service-note">
+  <b>We publish what works for us—and implement the same solutions for your business.</b>
+  We design AI automation, Telegram bots, chats, and AI agents for real-world processes.
+  <a href="../contacts-en.html">Discuss your project →</a>
+</section>
+</article>
+  </main>
+
+  <footer class="site-footer">
+    <div class="container">
+      <p>© Agent Lab Journal</p>
+      <nav aria-label="Footer navigation">
+        <a href="../guides.html">Guides</a>
+        <a href="../glossary.html">Glossary</a>
+      </nav>
+    </div>
+  </footer>
+</body>
+</html>
