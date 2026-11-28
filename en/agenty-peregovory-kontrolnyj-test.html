@@ -1,0 +1,682 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>When Agents Negotiate With Agents: Designing a Control Test</title>
+  <meta name="description" content="When Agents Negotiate With Agents: Designing a Control Test explains how to compare negotiation agents with a paired control group, complete logging, and transaction-cost measurement.">
+  <link rel="canonical" href="https://agentlabjournal.online/en/agenty-peregovory-kontrolnyj-test.html">
+  <link rel="stylesheet" href="../style.css">
+  <link rel="stylesheet" href="../reading.css">
+
+  <meta property="og:type" content="article">
+  <meta property="og:locale" content="en_US">
+  <meta property="og:title" content="When Agents Negotiate With Agents: Designing a Control Test">
+  <meta property="og:description" content="A reproducible method for testing whether a negotiation agent is losing money against another agent.">
+  <meta property="og:url" content="https://agentlabjournal.online/en/agenty-peregovory-kontrolnyj-test.html">
+  <meta property="og:image" content="https://agentlabjournal.online/assets/covers/llm-context-window-budget-social.png">
+
+  <meta name="twitter:card" content="summary_large_image">
+  <meta name="twitter:title" content="When Agents Negotiate With Agents: Designing a Control Test">
+  <meta name="twitter:description" content="A reproducible method for testing whether a negotiation agent is losing money against another agent.">
+  <meta name="twitter:image" content="https://agentlabjournal.online/assets/covers/llm-context-window-budget-social.png">
+
+  <meta name="reading-time" content="35 minutes">
+  <meta name="article:section" content="Evaluation">
+  <meta name="article:level" content="Advanced">
+
+  <script type="application/ld+json">
+  {
+    "@context": "https://schema.org",
+    "@type": "Article",
+    "headline": "When Agents Negotiate With Agents: Designing a Control Test",
+    "description": "A reproducible method for testing whether a negotiation agent is losing money against another agent.",
+    "image": ["https://agentlabjournal.online/assets/covers/llm-context-window-budget-social.png"],
+    "dateModified": "2026-11-28",
+    "author": {
+      "@type": "Organization",
+      "name": "Agent Lab Journal"
+    },
+    "publisher": {
+      "@type": "Organization",
+      "name": "Agent Lab Journal",
+      "logo": {
+        "@type": "ImageObject",
+        "url": "https://agentlabjournal.online/assets/logo.png"
+      }
+    },
+    "mainEntityOfPage": {
+      "@type": "WebPage",
+      "@id": "https://agentlabjournal.online/en/agenty-peregovory-kontrolnyj-test.html"
+    }
+  }
+  </script>
+<link rel="stylesheet" href="../homepage.css"><link rel="stylesheet" href="../max-promo.css">  <meta property="og:image:alt" content="Когда агенты торгуются друг с другом: как провести контрольный тест">
+</head>
+<body>
+  <header class="site-header">
+    <div class="container">
+      <a class="site-brand" href="../index.html">Agent Lab Journal</a>
+      <nav aria-label="Primary navigation">
+        <a href="../guides.html">Guides</a>
+        <a href="../glossary.html">Glossary</a>
+      </nav>
+    </div>
+  </header>
+
+  <main>
+    <article class="reading">
+      <header class="reading-header">
+        <p class="reading-kicker">Evaluation · Advanced</p>
+        <h1>When Agents Negotiate With Agents: Designing a Control Test</h1>
+        <figure class="article-cover" data-editorial-cover="agenty-peregovory-kontrolnyj-test"><img src="../assets/covers/llm-context-window-budget.png" alt="Когда агенты торгуются друг с другом: как провести контрольный тест" width="1280" height="720" fetchpriority="high"><figcaption>Temporary fallback cover; replace in editorial pass.</figcaption></figure>
+        <p class="reading-dek">How can a company test whether it is losing money because its negotiation agent is weaker than the agent on the other side? Treat the problem as a paired experiment: hold the deal constant, vary the negotiator, log every material action, and measure the cost of getting to agreement.</p>
+        <div class="reading-meta">
+          <span>35-minute read</span>
+          <span>Updated 28 November 2026</span>
+          <span>Agent Lab Journal</span>
+        </div>
+      </header>
+
+      <section>
+        <p>When two automated systems negotiate, a poor outcome can have several causes. Your agent may be strategically weak. The other agent may be unusually aggressive. The market may have changed. The deal population may be different. Or the nominal price may look acceptable while hidden delays, retries, escalations, and concessions consume the margin.</p>
+
+        <p>The practical question is therefore not “Did our agent get a good price?” It is:</p>
+
+        <blockquote>
+          <p>Compared with a credible alternative under the same conditions, did this agent produce more value after all negotiation and operating costs?</p>
+        </blockquote>
+
+        <p>This article describes a control test for answering that question. It is a test design, not a report of measured results. No customer facts, prices, credentials, or external study results are assumed.</p>
+      </section>
+
+      <section>
+        <h2>The test in one sentence</h2>
+
+        <p>Construct matched negotiation cases, assign the current agent and a control agent to comparable cases, expose both to the same counterpart population and policy constraints, and compare risk-adjusted net contribution after including <a href="../glossary.html#transaction-cost">transaction costs</a>.</p>
+
+        <p>The design has four required elements:</p>
+
+        <ul>
+          <li>A <a href="../glossary.html#control-group">control group</a> representing the credible alternative.</li>
+          <li>A paired or blocked allocation method that prevents easy cases from clustering in one arm.</li>
+          <li>A complete <a href="../glossary.html#negotiation-log">negotiation log</a> covering offers, messages, tool calls, timing, and termination.</li>
+          <li>A value model that includes price, probability of completion, service cost, human intervention, delay, and failure.</li>
+        </ul>
+
+        <p>If any of these is missing, the result may still be useful as an operational dashboard, but it is not strong evidence that one agent is weaker than another.</p>
+      </section>
+
+      <section>
+        <h2>What “weaker” means operationally</h2>
+
+        <p>“Weaker” should not mean that an agent sounds less persuasive or gives up more often. Define weakness as an observable loss against a predeclared objective.</p>
+
+        <p>For a purchasing agent, a simple objective might be:</p>
+
+        <pre><code>net_contribution =
+    expected_product_value
+  - agreed_price
+  - fulfillment_cost
+  - negotiation_compute_cost
+  - human_review_cost
+  - delay_cost
+  - failure_cost</code></pre>
+
+        <p>For a sales agent, the sign of the price term changes, but the structure remains: value received minus the costs and risks required to obtain it.</p>
+
+        <p>Possible primary metrics include:</p>
+
+        <ul>
+          <li><strong>Net contribution per eligible case:</strong> the recommended primary business metric.</li>
+          <li><strong>Agreement rate:</strong> useful only when non-agreement has a defined value.</li>
+          <li><strong>Effective price:</strong> the agreed price adjusted for concessions, fees, and expected failure.</li>
+          <li><strong>Time to agreement:</strong> elapsed time from the first valid offer to an accepted agreement.</li>
+          <li><strong>Intervention rate:</strong> the share of cases requiring a human or supervisory process.</li>
+          <li><strong>Policy-violation rate:</strong> cases in which the agent crosses a hard constraint or requires an emergency stop.</li>
+        </ul>
+
+        <p>Choose one primary metric before looking at outcomes. Keep the others as secondary diagnostics. Otherwise, the team can unintentionally select whichever metric makes the preferred agent look strongest.</p>
+      </section>
+
+      <section>
+        <h2>A concrete case: procurement agents</h2>
+
+        <p>Consider a company that uses an agent to negotiate recurring purchases. The company suspects that a supplier-side agent is extracting more value than its own system. It has observed several deals with higher-than-expected prices, but those deals also involved urgent delivery and unusual specifications.</p>
+
+        <p>The company creates a test set in which each case contains:</p>
+
+        <ul>
+          <li>An item or service specification.</li>
+          <li>A target quantity and delivery window.</li>
+          <li>A reservation price or maximum acceptable total cost.</li>
+          <li>Known switching, delay, and fulfillment assumptions.</li>
+          <li>A counterpart endpoint or scripted counterpart behavior.</li>
+          <li>A case identifier with no personal data or production credentials.</li>
+        </ul>
+
+        <p>Each case is then negotiated twice, or matched with a near-identical case negotiated by the other agent. The current production agent is the treatment arm. The candidate replacement, a frozen previous version, a deterministic policy, or a human-authored benchmark can serve as the control arm. The choice depends on the question being asked:</p>
+
+        <table>
+          <thead>
+            <tr>
+              <th>Question</th>
+              <th>Control choice</th>
+              <th>Interpretation</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td>Is the new agent better than the old one?</td>
+              <td>Frozen previous version</td>
+              <td>Change relative to the shipped baseline</td>
+            </tr>
+            <tr>
+              <td>Is automation better than the current process?</td>
+              <td>Existing human or rule-based process</td>
+              <td>Change relative to current operations</td>
+            </tr>
+            <tr>
+              <td>Is the agent losing to this counterpart?</td>
+              <td>Same agent against a neutral benchmark counterpart</td>
+              <td>Separates counterpart effect from policy weakness</td>
+            </tr>
+            <tr>
+              <td>Which strategy performs best?</td>
+              <td>Predefined alternative strategy</td>
+              <td>Direct strategy comparison</td>
+            </tr>
+          </tbody>
+        </table>
+
+        <p>A single observed loss to a supplier does not identify the cause. A paired design makes the comparison more informative by holding the case and counterpart conditions as constant as practical.</p>
+      </section>
+
+      <section>
+        <h2>Separate three effects before interpreting the result</h2>
+
+        <p>In agent-to-agent negotiation, the observed outcome is a mixture of at least three effects:</p>
+
+        <ol>
+          <li><strong>Case effect:</strong> the item, urgency, constraints, and reservation value.</li>
+          <li><strong>Counterpart effect:</strong> the other agent’s policy, information, patience, and termination rules.</li>
+          <li><strong>Our-agent effect:</strong> the strategy, model, tools, memory, and escalation policy being evaluated.</li>
+        </ol>
+
+        <p>The test should identify the third effect without pretending that the first two do not exist.</p>
+
+        <p>A useful design is a crossed matrix:</p>
+
+        <table>
+          <thead>
+            <tr>
+              <th></th>
+              <th>Counterpart A</th>
+              <th>Counterpart B</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <th>Agent under test</th>
+              <td>U-A</td>
+              <td>U-B</td>
+            </tr>
+            <tr>
+              <th>Control agent</th>
+              <td>C-A</td>
+              <td>C-B</td>
+            </tr>
+          </tbody>
+        </table>
+
+        <p>Run the cells on matched cases where possible. The comparison between U-A and C-A estimates the agent difference under counterpart A. The comparison between U-B and C-B estimates it under counterpart B. If the gap changes sharply between counterparts, the agent may be brittle rather than universally weak.</p>
+
+        <p>Do not infer that the stronger agent against Counterpart A will be stronger against every real counterpart. Generalization requires a counterpart sample that reflects the environments in which the agent will operate.</p>
+      </section>
+
+      <section>
+        <h2>Step 1: Write the protocol before running cases</h2>
+
+        <p>Put the test protocol in a versioned file. A minimal YAML configuration might look like this:</p>
+
+        <pre><code>test_id: procurement-negotiation-v1
+objective:
+  primary_metric: net_contribution_per_eligible_case
+  direction: maximize
+  unit: currency_units
+
+arms:
+  treatment:
+    id: agent-current
+    version: 2026-11-28
+  control:
+    id: agent-frozen-baseline
+    version: 2026-10-15
+
+allocation:
+  design: blocked-paired
+  block_keys:
+    - product_family
+    - urgency_band
+    - quantity_band
+    - counterpart_id
+  assignment_seed: "replace-with-recorded-seed"
+
+constraints:
+  max_rounds: 12
+  max_elapsed_seconds: 900
+  human_escalation: allowed
+  hard_stop_on_policy_violation: true
+
+logging:
+  schema_version: 1
+  store_prompts: false
+  store_model_outputs: true
+  redact_personal_data: true
+
+analysis:
+  primary_comparison: treatment_minus_control
+  exclude_cases_only_for_predeclared_reasons: true</code></pre>
+
+        <p>The values above are illustrative placeholders, not recommended production settings. The important properties are versioning, explicit metric direction, fixed arm definitions, recorded allocation, declared limits, and a rule for exclusions.</p>
+
+        <p>Freeze the protocol before inspecting treatment-versus-control results. If a limit must change for safety or operational reasons, create a new protocol version and preserve the original run.</p>
+      </section>
+
+      <section>
+        <h2>Step 2: Build eligible cases</h2>
+
+        <p>Define the population to which the result is meant to apply. The <a href="../glossary.html#eligibility-rule">eligibility rule</a> should state which cases enter the test and which do not.</p>
+
+        <p>For each case, record variables that could affect negotiation:</p>
+
+        <pre><code>{
+  "case_id": "case-000127",
+  "product_family": "example-family",
+  "quantity_band": "medium",
+  "urgency_band": "standard",
+  "specification_complexity": "low",
+  "counterpart_id": "counterpart-03",
+  "reservation_value": "stored-separately",
+  "allowed_channels": ["api"],
+  "eligible": true
+}</code></pre>
+
+        <p>The field names are examples. Do not place secrets, access tokens, private customer details, or unredacted personal data in the test corpus. If a production case is necessary, substitute stable pseudonymous identifiers and isolate sensitive values from the article, test logs, and analysis exports.</p>
+
+        <p>Avoid constructing cases only from deals that already went badly. That creates a diagnostic sample, not an estimate of performance across the eligible population. If the purpose is specifically to investigate failures, label the run as a failure-focused study and avoid presenting it as a general performance estimate.</p>
+      </section>
+
+      <section>
+        <h2>Step 3: Use paired or blocked assignment</h2>
+
+        <p>A <a href="../glossary.html#paired-design">paired design</a> compares agents on the same case or on cases matched by important variables. This reduces noise from case difficulty. When exact replay is unsafe or impossible, use <a href="../glossary.html#blocking">blocking</a>: group cases by predeclared characteristics and allocate both arms within each block.</p>
+
+        <p>For a deterministic assignment script, the important requirement is reproducibility, not a particular programming language. For example:</p>
+
+        <pre><code>python assign_cases.py \
+  --cases eligible_cases.jsonl \
+  --arms agent-current agent-frozen-baseline \
+  --block-by product_family urgency_band quantity_band counterpart_id \
+  --seed recorded-seed \
+  --out allocation-v1.jsonl</code></pre>
+
+        <p>The command is a template. It assumes a local script with those arguments; this article does not claim that such a script exists in your environment.</p>
+
+        <p>The allocation output should contain at least:</p>
+
+        <pre><code>{
+  "case_id": "case-000127",
+  "block_id": "family-a|standard|medium|counterpart-03",
+  "pair_id": "pair-000064",
+  "arm": "treatment",
+  "allocation_seed": "recorded-seed",
+  "protocol_version": "procurement-negotiation-v1"
+}</code></pre>
+
+        <p>Do not reassign a case after seeing its outcome. If a run is interrupted, resume from the recorded allocation rather than reallocating unfinished cases.</p>
+      </section>
+
+      <section>
+        <h2>Step 4: Freeze the negotiation environment</h2>
+
+        <p>Agent comparisons are invalid if one arm receives materially different information or tools. Record and, where practical, hold constant:</p>
+
+        <ul>
+          <li>System and developer instructions.</li>
+          <li>Model identifier and relevant inference parameters.</li>
+          <li>Tool definitions, tool versions, and tool permissions.</li>
+          <li>Available case facts and counterpart messages.</li>
+          <li>Maximum rounds, timeout rules, and retry behavior.</li>
+          <li>Escalation criteria and human response service level.</li>
+          <li>Currency, tax, fee, delivery, and settlement assumptions.</li>
+        </ul>
+
+        <p>If the purpose of the experiment is to compare complete systems, changing tools may be part of the treatment. In that case, document the systems as bundles. Do not later describe the result as a pure model comparison.</p>
+
+        <p>For live counterparties, use a safe test mode, sandbox, capped exposure, or an approved shadow process. A control test should not create unauthorized commitments. The exact safety mechanism depends on the business process and is outside the evidence available here.</p>
+      </section>
+
+      <section>
+        <h2>Step 5: Log the full negotiation, not only the final price</h2>
+
+        <p>The final agreement is an endpoint, not an explanation. A usable log should allow another analyst to reconstruct what happened without exposing secrets or personal data.</p>
+
+        <p>A compact event schema might be:</p>
+
+        <pre><code>{
+  "test_id": "procurement-negotiation-v1",
+  "run_id": "run-2026-11-28-001",
+  "case_id": "case-000127",
+  "pair_id": "pair-000064",
+  "arm": "treatment",
+  "event_index": 4,
+  "timestamp": "2026-11-28T10:15:12Z",
+  "event_type": "offer_sent",
+  "actor": "our_agent",
+  "offer": {
+    "price": "redacted-or-tokenized",
+    "quantity": "redacted-or-tokenized",
+    "delivery_window": "standard"
+  },
+  "message_hash": "optional-content-hash",
+  "tool_calls": [],
+  "latency_ms": 842,
+  "policy_checks": {
+    "within_reservation_value": true,
+    "within_round_limit": true
+  },
+  "termination": null,
+  "schema_version": 1
+}</code></pre>
+
+        <p>Useful event types include:</p>
+
+        <ul>
+          <li><code>case_loaded</code></li>
+          <li><code>message_received</code></li>
+          <li><code>offer_sent</code></li>
+          <li><code>counteroffer_received</code></li>
+          <li><code>tool_called</code></li>
+          <li><code>tool_failed</code></li>
+          <li><code>human_escalation_requested</code></li>
+          <li><code>human_escalation_resolved</code></li>
+          <li><code>agreement_reached</code></li>
+          <li><code>negotiation_abandoned</code></li>
+          <li><code>hard_stop</code></li>
+        </ul>
+
+        <p>Use append-only storage or an equivalent audit mechanism. If messages cannot be retained because of privacy or security requirements, retain structured features, hashes, timestamps, and policy decisions sufficient to reproduce the analysis. State exactly what was omitted.</p>
+      </section>
+
+      <section>
+        <h2>Step 6: Measure transaction costs</h2>
+
+        <p>A price-only comparison can favor an agent that consumes more time, more tokens, more retries, or more human attention. Define transaction cost before the run.</p>
+
+        <p>One useful decomposition is:</p>
+
+        <pre><code>transaction_cost =
+    compute_cost
+  + communication_cost
+  + human_review_cost
+  + retry_and_recovery_cost
+  + delay_cost
+  + expected_failure_cost</code></pre>
+
+        <p>The terms do not need to be expressed in the same physical unit initially. Convert them to a common analysis unit only after defining the conversion rule.</p>
+
+        <p>Examples of observable inputs:</p>
+
+        <table>
+          <thead>
+            <tr>
+              <th>Cost component</th>
+              <th>Possible measurement</th>
+              <th>Common mistake</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td>Compute</td>
+              <td>Input and output usage, tool runtime, infrastructure records</td>
+              <td>Counting only successful requests</td>
+            </tr>
+            <tr>
+              <td>Communication</td>
+              <td>Messages, API calls, channel fees, counterpart requests</td>
+              <td>Ignoring repeated or duplicate messages</td>
+            </tr>
+            <tr>
+              <td>Human review</td>
+              <td>Intervention count and elapsed handling time</td>
+              <td>Assigning zero cost to “occasional” intervention</td>
+            </tr>
+            <tr>
+              <td>Delay</td>
+              <td>Elapsed time mapped to a predeclared business cost</td>
+              <td>Applying a post-hoc penalty only to the weaker arm</td>
+            </tr>
+            <tr>
+              <td>Failure</td>
+              <td>Expected loss from invalid, abandoned, or failed agreements</td>
+              <td>Removing failures from the denominator</td>
+            </tr>
+          </tbody>
+        </table>
+
+        <p>If you do not know a cost precisely, use a range or sensitivity analysis. Do not silently set an unknown cost to zero and then describe the result as total economic performance.</p>
+      </section>
+
+      <section>
+        <h2>Step 7: Define outcomes and exclusions</h2>
+
+        <p>Create an outcome record for every eligible case, including cases with errors or no agreement:</p>
+
+        <pre><code>{
+  "case_id": "case-000127",
+  "arm": "treatment",
+  "status": "agreement_reached",
+  "agreed_terms_valid": true,
+  "gross_value": 0,
+  "transaction_cost": 0,
+  "net_contribution": 0,
+  "rounds": 0,
+  "elapsed_seconds": 0,
+  "human_interventions": 0,
+  "policy_violations": 0,
+  "failure_reason": null
+}</code></pre>
+
+        <p>The zero values above are placeholders showing the shape of the record. They are not results.</p>
+
+        <p>Predeclare rules for:</p>
+
+        <ul>
+          <li>Counterpart downtime.</li>
+          <li>Malformed test cases.</li>
+          <li>Infrastructure outages that affect both arms.</li>
+          <li>Infrastructure failures that affect only one arm.</li>
+          <li>Policy violations.</li>
+          <li>Human intervention.</li>
+          <li>Partial agreements.</li>
+          <li>Timeouts and abandoned negotiations.</li>
+        </ul>
+
+        <p>Usually, a policy violation is an outcome to report, not a reason to remove the case. If a case is excluded, preserve it in the run data and include the exclusion count and reason in the analysis.</p>
+      </section>
+
+      <section>
+        <h2>Step 8: Compare paired differences</h2>
+
+        <p>For each pair, calculate the treatment-minus-control difference in the primary metric:</p>
+
+        <pre><code>difference_i =
+    net_contribution_treatment_i
+  - net_contribution_control_i</code></pre>
+
+        <p>Summarize the distribution of differences, not only the average. Report at least:</p>
+
+        <ul>
+          <li>Number of eligible pairs.</li>
+          <li>Number of completed pairs.</li>
+          <li>Mean and median paired difference.</li>
+          <li>Spread, such as standard deviation or interquartile range.</li>
+          <li>Agreement and failure rates by arm.</li>
+          <li>Transaction cost by arm.</li>
+          <li>Differences by predeclared block.</li>
+          <li>Missing, excluded, and interrupted cases.</li>
+        </ul>
+
+        <p>A simple analysis command could be:</p>
+
+        <pre><code>python analyze_pairs.py \
+  --outcomes outcomes-v1.jsonl \
+  --allocation allocation-v1.jsonl \
+  --metric net_contribution \
+  --paired-by pair_id \
+  --report report-v1.json</code></pre>
+
+        <p>Again, this is an illustrative interface. It is not evidence that a particular tool or script is available.</p>
+
+        <p>For uncertainty, use a method appropriate to the data and state it explicitly. A <a href="../glossary.html#confidence-interval">confidence interval</a> around the mean paired difference can communicate estimation uncertainty. If the data are heavy-tailed or contain a small number of large losses, bootstrap intervals or robust summaries may be more informative than a normal approximation.</p>
+
+        <p>A <a href="../glossary.html#p-value">p-value</a> is not a substitute for an economic decision. A small difference can be statistically detectable and commercially irrelevant. A large estimated difference can be important even when the sample is too small for a precise conclusion. Report the estimate, uncertainty, practical threshold, and decision rule together.</p>
+      </section>
+
+      <section>
+        <h2>Set a decision threshold before looking at outcomes</h2>
+
+        <p>Define what result would justify action. For example:</p>
+
+        <pre><code>ship_candidate_if:
+  lower_bound_of_net_contribution_gain > minimum_economic_gain
+  and policy_violation_rate <= maximum_allowed_rate
+  and human_intervention_rate <= maximum_allowed_rate</code></pre>
+
+        <p>The threshold values are intentionally unspecified because they depend on the company’s economics, risk tolerance, and governance requirements.</p>
+
+        <p>Use a practical threshold rather than “any positive improvement.” A candidate that improves price by a small amount but doubles manual review may not be better. Conversely, a candidate that produces similar average contribution but materially reduces severe losses may be preferable if downside risk matters.</p>
+      </section>
+
+      <section>
+        <h2>Verification checklist</h2>
+
+        <p>Before accepting the result, verify the following:</p>
+
+        <ol>
+          <li>The protocol, agent versions, tools, prompts, and policy limits are recorded.</li>
+          <li>The control is a credible alternative for the question being asked.</li>
+          <li>Allocation was performed before outcome inspection and can be reproduced from the recorded seed.</li>
+          <li>Both arms received equivalent case information and counterpart conditions, or deviations are documented.</li>
+          <li>Every eligible case has an outcome or an explicit interruption reason.</li>
+          <li>The primary metric was chosen before comparing results.</li>
+          <li>Transaction costs and failures are included in the denominator and economic model.</li>
+          <li>Exclusions are visible and not silently removed.</li>
+          <li>Policy violations and unsafe behavior are reported separately from financial performance.</li>
+          <li>The final report distinguishes observed facts, assumptions, estimates, and unresolved limitations.</li>
+        </ol>
+
+        <p>These checks validate the integrity of the test record. They do not prove that the result will generalize to every future counterpart or market condition.</p>
+      </section>
+
+      <section>
+        <h2>Failure cases that commonly invalidate the comparison</h2>
+
+        <h3>Only comparing successful deals</h3>
+        <p>Excluding abandoned negotiations can make an agent with a high failure rate look efficient. Keep failures in the outcome table and assign them the predeclared business consequence.</p>
+
+        <h3>Changing the counterpart between arms</h3>
+        <p>If the treatment agent negotiates with a tough counterpart and the control agent negotiates with an easy one, the observed gap is not attributable to the agent alone. Use matched counterpart conditions or include counterpart as a blocking and analysis variable.</p>
+
+        <h3>Letting one arm escalate more easily</h3>
+        <p>Human escalation is part of the system. If one agent can call for help after two rounds while the other must continue for ten, compare complete operating policies or make the escalation rule equivalent.</p>
+
+        <h3>Replaying messages unrealistically</h3>
+        <p>Exact replay can create an artificial environment if the counterpart would react differently to a different timing or offer. For live tests, document whether the counterpart is scripted, sandboxed, simulated, or independent. Interpret each design according to that environment.</p>
+
+        <h3>Optimizing after inspecting the test</h3>
+        <p>Changing the agent, case filters, or metric after seeing results turns one test into a sequence of partially observed experiments. Version the next protocol and label it as a new run.</p>
+
+        <h3>Using a weak control</h3>
+        <p>A deliberately poor control can make the treatment look successful without answering the business question. The control should represent a real alternative: the current production system, the previous version, an approved policy, or a meaningful benchmark.</p>
+
+        <h3>Ignoring correlated failures</h3>
+        <p>If a counterpart outage affects every case in a block, the cases are not independent observations. Preserve the event and consider block-level analysis rather than treating every failed case as unrelated evidence.</p>
+      </section>
+
+      <section>
+        <h2>Limitations</h2>
+
+        <p>A paired control test can show that one complete negotiation system performed differently from another under defined conditions. It cannot, by itself, establish which internal component caused the difference. Model choice, prompt, memory, tools, retry logic, human review, and counterpart handling may all contribute.</p>
+
+        <p>It also cannot guarantee future performance. Counterpart policies may adapt. Deal mix may drift. Prices and service conditions may change. A test that is safe in a sandbox may not capture the strategic effects of live interaction.</p>
+
+        <p>For these reasons, treat the test as part of a sequence:</p>
+
+        <ol>
+          <li>Offline replay or simulation for inexpensive debugging.</li>
+          <li>Paired or blocked controlled tests for causal comparison under defined conditions.</li>
+          <li>Limited exposure with hard limits and monitoring.</li>
+          <li>Ongoing measurement for drift, counterpart adaptation, and transaction costs.</li>
+        </ol>
+
+        <p>The evidence becomes stronger when the same result survives across new case blocks, counterpart types, and time windows. That is an empirical requirement, not an assumption.</p>
+      </section>
+
+      <section>
+        <h2>What a reproducible report should contain</h2>
+
+        <p>A useful report lets a reviewer answer five questions:</p>
+
+        <ol>
+          <li>What exact systems were compared?</li>
+          <li>Which cases and counterpart conditions were eligible?</li>
+          <li>How were cases assigned?</li>
+          <li>How were value, failure, and transaction cost calculated?</li>
+          <li>What uncertainty and limitations remain?</li>
+        </ol>
+
+        <p>A compact report structure is:</p>
+
+        <pre><code>1. Decision question
+2. Primary metric and decision threshold
+3. Protocol and version identifiers
+4. Treatment and control definitions
+5. Case population and allocation method
+6. Counterpart coverage
+7. Logging and redaction rules
+8. Outcome and transaction-cost definitions
+9. Results by arm and paired differences
+10. Failures, exclusions, and interruptions
+11. Safety and policy-violation results
+12. Uncertainty and limitations
+13. Decision and next protocol version</code></pre>
+
+        <p>Do not include secrets, personal data, production credentials, or copied customer messages in the report. A reproducible test requires reproducible structure and assumptions, not unrestricted publication of raw data.</p>
+      </section>
+
+      <section>
+        <h2>Bottom line</h2>
+
+        <p>If a company wants to know whether its negotiation agent is weaker than the agent on the other side, it should stop treating individual deals as proof. Use matched cases, a credible control, controlled counterpart exposure, complete negotiation logging, and a net-value metric that includes transaction cost.</p>
+
+        <p>The decisive comparison is not simply “which agent named the lower price.” It is which complete system produces more reliable net contribution under the same declared conditions, with fewer costly interventions and failures, while staying inside its policy limits.</p>
+
+        <p>For related implementation patterns, see the <a href="../guides.html">guides</a> and the <a href="../glossary.html">glossary</a>.</p>
+      </section>
+    <section class="service-note">
+  <b>We publish what works for us—and implement the same solutions for your business.</b>
+  We design AI automation, Telegram bots, chats, and AI agents for real-world processes.
+  <a href="../contacts-en.html">Discuss your project →</a>
+</section>
+</article>
+  </main>
+
+  <footer class="site-footer">
+    <div class="container">
+      <p><a href="../guides.html">Guides</a> · <a href="../glossary.html">Glossary</a> · Agent Lab Journal</p>
+    </div>
+  </footer>
+</body>
+</html>
