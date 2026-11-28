@@ -1,0 +1,703 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Long-Term Memory for AI Agents: Comparing Pinning, Compaction, and Retrieval</title>
+  <meta name="description" content="Long-Term Memory for AI Agents: Comparing Pinning, Compaction, and Retrieval with a reproducible prototype for pinned facts, extraction, context compaction, and retrieval-quality evaluation.">
+  <link rel="canonical" href="https://agentlabjournal.online/en/long-term-memory-for-ai-agents.html">
+  <link rel="stylesheet" href="../style.css">
+  <link rel="stylesheet" href="../reading.css">
+
+  <meta property="og:type" content="article">
+  <meta property="og:title" content="Long-Term Memory for AI Agents: Comparing Pinning, Compaction, and Retrieval">
+  <meta property="og:description" content="A practical, reproducible comparison of pinned facts, context compaction, and retrieval for long-running AI-agent conversations.">
+  <meta property="og:url" content="https://agentlabjournal.online/en/long-term-memory-for-ai-agents.html">
+  <meta property="og:image" content="https://agentlabjournal.online/assets/covers/llm-context-window-budget-social.png">
+  <meta property="og:site_name" content="Agent Lab Journal">
+
+  <meta name="twitter:card" content="summary_large_image">
+  <meta name="twitter:title" content="Long-Term Memory for AI Agents: Comparing Pinning, Compaction, and Retrieval">
+  <meta name="twitter:description" content="Build and evaluate a small memory system for long-running AI-agent conversations.">
+  <meta name="twitter:image" content="https://agentlabjournal.online/assets/covers/llm-context-window-budget-social.png">
+
+  <meta name="reading-time" content="35 minutes">
+  <meta name="article:section" content="Agents">
+  <meta name="article:level" content="Advanced">
+
+  <script type="application/ld+json">
+  {
+    "@context": "https://schema.org",
+    "@type": "Article",
+    "headline": "Long-Term Memory for AI Agents: Comparing Pinning, Compaction, and Retrieval",
+    "description": "A practical, reproducible comparison of pinned facts, context compaction, and retrieval for long-running AI-agent conversations.",
+    "image": ["https://agentlabjournal.online/assets/covers/llm-context-window-budget-social.png"],
+    "dateModified": "2026-11-28",
+    "author": {
+      "@type": "Organization",
+      "name": "Agent Lab Journal"
+    },
+    "publisher": {
+      "@type": "Organization",
+      "name": "Agent Lab Journal",
+      "url": "https://agentlabjournal.online/"
+    },
+    "mainEntityOfPage": {
+      "@type": "WebPage",
+      "@id": "https://agentlabjournal.online/en/long-term-memory-for-ai-agents.html"
+    }
+  }
+  </script>
+<link rel="stylesheet" href="../homepage.css"><link rel="stylesheet" href="../max-promo.css">  <meta property="og:image:alt" content="Долговременная память для AI-агентов: сравниваем закрепление, сжатие и поиск">
+</head>
+
+<body>
+  <header class="site-header">
+    <div class="site-header__inner">
+      <a class="site-logo" href="../index.html">Agent Lab Journal</a>
+      <nav aria-label="Primary navigation">
+        <a href="../guides.html">Guides</a>
+        <a href="../glossary.html">Glossary</a>
+      </nav>
+    </div>
+  </header>
+
+  <main>
+    <article class="reading">
+      <header class="reading-header">
+        <p class="reading-meta">
+          <span>Agents</span>
+          <span>Advanced</span>
+          <span>35-minute read</span>
+        </p>
+        <h1>Long-Term Memory for AI Agents: Comparing Pinning, Compaction, and Retrieval</h1>
+        <figure class="article-cover" data-editorial-cover="long-term-memory-for-ai-agents"><img src="../assets/covers/llm-context-window-budget.png" alt="Долговременная память для AI-агентов: сравниваем закрепление, сжатие и поиск" width="1280" height="720" fetchpriority="high"><figcaption>Temporary fallback cover; replace in editorial pass.</figcaption></figure>
+        <p class="reading-lede">
+          A long conversation is not the same thing as a reliable memory. An agent may see thousands of earlier tokens and still miss the one constraint that determines whether its next action is safe. This guide builds a small memory system that separates durable facts, compressed history, and on-demand recall, then shows how to evaluate whether each part helps.
+        </p>
+        <p class="reading-updated">Updated November 28, 2026</p>
+      </header>
+
+      <nav class="reading-toc" aria-label="Table of contents">
+        <p>In this guide</p>
+        <ol>
+          <li><a href="#problem">The memory problem</a></li>
+          <li><a href="#three-mechanisms">Three mechanisms</a></li>
+          <li><a href="#architecture">Prototype architecture</a></li>
+          <li><a href="#build">Build the prototype</a></li>
+          <li><a href="#evaluation">Evaluate retrieval quality</a></li>
+          <li><a href="#failure-cases">Failure cases and limits</a></li>
+          <li><a href="#design-rules">Design rules</a></li>
+        </ol>
+      </nav>
+
+      <section id="problem">
+        <h2>The memory problem</h2>
+
+        <p>
+          An agent needs to retain at least three different kinds of information as a conversation grows:
+        </p>
+
+        <ul>
+          <li><strong>Facts:</strong> stable information such as a user’s preferred programming language or a project’s deployment constraint.</li>
+          <li><strong>Plans:</strong> work that is in progress, including decisions, open questions, and the next intended step.</li>
+          <li><strong>Constraints:</strong> rules that must remain visible before an action, such as “do not send messages without approval” or “use the staging database.”</li>
+        </ul>
+
+        <p>
+          Treating all three as ordinary chat history creates a fragile system. Recent messages are easy to include but may be less important than an older constraint. A summary is cheaper than the original transcript but can omit a qualifier. A search index can recover relevant passages but may retrieve a plausible-looking statement that is no longer true.
+        </p>
+
+        <p>
+          The useful abstraction is therefore not “give the model more history.” It is a memory pipeline:
+        </p>
+
+        <pre><code>conversation
+    ├── pinned facts and constraints
+    ├── structured working state
+    ├── compacted episodic history
+    └── searchable memory entries</code></pre>
+
+        <p>
+          In this article, <a href="../glossary.html#long-term-memory">long-term memory</a> means information retained beyond the current prompt assembly step. It does not imply that every retained item is permanent, correct, or safe to use without verification.
+        </p>
+
+        <aside class="callout">
+          <p><strong>Evidence boundary.</strong> The prototype and commands below are a reproducible design, not reported benchmark results. No retrieval score, latency, or model-quality improvement is claimed until you run the evaluation on your own data and record the output.</p>
+        </aside>
+      </section>
+
+      <section id="three-mechanisms">
+        <h2>Three mechanisms, three jobs</h2>
+
+        <p>
+          The design compares <a href="../glossary.html#pinning">pinning</a>, <a href="../glossary.html#context-compaction">compaction</a>, and <a href="../glossary.html#retrieval">retrieval</a>. They solve different problems and should not be treated as interchangeable.
+        </p>
+
+        <h3>Pinning: protect high-value state</h3>
+
+        <p>
+          A pinned item is deliberately placed into every relevant prompt, or into every prompt for a defined scope. Pinning is appropriate for facts that are both important and relatively stable:
+        </p>
+
+        <pre><code>{
+  "id": "constraint-001",
+  "kind": "constraint",
+  "text": "Never deploy directly to production.",
+  "scope": "workspace:demo-project",
+  "source": "user",
+  "status": "active",
+  "created_at": "2026-11-28T09:00:00Z",
+  "expires_at": null
+}</code></pre>
+
+        <p>
+          Pinning gives predictable visibility. Its cost is prompt space and staleness risk. If the system pins too much, the model receives a crowded block that competes with the current task. If an old preference changes, an unreviewed pin can become an instruction conflict.
+        </p>
+
+        <h3>Compaction: preserve the shape of a long episode</h3>
+
+        <p>
+          <a href="../glossary.html#context-window">Context-window</a> pressure usually arrives before the conversation is semantically complete. Compaction replaces older turns with a structured summary that preserves decisions, unresolved work, assumptions, and references to source messages.
+        </p>
+
+        <p>A useful compacted record is more constrained than a prose recap:</p>
+
+        <pre><code>{
+  "episode_id": "episode-014",
+  "goal": "Add webhook retries without duplicate side effects.",
+  "decisions": [
+    "Use an idempotency key for every delivery attempt."
+  ],
+  "constraints": [
+    "Do not change the public webhook payload."
+  ],
+  "open_questions": [
+    "What retry delay is acceptable for the worker?"
+  ],
+  "artifacts": [
+    "src/webhooks/dispatcher.ts"
+  ],
+  "source_message_ids": ["m-201", "m-206", "m-214"]
+}</code></pre>
+
+        <p>
+          Compaction reduces volume while keeping a coherent episode. It is not a source of truth: the summary can be incomplete or wrong. For high-risk decisions, retain a link to the original evidence and allow the agent to retrieve it.
+        </p>
+
+        <h3>Retrieval: bring back relevant evidence</h3>
+
+        <p>
+          <a href="../glossary.html#retrieval-augmented-generation">Retrieval-augmented generation</a> (RAG) selects stored entries for a particular query. A minimal system can use lexical search; a more advanced system may add <a href="../glossary.html#embeddings">embeddings</a> and a <a href="../glossary.html#vector-database">vector store</a>.
+        </p>
+
+        <p>
+          Retrieval is useful for facts that are too numerous to pin and too specific to include in every summary. It introduces its own failure modes: the right item may not be returned, an obsolete item may rank highly, or several similar items may create an unresolved conflict.
+        </p>
+
+        <table>
+          <caption>What each mechanism optimizes</caption>
+          <thead>
+            <tr>
+              <th>Mechanism</th>
+              <th>Strength</th>
+              <th>Primary risk</th>
+              <th>Good default use</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td>Pinning</td>
+              <td>Predictable visibility</td>
+              <td>Staleness and prompt bloat</td>
+              <td>Active constraints and a small set of durable preferences</td>
+            </tr>
+            <tr>
+              <td>Compaction</td>
+              <td>Lower context cost</td>
+              <td>Omission or distortion</td>
+              <td>Completed or paused conversation episodes</td>
+            </tr>
+            <tr>
+              <td>Retrieval</td>
+              <td>Selective access to a large store</td>
+              <td>Misses, false matches, and conflicts</td>
+              <td>Long-tail facts and evidence lookup</td>
+            </tr>
+          </tbody>
+        </table>
+      </section>
+
+      <section id="architecture">
+        <h2>Prototype architecture</h2>
+
+        <p>
+          The prototype uses four stores with explicit ownership:
+        </p>
+
+        <ol>
+          <li><strong>Pins:</strong> small, reviewed records injected into the prompt.</li>
+          <li><strong>Working state:</strong> the current goal, plan, blockers, and next action.</li>
+          <li><strong>Episodic summaries:</strong> compacted records for completed or paused sections of a conversation.</li>
+          <li><strong>Memory entries:</strong> searchable facts or evidence with timestamps and status.</li>
+        </ol>
+
+        <p>The prompt builder should assemble them in a fixed order:</p>
+
+        <pre><code>system policy
++ active constraints
++ current working state
++ retrieved evidence
++ recent conversation turns
++ current user request</code></pre>
+
+        <p>
+          Ordering is a policy choice, not a guarantee that the model will obey every item. The application should validate actions independently. Memory can inform an agent; it should not silently become authorization.
+        </p>
+
+        <h3>Memory record schema</h3>
+
+        <pre><code>{
+  "id": "mem-0007",
+  "kind": "fact",
+  "text": "The staging API requires the X-Workspace header.",
+  "scope": "workspace:demo-project",
+  "source": {
+    "type": "conversation",
+    "message_ids": ["m-102", "m-103"]
+  },
+  "status": "active",
+  "confidence": "reported",
+  "valid_from": "2026-11-28T10:00:00Z",
+  "valid_until": null,
+  "supersedes": null,
+  "updated_at": "2026-11-28T10:02:00Z"
+}</code></pre>
+
+        <p>
+          The <code>status</code> field supports explicit invalidation. The <code>source</code> field provides <a href="../glossary.html#provenance">provenance</a>. The validity fields distinguish “known at the time” from “currently active.” The <code>supersedes</code> field makes updates inspectable instead of silently overwriting history.
+        </p>
+
+        <h3>Extraction policy</h3>
+
+        <p>
+          Extraction should be conservative. The extractor proposes memory candidates; a policy layer decides whether to save them. A practical candidate must answer:
+        </p>
+
+        <ul>
+          <li>What exactly should be remembered?</li>
+          <li>Who or what is the source?</li>
+          <li>What scope does it apply to?</li>
+          <li>When might it expire?</li>
+          <li>Could retaining it expose personal or secret data?</li>
+          <li>What would prove that it is no longer valid?</li>
+        </ul>
+
+        <p>
+          Do not store passwords, access tokens, private keys, payment details, or unnecessary personal data. A memory system should also support deletion and correction, even if the first prototype uses a local file.
+        </p>
+      </section>
+
+      <section id="build">
+        <h2>Build the prototype</h2>
+
+        <p>
+          The following example uses Python’s standard library and JSON Lines. It is intentionally small so that the storage, ranking, and evaluation logic remain visible. It does not require an external model, database, credentials, or network access.
+        </p>
+
+        <h3>1. Create a fixture</h3>
+
+        <p>Save this as <code>memory_fixture.jsonl</code>:</p>
+
+        <pre><code>{"id":"m1","kind":"constraint","text":"Never deploy directly to production.","scope":"demo-project","status":"active","source":"user"}
+{"id":"m2","kind":"fact","text":"The staging API requires the X-Workspace header.","scope":"demo-project","status":"active","source":"conversation"}
+{"id":"m3","kind":"plan","text":"Add webhook retries with an idempotency key before changing worker concurrency.","scope":"demo-project","status":"active","source":"conversation"}
+{"id":"m4","kind":"fact","text":"The project uses TypeScript for application code.","scope":"demo-project","status":"active","source":"user"}
+{"id":"m5","kind":"fact","text":"The old webhook endpoint is scheduled for removal after migration.","scope":"demo-project","status":"superseded","source":"conversation"}</code></pre>
+
+        <h3>2. Implement lexical retrieval</h3>
+
+        <p>
+          This baseline uses token overlap. It is not semantic search, but it is deterministic and gives you a reference point before adding embeddings.
+        </p>
+
+        <pre><code># memory_baseline.py
+import json
+import re
+import sys
+from pathlib import Path
+
+STOP = {
+    "the", "a", "an", "and", "or", "to", "for", "of", "in",
+    "on", "with", "is", "are", "this", "that"
+}
+
+def tokens(text):
+    words = re.findall(r"[a-z0-9][a-z0-9_-]*", text.lower())
+    return {word for word in words if word not in STOP}
+
+def load_records(path):
+    records = []
+    for line in Path(path).read_text(encoding="utf-8").splitlines():
+        if line.strip():
+            records.append(json.loads(line))
+    return records
+
+def score(query, record):
+    query_tokens = tokens(query)
+    record_tokens = tokens(record["text"])
+    if not query_tokens:
+        return 0.0
+    return len(query_tokens & record_tokens) / len(query_tokens)
+
+def search(query, records, limit=5):
+    ranked = []
+    for record in records:
+        if record.get("status") != "active":
+            continue
+        ranked.append((score(query, record), record))
+    ranked.sort(key=lambda item: (-item[0], item[1]["id"]))
+    return ranked[:limit]
+
+if __name__ == "__main__":
+    if len(sys.argv) &lt; 3:
+        raise SystemExit("usage: python memory_baseline.py FILE QUERY")
+    path = sys.argv[1]
+    query = " ".join(sys.argv[2:])
+    for value, record in search(query, load_records(path)):
+        print(f"{value:.3f}\t{record['id']}\t{record['text']}")</code></pre>
+
+        <p>Run a query:</p>
+
+        <pre><code>python memory_baseline.py memory_fixture.jsonl "what header does staging require"</code></pre>
+
+        <p>
+          The output is an observation from your local run. Record it as such; do not turn it into a general performance claim. The baseline should exclude inactive records, keep a deterministic tie-breaker, and expose the score so that later changes can be compared.
+        </p>
+
+        <h3>3. Add pinning and prompt assembly</h3>
+
+        <pre><code># prompt_assembly.py
+import json
+from pathlib import Path
+
+def load(path):
+    return [
+        json.loads(line) for line in Path(path).read_text(encoding="utf-8").splitlines()
+        if line.strip()
+    ]
+
+def active(records):
+    return [r for r in records if r.get("status") == "active"]
+
+def pinned(records):
+    return [
+        r for r in active(records)
+        if r.get("kind") == "constraint"
+    ]
+
+def render(records, retrieved, recent_turns, user_request):
+    sections = []
+
+    constraints = pinned(records)
+    if constraints:
+        sections.append("ACTIVE CONSTRAINTS:\n" + "\n".join(
+            f"- {item['text']}" for item in constraints
+        ))
+
+    if retrieved:
+        sections.append("RETRIEVED MEMORY:\n" + "\n".join(
+            f"- [{item['id']}] {item['text']}" for item in retrieved
+        ))
+
+    if recent_turns:
+        sections.append("RECENT CONVERSATION:\n" + "\n".join(recent_turns))
+
+    sections.append("CURRENT REQUEST:\n" + user_request)
+    return "\n\n".join(sections)
+
+if __name__ == "__main__":
+    records = load("memory_fixture.jsonl")
+    prompt = render(
+        records=records,
+        retrieved=[records[1], records[2]],
+        recent_turns=["User: We need a safe retry design."],
+        user_request="Draft the implementation checklist."
+    )
+    print(prompt)</code></pre>
+
+        <p>
+          In production, pin selection should be scoped to the current workspace, user, tenant, or task. A global pin is easy to implement and easy to misuse.
+        </p>
+
+        <h3>4. Represent compaction explicitly</h3>
+
+        <p>
+          Instead of storing a single free-form summary, store fields that downstream code can inspect:
+        </p>
+
+        <pre><code>{
+  "episode_id": "episode-014",
+  "status": "compacted",
+  "goal": "Implement webhook retries.",
+  "decisions": [
+    "Use idempotency keys.",
+    "Keep the public payload unchanged."
+  ],
+  "constraints": [
+    "Deploy only through staging."
+  ],
+  "open_questions": [
+    "Choose the worker retry backoff."
+  ],
+  "next_action": "Write the retry state transition table.",
+  "source_message_ids": ["m-201", "m-206", "m-214"],
+  "created_at": "2026-11-28T11:00:00Z"
+}</code></pre>
+
+        <p>
+          A compaction prompt should instruct the summarizer to preserve negations, numbers, names, deadlines, and unresolved questions. It should also require the summarizer to mark uncertainty rather than fill gaps.
+        </p>
+
+        <pre><code>Summarize the episode as JSON with:
+- goal
+- decisions
+- constraints
+- open_questions
+- next_action
+- source_message_ids
+
+Preserve negations, qualifiers, dates, identifiers, and explicit uncertainty.
+Do not invent decisions. If a field is unknown, use an empty array or null.</code></pre>
+      </section>
+
+      <section id="evaluation">
+        <h2>Evaluate retrieval quality</h2>
+
+        <p>
+          Retrieval quality should be tested separately from answer quality. First ask whether the correct memory entry was returned. Only then evaluate whether the agent used it correctly.
+        </p>
+
+        <h3>Create a labeled query set</h3>
+
+        <p>
+          A query set contains a question and the IDs of the records that are acceptable answers. Include paraphrases, short queries, ambiguous queries, and queries that should return nothing.
+        </p>
+
+        <pre><code>[
+  {
+    "query": "What header is required by staging?",
+    "relevant_ids": ["m2"]
+  },
+  {
+    "query": "What is the safe deployment rule?",
+    "relevant_ids": ["m1"]
+  },
+  {
+    "query": "How should webhook retries be made safe?",
+    "relevant_ids": ["m3"]
+  },
+  {
+    "query": "What is the database password?",
+    "relevant_ids": []
+  }
+]</code></pre>
+
+        <p>
+          The final query is a safety case. A system should not manufacture a memory result simply because the query expects one.
+        </p>
+
+        <h3>Measure precision and recall</h3>
+
+        <p>
+          <a href="../glossary.html#precision">Precision</a> asks how many returned items were relevant. <a href="../glossary.html#recall">Recall</a> asks how many relevant items were returned. For a top-<code>k</code> result set:
+        </p>
+
+        <pre><code>precision@k = relevant returned items / returned items
+recall@k    = relevant returned items / all relevant items</code></pre>
+
+        <p>
+          For an empty-relevance query, separately record whether the system abstained. Do not count “returned nothing” as ordinary recall success; it is a different behavior that should be evaluated as an abstention or safety outcome.
+        </p>
+
+        <h3>Run an evaluation script</h3>
+
+        <pre><code># evaluate.py
+import json
+from pathlib import Path
+from memory_baseline import load_records, search
+
+def main():
+    records = load_records("memory_fixture.jsonl")
+    cases = json.loads(Path("queries.json").read_text(encoding="utf-8"))
+    k = 3
+
+    total_precision = 0.0
+    total_recall = 0.0
+    scored = 0
+    abstention_correct = 0
+    abstention_cases = 0
+
+    for case in cases:
+        results = search(case["query"], records, limit=k)
+        returned = [record["id"] for score, record in results if score > 0]
+        relevant = set(case["relevant_ids"])
+
+        if not relevant:
+            abstention_cases += 1
+            if not returned:
+                abstention_correct += 1
+            print(case["query"], "abstention", not returned)
+            continue
+
+        scored += 1
+        hit_count = len(set(returned) & relevant)
+        total_precision += hit_count / max(len(returned), 1)
+        total_recall += hit_count / len(relevant)
+        print(case["query"], returned, "hits", hit_count)
+
+    if scored:
+        print("precision_at_k", total_precision / scored)
+        print("recall_at_k", total_recall / scored)
+    if abstention_cases:
+        print("abstention_accuracy",
+              abstention_correct / abstention_cases)
+
+if __name__ == "__main__":
+    main()</code></pre>
+
+        <p>
+          Run it with:
+        </p>
+
+        <pre><code>python evaluate.py</code></pre>
+
+        <p>
+          Save the complete output, the fixture version, the query-set version, the retrieval configuration, and the date. A score without its dataset and configuration is not reproducible evidence.
+        </p>
+
+        <h3>Compare strategies, not just one implementation</h3>
+
+        <p>
+          Run at least three conditions:
+        </p>
+
+        <ol>
+          <li><strong>Recent context only:</strong> retrieve nothing beyond the latest turns.</li>
+          <li><strong>Pinning plus recent context:</strong> inject active constraints and use no search.</li>
+          <li><strong>Pinning, compaction, and retrieval:</strong> combine all three mechanisms.</li>
+        </ol>
+
+        <p>
+          Keep the query set fixed. Report exact values from your run, not expected values. Also report the number of records, the value of <code>k</code>, the token budget if a model is involved, and any filtering or reranking rules.
+        </p>
+
+        <aside class="callout">
+          <p><strong>Do not overclaim.</strong> A higher retrieval score does not automatically mean better agent behavior. The agent may ignore a retrieved constraint, apply a stale fact, or take an unsafe action despite retrieving the correct record.</p>
+        </aside>
+      </section>
+
+      <section id="failure-cases">
+        <h2>Failure cases and limitations</h2>
+
+        <h3>Stale pins</h3>
+
+        <p>
+          A pinned preference can outlive the project decision that created it. Give pins a scope, an owner, a timestamp, and a review or expiry rule. When a new item contradicts an old one, mark the old item as superseded rather than relying on insertion order.
+        </p>
+
+        <h3>Incorrect extraction</h3>
+
+        <p>
+          An extractor can convert a suggestion into a fact, mistake a hypothetical for a decision, or attach a statement to the wrong user. Use a proposal state such as <code>candidate</code> and require confirmation for high-impact memories.
+        </p>
+
+        <h3>Summary loss</h3>
+
+        <p>
+          Compaction may remove a small word with large consequences: “not,” “only,” “after,” or “unless.” Test summaries against source transcripts with a checklist for negation, constraints, quantities, deadlines, and named artifacts.
+        </p>
+
+        <h3>Retrieval collisions</h3>
+
+        <p>
+          Similar records may describe different projects or different time periods. Always filter by scope before ranking. If multiple active records conflict, return the conflict for resolution instead of selecting one silently.
+        </p>
+
+        <h3>Vocabulary mismatch</h3>
+
+        <p>
+          Lexical search can miss paraphrases. Embeddings may improve semantic matching, but they can also make broad or conceptually adjacent records look relevant. Compare an embedding-based system with the lexical baseline on the same labeled queries.
+        </p>
+
+        <h3>Prompt injection through memory</h3>
+
+        <p>
+          Stored text is untrusted input. A memory entry that says “ignore all previous instructions” must remain data, not become policy. Keep system rules separate from retrieved content, delimit memory clearly, and validate tool calls outside the model.
+        </p>
+
+        <h3>Privacy and retention</h3>
+
+        <p>
+          Memory increases the lifetime and reach of sensitive information. Define retention periods, deletion behavior, tenant isolation, access controls, and audit events before adding personal data. For a first prototype, use synthetic records only.
+        </p>
+
+        <h3>Evaluation leakage</h3>
+
+        <p>
+          Do not build the query set from the same phrases used to create the memory records and then describe the result as broad semantic performance. Include independently written paraphrases and negative cases. Keep a held-out set for later checks.
+        </p>
+      </section>
+
+      <section id="design-rules">
+        <h2>Practical design rules</h2>
+
+        <ol>
+          <li><strong>Pin less than you think.</strong> Pin active constraints and a small amount of durable state. Search for the rest.</li>
+          <li><strong>Make every memory inspectable.</strong> Store source, scope, status, timestamps, and replacement relationships.</li>
+          <li><strong>Separate proposal from truth.</strong> Extraction should produce candidates; policy should approve, reject, expire, or supersede them.</li>
+          <li><strong>Preserve evidence links during compaction.</strong> A summary is useful because it is compact, but trustworthy because it can point back to source.</li>
+          <li><strong>Evaluate retrieval before generation.</strong> Measure whether the right evidence is available before judging the final answer.</li>
+          <li><strong>Include abstention tests.</strong> A memory system must be able to say that it has no supported answer.</li>
+          <li><strong>Keep authorization outside memory.</strong> A remembered preference is not permission to perform an irreversible action.</li>
+          <li><strong>Version the memory format.</strong> Schema changes should be migratable and reviewable.</li>
+        </ol>
+
+        <p>
+          A practical first milestone is not a full autonomous memory layer. It is a small system that can answer four questions reliably:
+        </p>
+
+        <ul>
+          <li>What is currently pinned, and why?</li>
+          <li>What was compressed, and which source messages support it?</li>
+          <li>Which memories were retrieved for this request?</li>
+          <li>What happened when the memory was wrong, stale, or absent?</li>
+        </ul>
+
+        <p>
+          Once those answers are visible, you can make meaningful comparisons. Pinning gives deterministic coverage for a narrow set of high-value constraints. Compaction controls context growth while preserving episode structure. Retrieval scales access to a larger store, provided that relevance, freshness, scope, and abstention are measured rather than assumed.
+        </p>
+
+        <p>
+          Continue with the <a href="../guides.html">Agent Lab Journal guides</a> or look up unfamiliar terms in the <a href="../glossary.html">glossary</a>.
+        </p>
+      </section>
+    <section class="service-note">
+  <b>We publish what works for us—and implement the same solutions for your business.</b>
+  We design AI automation, Telegram bots, chats, and AI agents for real-world processes.
+  <a href="../contacts-en.html">Discuss your project →</a>
+</section>
+</article>
+  </main>
+
+  <footer class="site-footer">
+    <div class="site-footer__inner">
+      <p>&copy; 2026 Agent Lab Journal</p>
+      <nav aria-label="Footer navigation">
+        <a href="../guides.html">Guides</a>
+        <a href="../glossary.html">Glossary</a>
+      </nav>
+    </div>
+  </footer>
+</body>
+</html>
